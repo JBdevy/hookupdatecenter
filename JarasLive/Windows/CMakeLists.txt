@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.24" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "1.25" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -202,7 +202,7 @@ target_compile_options(SavePulseTests PRIVATE /utf-8)
 target_link_libraries(SavePulseTests PRIVATE d3d11 dxgi d2d1 dcomp dwmapi ole32)
 # Requires a usable Windows graphics adapter, but creates no visible window and
 # never takes keyboard focus. Run explicitly on the validation PC, not CI VMs.
-foreach(name ProjectSync Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership TempoOwnership Timecode TimecodePlayback ClickTrack)
+foreach(name ProjectSync Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership TempoOwnership Timecode TimecodePlayback ClickTrack WindowsTimelineSnap)
     add_executable(${name}Tests "${CATLIVEROOT}/Tests/Core/${name}Tests.cpp")
     target_link_libraries(${name}Tests PRIVATE CatLiveCore)
     target_compile_options(${name}Tests PRIVATE /utf-8)

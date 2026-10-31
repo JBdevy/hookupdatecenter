@@ -6,14 +6,14 @@ namespace catlive {
 class TrackMixerViewport final : public Viewport, private Timer {
   public:
     std::function<void()> moved;
-    std::function<void(const MouseEvent &)> pressed;
+    std::function<void(const MouseEvent &)> pressed, doubleClicked;
     std::function<void(const MouseEvent &,const MouseWheelDetails &)> wheel;
     TrackMixerViewport() {
         selection.owner=this;addMouseListener(&selection,true);
         setScrollBarsShown(false,false,false,false);
     }
     ~TrackMixerViewport() override { clearCallbacks();removeMouseListener(&selection); }
-    void clearCallbacks() { stopTimer();moved={};pressed={};wheel={}; }
+    void clearCallbacks() { stopTimer();moved={};pressed={};doubleClicked={};wheel={}; }
     void cancelWheel() { stopTimer();origin=target=getViewPositionY();direction=0; }
     void scrollTo(int y) { cancelWheel();setViewPosition(0,jlimit(0,maximum(),y)); }
     void scrollByWheel(double delta,bool precise) {
@@ -35,9 +35,11 @@ class TrackMixerViewport final : public Viewport, private Timer {
         if(wheel)wheel(event,details);
     }
   private:
+    friend struct WorkspaceLayoutTests;
     struct SelectionObserver final : MouseListener {
         TrackMixerViewport *owner=nullptr;
         void mouseDown(const MouseEvent &event) override { if(owner->pressed)owner->pressed(event); }
+        void mouseDoubleClick(const MouseEvent &event) override { if(owner->doubleClicked)owner->doubleClicked(event); }
     } selection;
     bool applying=false;
     int direction=0;

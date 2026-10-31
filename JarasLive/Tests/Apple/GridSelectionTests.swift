@@ -1012,6 +1012,58 @@ precondition(projectedSeeks == [24, 12, 6, 48] && projectionView.itemGuide == ni
 projectionWindow.close()
 print("STABLE_ITEM_ACTIONS_FOLLOW_COMMITTED_ZOOM_GEOMETRY_OK")
 
+// A preview replaces the input's immutable layout between drag and release.
+// The native gesture must keep its original anchor and the whole selection,
+// even when one point represents hundreds of seconds at distant zoom.
+MainActor.assumeIsolated {
+for scale: CGFloat in [0.01, 0.05, 0.3, 1, 100] {
+    let dragWindow = NSWindow(contentRect: CGRect(x: -5000, y: -5000, width: 600, height: 400),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+    dragWindow.isReleasedWhenClosed = false
+    let dragView = GridSelectionView(frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+    dragWindow.contentView = dragView
+    let firstID = UUID(), secondID = UUID()
+    let movingIDs: Set<UUID> = [firstID, secondID]
+    var selectedIDs = movingIDs
+    let originalStart = 100 / scale
+    var deliveries: [(start: CGFloat, ended: Bool, selection: Set<UUID>)] = []
+    func input(previewStart: CGFloat) -> GridSelectionInput {
+        let projection = GridSelectionProjection()
+        let layout = GridSelectionLayout(items: [
+            GridSelectionItem(id: firstID, rect: CGRect(x: previewStart, y: 140, width: 200 / scale, height: 80), duration: 200 / scale),
+            GridSelectionItem(id: secondID, rect: CGRect(x: previewStart + 80 / scale, y: 240, width: 200 / scale, height: 80), duration: 200 / scale)
+        ], timeCoordinates: true)
+        return GridSelectionInput(origin: .zero, headerHeight: 20, items: [], selected: selectedIDs,
+            selectionChanged: { selectedIDs = $0 }, mute: { _ in }, move: { id, translation, pointerY, ended in
+                precondition(id == firstID && pointerY.isFinite)
+                deliveries.append((originalStart + translation.width / projection.pixelsPerSecond, ended, selectedIDs))
+            }, seek: { _, _ in preconditionFailure("A completed drag must not seek") }, createRegion: { _ in },
+            indexedLayout: layout, pixelsPerSecond: scale, projection: projection)
+    }
+    func send(_ type: NSEvent.EventType, x: CGFloat) {
+        let point = dragView.convert(CGPoint(x: x, y: 190), to: nil)
+        let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: dragWindow.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        precondition(dragView.handlePointerEvent(event))
+    }
+    input(previewStart: originalStart).apply(to: dragView)
+    send(.leftMouseDown, x: 160)
+    send(.leftMouseDragged, x: 190)
+    precondition(deliveries.count == 1 && !deliveries[0].ended)
+    let displayed = deliveries[0].start
+    input(previewStart: displayed).apply(to: dragView)
+    send(.leftMouseUp, x: 190)
+    precondition(deliveries.count == 2 && deliveries[1].ended)
+    precondition(abs(deliveries[1].start - displayed) < 1e-8 && abs(displayed - (originalStart + 30 / scale)) < 1e-8,
+                 "mouse-up must commit the displayed position, not a new preview-relative delta")
+    precondition(deliveries.allSatisfy { $0.selection == movingIDs } && selectedIDs == movingIDs,
+                 "preview and release keep every selected item in the move")
+    dragWindow.close()
+}
+}
+print("DISTANT_ZOOM_ITEM_PREVIEW_RELEASE_AND_MULTI_SELECTION_KEEP_ORIGINAL_DRAG_ANCHOR_OK")
+
 // A native item press can consume the event before the passive panel monitor.
 // Selecting its track must not retain the previous mixer/setlist keyboard focus.
 MainActor.assumeIsolated {

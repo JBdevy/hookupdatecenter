@@ -9,6 +9,37 @@ inline bool singleLane(const jaras::Track &track) {
     return jaras::isTeleprompterRole(track.role) || track.role.id == "chords" ||
            track.role.id == "video";
 }
+inline bool generatedClick(const jaras::Track &track, const jaras::AudioClip &clip) {
+    return track.role.id == "generatedClick" && !projection(clip);
+}
+inline ID generatedClickID(ID region) {
+    // Legacy generated items derive their identity from the original region.
+    for (auto &c : region) if (c >= 'A' && c <= 'F') c += 'a' - 'A';
+    if (!region.empty()) {
+        const auto first = std::string("0123456789abcdef").find(region.front());
+        if (first != std::string::npos) region.front() = "0123456789abcdef"[first ^ 4];
+    }
+    return region;
+}
+inline const jaras::Part *generatedClickRegion(const jaras::Song &song, const jaras::AudioClip &clip) {
+    if (clip.regionOwnerID) {
+        const auto owner = std::find_if(song.parts.begin(), song.parts.end(), [&](const auto &part) { return part.id == *clip.regionOwnerID; });
+        // An explicit owner must never silently jump to a different song.
+        return owner == song.parts.end() ? nullptr : &*owner;
+    }
+    auto itemID = clip.id;
+    for (auto &c : itemID) if (c >= 'A' && c <= 'F') c += 'a' - 'A';
+    for (const auto &part : song.parts)
+        if (generatedClickID(part.id) == itemID) return &part;
+    // Older documents have neither ownership nor the derived ID after a split.
+    // Prefer the outer region containing the complete original item.
+    for (const bool complete : {true, false})
+        for (const auto &part : song.parts)
+            if (!part.parentRegionID && clip.startTime >= part.startTime - 1e-6 &&
+                clip.startTime < part.endTime - 1e-6 &&
+                (!complete || clip.startTime + clip.duration <= part.endTime + 1e-6)) return &part;
+    return nullptr;
+}
 inline void splitSelected(jaras::Song &song, const std::set<ID> &selected, double at, std::map<ID, ID> *sources = nullptr) {
     if (!std::isfinite(at))
         return;
@@ -17,16 +48,17 @@ inline void splitSelected(jaras::Song &song, const std::set<ID> &selected, doubl
         for (auto &clip : track.clips) {
             if ((!selected.empty() && !selected.count(clip.id)) || at <= clip.startTime + .001 ||
                 at >= clip.startTime + clip.duration - .001 ||
-                ((track.role.id == "timecode" || track.role.id == "generatedClick") &&
-                 !projection(clip)))
+                (track.role.id == "timecode" && !projection(clip)))
                 continue;
+            const bool click = generatedClick(track, clip);
+            if (click) if (const auto *region = generatedClickRegion(song, clip)) clip.regionOwnerID = region->id;
             auto right = clip;
             right.id = uuid();
             if (sources) sources->emplace(right.id, clip.id);
             const double length = at - clip.startTime, fraction = length / clip.duration;
             right.startTime = at;
             right.duration -= length;
-            if (!clip.text || clip.audioFile || clip.loopLength) {
+            if (!click && (!clip.text || clip.audioFile || clip.loopLength)) {
                 // The source clock includes every relative-tempo segment before
                 // the cut. Multiplying by the item's base rate repeats/skips
                 // audio as soon as a marker has changed its actual speed.
@@ -93,6 +125,24 @@ inline std::pair<double,double> constrainedEdges(const jaras::Track &track,const
     }
     return {std::max(left,start),std::min(right,end)};
 }
+inline std::pair<double,double> constrainedEdges(const jaras::Song &song, const jaras::Track &track,
+                                                const jaras::AudioClip &clip, double start, double end) {
+    if (!generatedClick(track, clip)) return constrainedEdges(track, clip, start, end);
+    const auto *region = generatedClickRegion(song, clip);
+    if (!region || region->endTime - region->startTime < .01) return {clip.startTime, clip.startTime + clip.duration};
+    start = std::clamp(start, region->startTime, region->endTime - .01);
+    end = std::clamp(end, start + .01, region->endTime);
+    return {start, end};
+}
+inline jaras::AudioClip resizedClick(const jaras::Song &song, const jaras::Track &track,
+                                    jaras::AudioClip clip, double start, double end) {
+    std::tie(start, end) = constrainedEdges(song, track, clip, start, end);
+    if (const auto *region = generatedClickRegion(song, clip)) clip.regionOwnerID = region->id;
+    clip.startTime = start; clip.duration = end - start;
+    // Synthesized beats keep their tempo-marker phase and have no source loops.
+    clip.sourceOffset = 0; clip.loopStart.reset(); clip.loopLength.reset();
+    return clip;
+}
 // Preview and commit share the same source interval, including left extension.
 inline jaras::AudioClip resizedSource(jaras::AudioClip clip, double start, double end) {
     if (!std::isfinite(start) || !std::isfinite(end) || start < 0 || end - start < .01)
@@ -127,8 +177,12 @@ inline void resize(jaras::Project &project, const ID &id, double start, double e
         for (auto &track : song.tracks)
             for (auto &clip : track.clips)
                 if (clip.id == id) {
-                    if (track.role.id == "generatedClick" && !projection(clip))
-                        throw std::runtime_error("Os itens de Click acompanham suas regiões.");
+                    if (generatedClick(track, clip)) {
+                        if (!generatedClickRegion(song, clip))
+                            throw std::runtime_error("Região do Click não encontrada.");
+                        clip = resizedClick(song, track, clip, start, end);
+                        return;
+                    }
                     requireSpace(track, clip, start, end);
                     if (track.role.id == "timecode" && !projection(clip)) {
                         if (!track.importedTimecodeItems) {
@@ -162,6 +216,8 @@ inline void move(jaras::Project &project, const ID &id, double start, const ID &
                     if (target == song.tracks.end())
                         throw std::runtime_error("Pista de destino não encontrada.");
                     if (!projection(*it)) {
+                        if (track.role.id == "generatedClick")
+                            throw std::runtime_error("Os itens de Click só podem ser cortados ou redimensionados dentro da região.");
                         if (track.role.id == "timecode")
                             throw std::runtime_error(
                                 "Os itens de timecode acompanham suas regiões.");

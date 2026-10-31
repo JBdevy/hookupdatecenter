@@ -27,3 +27,8 @@ else()
     target_compile_options(RealtimeMIDIQueueTests PRIVATE -UNDEBUG)
 endif()
 add_test(NAME RealtimeMIDIQueueTests COMMAND RealtimeMIDIQueueTests)
+
+# The Windows item magnet is pure C++ and also runs on macOS/Linux CI.
+add_executable(WindowsTimelineSnapTests Tests/Core/WindowsTimelineSnapTests.cpp)
+target_compile_features(WindowsTimelineSnapTests PRIVATE cxx_std_17)
+add_test(NAME WindowsTimelineSnapTests COMMAND WindowsTimelineSnapTests)

@@ -53,6 +53,7 @@ struct GridSelectionItem {
     var audioExportable = true
     var midiEditable = false
     var textEditable = false
+    var clickDouble: Bool? = nil
     var name: String? = nil
     var muted = false
     var hasFX = false
@@ -668,6 +669,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var itemMoveBegan: () -> Void = {}
     var separateAudio: ((UUID) -> Void)? = nil
     var canSeparateAudio: ((UUID) -> Bool)? = nil
+    var toggleClickDouble: ((UUID) -> Void)? = nil
     var fileLocation: ((UUID) -> URL?)? = nil
     var itemGuide: CGRect? = nil
     func projected(pixelsPerSecond: CGFloat, itemGuide: CGRect?) -> Self {
@@ -693,6 +695,7 @@ struct GridSelectionInput: NSViewRepresentable {
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
+        view.toggleClickDouble = toggleClickDouble
         view.fileLocation = fileLocation; view.separateAudio = separateAudio; view.canSeparateAudio = canSeparateAudio
         view.marqueeBegan = marqueeBegan
         view.itemMoveBegan = itemMoveBegan
@@ -1481,14 +1484,22 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     var separateAudio: ((UUID) -> Void)?
     var canSeparateAudio: ((UUID) -> Bool)?
+    var toggleClickDouble: ((UUID) -> Void)?
     var fileLocation: ((UUID) -> URL?)?
     @objc private func revealContextFile() {
         guard selected.count == 1, let contextItem, let url = fileLocation?(contextItem) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
+    @objc private func toggleContextClickDouble() {
+        if let contextItem { toggleClickDouble?(contextItem) }
+    }
     func itemContextMenu(for contextItem: UUID) -> NSMenu {
         self.contextItem = contextItem
         let menu = NSMenu()
+        if let doubled = item(id: contextItem)?.clickDouble {
+            let rate = NSMenuItem(title: doubled ? "1x" : "2x", action: #selector(toggleContextClickDouble), keyEquivalent: "")
+            rate.target = self; menu.addItem(rate)
+        }
         if selected.count == 1, item(id: contextItem)?.midiEditable == true || fileLocation?(contextItem) != nil {
             let rename = NSMenuItem(title: "Editar nome", action: #selector(renameContextItem), keyEquivalent: "")
             rename.target = self; menu.addItem(rename); menu.addItem(.separator())

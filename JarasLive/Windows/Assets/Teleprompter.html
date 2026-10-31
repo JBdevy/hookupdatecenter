@@ -9,8 +9,9 @@
 .title,.chords{text-align:center;padding:4px;overflow:hidden}.title{white-space:nowrap;text-overflow:ellipsis}.chords{border:1px solid transparent;border-radius:6px;white-space:pre-wrap;width:max-content;max-width:100%;margin-inline:auto;overflow-wrap:anywhere}
 .progress{height:5px;background:#ffffff20}.progress div{height:100%}#blocks{display:none;width:100%;height:100%;gap:8px;align-items:stretch;min-height:0}.block{font-weight:bold;padding:6px;border:1px solid;border-radius:6px;overflow:hidden;min-width:0;min-height:0;line-height:1.2;box-sizing:border-box}.block-title{border-bottom:2px solid;padding-bottom:6px;margin-bottom:6px}.preview-song{padding:0 3px 4px;margin-bottom:4px}
 video,img{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}#connection{position:absolute;bottom:10px;right:10px;z-index:4;color:#ffdc52;font-size:12px;display:none}
+#notice{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;overflow:hidden}#notice[hidden],#noticeImage[hidden],#noticeText[hidden]{display:none}#noticeText{max-width:100%;max-height:100%;white-space:pre-wrap;overflow-wrap:anywhere}#noticeImage{position:static;width:100%;height:100%;object-fit:contain}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:.25}}.expired{animation:blink 1s infinite}
-</style></head><body><div id="screen"><video id="video" muted playsinline></video><img id="image" hidden><div id="top"></div><div id="content"><div id="lyrics"></div><div id="blocks"></div></div><div id="bottom"></div><div id="connection">Connecting…</div></div>
+</style></head><body><div id="screen"><video id="video" muted playsinline></video><img id="image" hidden><div id="top"></div><div id="content"><div id="lyrics"></div><div id="blocks"></div></div><div id="bottom"></div><div id="notice" hidden><div id="noticeText"></div><img id="noticeImage" hidden></div><div id="connection">Connecting…</div></div>
 <script>
 const $=id=>document.getElementById(id),hex=n=>'#'+Number(n).toString(16).padStart(6,'0');
 const fonts={system:'Arial,sans-serif',arial:'Arial,sans-serif',mono:'monospace',georgia:'Georgia,serif',verdana:'Verdana,sans-serif',tahoma:'Tahoma,sans-serif',impact:'Impact,sans-serif',trebuchet:'Trebuchet MS,sans-serif',segoe:'Segoe UI,sans-serif',bahnschrift:'Bahnschrift,sans-serif'};
@@ -57,7 +58,18 @@ function decorations(d,position){const s=d.settings,host=$(position);host.replac
  if(!d.preview&&s.progressEnabled&&s.progressPosition===position){const e=document.createElement('div');e.className='progress';const fill=document.createElement('div');fill.style.width=Math.max(0,Math.min(1,d.progress))*100+'%';fill.style.background=hex(s.progressColor);e.append(fill);host.append(e)}
 }
 const previewLayouts=new Map();
-function render(d){current=d;const s=d.settings;$('screen').style.borderColor=!s.clearMode&&s.windowBorderEnabled?color(s.borderColor,s.rgbWindowBorderEnabled):'transparent';decorations(d,'top');decorations(d,'bottom');
+function showingNotice(d){return !!(d&&!d.preview&&d.notice&&d.notice.active)}
+function noticeBackground(d){const n=d.notice,elapsed=(n.elapsed||0)+(performance.now()-lastStamp)/1000,flash=elapsed<1.05&&Math.floor(elapsed/.175)%2===0;$('notice').style.background=hex(flash?n.flashColor:n.backgroundColor)}
+function render(d){current=d;const s=d.settings,notice=showingNotice(d);$('notice').hidden=!notice;$('screen').style.borderColor=(notice||!s.clearMode)&&s.windowBorderEnabled?color(s.borderColor,s.rgbWindowBorderEnabled):'transparent';
+ for(const id of ['top','content','bottom'])$(id).style.display=notice?'none':'';
+ if(notice){
+  $('video').hidden=true;$('video').pause();$('image').hidden=true;
+  const n=d.notice,t=$('noticeText'),im=$('noticeImage');t.hidden=!!n.imageID;im.hidden=!n.imageID;noticeBackground(d);
+  if(n.imageID){const url='notice/'+encodeURIComponent(n.imageID);if(im.getAttribute('src')!==url)im.setAttribute('src',url)}
+  else {t.textContent=n.message||'';t.style.fontFamily=fonts[n.font]||n.font||fonts.system;t.style.color=hex(n.textColor??0xffffff);let size=Math.min(72,Math.max(24,innerWidth*.078))*(n.scale||100)/100;t.style.fontSize=size+'px';for(let i=0;i<24&&size>1&&(t.scrollHeight>t.clientHeight||t.scrollWidth>t.clientWidth);i++){size*=.9;t.style.fontSize=size+'px'}}
+  return;
+ }
+ decorations(d,'top');decorations(d,'bottom');
  $('lyrics').style.display=s.clearMode||d.preview?'none':'block';$('blocks').style.display=d.preview?'grid':'none';coloredText($('lyrics'),d.text,d.textStyled,s);
  $('lyrics').style.color=hex(s.textColor);$('lyrics').style.fontFamily=fonts[s.fontFamily];$('lyrics').style.textAlign=s.textAlignment;
  $('lyrics').style.borderColor=s.textBoxEnabled&&d.text?color(s.textBoxColor,s.rgbTextBoxBorderEnabled):'transparent';
@@ -92,7 +104,7 @@ function render(d){current=d;const s=d.settings;$('screen').style.borderColor=!s
 async function poll(){try{const r=await fetch('state',{cache:'no-store'});if(!r.ok)throw Error();const body=await r.text(),d=JSON.parse(body);if(!d.settings)throw Error();$('connection').style.display='none';lastStamp=performance.now();if(body!==lastBody){lastBody=body;render(d)}}catch{ $('connection').style.display='block';$('video').pause()}finally{setTimeout(poll,250)}}
 addEventListener('resize',()=>{if(current)render(current)});addEventListener('dblclick',()=>{if(document.fullscreenElement)document.exitFullscreen();else document.documentElement.requestFullscreen().catch(()=>{})});
 $('video').addEventListener('loadedmetadata',()=>{if(current)$('video').currentTime=current.mediaTime});poll();
-setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode&&!current.preview)return;
+setInterval(()=>{if(!current)return;const s=current.settings;if(showingNotice(current)){noticeBackground(current);if(s.windowBorderEnabled&&s.rgbWindowBorderEnabled)$('screen').style.borderColor=color(s.borderColor,true);return;}if(s.clearMode&&!current.preview)return;
  if(s.windowBorderEnabled&&s.rgbWindowBorderEnabled)$('screen').style.borderColor=color(s.borderColor,true);
  const timer=document.querySelector('.timer'),chords=document.querySelector('.chords');
  if(timer&&s.clockBorderEnabled&&s.rgbClockBorderEnabled)timer.style.borderColor=color(s.clockBorderColor,true);

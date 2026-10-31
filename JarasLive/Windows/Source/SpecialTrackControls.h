@@ -14,7 +14,8 @@ class SpecialTrackControls final : public Component, private Timer {
         insert.setComponentID("insertClick");media.setComponentID("insertMedia");addText.setComponentID("insertText");settings.getProperties().set("icon","settings");
         insert.onClick=[this]{action(id,"click");};media.onClick=[this]{action(id,"media");};addText.onClick=[this]{action(id,"text");};settings.onClick=[this]{action(id,"settings");};
         copy.onClick=[this]{action(id,"pcCopyPaste");};
-        patch.onClick=[this]{action(id,"pcPatch");};scan.onClick=[this]{action(id,"pcScan");};startTimerHz(8);
+        patch.setComponentID("specialPatch");
+        patch.onClick=[this]{const auto *t=track();action(id,t&&t->role.id=="generatedClick"?"clickPatch":"pcPatch");};scan.onClick=[this]{action(id,"pcScan");};startTimerHz(8);
         mtc.onClick=[this]{action(id,"mtc");};ltc.onClick=[this]{action(id,"ltc");};refresh();
     }
     void timerCallback() override {
@@ -38,7 +39,7 @@ class SpecialTrackControls final : public Component, private Timer {
         for(auto *b:{&insert,&media,&addText,&settings,&patch,&copy,&scan,&mtc,&ltc})b->setVisible(false);
         const auto *t=track();if(!t)return;const auto &role=t->role.id;
         std::vector<TextButton*> buttons;
-        if(role=="programChange")buttons={&patch,&copy,&scan};else if(role=="generatedClick")buttons={&insert};else if(role=="timecode")buttons={&settings,&mtc,&ltc};else if(role=="video")buttons={&media};
+        if(role=="programChange")buttons={&patch,&copy,&scan};else if(role=="generatedClick")buttons={&patch,&insert};else if(role=="timecode")buttons={&settings,&mtc,&ltc};else if(role=="video")buttons={&media};
         else if(jaras::isTeleprompterRole(t->role)||role=="chords")buttons={&addText};
         if(getWidth()<100 || jaras::isTeleprompterRole(t->role)){int y=0;for(auto *b:buttons){b->setBounds(0,y,getWidth(),21);b->setVisible(true);y+=24;}}
         else{int x=0;for(auto *b:buttons){int width=(b==&patch||b==&copy||b==&scan)?50:b==&settings?30:(b==&mtc||b==&ltc?38:role=="generatedClick"?47:102);b->setBounds(x,0,width,std::min(24,getHeight()));b->setVisible(true);x+=width+3;}}

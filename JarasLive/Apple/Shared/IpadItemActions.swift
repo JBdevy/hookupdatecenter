@@ -90,6 +90,13 @@ import UniformTypeIdentifiers
                 IpadModalHeader(title: context?.1.name ?? "—", close: close)
                 if entries.count > 1 { Text("\(entries.count) items").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
                 if let (track, clip) = context {
+                    if track.kind == .click, clip.audioFile == nil {
+                        action(clip.clickDouble == true ? "1x" : "2x", symbol: "metronome") { show.toggleClickDouble(clip.id); close() }
+                        let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
+                        if position > clip.startTime, position < clip.startTime + clip.duration {
+                            action("Split", symbol: "scissors") { show.splitItems(Set(entries.map { $0.1.id }), at: position); close() }
+                        }
+                    }
                     if entries.count == 1, clip.midi != nil || (clip.audioFile ?? track.audioFile) != nil {
                         action("Editar nome", symbol: "pencil") { editingName = true }
                     }

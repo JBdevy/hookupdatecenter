@@ -28,6 +28,22 @@ MainActor.assumeIsolated {
     precondition(model.templates == ["Imported 1", "Imported 2", "Imported 3"] && model.draft == "Imported 1")
     let reloaded = TPNoticeController(defaults: defaults)
     precondition(reloaded.templates == model.templates && reloaded.appearance.font == model.appearance.font && !reloaded.active)
+    model.select(1); model.draft = "Stopped message"
+    model.setPinWhenStopped(true)
+    precondition(model.pinWhenStopped && model.active && model.pinned && model.message == "Stopped message")
+    model.select(2); model.draft = "Different draft"
+    model.observeTransport(playing: true)
+    precondition(!model.active && model.pinWhenStopped, "Play removes only the automatic notice")
+    model.observeTransport(playing: false)
+    precondition(model.message == "Stopped message" && model.pinned && model.draft == "Different draft", "Stop must preserve the captured notice and current editor draft")
+    let once = model.sentAt
+    model.observeTransport(playing: false)
+    precondition(model.sentAt == once, "Stopped updates must not resend and flash repeatedly")
+    model.setPinWhenStopped(false)
+    precondition(!model.active && !model.pinWhenStopped)
+    model.draft = "Manual"; model.send(); model.observeTransport(playing: true)
+    precondition(model.active && model.message == "Manual", "Automatic mode removed an unrelated manual message")
+    model.clear(); model.observeTransport(playing: false)
     func pixels(index: Int) -> Data {
         let view = NSHostingView(rootView: Color.green.overlay(TPNoticeOverlay(model: model, index: index)))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 450), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -47,12 +63,15 @@ MainActor.assumeIsolated {
         let original = pixels(index: index)
         for change: (inout TPNoticeAppearance) -> Void in [
             { $0.font = "Georgia" }, { $0.scale = 50 }, { $0.text = 0xff0000 }, { $0.background = 0x0000ff },
-            { $0.emojiEnabled = true }, { $0.emojiEnabled = true; $0.emoji = "🎹" }, { $0.cleanDisplay = false },
+            { $0.emojiEnabled = true }, { $0.emojiEnabled = true; $0.emoji = "🎹" },
             { if index == 1 { $0.window1 = false } else { $0.window2 = false } }
         ] {
             model.appearance = base; change(&model.appearance)
             precondition(pixels(index: index) != original, "every global message appearance control affects TP-\(index)")
         }
+        model.appearance = base
+        model.appearance.cleanDisplay = false
+        precondition(pixels(index: index) == original, "Legacy banner mode must keep notices centered and exclusive")
         model.appearance = base
     }
     model.send()

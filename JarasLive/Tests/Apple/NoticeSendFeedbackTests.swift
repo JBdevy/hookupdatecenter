@@ -71,6 +71,12 @@ MainActor.assumeIsolated {
     presentation = RemoteNoticePresentation(project: project)
     precondition(presentation.dismiss(project: project, song: song) != nil, "reopening permits a new withdrawal")
 
+    presentation = RemoteNoticePresentation(project: project)
+    precondition(presentation.dismiss(project: project, song: song, preserveStoppedNotice: true) == nil,
+                 "closing Remote preserves the captured automatic Stop notice")
+    precondition(presentation.dismissed && presentation.dismiss(project: project, song: song) == nil,
+                 "onDisappear cannot withdraw an automatic notice after explicit close")
+
     model.select(-1); model.draft = "Keep the draft"; model.templates[0] = "Keep the preset"
     precondition(model.send()); model.togglePin()
     let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 520, height: 430), styleMask: [.titled, .closable], backing: .buffered, defer: false)

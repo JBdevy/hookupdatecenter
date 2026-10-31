@@ -5,13 +5,18 @@ test_dir="$(mktemp -d "${TMPDIR:-/tmp}/catlive-settings-layout.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir" <<'PY'
 from pathlib import Path
-import sys
+import sys, os, re
 folder = Path(sys.argv[1])
 source = Path('Apple/Shared/DAWActionsList.swift').read_text()
-needle = '                    .accessibilityAddTraits(category == item ? .isSelected : [])'
+needle = '                    .accessibilityAddTraits(query.isEmpty && category == item ? .isSelected : [])'
 assert source.count(needle) == 1
 source = source.replace(needle, needle + '\n                    .background(GeometryReader { geometry in Color.clear.preference(key: CategoryFrames.self, value: [item.rawValue: geometry.frame(in: .named("actions"))]) })')
-(folder/'main.swift').write_text(source + '\n' + Path('Tests/Apple/SettingsActionsLayoutTests.swift').read_text())
+windows = Path(os.environ.get('CATLIVE_WORKSPACE_SOURCE', 'Apple/Shared/FXWindows.swift')).read_text()
+start = windows.index('private struct WorkspaceEditorViewport')
+viewport = windows[start:windows.index('/// Editors remain independent', start)]
+condition = re.search(r'WorkspaceEditorViewport\(content: editor, scrolls: (tool [!=]= \.\w+)', windows).group(1)
+policy = 'enum WorkspaceToolProbeKind { case settings, advanced, textItem }; let tool = WorkspaceToolProbeKind.settings\nlet workspaceSettingsScrolls = ' + condition + '\n'
+(folder/'main.swift').write_text(source + '\n' + viewport + policy + Path('Tests/Apple/SettingsActionsLayoutTests.swift').read_text())
 app = folder/'Fixture.app/Contents'
 (app/'MacOS').mkdir(parents=True)
 for language in ['en', 'pt-BR']:

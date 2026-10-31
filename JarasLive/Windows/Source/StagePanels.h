@@ -7,9 +7,9 @@ namespace catlive {
 class NoticePanel final : public Component, private Timer {
   public:
     explicit NoticePanel(StageState &s) : state(s) {
-        for (auto *b : {&send, &withdraw, &pin, &save, &image, &removeImage})
+        for (auto *b : {&send, &withdraw, &pin, &pinStopped, &save, &image, &removeImage})
             addAndMakeVisible(b);
-        for (auto *b : {&withdraw, &pin, &save, &image, &removeImage}) {
+        for (auto *b : {&withdraw, &pin, &pinStopped, &save, &image, &removeImage}) {
             b->getProperties().set("flat", true);
             b->setColour(TextButton::buttonColourId, Colour(0xff505050));
         }
@@ -23,10 +23,20 @@ class NoticePanel final : public Component, private Timer {
         editor.submit = send.onClick;
         withdraw.onClick = [this] { state.clearNotice(); };
         pin.onClick = [this] { state.togglePin(); };
+        pinStopped.onClick = [this] {
+            state.setPinWhenStopped(!state.pinWhenStopped, editor.getText(), slot < 0 ? Image() : slotImage());
+            timerCallback();
+        };
+        pinStopped.getProperties().set("fontSize", 12.f);
+        pinStopped.setColour(TextButton::buttonOnColourId, theme::green);
+        pinStopped.setColour(TextButton::textColourOnId, Colours::black);
         addAndMakeVisible(editor);
         editor.setMultiLine(true);
         editor.setReturnKeyStartsNewLine(true);
         editor.setFont(theme::font(18));
+        editor.setColour(TextEditor::backgroundColourId, Colour(0xff101010));
+        editor.setColour(TextEditor::textColourId, Colours::white);
+        editor.setBorder(BorderSize<int>(8));
         editor.setInputRestrictions(500);
         addAndMakeVisible(remaining);
         addAndMakeVisible(count);
@@ -78,6 +88,7 @@ class NoticePanel final : public Component, private Timer {
         send.setBounds(16, 16, 88, 30);
         withdraw.setBounds(112, 16, 72, 30);
         pin.setBounds(192, 16, 62, 30);
+        pinStopped.setBounds(262, 16, std::max(120,getWidth()-342), 30);
         remaining.setBounds(getWidth() - 72, 16, 56, 30);
         for (int i = 0; i < 4; ++i)
             slots[i]->setBounds(100 + i * ((getWidth() - 116) / 4), 92, (getWidth() - 116) / 4, 26);
@@ -107,7 +118,7 @@ class NoticePanel final : public Component, private Timer {
         }
     } editor;
     TextButton send{localization::translate("Enviar")}, withdraw{localization::translate("Retirar")}, pin{localization::translate("Fixar")}, save{localization::translate("Salvar")},
-        image{"Add imagem"}, removeImage{"Remover imagem"};
+        pinStopped{localization::translate("Pin while transport is stopped")}, image{"Add imagem"}, removeImage{"Remover imagem"};
     OwnedArray<TextButton> slots;
     Label remaining, count;
     std::unique_ptr<FileChooser> chooser;
@@ -166,6 +177,7 @@ class NoticePanel final : public Component, private Timer {
         count.setText(String(editor.getText().length()) + " / 500", dontSendNotification);
         withdraw.setEnabled(state.noticeActive());
         pin.setToggleState(state.pinned, dontSendNotification);
+        pinStopped.setToggleState(state.pinWhenStopped, dontSendNotification);
         send.setEnabled(editor.getText().trim().isNotEmpty() || slot >= 0 && slotImage().isValid());
         removeImage.setVisible(slot >= 0 && slotImage().isValid());
     }

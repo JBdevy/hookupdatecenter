@@ -3033,6 +3033,18 @@ public struct ShowTimelinePresentationState: Equatable {
             }
         }
     }
+    public func toggleClickDouble(_ id: UUID) {
+        guard canControl(), !finishing else { return }
+        editProject { project in
+            for song in project.songs.indices {
+                for track in project.songs[song].tracks.indices where project.songs[song].tracks[track].kind == .click {
+                    if let item = project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == id && $0.audioFile == nil }) {
+                        project.songs[song].tracks[track].clips[item].clickDouble = project.songs[song].tracks[track].clips[item].clickDouble != true
+                    }
+                }
+            }
+        }
+    }
     public func insertClickItems(track id: UUID) {
         guard canControl(), !finishing else { return }
         var project = snapshot.project
@@ -3150,6 +3162,7 @@ public struct ShowTimelinePresentationState: Equatable {
         guard canControl(), !finishing, !timelineMovementLocked else { return }
         if let source = current?.tracks.first(where: { $0.clips.contains { $0.id == id } }),
            let clip = source.clips.first(where: { $0.id == id }) {
+            guard source.kind != .click || clip.isProjectionMedia else { return }
             guard let destination = track.flatMap({ id in current?.tracks.first { $0.id == id } }) ?? (track == nil ? source : nil) else { return }
             let mediaTransfer = clip.isProjectionMedia
             guard source.id == destination.id || (source.kind == .standard && destination.kind == .standard) || mediaTransfer else { return }

@@ -40,6 +40,24 @@ require(!DAWRemoteCommand(project: project, song: song, action: .play, text: "un
 require(!DAWRemoteCommand(project: project, song: song, action: .noticeDestination, value: 1).valid, "destination requires explicit desired state")
 require(DAWRemoteCommand(project: project, song: song, action: .noticeDestination, value: 2, enabled: false).valid, "destination uses idempotent desired state")
 require(!DAWRemoteCommand(project: project, song: song, action: .noticePin, value: 2).valid, "pin accepts only desired boolean")
+for slot in [-1.0, 0, 1, 2] {
+    let command = DAWRemoteCommand(project: project, action: .noticePinStopped, value: slot, text: unicodeNotice, enabled: true)
+    require(command.valid, "stopped-transport pin captures Global or any template")
+    if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(command)) {
+        require(decoded.text == unicodeNotice && decoded.value == slot && decoded.enabled == true, "stopped notice capture survives wire")
+        require(DAWRemoteAccessRules.allows(decoded, mode: .notices) && DAWRemoteAccessRules.allows(decoded, mode: .director), "both notice editors may control stopped pin")
+        require(!DAWRemoteAccessRules.allows(decoded, mode: .observer), "observer cannot change stopped pin")
+    } else { fatalError("stopped notice command") }
+}
+require(DAWRemoteCommand(project: project, action: .noticePinStopped, value: -1, enabled: false).valid, "disable needs no draft")
+require(DAWRemoteCommand(project: project, action: .noticePinStopped, value: 1, text: "", enabled: true).valid, "image-only preset may pin while stopped")
+for command in [DAWRemoteCommand(project: project, action: .noticePinStopped, text: "Missing enabled"),
+                DAWRemoteCommand(project: project, action: .noticePinStopped, enabled: true),
+                DAWRemoteCommand(project: project, action: .noticePinStopped, value: 3, text: "Bad slot", enabled: true),
+                DAWRemoteCommand(project: project, action: .noticePinStopped, value: 0.5, text: "Fraction", enabled: true),
+                DAWRemoteCommand(project: project, action: .noticePinStopped, target: UUID(), text: "Bad target", enabled: true)] {
+    require(!command.valid, "malformed stopped notice command rejected")
+}
 for value in [0.0, 1.0, 2.0, 3.0] {
     require(DAWRemoteCommand(project: project, song: song, action: .remotePanel, value: value).valid, "native panel subscription range")
 }
@@ -60,6 +78,18 @@ tpFixture.timer = .init(revision: UUID(), targetSeconds: 90, running: true, rema
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(tpFixture)) {
     require(decoded == tpFixture, "independent TP2, opaque images, notice destinations, timer revision state roundtrip")
 } else { fatalError("teleprompter state packet") }
+require(tpFixture.notices?.pinWhenStopped == nil && tpFixture.notices?.stoppedNoticeActive == nil,
+        "older hosts do not advertise stopped pin capability")
+if case .state(let legacy) = try DAWRemoteWire.decode(DAWRemoteWire.state(tpFixture)) {
+    require(legacy.notices?.pinWhenStopped == nil, "legacy notices decode without new fields")
+}
+tpFixture.notices?.pinWhenStopped = true; tpFixture.notices?.stoppedNoticeActive = true
+tpFixture.previewActive = true
+if case .state(let pinned) = try DAWRemoteWire.decode(DAWRemoteWire.state(tpFixture)) {
+    require(pinned.notices?.active == true && pinned.notices?.pinWhenStopped == true && pinned.notices?.stoppedNoticeActive == true,
+            "Preview preserves automatic notice state for restoration after Preview")
+} else { fatalError("stopped notice state") }
+print("PASS: stopped-transport notices, backwards compatibility and access permissions")
 var malformedTP = tpFixture
 malformedTP.notices?.templates = []
 require(!malformedTP.valid, "malformed template list rejected before native view indexing")

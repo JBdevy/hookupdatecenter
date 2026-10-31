@@ -9,6 +9,8 @@ import SwiftUI
 final class NativeVerticalTrackMeterView: NSView {}
 private enum JarasTheme { static let text = Color.white }
 
+private enum VisibilityJournal { static var windowTransitions = 0 }
+
 // INSERT_NATIVE_TRACK_MIXER_VISIBILITY
 
 private final class VisibilityDocument: NSView {
@@ -86,5 +88,29 @@ MainActor.assumeIsolated {
     distantAncestor.addSubview(distant)
     distant.place()
     precondition(!distant.isHidden, "reattachment resumes visible controls")
+    // A rapid wheel reversal must not detach/reattach the same hosting roots.
+    // It still hides their controls immediately, then removes offscreen roots
+    // from the window once the gesture is idle.
+    scroll.setFrameSize(CGSize(width: 320, height: 320)); scroll.tile()
+    scroll.contentView.scroll(to: .zero)
+    let transitions = VisibilityJournal.windowTransitions
+    for _ in 0..<20 {
+        scroll.contentView.scroll(to: CGPoint(x: 0, y: 3000))
+        precondition(first.isHidden != accessibility)
+        scroll.contentView.scroll(to: .zero)
+        precondition(!first.isHidden)
+    }
+    let wheelTransitions = VisibilityJournal.windowTransitions - transitions
+    print("TRACK_MIXER_FAST_SCROLL_HOST_WINDOW_TRANSITIONS=\(wheelTransitions)")
+    if !CommandLine.arguments.contains("--legacy") {
+        precondition(wheelTransitions == 0, "rapid reversal must reuse mounted native roots without window/environment churn")
+    }
+    scroll.contentView.scroll(to: CGPoint(x: 0, y: 3000))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.22))
+    precondition(accessibility || first.controls.superview == nil,
+                 "after scrolling rests, offscreen hosts leave the native traversal")
+    scroll.contentView.scroll(to: .zero)
+    precondition(!first.isHidden && first.controls.window === window,
+                 "an idle-detached row reattaches synchronously when scrolled into view")
     print("TRACK_MIXER_NATIVE_VISIBILITY_DETACH_WARM_SCROLL_IDENTITY_PINNED_FOCUS_RESIZE_AND_REATTACH_OK")
 }

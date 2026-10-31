@@ -390,6 +390,7 @@ struct DAWRemoteClientView: View {
             var snapshot = show.snapshot
             if remote.isLocalWorkspace { snapshot.transport = show.timelinePlaybackTransport }
             let song = show.current, transport = snapshot.transport
+            if remote.isLocalWorkspace { TPNoticeController.shared.observeTransport(playing: transport.playing || transport.subPlay.playing) }
             let playedLiveIDs = show.playedLiveRegionIDs
             let sendsPeaks = remote.accessMode == .director
             // Geometry and item metadata change with project edits, not transport ticks.
@@ -685,6 +686,8 @@ struct DAWRemoteClientView: View {
         case .noticeClear: model.clear()
         case .noticePin:
             if model.pinned != (command.value == 1) { model.togglePin() }
+        case .noticePinStopped:
+            model.setPinWhenStopped(command.enabled == true, text: command.text, selectedSlot: Int(command.value))
         case .noticeDestination:
             if command.value == 1 { model.appearance.window1 = command.enabled == true }
             else { model.appearance.window2 = command.enabled == true }
@@ -709,7 +712,8 @@ struct DAWRemoteClientView: View {
                      remaining: min(20, max(0, Int(ceil(model.remaining())))), window1: appearance.window1, window2: appearance.window2,
                      textColor: appearance.text, backgroundColor: appearance.background, flashColor: appearance.flash,
                      font: appearance.font, scale: appearance.scale, emoji: appearance.emojiEnabled ? appearance.emoji : "",
-                     cleanDisplay: appearance.cleanDisplay, sentAt: model.sentAt.timeIntervalSince1970, imageID: imageID)
+                     cleanDisplay: appearance.cleanDisplay, sentAt: model.sentAt.timeIntervalSince1970, imageID: imageID,
+                     pinWhenStopped: model.pinWhenStopped, stoppedNoticeActive: model.stoppedNoticeActive)
     }
     static func teleprompter(index: Int, snapshot: ShowSnapshot, directory: URL?, remote: DAWRemoteSession) -> DAWRemoteTeleprompter {
         var settings = (index == 1 ? TeleprompterPreferences.shared : .second).settings
@@ -4436,7 +4440,11 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         let lower = left ? min(target, original.startTime + original.duration - 0.01) : original.startTime
         let upper = left ? original.startTime + original.duration : max(original.startTime + 0.01, target)
         let unchanged = lower == original.startTime && upper == original.startTime + original.duration
-        let candidate = unchanged ? original : original.resized(start: lower, end: upper)
+        let candidate: AudioClip
+        if nativeTrack.kind == .click, !original.isProjectionMedia {
+            guard let resized = nativeSong.resizedClick(original, start: lower, end: upper) else { return }
+            candidate = resized
+        } else { candidate = unchanged ? original : original.resized(start: lower, end: upper) }
         if nativeTrack.canPlaceItem(start: candidate.startTime, duration: candidate.duration, excluding: id) {
             preview.candidate = candidate; resizing = preview
         }
@@ -4444,6 +4452,12 @@ private struct RemoteTimelineTrackRow: View, Equatable {
             resizing = nil
             if preview.candidate != original { resizeItem?(id, preview.candidate.startTime, preview.candidate.startTime + preview.candidate.duration) }
         }
+    }
+    private func nativeClickBeats(_ clip: DAWRemoteState.Clip, left: Double, right: Double, width: Double) -> [Double] {
+        guard nativeTrack?.kind == .click, let nativeSong, let item = previewTrack?.clips.first(where: { $0.id == clip.id }), right > left else { return [] }
+        let scale = width / (right - left)
+        return ClickTrackProgram.visibleBeats(sections: nativeSong.tempoSections(until: max(nativeSong.duration, right)), start: clip.start, end: clip.start + clip.duration,
+            visibleStart: left, visibleEnd: right, pixelsPerSecond: scale, doubled: item.clickDouble == true).map { ($0 - left) * scale }
     }
     private func gridItem(_ clip: DAWRemoteState.Clip, width itemWidth: Double, height itemHeight: Double, left: Double, right: Double) -> RemoteNativeGridItem {
         return
@@ -4454,6 +4468,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     mute: { control(.clipMute, clip.id, 0) },
                     setGain: { control(.clipGain, clip.id, $0) }, local: local, trackSilenced: track.silenced == true,
                     nativeClip: previewTrack?.clips.first(where: { $0.id == clip.id }), nativeKind: nativeTrack?.kind,
+                    clickBeats: nativeClickBeats(clip, left: left, right: right, width: itemWidth),
                     itemMix: { parameter, value, finished, cancelled in itemMix?(clip.id, parameter, value, finished, cancelled) },
                     itemPhase: { itemPhase?(clip.id) },
                     nativeWaveform: nativeDirectory != nil && nativeTrack?.clips.contains(where: { $0.id == clip.id && !$0.isImage && ($0.audioFile ?? nativeTrack?.audioFile) != nil }) == true,
@@ -4505,7 +4520,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     tracks: [nativeTrack], offsets: [0], heights: [rowHeight], rulerHeight: 0,
                     scale: scale, alignsToViewport: true).allowsHitTesting(false)
             }
-            if local, resizeEnabled, let nativeTrack {
+            if local, resizeEnabled, let nativeTrack, nativeTrack.kind != .click {
                 ForEach(nativeTrack.clips.filter { selectedItems.contains($0.id) && $0.startTime < end && $0.startTime + $0.duration > start }) { item in
                     ForEach([true, false], id: \.self) { fadeIn in
                         let duration = (fadeIn ? item.fadeIn : item.fadeOut) ?? 0
@@ -4624,6 +4639,7 @@ private struct RemoteNativeGridItem: View, Equatable {
     var trackSilenced = false
     var nativeClip: AudioClip? = nil
     var nativeKind: TrackKind? = nil
+    var clickBeats: [Double] = []
     var itemMix: ((IpadItemMixParameter, Double, Bool, Bool) -> Void)? = nil
     var itemPhase: (() -> Void)? = nil
     var nativeWaveform = false
@@ -4636,7 +4652,7 @@ private struct RemoteNativeGridItem: View, Equatable {
         lhs.clip == rhs.clip && lhs.width == rhs.width && lhs.height == rhs.height && lhs.color == rhs.color &&
             lhs.nameColor == rhs.nameColor && lhs.scrolling === rhs.scrolling &&
             lhs.sourceFraction == rhs.sourceFraction && lhs.visibleFraction == rhs.visibleFraction &&
-            lhs.local == rhs.local && lhs.trackSilenced == rhs.trackSilenced && lhs.nativeClip == rhs.nativeClip && lhs.nativeKind == rhs.nativeKind && lhs.nativeWaveform == rhs.nativeWaveform && (lhs.openMenu != nil) == (rhs.openMenu != nil) &&
+            lhs.local == rhs.local && lhs.trackSilenced == rhs.trackSilenced && lhs.nativeClip == rhs.nativeClip && lhs.nativeKind == rhs.nativeKind && lhs.clickBeats == rhs.clickBeats && lhs.nativeWaveform == rhs.nativeWaveform && (lhs.openMenu != nil) == (rhs.openMenu != nil) &&
             (lhs.openFX != nil) == (rhs.openFX != nil)
     }
     var body: some View {
@@ -4669,6 +4685,16 @@ private struct RemoteNativeGridItem: View, Equatable {
             Canvas { context, size in
                 guard !nativeWaveform else { return }
                 var wave = Path()
+                if local && nativeKind == .click {
+                    let middle = size.height / 2, amplitude = size.height * 0.45
+                    for x in clickBeats {
+                        wave.move(to: CGPoint(x: x, y: middle - amplitude))
+                        wave.addLine(to: CGPoint(x: x + 2, y: middle))
+                        wave.addLine(to: CGPoint(x: x, y: middle + amplitude)); wave.closeSubpath()
+                    }
+                    context.fill(wave, with: .color(silenced ? .gray : Color(white: 0.8)))
+                    return
+                }
                 let seed = local ? 0 : clip.id.uuidString.utf8.reduce(0) { ($0 + Int($1)) % 997 }
                 let peaks = clip.waveform ?? []
                 let count = max(1, Int(size.width / 3))
@@ -5438,15 +5464,18 @@ private struct RemoteNativeMixerRow: View, Equatable {
                         .frame(width: UIDevice.current.userInterfaceIdiom == .phone ? 104 : 52.5, height: 28).accessibilityLabel("Pan " + track.name)
                 }
                 } else if kind == .click, let localShow {
+                    if let openPatch { Button("Patch", action: openPatch).buttonStyle(RemoteNativeTrackButtonStyle(width: 44)) }
                     Button("Insert") { localShow.insertClickItems(track: track.id) }
                         .buttonStyle(RemoteNativeTrackButtonStyle(width: 52))
                 } else if kind.isText, let addText {
                     Button("Add text", action: addText).buttonStyle(RemoteNativeTrackButtonStyle(width: 82))
                 }
+                if !local || !kind.isTeleprompter {
                 Button { send(.mute, 0) } label: { Text(verbatim: "M") }
                     .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: track.mute ? .red : nil))
                 Button { send(.solo, 0) } label: { Text(verbatim: "S") }
                     .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil))
+                }
                 }.anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
             }
             if !compact {
@@ -6152,20 +6181,21 @@ private struct RemoteNativeProjectionImage: View {
         remote.send(.init(project: state.project, song: state.song, action: .remotePanel, value: Double(panel)))
     }
     private func projection(_ content: DAWRemoteTeleprompter, state: DAWRemoteState) -> some View {
-        TeleprompterProjectionLayout(content: content, fullscreen: fullscreen,
-            timerValue: { (timer.displayText().replacingOccurrences(of: ":", with: " : "), timer.displayOpacity(), timer.expired()) },
-            media: {
-                if remote.isLocalWorkspace {
-                    ProjectionMediaSurface(controller: index == 1 ? .teleprompter : .teleprompter2)
-                } else if let image = content.imageID {
-                    RemoteNativeProjectionImage(id: image, project: state.project, stretch: content.resolvedSettings.stretchesMedia, remote: remote)
-                }
-            })
-            .overlay {
-                if !content.resolvedSettings.displaysPreview(content.preview) && !content.resolvedSettings.isClear, let notices = state.notices, notices.active && (index == 1 ? notices.window1 : notices.window2) {
-                    RemoteNativeNoticeOverlay(notice: notices, project: state.project, remote: remote)
-                }
-            }
+        let notice = state.notices
+        let active = notice.map { $0.active && (index == 1 ? $0.window1 : $0.window2) } ?? false
+        return TeleprompterNoticeStage(settings: content.resolvedSettings, preview: content.preview, noticeActive: active) {
+            TeleprompterProjectionLayout(content: content, fullscreen: fullscreen,
+                timerValue: { (timer.displayText().replacingOccurrences(of: ":", with: " : "), timer.displayOpacity(), timer.expired()) },
+                media: {
+                    if remote.isLocalWorkspace {
+                        ProjectionMediaSurface(controller: index == 1 ? .teleprompter : .teleprompter2)
+                    } else if let image = content.imageID {
+                        RemoteNativeProjectionImage(id: image, project: state.project, stretch: content.resolvedSettings.stretchesMedia, remote: remote)
+                    }
+                })
+        } notice: {
+            if let notice { RemoteNativeNoticeOverlay(notice: notice, project: state.project, remote: remote) }
+        }
     }
 }
 
@@ -6187,9 +6217,9 @@ private struct RemoteNativeNoticeOverlay: View {
                         .font(tpNoticeFont(notice.font, size: min(72, max(24, geometry.size.width * 0.078)) * notice.scale / 100)).minimumScaleFactor(0.3)
                         .foregroundStyle(remoteColor(notice.textColor)).multilineTextAlignment(.center)
                 }
-            }.padding(24).frame(maxWidth: .infinity, maxHeight: notice.cleanDisplay ? .infinity : nil)
+            }.padding(24).frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
                 .background(remoteColor(flash ? notice.flashColor : notice.backgroundColor))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .clipped()
           }
         }.allowsHitTesting(false)
     }
@@ -6220,7 +6250,8 @@ private struct RemoteNativeNoticeOverlay: View {
             }
         } actions: {
             if let notices {
-                HStack(spacing: 8) {
+                RemoteNoticeActions {
+                  HStack(spacing: 8) {
                     Button { sendNotice() } label: {
                         NoticeSendButtonLabel(phase: sendFeedback.phase)
                             .frame(minHeight: 44).contentShape(Rectangle())
@@ -6229,12 +6260,26 @@ private struct RemoteNativeNoticeOverlay: View {
                     Button { command(.noticeClear) } label: {
                         Text("Withdraw message").frame(minWidth: 60, minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteNoticeActionStyle()).disabled(!notices.active)
+                  }
+                } pin: {
+                  HStack(spacing: 8) {
                     Button { command(.noticePin, value: notices.pinned ? 0 : 1) } label: {
                         Label("Pin", systemImage: notices.pinned ? "pin.fill" : "pin")
                             .frame(minWidth: 60, minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(RemoteNoticeActionStyle())
                         .foregroundStyle(notices.pinned ? JarasTheme.yellow : JarasTheme.text)
-                    Spacer(minLength: 0)
+                    if let pinWhenStopped = notices.pinWhenStopped {
+                        Button {
+                            command(.noticePinStopped, value: Double(slot), text: draft, enabled: !pinWhenStopped)
+                        } label: {
+                            Text("Pin while transport is stopped").lineLimit(2)
+                                .frame(minHeight: 44).contentShape(Rectangle())
+                        }.buttonStyle(RemoteNoticeActionStyle())
+                            .foregroundStyle(pinWhenStopped ? JarasTheme.yellow : JarasTheme.text)
+                            .disabled(!pinWhenStopped && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                                      (slot < 0 || !notices.imageSlots[slot]))
+                    }
+                  }
                 }.font(.jarasSystem(size: 13, weight: .semibold))
             }
         } content: {
@@ -6247,7 +6292,9 @@ private struct RemoteNativeNoticeOverlay: View {
                     draft = value < 0 ? globalDraft : notices.templates[value]
                 }
                 TextEditor(text: $draft).font(.jarasSystem(size: 18)).scrollContentBackground(.hidden)
-                    .frame(height: 150).padding(5).background(RemoteSurface.display).cornerRadius(6)
+                    .frame(height: 150).padding(8).background(Color(hex: 0x101010))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.14), lineWidth: 1).allowsHitTesting(false))
                     .onChange(of: draft) { value in
                         var bounded = String(value.prefix(500))
                         while bounded.utf8.count > 4000 { bounded.removeLast() }
@@ -6286,7 +6333,8 @@ private struct RemoteNativeNoticeOverlay: View {
     }
     private func closeNotices() {
         guard !presentation.dismissed else { return }
-        if let command = presentation.dismiss(project: remote.remoteState?.project, song: remote.remoteState?.song),
+        if let command = presentation.dismiss(project: remote.remoteState?.project, song: remote.remoteState?.song,
+                                              preserveStoppedNotice: notices?.stoppedNoticeActive == true),
            remote.connected && !remote.reconnecting {
             // The notices-only close action disconnects. Complete the write
             // first so disconnect cannot cancel the withdrawal behind it.
@@ -6294,7 +6342,8 @@ private struct RemoteNativeNoticeOverlay: View {
         } else { close() }
     }
     private func withdrawPresentedNotice() {
-        guard let command = presentation.dismiss(project: remote.remoteState?.project, song: remote.remoteState?.song),
+        guard let command = presentation.dismiss(project: remote.remoteState?.project, song: remote.remoteState?.song,
+                                              preserveStoppedNotice: notices?.stoppedNoticeActive == true),
               remote.connected && !remote.reconnecting else { return }
         remote.send(command)
     }
@@ -6322,37 +6371,73 @@ struct RemoteNoticePresentation {
     mutating func observe(project: UUID?) {
         if self.project == nil && !dismissed { self.project = project }
     }
-    mutating func dismiss(project: UUID?, song: UUID?) -> DAWRemoteCommand? {
+    mutating func dismiss(project: UUID?, song: UUID?, preserveStoppedNotice: Bool = false) -> DAWRemoteCommand? {
         guard !dismissed else { return nil }
         dismissed = true
-        guard let captured = self.project, project == captured else { return nil }
+        guard !preserveStoppedNotice, let captured = self.project, project == captured else { return nil }
         return .init(project: captured, song: song, action: .noticeClear)
     }
 }
 
-/// Only the editor body scrolls. Header and actions retain their touch targets
-/// when the keyboard reduces either a popover or a phone panel's height.
+/// Keep the stopped-transport option beside Pin, wrapping the two action
+/// groups on narrow phones instead of shrinking or hiding their touch targets.
+struct RemoteNoticeActions: View {
+    private let primary: AnyView
+    private let pin: AnyView
+    init<Primary: View, Pin: View>(@ViewBuilder primary: () -> Primary, @ViewBuilder pin: () -> Pin) {
+        self.primary = AnyView(primary()); self.pin = AnyView(pin())
+    }
+    var body: some View {
+        actionLayout.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    // iOS 16 can fail while resolving the symbolic metadata of an availability
+    // branch containing generic action tuples. Keep that branch out of body and
+    // erase both its result and its children before SwiftUI resolves the layout.
+    private var actionLayout: AnyView {
+        let vertical = AnyView(VStack(alignment: .leading, spacing: 8) { primary; pin })
+        if #available(macOS 13.0, iOS 16.0, *) {
+            let horizontal = AnyView(HStack(spacing: 8) { primary; pin }
+                .fixedSize(horizontal: true, vertical: false))
+            return AnyView(ViewThatFits(in: .horizontal) { horizontal; vertical })
+        }
+        return vertical
+    }
+}
+
+/// Actions stay pinned during normal editing. With a very short keyboard
+/// viewport they scroll with the editor so every control remains reachable.
 struct RemoteNoticePanel<Header: View, Actions: View, Content: View>: View {
     @ViewBuilder let header: () -> Header
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let content: () -> Content
     var body: some View {
-        VStack(spacing: 0) {
-            header().frame(minHeight: 44).padding(.horizontal, 16).padding(.top, 12)
-                .fixedSize(horizontal: false, vertical: true)
-            actions().padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 12)
-                .fixedSize(horizontal: false, vertical: true)
-            Divider()
-            ScrollView(.vertical) {
-                VStack(spacing: 10) { content() }.frame(maxWidth: .infinity)
-                    .padding(16)
-            }
-            #if os(iOS)
-            .scrollDismissesKeyboard(.interactively)
-            #endif
-        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                header().frame(minHeight: 44).padding(.horizontal, 16).padding(.top, 12)
+                    .fixedSize(horizontal: false, vertical: true)
+                ScrollView(.vertical) {
+                    // Keep one stable editor hierarchy when the keyboard opens.
+                    LazyVStack(spacing: 0, pinnedViews: geometry.size.height >= 240 ? [.sectionHeaders] : []) {
+                        Section {
+                            VStack(spacing: 10) { content() }.frame(maxWidth: .infinity)
+                                .padding(16)
+                        } header: {
+                            VStack(spacing: 0) {
+                                actions().padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 12)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Divider()
+                            }.background(JarasTheme.panel)
+                        }
+                    }
+                }
+                #if os(iOS)
+                .scrollDismissesKeyboard(.interactively)
+                #endif
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
     }
 }
+
 struct RemoteNoticeActionStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     func makeBody(configuration: Configuration) -> some View {

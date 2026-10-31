@@ -71,9 +71,16 @@ void Projection::resized() {
     fontUp.setBounds(getWidth() - 110, 3, 45, 26);
     fontDown.setBounds(getWidth() - 58, 3, 45, 26);
 }
+bool Projection::stageHidesMedia() const {
+    if (!stage) return false;
+    const auto settings = stage->settings(profile);
+    const bool preview = stage->preview && flag(settings, "previewEnabled", true) && !flag(settings, "ignorePreview");
+    const auto notices = stage->preferences.value("jaras.notices.appearance", object());
+    return preview || (stage->noticeActive() && flag(notices, profile == 1 ? "window1" : "window2", true));
+}
 void Projection::paint(Graphics &g) {
     g.fillAll(Colours::black);
-    if (image.isValid() && !(stage && stage->preview && flag(stage->settings(profile),"previewEnabled",true) && !flag(stage->settings(profile),"ignorePreview"))) {
+    if (image.isValid() && !stageHidesMedia()) {
         g.setOpacity(mediaOpacity);
         const auto viewport = mediaBounds();
         const auto scale = stage ? jlimit(.25, 1.5, num(stage->settings(profile), "mediaScale", 100) / 100.) : 1.;
@@ -182,7 +189,7 @@ void Projection::paintVideoSurface(HDC dc) {
     }
 }
 void Projection::updateVideoSurface() {
-    if(videoFile==File() || (stage && stage->preview && flag(stage->settings(profile),"previewEnabled",true) && !flag(stage->settings(profile),"ignorePreview"))) {
+    if(videoFile==File() || stageHidesMedia()) {
         if(videoSurface)ShowWindow(videoSurface,SW_HIDE);
         return;
     }
@@ -302,6 +309,9 @@ void Projection::timerCallback() {
     if (stage) {
         resized();
         repaint();
+        // Keep prepared media available while the notice/Preview owns the TP.
+        // The child video HWND must remain hidden, otherwise it covers the notice.
+        if (stageHidesMedia()) return;
     }
     const jaras::AudioClip *clip = nullptr;
     const auto transport = session.presentationTransport();

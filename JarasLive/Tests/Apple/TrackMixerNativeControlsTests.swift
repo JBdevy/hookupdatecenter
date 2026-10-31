@@ -228,9 +228,12 @@
            "Clipping number must be red")
     let bar = meter.layer!.sublayers!.first { $0.name == "meter-background-0" }!
     let barPoint = meter.convert(NSPoint(x: 2, y: bar.frame.midY), to: nil)
-    // The peak now occupies the lower-right corner; probe the unused space
-    // above it instead of the number's intentional reset target.
-    let scalePoint = meter.convert(NSPoint(x: meter.bounds.maxX - 2, y: meter.bounds.midY), to: nil)
+    // The peak follows the fader height and can cross the meter's midpoint.
+    // Probe the actual empty area above its current frame, not a fixed y that
+    // becomes the intentional reset target when the row height changes.
+    let blankScalePoint = NSPoint(x: meter.bounds.maxX - 2, y: (peak.frame.maxY + meter.bounds.maxY) / 2)
+    expect(!peak.frame.contains(blankScalePoint), "Blank-space probe must avoid the current peak label")
+    let scalePoint = meter.convert(blankScalePoint, to: nil)
     for point in [barPoint, scalePoint] {
         expect(row.hitTestTimelineControl(atWindowPoint: point) == nil, "The meter bars and scale must remain available for selecting and dragging the track")
         expect(row.meter.hitTest(row.convert(point, from: nil)) == nil, "The meter hosting view cannot intercept blank meter space")
@@ -240,7 +243,10 @@
         windowNumber: fixture.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
     row.hitTestTimelineControl(atWindowPoint: peakPoint)!.mouseDown(with: event)
     expect(fixture.state.meter.peakHold.decibels == nil, "Clicking the held peak must reset the actual meter model")
-    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) === meter, "Clearing a peak keeps the same rectangle available for the next peak")
+    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) == nil, "An empty peak readout releases its rectangle for track selection")
+    fixture.state.meter.update(peak: 1.25, elapsed: 0.05)
+    fixture.settle(); meter.refreshVisibleDrawing()
+    expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) === meter, "The next peak restores its reset target in the retained meter")
     fixture.change(36)
     expect(row.hitTestTimelineControl(atWindowPoint: peakPoint) == nil, "Collapsed rows cannot retain a hidden peak hit target")
     fixture.change(80)

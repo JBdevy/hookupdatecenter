@@ -1728,5 +1728,6 @@
   "2 columns": "2 colunas",
   "Return to Default?": "Voltar para Default?",
   "Remove second column": "Remover segunda coluna",
-  "The text in the second column must be removed to continue.": "O texto da segunda coluna precisa ser removido para continuar."
+  "The text in the second column must be removed to continue.": "O texto da segunda coluna precisa ser removido para continuar.",
+  "Pin while transport is stopped": "Fixar com o transporte parado"
 }

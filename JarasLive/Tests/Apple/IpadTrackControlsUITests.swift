@@ -1,5 +1,20 @@
 import XCTest
 final class TrackTouchTests:XCTestCase {
+ func testTeleprompterRowsKeepTextAndMediaWithoutMuteSolo() {
+  let app=XCUIApplication();app.launch()
+  XCTAssertTrue(app.buttons["Show Remote rows"].waitForExistence(timeout:10))
+  XCTAssertTrue(app.staticTexts["04  TP 1"].exists);XCTAssertTrue(app.staticTexts["05  TP 2"].exists)
+  XCTAssertEqual(app.buttons.matching(identifier:"M").count,3,"Only normal, Click and Chords keep mute")
+  XCTAssertEqual(app.buttons.matching(identifier:"S").count,3,"Only normal, Click and Chords keep solo")
+  XCTAssertEqual(app.buttons.matching(identifier:"Add text").count,3,"Both TP tracks and Chords retain Add text")
+  XCTAssertEqual(app.buttons.matching(identifier:"Add media").count,2,"Both TP tracks retain Add media")
+  app.buttons.matching(identifier:"Add media").firstMatch.tap()
+  XCTAssertEqual(app.staticTexts["event"].label,"tp-media")
+  app.buttons["Show Remote rows"].tap()
+  XCTAssertEqual(app.buttons.matching(identifier:"M").count,5,"Remote controls must stay unchanged")
+  XCTAssertEqual(app.buttons.matching(identifier:"S").count,5,"Remote controls must stay unchanged")
+ }
+
  func testRecordHoldOpensSettingsWithoutArmingAndKeepsMIDIChannelInAudioMode() {
   let app = XCUIApplication(); app.launch()
   let rec = app.buttons["Arm track for recording"].firstMatch

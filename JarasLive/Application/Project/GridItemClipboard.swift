@@ -14,7 +14,7 @@ public struct GridItemClipboard: Equatable, Sendable {
     public init?(project: Project, song: UUID, selected: Set<UUID>, moving: Bool = false) {
         guard let source = project.songs.first(where: { $0.id == song }) else { return nil }
         let entries = source.tracks.filter { $0.kind != .timecode }.flatMap { track in
-            track.clips.filter { selected.contains($0.id) }.map { Entry(track: track.id, clip: $0) }
+            track.clips.filter { selected.contains($0.id) && (track.kind != .click || $0.isProjectionMedia) }.map { Entry(track: track.id, clip: $0) }
         }
         guard !entries.isEmpty else { return nil }
         self.project = project.id; self.song = song; self.moving = moving; self.entries = entries
@@ -27,10 +27,12 @@ public struct GridItemClipboard: Equatable, Sendable {
             guard let track = source.tracks.first(where: { $0.id == values[index].track }), track.kind != .timecode else {
                 throw ProjectError.invalid("The destination track no longer exists")
             }
+            guard track.kind != .click || values[index].clip.isProjectionMedia else { throw ProjectError.invalid("Invalid destination track") }
             if moving {
                 guard let clip = track.clips.first(where: { $0.id == values[index].clip.id }) else { throw ProjectError.invalid("An item to move no longer exists") }
                 values[index].clip = clip
             }
+            guard track.kind != .click || values[index].clip.isProjectionMedia else { throw ProjectError.invalid("Invalid destination track") }
         }
         let start = values.map { $0.clip.startTime }.min()!
         for index in values.indices {
@@ -48,7 +50,8 @@ public extension Project {
         var candidate = self
         for entry in entries {
             guard let track = candidate.songs[index].tracks.firstIndex(where: { $0.id == entry.track }),
-                  candidate.songs[index].tracks[track].kind != .timecode else { throw ProjectError.invalid("Invalid destination track") }
+                  candidate.songs[index].tracks[track].kind != .timecode,
+                  candidate.songs[index].tracks[track].kind != .click || entry.clip.isProjectionMedia else { throw ProjectError.invalid("Invalid destination track") }
             if moving {
                 guard let item = candidate.songs[index].tracks[track].clips.firstIndex(where: { $0.id == entry.clip.id }) else { throw ProjectError.invalid("An item to move no longer exists") }
                 candidate.songs[index].tracks[track].clips.remove(at: item)

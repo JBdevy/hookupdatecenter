@@ -328,7 +328,8 @@ struct TimecodePlaybackSpan {
     private var deviceActivity: NSObjectProtocol?
     private var clickGenerators: [JarasMetronomeGenerator] = []
     private var clickTrackID: UUID?
-    private var clickSections: [ClickTrackSection] = []
+    private var clickSections: [Int: [ClickTrackSection]] = [:]
+    private var clickPlaybackContexts: [Int: ClickTrackProgram.PlaybackContext] = [:]
     private var clickSample: Data?
     private var clickSoundPath: String?
     private var metronome: JarasMetronomeGenerator?
@@ -3362,7 +3363,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
     }
     private func detachClickTrack() {
         for click in clickGenerators { engine.detach(click.node) }
-        clickGenerators.removeAll(); clickTrackID = nil; clickSections = []
+        clickGenerators.removeAll(); clickTrackID = nil; clickSections.removeAll(); clickPlaybackContexts.removeAll()
     }
     private func prepareClickTrack(song: Song) throws {
         guard let track = song.tracks.first(where: { $0.kind == .click }) else {
@@ -3389,15 +3390,30 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             }
             clickTrackID = track.id
         }
-        let sections = ClickTrackProgram.sections(song: song, track: track)
-        if soundChanged || clickSections != sections {
-            let values = sections.map { ["start": $0.start, "end": $0.end, "origin": $0.origin, "bpm": $0.bpm, "beats": Double($0.beats), "unit": Double($0.unit)] }
-            for click in clickGenerators { click.setClickSections(values, sound: clickSample ?? Data()) }
-            clickSections = sections
-        }
+        // Structural edits invalidate membership; actual programs are committed
+        // per head with its current transport scope before configuring the clock.
+        clickPlaybackContexts.removeAll()
+        if soundChanged { clickSections.removeAll() }
     }
     private func updateClickPosition(_ transport: TransportState, only head: Int? = nil) {
+        guard let playback = latestPlayback,
+              let song = playback.snapshot.project.songs.first(where: { $0.id == transport.songId }),
+              let track = song.tracks.first(where: { $0.id == clickTrackID }) else { return }
+        let selectedTracks = Set(playback.snapshot.project.regionSetlist?.subplayExclusiveTrackIDs ?? [])
         for (index, click) in clickGenerators.enumerated() where head == nil || head == index {
+            let context = ClickTrackProgram.playbackContext(song: song, track: track, transport: transport,
+                head: index, selectedTracks: selectedTracks)
+            if clickPlaybackContexts[index] != context {
+                let sections = ClickTrackProgram.sections(song: song, track: track, transport: transport,
+                    head: index, selectedTracks: selectedTracks)
+                if clickSections[index] != sections {
+                    let values = sections.map { ["start": $0.start, "end": $0.end, "origin": $0.origin, "bpm": $0.bpm,
+                        "beats": Double($0.beats), "unit": Double($0.unit)] }
+                    click.setClickSections(values, sound: clickSample ?? Data())
+                    clickSections[index] = sections
+                }
+                clickPlaybackContexts[index] = context
+            }
             let position = index == 0 ? transport.position : transport.subPlay.position
             let host = audioHostTime(position: position, head: index) ?? mach_absolute_time()
             let sample = realtime ? nodeSampleTime(host: host, anchor: click.node.lastRenderTime ?? engine.outputNode.lastRenderTime).map(Double.init) ?? .nan : Double(engine.manualRenderingSampleTime)
@@ -3846,7 +3862,15 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 }
                 midiTakeVoices[main] = promoted
             }
-            if clickGenerators.count == 2 { clickGenerators.swapAt(0, 1) }
+            if clickGenerators.count == 2 {
+                clickGenerators.swapAt(0, 1)
+                // The immutable program/cache belongs to the generator, not
+                // its previous head index. Keep the promoted click continuous.
+                let previousSections = clickSections[0]
+                clickSections[0] = clickSections[1]; clickSections[1] = previousSections
+                let previousContext = clickPlaybackContexts[0]
+                clickPlaybackContexts[0] = clickPlaybackContexts[1]; clickPlaybackContexts[1] = previousContext
+            }
             headAudioClock[0] = headAudioClock[1]; headAudioClock[1] = nil
             lastPosition[0] = lastPosition[1]
             lastPosition[1] = nil

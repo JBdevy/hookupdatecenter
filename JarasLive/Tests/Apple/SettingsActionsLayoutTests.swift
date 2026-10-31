@@ -1,5 +1,11 @@
 import AppKit
 import SwiftUI
+extension Font {
+    static func jarasSystem(size: CGFloat, weight: Font.Weight = .regular) -> Font { .system(size: size, weight: weight) }
+    static var jarasHeadline: Font { .headline }
+    static var jarasCaption: Font { .caption }
+    static var jarasCaption2: Font { .caption2 }
+}
 
 // UI-only dependencies. The action list and its six-category model are the
 // production sources; no audio hardware, account or saved mappings are used.
@@ -24,7 +30,11 @@ struct CategoryFrames: PreferenceKey {
     static var defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) { value.merge(nextValue(), uniquingKeysWith: { _, next in next }) }
 }
-final class LayoutProbe { var frames: [String: CGRect] = [:] }
+struct SettingsViewportSize: PreferenceKey {
+    static var defaultValue = CGSize.zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+final class LayoutProbe { var frames: [String: CGRect] = [:]; var viewport = CGSize.zero }
 
 Task { @MainActor in
     NSApplication.shared.setActivationPolicy(.prohibited)
@@ -40,11 +50,12 @@ Task { @MainActor in
                             .coordinateSpace(name: "actions")
                             .onPreferenceChange(CategoryFrames.self) { probe.frames = $0 }
                             .padding(24).frame(width: viewport.size.width, alignment: .leading)
-                    }
+                    }.preference(key: SettingsViewportSize.self, value: viewport.size)
                 }
-            }.frame(width: width, height: 540).background(Color(white: 0.115))
+            }.background(Color(white: 0.115))
                 .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
-            let host = NSHostingView(rootView: root)
+            let host = NSHostingView(rootView: WorkspaceEditorViewport(content: root, scrolls: workspaceSettingsScrolls)
+                .onPreferenceChange(SettingsViewportSize.self) { probe.viewport = $0 })
             let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: width, height: 540), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
             let deadline = ProcessInfo.processInfo.systemUptime + 2
@@ -52,6 +63,8 @@ Task { @MainActor in
                 host.layoutSubtreeIfNeeded()
                 RunLoop.main.run(until: Date().addingTimeInterval(0.02))
             }
+            precondition(probe.viewport.width >= width - 146 && probe.viewport.height >= 539,
+                         "Settings content must fill the finite window proposal, got \(probe.viewport) at \(width)")
             precondition(probe.frames.count == 6, "All six categories must be laid out")
             let available = width - 144 - 1 - 48
             for (name, frame) in probe.frames {

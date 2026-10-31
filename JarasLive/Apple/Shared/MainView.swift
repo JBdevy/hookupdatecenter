@@ -601,7 +601,6 @@ struct MainView: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Menu")
-            .jarasHelp("Menu")
             Button(action: toggleMixer) {
                 Image(systemName: "slider.horizontal.3")
                     .font(.jarasSystem(size: 15, weight: .semibold))
@@ -610,7 +609,7 @@ struct MainView: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer")
-            .jarasHelp(mixerWidth <= 0 ? "Restaurar largura anterior do Track-Mixer" : "Ocultar Track-Mixer")
+            .desktopIconTooltip("Track-Mixer")
             if desktopExtras {
             Button(action: toggleBarMixer) {
                 Image(systemName: "slider.vertical.3")
@@ -620,7 +619,7 @@ struct MainView: View {
             }
             .foregroundStyle((footerMixerOpen || detachedMixer.isVisible) ? JarasTheme.green : JarasTheme.text)
             .accessibilityLabel("Hoz-Mixer")
-            .jarasHelp("Hoz-Mixer")
+            .desktopIconTooltip("Hoz-Mixer")
             .contextMenu {
                 Button(LocalizedStringKey(detachedMixer.isDetached ? "Dock mixer" : "Undock mixer")) {
                     if detachedMixer.isDetached {
@@ -638,7 +637,7 @@ struct MainView: View {
                     .font(.jarasSystem(size: 16, weight: .semibold)).frame(width: 26, height: 24)
                     .contentShape(Rectangle())
             }.foregroundStyle((partsLeftOpen || detachedParts.isVisible) ? JarasTheme.green : JarasTheme.text)
-                .accessibilityLabel("Parts à esquerda").jarasHelp("Parts à esquerda")
+                .accessibilityLabel("Parts à esquerda").desktopIconTooltip("Parts")
                 .contextMenu {
                     Button(LocalizedStringKey(detachedParts.isDetached ? "Dock Parts" : "Undock Parts")) {
                         if detachedParts.isDetached { detachedParts.close(); partsLeftOpen = true }
@@ -656,7 +655,7 @@ struct MainView: View {
             }
             .foregroundStyle(keyboardOpen ? JarasTheme.green : JarasTheme.text)
             .accessibilityLabel("Keyboard")
-            .jarasHelp("Keyboard")
+            .desktopIconTooltip("Keyboard")
             .immediateRightClick { keyboardSettings = true }
             .sheet(isPresented: $keyboardSettings) { KeyboardSettingsView() }
             Button {
@@ -669,7 +668,7 @@ struct MainView: View {
                     .frame(width: 26, height: 24)
                     .contentShape(Rectangle())
             }.foregroundStyle((vinhetasOpen || vinhetasWindow.visible) ? JarasTheme.green : JarasTheme.text)
-                .accessibilityLabel("Vinhetas").contextMenu {
+                .accessibilityLabel("Pads").desktopIconTooltip("Pads").contextMenu {
                     Button(vinhetasWindow.detached ? "Indexar" : "Desindexar") {
                         if vinhetasWindow.detached { vinhetasWindow.dock(); vinhetasOpen = true }
                         else { vinhetasOpen = false; vinhetasWindow.open(show: show) }
@@ -678,6 +677,7 @@ struct MainView: View {
 
 
             }
+            TeleprompterTimerControl(compact: true)
             Spacer(minLength: 0)
             AudioStatusView { openSettings(.audio) }
                 .font(.jarasSystem(size: 9, weight: .medium, design: .monospaced))
@@ -686,7 +686,7 @@ struct MainView: View {
                 Image(systemName: "gearshape")
                     .font(.jarasSystem(size: 16))
                     .frame(width: 26, height: 24).contentShape(Rectangle())
-            }.accessibilityLabel("Configurações").jarasHelp("Configurações")
+            }.accessibilityLabel("Configurações").desktopIconTooltip("Configurações")
 
         }
         .buttonStyle(.plain)
@@ -1241,10 +1241,16 @@ final class FooterHeightContainerView: NSView {
         if let pendingCommit, storedHeight != pendingCommit.previous || !active { self.pendingCommit = nil }
         self.storedHeight = storedHeight; self.minimum = minimum; self.maximum = maximum
         self.active = active; self.role = role; self.coordinator = coordinator
-        // A zero-height frame still leaves the complete mixer in AppKit's
-        // tracking/layout traversal. Hide the retained native root as well.
+        // Hiding a zero-height panel still leaves its entire hosting tree in
+        // AppKit's window layout/environment walks when another panel opens.
+        // Keep the root and its last geometry, but detach it while closed.
         host.isHidden = !active
-        if !active { FooterVerticalResizeView.cancelDrags(in: self); preview = nil }
+        if active {
+            if host.superview !== self { addSubview(host) }
+        } else {
+            FooterVerticalResizeView.cancelDrags(in: self); preview = nil
+            if host.superview === self { host.removeFromSuperview() }
+        }
         refreshHeight(); coordinator?.register(self, role: role)
     }
     func setContent(identity: AnyHashable, environment: EnvironmentValues, make: () -> AnyView) {

@@ -4,6 +4,7 @@ import Combine
 #if os(macOS)
 /// Only this small control redraws with the independent timer clock.
 @MainActor struct TeleprompterTimerControl: View {
+    private let compact: Bool
     @ObservedObject private var timer: TeleprompterTimerController
     @State private var tick = Date()
     private let clock = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
@@ -14,14 +15,14 @@ import Combine
     @State private var confirmStop = false
     @State private var stopRunID: UUID?
     @FocusState private var focused: Int?
-    init() { timer = .shared }
-    init(timer: TeleprompterTimerController) { self.timer = timer }
+    init(compact: Bool = false) { timer = .shared; self.compact = compact }
+    init(timer: TeleprompterTimerController, compact: Bool = false) { self.timer = timer; self.compact = compact }
     var body: some View {
         HStack(spacing: 3) {
             timerField(at: tick)
             timerButton
         }.fixedSize(horizontal: true, vertical: false)
-            .padding(4)
+            .padding(compact ? 2 : 4)
             .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
             .onReceive(clock) { if timer.running { tick = $0 } }
@@ -62,7 +63,7 @@ import Combine
                             .onExitCommand { refresh(); focused = nil }
                     }
                 }
-                .multilineTextAlignment(.center).frame(width: 30, height: 35)
+                .multilineTextAlignment(.center).frame(width: compact ? 23 : 30, height: compact ? 20 : 35)
                 .background(JarasTheme.display).clipShape(RoundedRectangle(cornerRadius: 5))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(invalid ? Color.red : JarasTheme.line))
                 .accessibilityLabel(LocalizedStringKey(["Hours", "Minutes", "Seconds"][index]))
@@ -79,7 +80,7 @@ import Combine
             else if commit() { focused = nil; timer.start() }
         } label: {
             Text(LocalizedStringKey(timer.running ? "Stop" : "Start"))
-                .font(.jarasSystem(size: 12, weight: .semibold)).frame(width: 52, height: 35)
+                .font(.jarasSystem(size: 12, weight: .semibold)).frame(width: compact ? 48 : 52, height: compact ? 20 : 35)
                 .foregroundStyle(timer.running ? Color.white : JarasTheme.green)
                 .background(timer.running ? Color.red.opacity(0.65) : JarasTheme.display)
                 .clipShape(RoundedRectangle(cornerRadius: 5))

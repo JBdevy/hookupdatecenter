@@ -2,6 +2,72 @@ import XCTest
 @testable import JarasApplication
 
 final class ClickTrackTests: XCTestCase {
+    func testDoubleClickIsPerItemPersistsAndKeepsBarAccents() throws {
+        var project = fixture()
+        project.insertClickItems(track: project.songs[0].tracks[0].id)
+        project.songs[0].tracks[0].clips[0].clickDouble = true
+        let restored = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))
+        let song = restored.songs[0], track = song.tracks[0]
+        XCTAssertEqual(track.clips[0].clickDouble, true)
+        XCTAssertNil(track.clips[1].clickDouble)
+        XCTAssertEqual(track.clips.map(\.duration), [4,4])
+        let sections = ClickTrackProgram.sections(song: song, track: track)
+        XCTAssertEqual(sections.map(\.bpm), [240,120])
+        XCTAssertEqual(sections.map(\.beats), [8,4], "Doubled subdivisions retain the original bar accents")
+        let timing = song.tempoSections(until: song.duration)
+        let normal = ClickTrackProgram.visibleBeats(sections: timing, start: 1, end: 5, visibleStart: 0, visibleEnd: 30, pixelsPerSecond: 100)
+        let doubled = ClickTrackProgram.visibleBeats(sections: timing, start: 1, end: 5, visibleStart: 0, visibleEnd: 30, pixelsPerSecond: 100, doubled: true)
+        XCTAssertEqual(doubled.count, normal.count * 2)
+        XCTAssertEqual(doubled[1]-doubled[0], 0.25)
+        var overlap = track; var copy = track.clips[0]; copy.clickDouble = false; overlap.clips.append(copy)
+        XCTAssertEqual(ClickTrackProgram.sections(song: song, track: overlap), sections)
+        project.songs[0].tracks[0].clips[0].clickDouble = false
+        XCTAssertEqual(ClickTrackProgram.sections(song: project.songs[0], track: project.songs[0].tracks[0]).map(\.bpm), [120,120])
+    }
+    func testClickCanTrimExtendAndSplitButCannotMoveOutsideItsRegion() throws {
+        var project = fixture()
+        let trackID = project.songs[0].tracks[0].id, owner = project.songs[0].parts[0].id
+        project.insertClickItems(track: trackID)
+        let id = project.songs[0].tracks[0].clips[0].id
+        project.songs[0].tracks[0].clips[0].clickDouble = true
+        project.resizeItem(id, start: 2, end: 4)
+        var clip = project.songs[0].tracks[0].clips[0]
+        XCTAssertEqual(clip.startTime, 2); XCTAssertEqual(clip.duration, 2)
+        XCTAssertNil(clip.loopLength); XCTAssertEqual(clip.sourceOffset, 0)
+        project.resizeItem(id, start: 0, end: 30)
+        clip = project.songs[0].tracks[0].clips[0]
+        XCTAssertEqual(clip.startTime, 1); XCTAssertEqual(clip.duration, 4)
+        XCTAssertEqual(clip.regionOwnerID, owner)
+        XCTAssertNil(project.songs[0].movingItems([id], anchor: id, start: 2, track: trackID))
+        XCTAssertNil(GridItemClipboard(project: project, song: project.songs[0].id, selected: [id], moving: true))
+        XCTAssertNil(GridItemClipboard(project: project, song: project.songs[0].id, selected: [id]))
+        XCTAssertThrowsError(try project.pasteItems([.init(track: trackID, clip: clip)], song: project.songs[0].id, moving: true))
+        project.splitItems([id], at: 3)
+        let fragments = project.songs[0].tracks[0].clips.filter { $0.regionOwnerID == owner }
+        XCTAssertEqual(fragments.count, 2)
+        XCTAssertEqual(fragments.map(\.startTime), [1,3]); XCTAssertEqual(fragments.map(\.duration), [2,2])
+        XCTAssertTrue(fragments.allSatisfy { $0.clickDouble == true && $0.sourceOffset == 0 && $0.loopLength == nil })
+        XCTAssertEqual(project.insertClickItems(track: trackID), 0)
+        project.deleteItems([id])
+        XCTAssertEqual(project.insertClickItems(track: trackID), 0, "A remaining cut fragment prevents Insert from recreating the full click")
+        let restored = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(project))
+        XCTAssertEqual(restored, project)
+        try restored.validate()
+    }
+    func testLegacyClickBoundsResolveBeforeSplitInsideUnifiedChild() {
+        var project = fixture()
+        project.insertClickItems(track: project.songs[0].tracks[0].id)
+        let root = project.songs[0].parts[0]
+        project.songs[0].parts.append(Part(id: UUID(), name: "Child", startTime: 2, endTime: 4, parentRegionID: root.id))
+        project.songs[0].tracks[0].clips[0].regionOwnerID = nil
+        let id = project.songs[0].tracks[0].clips[0].id
+        project.splitItems([id], at: 3)
+        let pieces = project.songs[0].tracks[0].clips.filter { $0.startTime < 5 }
+        XCTAssertEqual(pieces.count, 2)
+        XCTAssertTrue(pieces.allSatisfy { $0.regionOwnerID == root.id })
+        project.resizeItem(pieces[1].id, start: 3, end: 7)
+        XCTAssertEqual(project.songs[0].tracks[0].clips[1].startTime + project.songs[0].tracks[0].clips[1].duration, 5)
+    }
     private func fixture() -> Project {
         var project = Project.empty(name: "Click")
         project.songs[0].duration = 30
@@ -96,4 +162,44 @@ final class ClickTrackTests: XCTestCase {
         XCTAssertThrowsError(try project.validate())
     }
 
+}
+
+extension ClickTrackTests {
+    func testExclusiveClickSubplayKeepsIncomingProgramAfterPromotion() {
+        var project = Project.empty(name: "Click Subplay")
+        let first = Part(id: UUID(), name: "Previous", startTime: 0, endTime: 4)
+        let next = Part(id: UUID(), name: "Incoming", startTime: 2, endTime: 6)
+        var song = project.songs[0]; song.duration = 6; song.bpm = 120
+        song.parts = [first, next]; song.regionOwnershipInitialized = true
+        var track = Track(id: UUID(), name: "Click", role: TrackRole(rawValue: "generatedClick"))
+        var old = AudioClip(id: Project.clickItemID(first.id), name: "Old", startTime: 0, duration: 4)
+        old.regionOwnerID = first.id; old.clickDouble = true
+        var incoming = AudioClip(id: Project.clickItemID(next.id), name: "Incoming", startTime: 2, duration: 4)
+        incoming.regionOwnerID = next.id
+        track.clips = [old, incoming]; song.tracks = [track]; project.songs = [song]
+        var transport = TransportState(playing: true, songId: song.id, position: 1,
+            queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 2))
+        let selected: Set<UUID> = [track.id]
+        func sections(_ head: Int) -> [ClickTrackSection] {
+            ClickTrackProgram.sections(song: song, track: track, transport: transport, head: head, selectedTracks: selected)
+        }
+        XCTAssertEqual(sections(0).first?.bpm, 240)
+        let unchanged = ClickTrackProgram.playbackContext(song: song, track: track, transport: transport, head: 0, selectedTracks: selected)
+        transport.position += 0.1
+        XCTAssertEqual(ClickTrackProgram.playbackContext(song: song, track: track, transport: transport, head: 0, selectedTracks: selected), unchanged,
+            "Advancing playback never rebuilds generator programs")
+        transport.subPlay.playing = true; transport.subExclusivePlaybackRegionId = next.id
+        XCTAssertTrue(sections(0).isEmpty, "The previous music's click stops when selected for Subplay")
+        XCTAssertEqual(sections(1).map(\.bpm), [120], "Only the incoming item's own 1x setting plays")
+        XCTAssertEqual(sections(1).map(\.start), [2]); XCTAssertEqual(sections(1).map(\.end), [6])
+        XCTAssertFalse(ClickTrackProgram.sections(song: song, track: track, transport: transport, head: 0, selectedTracks: []).isEmpty,
+            "Tracks not chosen for exclusive Subplay keep sounding")
+        transport.subPlay.playing = false; transport.subExclusivePlaybackRegionId = nil
+        transport.exclusivePlaybackRegionId = next.id; transport.position = 3
+        XCTAssertEqual(sections(0).map(\.bpm), [120], "Promotion retains incoming membership through the entire song")
+        track.clips[0].regionOwnerID = nil; track.clips[1].regionOwnerID = nil
+        XCTAssertEqual(sections(0).map(\.bpm), [120], "Older generated click items resolve their original region")
+        transport.exclusivePlaybackRegionId = nil
+        XCTAssertEqual(sections(0).first?.bpm, 240, "A later independent Play restores ordinary click membership")
+    }
 }

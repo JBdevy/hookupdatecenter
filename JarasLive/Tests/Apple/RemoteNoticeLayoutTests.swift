@@ -16,7 +16,8 @@ private struct NoticeLayoutFixture: View {
                 Button(portuguese ? "Fechar" : "Close") {}.frame(minWidth: 44, minHeight: 44)
             }.background(NoticeLayoutProbe(role: "header"))
         } actions: {
-            HStack(spacing: 8) {
+            RemoteNoticeActions {
+              HStack(spacing: 8) {
                 Button {} label: {
                     Label(portuguese ? "Enviar" : "Send", systemImage: "paperplane.fill")
                         .frame(minHeight: 44).contentShape(Rectangle())
@@ -25,10 +26,17 @@ private struct NoticeLayoutFixture: View {
                 Button {} label: {
                     Text(verbatim: portuguese ? "Retirar" : "Withdraw").frame(minWidth: 60, minHeight: 44).contentShape(Rectangle())
                 }.buttonStyle(RemoteNoticeActionStyle()).background(NoticeLayoutProbe(role: "clear"))
+              }
+            } pin: {
+              HStack(spacing: 8) {
                 Button {} label: {
                     Label(portuguese ? "Fixar" : "Pin", systemImage: "pin").frame(minWidth: 60, minHeight: 44).contentShape(Rectangle())
                 }.buttonStyle(RemoteNoticeActionStyle()).background(NoticeLayoutProbe(role: "pin"))
-                Spacer(minLength: 0)
+                Button {} label: {
+                    Text(verbatim: portuguese ? "Fixar com o transporte parado" : "Pin while transport is stopped")
+                        .lineLimit(2).frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(RemoteNoticeActionStyle()).background(NoticeLayoutProbe(role: "stopped"))
+              }
             }.font(.system(size: 13, weight: .semibold))
         } content: {
             Text("Could not confirm delivery. Check the PC.").frame(minHeight: 22)
@@ -51,6 +59,17 @@ private func settleNoticeLayout(_ root: NSView) {
 }
 MainActor.assumeIsolated {
     _ = NSApplication.shared
+    let simple = RemoteNoticeActions { Text("Send") } pin: { Text("Pin") }
+    let nested = RemoteNoticeActions {
+        HStack { Button("Send") {}; Button("Withdraw") {} }
+    } pin: {
+        HStack { Label("Pin", systemImage: "pin"); Button("Pin while stopped") {} }
+    }
+    let bodyType = String(reflecting: type(of: simple.body))
+    precondition(bodyType == String(reflecting: type(of: nested.body)),
+                 "Notice action metadata must not depend on generic child tuples on iOS 16")
+    precondition(bodyType.contains("AnyView") && !bodyType.contains("_ConditionalContent"),
+                 "Availability branches must be erased before resolving the notice body metadata")
     let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 440, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     let host = NSHostingView(rootView: NoticeLayoutFixture(portuguese: true))
@@ -70,9 +89,13 @@ MainActor.assumeIsolated {
         ("keyboard-dismissed", CGSize(width: 440, height: 500))
     ] {
         window.setContentSize(size); settleNoticeLayout(host)
+        for scroll in noticeDescendants(NSScrollView.self, host) {
+            scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        settleNoticeLayout(host)
         let probes = Dictionary(uniqueKeysWithValues: noticeDescendants(NoticeLayoutProbeView.self, host).map { ($0.role, $0) })
         let header = probes["header"]!.convert(probes["header"]!.bounds, to: host)
-        let actionRects = ["send", "clear", "pin"].map { role -> CGRect in
+        let actionRects = ["send", "clear", "pin", "stopped"].map { role -> CGRect in
             let probe = probes[role]!, rect = probe.convert(probe.bounds, to: host)
             precondition(rect.width >= 43.99 && rect.height >= 43.99, "\(name): \(role) keeps the full touch target")
             precondition(host.bounds.insetBy(dx: -0.1, dy: -0.1).contains(rect), "\(name): \(role) cannot be cropped by keyboard compression: \(rect)")
@@ -81,7 +104,12 @@ MainActor.assumeIsolated {
             return rect
         }
         for pair in zip(actionRects, actionRects.dropFirst()) {
-            precondition(pair.1.minX - pair.0.maxX >= 7.99, "\(name): adjacent actions remain separate")
+            if abs(pair.1.midY - pair.0.midY) < 1 {
+                precondition(pair.1.minX - pair.0.maxX >= 7.99, "\(name): adjacent actions remain separate")
+            } else {
+                precondition(abs(pair.1.midY - pair.0.midY) >= (pair.0.height + pair.1.height) / 2 + 7.99,
+                             "\(name): wrapped action groups remain separate")
+            }
         }
         let destination = probes["destinations"]!
         let scroll = noticeDescendants(NSScrollView.self, host).first { scroll in
@@ -90,9 +118,11 @@ MainActor.assumeIsolated {
         destination.scrollToVisible(destination.bounds); settleNoticeLayout(host)
         precondition(scroll.contentView.bounds.insetBy(dx: -0.1, dy: -0.1).contains(destination.convert(destination.bounds, to: scroll.contentView)),
                      "\(name): lower editor controls remain reachable by scrolling")
-        for (index, role) in ["send", "clear", "pin"].enumerated() {
+        for (index, role) in ["send", "clear", "pin", "stopped"].enumerated() {
             let probe = probes[role]!
-            precondition(probe.convert(probe.bounds, to: host) == actionRects[index], "\(name): scrolling the editor never moves the action toolbar")
+            if size.height >= 240 {
+                precondition(probe.convert(probe.bounds, to: host) == actionRects[index], "\(name): scrolling the editor never moves the pinned toolbar")
+            }
         }
         print("REMOTE_NOTICE_KEYBOARD_LAYOUT_OK \(name) language=\(portuguese ? "pt" : "en")")
       }

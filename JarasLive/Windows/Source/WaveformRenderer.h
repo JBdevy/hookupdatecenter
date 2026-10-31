@@ -74,6 +74,12 @@ struct WaveformRenderer {
             if (lane.isEmpty()) continue;
             g.saveState();
             Path laneClip; laneClip.addRectangle(lane); g.reduceClipRegion(laneClip);
+            // Retain the zero line at every detail level, including exact
+            // silence. Its thickness is one device pixel at every Windows DPI.
+            const float pixel = WaveformDetailPeaks::pixelWidth(physical);
+            g.setColour(ink.withMultipliedAlpha(.5f));
+            g.fillRect(lane.getX(), middle-pixel*.5f, lane.getWidth(), pixel);
+            g.setColour(ink);
             double position = visibleStart;
             while (position < visibleEnd) {
                 const auto *span=timing.at(clip.startTime+position);
@@ -111,7 +117,7 @@ struct WaveformRenderer {
                     // At overview zoom the cached extrema retain transients
                     // while keeping continuous-scroll work bounded by pixels.
                     bool detailed = false;
-                    if (data->sampleRate / (sourceScale * physical) <= 32) detailed = drawDetail(g, cache, data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, step, fade);
+                    if (WaveformDetailPeaks::needsDetail(data->sampleRate / (sourceScale * physical))) detailed = drawDetail(g, cache, data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, step, physical, fade);
                     if (!detailed) drawEnvelope(g, *data, sourceChannel, source, sourceEnd, sourceScale, x, middle, amplitude, physical, fade);
                     if(cropped) g.restoreState();
                 }
@@ -141,9 +147,8 @@ struct WaveformRenderer {
                 std::min(data.frames, (int64)std::ceil(b * data.sampleRate) + 1));
             const auto edgeAt = [&](double time) {
                 const float px = (float)(x + (time - start) * scale), level = amplitude * fade.at(px);
-                const float center = middle - (peak.first + peak.second) * .5f * level;
-                const float half = std::max(.5f / physical, (peak.second - peak.first) * .5f * std::abs(level));
-                return Edge{px, center-half, center+half};
+                const auto edges = WaveformDetailPeaks::displayEdges(peak.first, peak.second, middle, level, physical);
+                return Edge{px, edges.first, edges.second};
             };
             if (column == first) edges.push_back(edgeAt(a));
             edges.push_back(edgeAt((a+b)*.5));
@@ -157,13 +162,15 @@ struct WaveformRenderer {
     }
     static bool drawDetail(Graphics &g, WaveformCache &cache,
         const std::shared_ptr<const WaveformCache::Data> &data, int channel,
-        double start, double end, double scale, double x, float middle, float amplitude, int64 step, const FadeEnvelope &fade) {
+        double start, double end, double scale, double x, float middle, float amplitude, int64 step, float physical, const FadeEnvelope &fade) {
         const int64 first = std::max<int64>(0, ((int64)(start * data->sampleRate) / step - 1) * step);
         const int64 last = std::min<int64>(data->frames - 1, ((int64)std::ceil(end * data->sampleRate) / step + 2) * step);
+        const int64 lastRead = std::min(data->frames - 1, last + step - 1);
         std::map<int64, std::shared_ptr<const WaveformCache::Detail>> pages;
         bool complete = true;
-        for (int64 frame = first / WaveformCache::Detail::pageFrames * WaveformCache::Detail::pageFrames; frame <= last; frame += WaveformCache::Detail::pageFrames) {
-            auto page = cache.detail(data, frame); complete &= page != nullptr;
+        const bool extremaOnly = step >= 32 && step % WaveformDetailPeaks::stride == 0;
+        for (int64 frame = first / WaveformCache::Detail::pageFrames * WaveformCache::Detail::pageFrames; frame <= lastRead; frame += WaveformCache::Detail::pageFrames) {
+            auto page = cache.detail(data, frame, extremaOnly); complete &= page != nullptr;
             pages[frame / WaveformCache::Detail::pageFrames] = std::move(page);
         }
         if (!complete) return false;
@@ -176,9 +183,17 @@ struct WaveformRenderer {
             std::vector<Edge> edges;
             edges.reserve((size_t)((last-first)/step+3));
             for (int64 at=first;at<=last;at+=step) {
-                const int64 until=std::min({last,at+step-1,data->frames-1});
+                const int64 until=std::min(at+step,data->frames)-1;
                 float low=std::numeric_limits<float>::max(),high=-low;
-                for(int64 frame=at;frame<=until;++frame) {
+                if (extremaOnly) {
+                    for (int64 frame=at;frame<=until;) {
+                        const auto &page=*pages.at(frame/WaveformCache::Detail::pageFrames);
+                        const int64 finish=std::min(until+1,page.start+page.frames);
+                        const auto peak=page.peaks.alignedRange(channel,(int)(frame-page.start),(int)(finish-page.start));
+                        low=std::min(low,peak.first);high=std::max(high,peak.second);
+                        frame=finish;
+                    }
+                } else for(int64 frame=at;frame<=until;++frame) {
                     const auto &page=*pages.at(frame/WaveformCache::Detail::pageFrames);
                     const float value=page.sample(channel,frame);
                     low=std::min(low,value);high=std::max(high,value);
@@ -186,12 +201,12 @@ struct WaveformRenderer {
                 const auto edge=[&](double frame) {
                     const float px=(float)(x+(frame/data->sampleRate-start)*scale);
                     const float level=amplitude*fade.at(px);
-                    const float a=middle-low*level,b=middle-high*level;
-                    edges.push_back({px,std::min(a,b),std::max(a,b)});
+                    const auto bounds=WaveformDetailPeaks::displayEdges(low,high,middle,level,physical);
+                    edges.push_back({px,bounds.first,bounds.second});
                 };
                 if(at==first)edge((double)at);
                 edge(((double)at+until)*.5);
-                if(until==last)edge((double)until);
+                if(at+step>last)edge((double)until);
             }
             if(!edges.empty()) {
                 Path envelope;envelope.preallocateSpace((int)edges.size()*6);
@@ -226,8 +241,7 @@ struct WaveformRenderer {
             else { append(highAt, high); append(lowAt, low); }
             append(until, sample(until));
         }
-        const double progress = jlimit(0., 1., (8 - std::log2(std::max(1., data->sampleRate / scale))) / 6);
-        const float width = (float)(2 - progress * progress * (3 - 2 * progress));
+        const float width = WaveformDetailPeaks::pixelWidth(physical);
         g.strokePath(path, PathStrokeType(width, PathStrokeType::curved, PathStrokeType::rounded));
         return true;
     }

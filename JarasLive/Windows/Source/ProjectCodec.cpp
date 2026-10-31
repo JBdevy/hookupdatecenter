@@ -698,6 +698,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 optionalNum(rc, "pitchSemitones", c.pitchSemitones);
                 optionalNum(rc, "tempoBasePlaybackRate", c.tempoBasePlaybackRate);
                 optionalNum(rc, "renderedTempo", c.renderedTempo);
+                optionalNum(rc, "clickDouble", c.clickDouble);
                 optionalJSON(rc, "automation", c.automationJSON);
                 if (get(rc, "timecode").isObject())
                     c.timecode = timecode(get(rc, "timecode"));
@@ -1012,6 +1013,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 emit(rc, "pitchSemitones", c.pitchSemitones);
                 emit(rc, "tempoBasePlaybackRate", c.tempoBasePlaybackRate);
                 emit(rc, "renderedTempo", c.renderedTempo);
+                emit(rc, "clickDouble", c.clickDouble);
                 if (c.midi)
                     put(rc, "midi", midiJSON(*c.midi, get(rc, "midi")));
                 else

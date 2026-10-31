@@ -16,7 +16,22 @@ class StageState final {
     double started = 0;
     String notice;
     Image noticeImage;
-    bool pinned = false;
+    bool pinned = false, pinWhenStopped = false, stoppedNoticeActive = false;
+    bool noticePlaybackRunning = false;
+    String stoppedNotice;
+    Image stoppedImage;
+    void setPinWhenStopped(bool enabled, String message = {}, Image image = {}) {
+        pinWhenStopped = enabled;
+        if (enabled) {
+            stoppedNotice = message.trim().substring(0,500); stoppedImage = image;
+            if (!noticePlaybackRunning) presentStoppedNotice();
+        } else if (stoppedNoticeActive) clearNotice();
+    }
+    void presentStoppedNotice() {
+        if (stoppedNotice.isEmpty() && !stoppedImage.isValid()) return;
+        sendNotice(stoppedNotice, stoppedImage);
+        stoppedNoticeActive = true; pinned = true;
+    }
     double noticeSent = 0, noticeDeadline = 0, pausedRemaining = 20;
     static double now() { return Time::getMillisecondCounterHiRes() / 1000; }
     double seconds() const { return running ? target - std::max(0., now() - started) : target; }
@@ -40,6 +55,12 @@ class StageState final {
         preferences.set("jaras.teleprompter.timer", p);
     }
     void observe(const jaras::TransportState &t) {
+        const bool playing = t.playing || t.subPlay.playing;
+        if (playing != noticePlaybackRunning) {
+            noticePlaybackRunning = playing;
+            if (playing) { if (stoppedNoticeActive) clearNotice(); }
+            else if (pinWhenStopped) presentStoppedNotice();
+        }
         if (!t.playing) {
             wasPlaying = false;
             if (!t.paused)
@@ -69,6 +90,7 @@ class StageState final {
                               : 0;
     }
     void sendNotice(String message, Image image = {}) {
+        stoppedNoticeActive = false;
         notice = message.trim().substring(0, 500);
         noticeImage = image;
         noticeSent = now();
@@ -76,6 +98,7 @@ class StageState final {
         noticeDeadline = now() + 20;
     }
     void clearNotice() {
+        stoppedNoticeActive = false;
         notice.clear();
         noticeImage = {};
         pinned = false;
@@ -143,8 +166,11 @@ class StageTimerControl final : public Component, private Timer {
   public:
     StageTimerControl(StageState &s, std::function<void()> configure = {})
         : state(s), settings(std::move(configure)) {
+        setComponentID("stageTimerControl");
         for (int i = 0; i < 3; ++i) {
             addAndMakeVisible(digits[i]);
+            digits[i].setComponentID(i==0?"timerHours":i==1?"timerMinutes":"timerSeconds");
+            digits[i].setTitle(i==0?"HH":i==1?"MM":"SS");
             digits[i].setInputRestrictions(2, "0123456789");
             digits[i].setPopupMenuEnabled(false);
             digits[i].setText("00");
@@ -159,7 +185,8 @@ class StageTimerControl final : public Component, private Timer {
             digits[i].onFocusLost = [this] { state.saveTimer(); };
             digits[i].addMouseListener(this, true);
         }
-        addAndMakeVisible(start);
+        addAndMakeVisible(start);start.setComponentID("timerStart");
+        start.getProperties().set("flat",true);start.getProperties().set("fontSize",11.f);
         start.context = [this](Point<int>) { if (settings) settings(); };
         start.setColour(TextButton::textColourOffId, theme::green);
         start.onClick = [this] {
@@ -193,11 +220,12 @@ class StageTimerControl final : public Component, private Timer {
     void resized() override {
         const float scale = std::min(1.f, getWidth() / 157.f);
         const float cell = 32 * scale;
+        const int verticalInset=getHeight()<30?1:4;
         for (int i = 0; i < 3; ++i)
-            digits[i].setBounds(4 + roundToInt(i * cell), 4, roundToInt(cell - 2 * scale),
-                                getHeight() - 8);
+            digits[i].setBounds(4 + roundToInt(i * cell), verticalInset, roundToInt(cell - 2 * scale),
+                                getHeight() - 2*verticalInset);
         const int buttonX = 4 + roundToInt(cell * 3 + scale);
-        start.setBounds(buttonX, 4, getWidth() - buttonX - 4, getHeight() - 8);
+        start.setBounds(buttonX, verticalInset, getWidth() - buttonX - 4, getHeight() - 2*verticalInset);
     }
     void mouseDown(const MouseEvent &e) override {
         if (e.mods.isPopupMenu() && settings)

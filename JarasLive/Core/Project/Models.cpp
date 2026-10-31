@@ -87,6 +87,9 @@ void synchronizeRegionOwnership(Project& project, const Project* previous) {
         for (auto& track : song.tracks) for (auto& clip : track.clips) {
             // Generated Timecode has an explicit owner even when its edges extend.
             if (track.role.id == "timecode" && !track.importedTimecodeItems) continue;
+            // Splitting and trimming generated clicks must keep the enclosing
+            // song, even when the new edge falls inside a unified child region.
+            if (track.role.id == "generatedClick" && !clip.audioFile && clip.regionOwnerID && valid(clip.regionOwnerID)) continue;
             const auto priorEntry = oldClips.find(clip.id);
             const AudioClip* prior = priorEntry == oldClips.end() ? nullptr : priorEntry->second;
             if (initialize || (old && !prior)) clip.regionOwnerID = regionOwnerAt(song, clip.startTime);

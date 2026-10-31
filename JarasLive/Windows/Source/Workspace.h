@@ -193,6 +193,7 @@ class Workspace final : public Component,
     std::array<std::unique_ptr<TeleprompterHTTP>,2> teleprompterHTTP;
     void openTPRemote(int);
     std::unique_ptr<StageTimerControl> stageTimer;
+    std::unique_ptr<Component> toolbarHints;
     std::unique_ptr<TempoControl> tempoControl;
     std::unique_ptr<MixerPanel> footerMixer;
     std::unique_ptr<PartsPanel> partsLeft;

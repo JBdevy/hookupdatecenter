@@ -9,6 +9,31 @@
 #include "ExportPanel.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void toolbarTimerAndHints(const File &directory) {
+        using floatingControlTests::require;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("toolbar-hints",".json"));
+        DocumentWindow host("Workspace",theme::background,0);host.setContentNonOwned(&w,false);host.setBounds(50,50,1200,800);host.setVisible(true);w.projectOpened(false);
+        for(const int width:{900,1200,1600}) {
+            w.setSize(width,800);
+            require(!w.controls["railClock"]->isVisible(),"Old timer icon remains on the toolbar");
+            require(w.stageTimer->isVisible()&&w.stageTimer->getX()>w.controls["railVinhetas"]->getRight(),"Timer fields are not immediately after Pads");
+            require(w.stageTimer->getRight()<w.controls["audioStatus"]->getX(),"Timer overlaps audio status");
+            int fields=0;for(auto *child:w.stageTimer->getChildren())if(dynamic_cast<TextEditor*>(child)){++fields;require(child->getWidth()>=20&&child->getHeight()>=20,"Compact timer fields are clipped");}
+            require(fields==3,"Timer needs HH, MM and SS fields");
+        }
+        for(const auto &spec:std::initializer_list<std::pair<const char*,const char*>>{{"mixer","Track-Mixer"},{"railMixer","Hoz-Mixer"},{"railParts","Parts"},{"railNotice","Recados"},{"railKeyboard","Keyboard"},{"railVinhetas","Pads"},{"settings","Configurações"}}) {
+            auto *button=w.controls[spec.first];const auto point=button->getLocalBounds().getCentre().toFloat();
+            MouseEvent event(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys{},0,0,0,0,0,button,button,Time::getCurrentTime(),point,Time::getCurrentTime(),0,false);
+            w.toolbarHints->mouseMove(event);
+            require(w.toolbarHints->isVisible()&&w.toolbarHints->getHeight()==24&&w.toolbarHints->getName()==localization::translate(String::fromUTF8(spec.second)),"Toolbar lost the item-knob tooltip appearance or name");
+            require(button->getTooltip().isEmpty(),"Toolbar still publishes a second system tooltip");
+            w.toolbarHints->mouseExit(event);require(!w.toolbarHints->isVisible(),"Tooltip stayed after leaving its icon");
+        }
+        require(w.controls["menu"]->getTooltip().isEmpty(),"Menu must not show a tooltip");
+        host.clearContentComponent();
+    }
     static void tabbedPatchWindow(const File &directory) {
         using floatingControlTests::require;
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
@@ -32,6 +57,36 @@ struct WorkspaceLayoutTests {
         require(close!=nullptr,"Patch lost its bottom Close button");close->onClick();
         require(!patchWindow->isVisible(),"Bottom Close did not close the modeless Patch");
         floatingControlTests::pump();
+    }
+    static void toolWindowOrdering(const File &directory) {
+        using floatingControlTests::require;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("tool-order",".json"));
+        DocumentWindow host("Workspace",theme::background,0);
+        host.setContentNonOwned(&w,false);host.setBounds(50,50,1100,750);host.setVisible(true);w.projectOpened(false);
+        w.openAdvanced();
+        auto *tool=w.floatingWindows.at(String::fromUTF8("Avançado")).get();
+        const auto main=static_cast<HWND>(host.getPeer()->getNativeHandle());
+        const auto handle=static_cast<HWND>(tool->getPeer()->getNativeHandle());
+        for(int i=0;i<3;++i) {
+            host.toFront(true);w.updateState();floatingControlTests::pump();
+            require(tool->isVisible()&&!tool->isMinimised(),"Advanced disappeared after focusing workspace");
+            require(GetWindow(handle,GW_OWNER)==main,"Advanced lost its workspace owner");
+            bool above=false;
+            for(auto h=GetTopWindow(nullptr);h;h=GetWindow(h,GW_HWNDNEXT)) {
+                if(h==handle){above=true;break;}
+                if(h==main)break;
+            }
+            require(above,"Advanced fell behind workspace");
+            require(!(GetWindowLongPtrW(handle,GWL_EXSTYLE)&WS_EX_TOPMOST),"Tool became globally topmost");
+            require(Component::getCurrentlyModalComponent()==nullptr,"Tool blocked workspace controls");
+            require(!tool->isResizable()&&tool->getMaximiseButton()==nullptr,"Advanced is still user resizable");
+            const auto *limits=tool->getConstrainer();
+            require(limits&&limits->getMinimumWidth()==limits->getMaximumWidth()&&limits->getMinimumHeight()==limits->getMaximumHeight(),"Advanced does not keep its designed size");
+        }
+        tool->closeButtonPressed();require(!tool->isVisible(),"Explicit Close failed");
+        host.clearContentComponent();
     }
     static void projectReplacement(const File &directory) {
         using floatingControlTests::require;
@@ -583,7 +638,11 @@ struct WorkspaceLayoutTests {
         require(session.song()->tracks.front().clips.size()==1,"Delete after a blank mixer click leaked into the grid selection");
         const int offset=w.tracksContent.getHeight()-w.tracksViewport.getViewHeight();
         w.verticalOffset=offset;w.tracksViewport.setViewPosition(0,offset);
-        w.addStandardTrackAtEnd();w.rebuild();
+        w.tracksViewport.selection.mouseDoubleClick(event(w.addTrack,{5,5}));
+        w.tracksViewport.selection.mouseDoubleClick(event(w.tracksContent,blank,ModifierKeys::rightButtonModifier));
+        w.tracksViewport.selection.mouseDoubleClick(event(w.tracksContent,blank,ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier));
+        require(session.song()->tracks.size()==count,"Control or modified double-click created a track");
+        w.tracksViewport.selection.mouseDoubleClick(event(w.tracksContent,blank));w.rebuild();
         require(session.song()->tracks.size()==31,"Double-click track command did not append a track");
         require(w.verticalOffset==offset&&w.tracksViewport.getViewPositionY()==offset,"Appending a track jumped to the top");
     }
@@ -854,6 +913,8 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Tuner gestures retain the project and audio graph while playing and stopped",[&]{WorkspaceLayoutTests::pitchResponsiveness(directory);});
     test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
+    test("Toolbar timer and hints match item-knob style",[&]{WorkspaceLayoutTests::toolbarTimerAndHints(directory);});
+    test("Advanced remains above workspace without blocking controls",[&]{WorkspaceLayoutTests::toolWindowOrdering(directory);});
     test("Empty track tail matches Mac and appending preserves vertical scroll",[&]{WorkspaceLayoutTests::trackTail(directory);});
     test("Setlist block Delete and drag follow last area, keep songs and media, support cancel and Undo, and reject stale confirmations",[&]{WorkspaceLayoutTests::setlistBlockDeletion(directory);});
     test("Setlist block MIDI follows the current playlist ordinal and normal song selection or queue",[&]{WorkspaceLayoutTests::setlistBlockMIDI(directory);});

@@ -72,7 +72,7 @@ import AppKit
     func showConfiguration() {
         #if os(macOS)
         if let configuration { configuration.makeKeyAndOrderFront(nil); return }
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 380,height: 405),styleMask: [.titled,.closable,.resizable],backing: .buffered,defer: false)
+        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 380,height: 405),styleMask: [.titled,.closable],backing: .buffered,defer: false)
         panel.title = JarasLocalization.string("Timer")
         panel.contentMinSize = NSSize(width: 340,height: 240); panel.level = .normal; panel.isReleasedWhenClosed = false
         panel.delegate = self

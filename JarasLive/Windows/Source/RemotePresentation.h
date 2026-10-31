@@ -261,7 +261,11 @@ class Presentation final {
             }
             return true;
         }
-        if (a == "noticeSend") {
+        if (a == "noticeSend" || a == "noticePinStopped") {
+            if (a == "noticePinStopped" && !c.enabled.value_or(false)) {
+                stage.setPinWhenStopped(false);
+                return true;
+            }
             Image image;
             if (c.value >= 0) {
                 MemoryBlock bytes;
@@ -272,7 +276,12 @@ class Presentation final {
             }
             if (c.message.trim().isEmpty() && !image.isValid())
                 return false;
-            stage.sendNotice(c.message, image);
+            if (a == "noticePinStopped") {
+                // Capture the selected draft and image now, independently of later template edits.
+                stage.observe(session.presentationTransport());
+                stage.setPinWhenStopped(true, c.message, image);
+            } else
+                stage.sendNotice(c.message, image);
             return true;
         }
         if (a == "noticeClear") {
@@ -523,6 +532,8 @@ class Presentation final {
         put(result, "message", stage.notice);
         put(result, "active", stage.noticeActive());
         put(result, "pinned", stage.pinned);
+        put(result, "pinWhenStopped", stage.pinWhenStopped);
+        put(result, "stoppedNoticeActive", stage.stoppedNoticeActive);
         put(result, "remaining", jlimit(0, 20, (int)std::ceil(stage.remaining())));
         put(result, "window1", flag(settings, "window1", true));
         put(result, "window2", flag(settings, "window2", true));

@@ -430,6 +430,7 @@ private struct WorkspaceToolContent<Content: View>: View {
             return
         }
         let panel = makeWorkspacePanel(title: JarasLocalization.string(title), size: size, minimum: size)
+        panel.styleMask.remove(.resizable)
         panel.identifier = NSUserInterfaceItemIdentifier("catlive.tool." + tool.rawValue)
         if tool == .textItem {
             // Keep the draft visible while the user focuses the projection.
@@ -439,12 +440,19 @@ private struct WorkspaceToolContent<Content: View>: View {
             panel.collectionBehavior.insert(.fullScreenAuxiliary)
         }
         panel.delegate = self
-        let host = NSHostingView(rootView: WorkspaceToolContent(content: content(panel), updateTitle: { [weak panel] in
+        let editor = WorkspaceToolContent(content: content(panel), updateTitle: { [weak panel] in
             panel?.title = JarasLocalization.string(title)
-        }).interfaceScaled())
+        })
+        // Settings and the text editor own their scrolling and fill the window.
+        // Advanced has a fixed minimum canvas; scroll that canvas only if the
+        // available screen cannot fit it, without asking it for an ideal size.
+        let host = NSHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: tool == .advanced, layoutSize: tool == .advanced ? size : nil).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
         panel.contentView = host
+        let available = panel.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size ?? size
+        panel.contentMinSize = .zero
+        panel.setContentSize(NSSize(width: min(size.width, available.width), height: min(size.height, max(240, available.height - 32))))
         InterfaceScaling.shared.register(panel)
         panel.center()
         windows[tool] = panel
@@ -476,10 +484,39 @@ private struct WorkspaceToolContent<Content: View>: View {
 }
 
 
+/// Measure before InterfaceScaleLayout: its GeometryReader intentionally has a
+/// 10-point ideal size, which is not the editor's required content size.
+private func workspaceEditorContentSize<Content: View>(_ content: Content) -> NSSize {
+    let fitted = NSHostingView(rootView: content).fittingSize
+    guard fitted.width.isFinite, fitted.height.isFinite else { return NSSize(width: 380, height: 500) }
+    return NSSize(width: min(940, max(340, fitted.width)), height: min(700, max(280, fitted.height)))
+}
+
+private struct WorkspaceEditorViewport<Content: View>: View {
+    let content: Content
+    var scrolls = true
+    /// Layout-driven tools need a finite proposal; an intrinsic-size request
+    /// collapses GeometryReader to its ten-point ideal size.
+    var layoutSize: NSSize? = nil
+    var body: some View {
+        if scrolls {
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                if let layoutSize {
+                    content.frame(width: layoutSize.width, height: layoutSize.height)
+                } else {
+                    content.fixedSize(horizontal: true, vertical: true)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+        } else { content }
+    }
+}
+
 /// Editors remain independent windows so mixer, timeline and transport stay interactive.
 private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
     @Binding var presented: Bool
     let title: String
+    var scrolls = true
     @ViewBuilder let content: () -> Content
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
@@ -490,7 +527,7 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
         if coordinator.panel != nil { return }
         guard !coordinator.opening else { return }
         coordinator.opening = true
-        let title = title, content = content
+        let title = title, content = content, scrolls = scrolls
         DispatchQueue.main.async { [weak coordinator] in
             guard let coordinator else { return }
             coordinator.opening = false
@@ -499,15 +536,17 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
                 size: NSSize(width: 380, height: 500), minimum: NSSize(width: 320, height: 240))
             panel.identifier = NSUserInterfaceItemIdentifier("catlive.editor." + title)
             panel.delegate = coordinator
-            let host = NSHostingView(rootView: WorkspaceToolContent(content: content().environment(\.workspaceEditorDismiss, { [weak coordinator] in coordinator?.close(notify: true) }), updateTitle: { [weak panel] in
+            let editor = WorkspaceToolContent(content: content().environment(\.workspaceEditorDismiss, { [weak coordinator] in coordinator?.close(notify: true) }), updateTitle: { [weak panel] in
                 panel?.title = JarasLocalization.string(title)
-            }).interfaceScaled())
+            })
+            let initialSize = workspaceEditorContentSize(editor)
+            let host = NSHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: scrolls).interfaceScaled())
             if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
             panel.contentView = host
-            let fitted = host.fittingSize
-            if fitted.width.isFinite && fitted.height.isFinite {
-                panel.setContentSize(NSSize(width: min(940, max(340, fitted.width)), height: min(700, max(280, fitted.height))))
-            }
+            let available = panel.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size ?? initialSize
+            panel.styleMask.remove(.resizable)
+            panel.contentMinSize = .zero
+            panel.setContentSize(NSSize(width: min(initialSize.width, available.width), height: min(initialSize.height, max(240, available.height - 32))))
             InterfaceScaling.shared.register(panel)
             coordinator.panel = panel
             panel.center(); attachWorkspacePanel(panel); panel.makeKeyAndOrderFront(nil)
@@ -555,16 +594,16 @@ extension EnvironmentValues {
 }
 
 extension View {
-    @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) -> some View {
+    @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, scrolls: Bool = true, @ViewBuilder content: @escaping () -> Content) -> some View {
         #if os(macOS)
-        background(WorkspaceEditorPresenter(presented: isPresented, title: title, content: content).frame(width: 0, height: 0))
+        background(WorkspaceEditorPresenter(presented: isPresented, title: title, scrolls: scrolls, content: content).frame(width: 0, height: 0))
         #else
         sheet(isPresented: isPresented, content: content)
         #endif
     }
-    @ViewBuilder func workspaceEditor<Item: Identifiable, Content: View>(_ title: String, item: Binding<Item?>, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
+    @ViewBuilder func workspaceEditor<Item: Identifiable, Content: View>(_ title: String, item: Binding<Item?>, scrolls: Bool = true, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
         #if os(macOS)
-        background(WorkspaceEditorPresenter(presented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }), title: title) {
+        background(WorkspaceEditorPresenter(presented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }), title: title, scrolls: scrolls) {
             if let value = item.wrappedValue { content(value) }
         }.frame(width: 0, height: 0))
         #else

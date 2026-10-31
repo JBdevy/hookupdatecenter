@@ -3,7 +3,6 @@
 namespace catlive {
 void Projection::paintStage(Graphics &g) {
     const auto settings = stage->settings(profile);
-    const auto content = StageContent::make(session,*stage,profile).payload;
     const auto notices = stage->preferences.value("jaras.notices.appearance", object());
     const bool preview = stage->preview && flag(settings, "previewEnabled", true) &&
                          !flag(settings, "ignorePreview");
@@ -24,7 +23,37 @@ void Projection::paintStage(Graphics &g) {
                : mode == "lowercase" ? unicodeCase(value, false)
                                      : value;
     };
-    if (preview || (showingNotice && flag(notices, "cleanDisplay", true)))
+    if (showingNotice) {
+        auto area = getLocalBounds().toFloat();
+        const float size =
+            (float)(jlimit(24., 72., getWidth() * .078) * num(notices, "scale", 100) / 100.);
+        auto family = str(notices, "font", "Arial");
+        if (family == "Menlo")
+            family = "Consolas";
+        const Font font(FontOptions(family, size, Font::plain).withPointHeight(size));
+        const auto message = stage->noticeText(notices);
+        const double elapsed = std::max(0., StageState::now() - stage->noticeSent);
+        const bool flash = elapsed < 1.05 && ((int)(elapsed / .175) % 2) == 0;
+        g.setColour(
+            StageState::colour(notices, flash ? "flash" : "background", flash ? 0xffdc52 : 0));
+        g.fillRect(area);
+        const auto inner = area.reduced(24).toNearestInt();
+        if (stage->noticeImage.isValid())
+            g.drawImageWithin(stage->noticeImage, inner.getX(), inner.getY(), inner.getWidth(),
+                              inner.getHeight(), RectanglePlacement::centred);
+        else {
+            g.setFont(font);
+            g.setColour(StageState::colour(notices, "text", 0xffffff));
+            g.drawFittedText(message, inner, Justification::centred, 20, .3f);
+        }
+        if (flag(settings, "windowBorderEnabled", true)) {
+            g.setColour(border("borderColor", "rgbWindowBorderEnabled"));
+            g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.7f), 5, 1.4f);
+        }
+        return;
+    }
+    const auto content = StageContent::make(session,*stage,profile).payload;
+    if (preview)
         g.fillAll(Colours::black);
     auto label = [&](String value, juce::Rectangle<float> area, String family, float size,
                      Colour ink, Justification alignment = Justification::centred, int lines = 1) {
@@ -36,8 +65,7 @@ void Projection::paintStage(Graphics &g) {
         g.drawFittedText(display(value), area.toNearestInt(), alignment, lines, .3f);
     };
     auto *song = session.song();
-    if (!clear && !flag(settings, "hideTransport") &&
-        !(showingNotice && flag(notices, "cleanDisplay", true))) {
+    if (!clear && !flag(settings, "hideTransport")) {
         const auto position = str(settings, "clockPosition", "center-top");
         const bool timerEnabled = flag(settings,"clockEnabled",true);
         const bool top = !timerEnabled || position.endsWith("top");
@@ -225,43 +253,6 @@ void Projection::paintStage(Graphics &g) {
         g.setColour(border("borderColor", "rgbWindowBorderEnabled"));
         g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.7f), 5, 1.4f);
     }
-    if (showingNotice) {
-        auto area = getLocalBounds().toFloat();
-        const float size =
-            (float)(jlimit(24., 72., getWidth() * .078) * num(notices, "scale", 100) / 100.);
-        auto family = str(notices, "font", "Arial");
-        if (family == "Menlo")
-            family = "Consolas";
-        const Font font(FontOptions(family, size, Font::plain).withPointHeight(size));
-        const auto message = stage->noticeText(notices);
-        if (!flag(notices, "cleanDisplay", true)) {
-            float height = 0;
-            if (stage->noticeImage.isValid()) {
-                height = (area.getWidth() - 48) * stage->noticeImage.getHeight() /
-                         std::max(1, stage->noticeImage.getWidth());
-            } else {
-                AttributedString attributed(message);
-                attributed.setFont(font);
-                TextLayout layout;
-                layout.createLayout(attributed, std::max(1.f, area.getWidth() - 48));
-                height = layout.getHeight();
-            }
-            area.setHeight(std::min(area.getHeight(), height + 48));
-        }
-        const double elapsed = std::max(0., StageState::now() - stage->noticeSent);
-        const bool flash = elapsed < 1.05 && ((int)(elapsed / .175) % 2) == 0;
-        g.setColour(
-            StageState::colour(notices, flash ? "flash" : "background", flash ? 0xffdc52 : 0));
-        g.fillRect(area);
-        const auto inner = area.reduced(24).toNearestInt();
-        if (stage->noticeImage.isValid())
-            g.drawImageWithin(stage->noticeImage, inner.getX(), inner.getY(), inner.getWidth(),
-                              inner.getHeight(), RectanglePlacement::centred);
-        else {
-            g.setFont(font);
-            g.setColour(StageState::colour(notices, "text", 0xffffff));
-            g.drawFittedText(message, inner, Justification::centred, 20, .3f);
-        }
-    }
+
 }
 } // namespace catlive

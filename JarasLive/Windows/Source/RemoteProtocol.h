@@ -65,7 +65,7 @@ struct Command {
         if (!t.isVoid() && !t.isUndefined()) {
             require(t.isString() && t.toString().length() <= 500 &&
                     t.toString().getNumBytesAsUTF8() <= 4000 &&
-                    (a == "noticeSend" || a == "noticeSaveTemplate" || a == "editRegion" ||
+                    (a == "noticeSend" || a == "noticeSaveTemplate" || a == "noticePinStopped" || a == "editRegion" ||
                      a == "renamePlaylist"));
             c.message = t.toString();
         }
@@ -79,7 +79,7 @@ struct Command {
                 *entry.second = (bool)field;
             }
         }
-        require(!c.enabled || a == "noticeDestination" || a == "vinhetasGate");
+        require(!c.enabled || a == "noticeDestination" || a == "noticePinStopped" || a == "vinhetasGate");
         require(!c.receipt || a == "noticeSend");
         const bool target = !c.target.empty(), zero = c.value == 0,
                    integral = std::floor(c.value) == c.value;
@@ -118,6 +118,9 @@ struct Command {
             valid = !target && range(0, 3) && integral;
         else if (a == "noticeSend" || a == "noticeSaveTemplate")
             valid = !target && t.isString() && range(a == "noticeSend" ? -1 : 0, 2) && integral;
+        else if (a == "noticePinStopped")
+            valid = !target && range(-1, 2) && integral && c.enabled.has_value() &&
+                    (!*c.enabled || t.isString());
         else if (a == "noticePin")
             valid = !target && (zero || c.value == 1);
         else if (a == "noticeDestination")
@@ -150,7 +153,7 @@ struct Command {
         if (mode == "observer")
             return action == "requestImage" || (action == "remotePanel" && value <= 2);
         if (mode == "notices")
-            return StringArray{"noticeSend", "noticeClear", "noticePin", "noticeDestination",
+            return StringArray{"noticeSend", "noticeClear", "noticePin", "noticePinStopped", "noticeDestination",
                                "noticeSaveTemplate"}
                        .contains(action) ||
                    (action == "remotePanel" && (value == 0 || value == 3));

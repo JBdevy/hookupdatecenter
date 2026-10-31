@@ -21,7 +21,7 @@ struct GridItemClipboard {
                 if (track.role.id == "timecode") continue;
                 jaras::Track entry; entry.id = track.id;
                 for (const auto &clip : track.clips)
-                    if (selection.count(clip.id)) entry.clips.push_back(clip);
+                    if (selection.count(clip.id) && !(track.role.id == "generatedClick" && !clip.audioFile)) entry.clips.push_back(clip);
                 if (!entry.clips.empty()) result.tracks.push_back(std::move(entry));
             }
         if (result.tracks.empty()) return {};
@@ -48,6 +48,8 @@ struct GridItemClipboard {
                     if (current == target->clips.end()) throw std::runtime_error("Um item a mover não existe mais.");
                     clip = *current;
                 }
+                if (target->role.id == "generatedClick" && !clip.audioFile)
+                    throw std::runtime_error("Os itens de Click só podem ser cortados ou redimensionados dentro da região.");
                 first = std::min(first, clip.startTime);
             }
         }

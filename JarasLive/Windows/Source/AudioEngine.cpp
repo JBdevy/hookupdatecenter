@@ -431,6 +431,13 @@ void AudioEngine::refreshItemTiming(const jaras::Song &song, const jaras::AudioC
     const auto ownerIndex=jaras::playbackOwnerIndex(song,clip.regionOwnerID);
     std::optional<jaras::TimecodeProgram> timecode;
     if (owner->role.id == "timecode") timecode.emplace(song, *owner);
+    ClickProgram *clickTarget = nullptr;
+    std::vector<ClickProgram::Section> clickSections;
+    if (owner->role.id == "generatedClick") {
+        ClickProgram prepared; prepared.prepare(song, &*owner);
+        clickSections = std::move(prepared.sections);
+        for (const auto &bus : buses) if (bus->id == owner->id && bus->click) { clickTarget = bus->click.get(); break; }
+    }
     // Decoder/DSP preparation and retirement remain on control. Audio applies
     // the prepared mapping at its next boundary, retaining both playback heads.
     commitPreparedEdit([&]() noexcept {
@@ -443,6 +450,7 @@ void AudioEngine::refreshItemTiming(const jaras::Song &song, const jaras::AudioC
         }
         duration = song.duration;
         if (timecode) std::swap(timecodeProgram, *timecode);
+        if (clickTarget) clickTarget->sections.swap(clickSections);
     });
     if (timecode) timecodeMIDI.updateProgram(timecodeProgram, song.duration, owner->mute);
 }
@@ -2413,7 +2421,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                     auto &bus = *buses[busIndex];
                     auto &buffer = bus.head(head);
                     for (int n = 0; n < count; ++n) {
-                        const float sample = bus.click->sample(cursor + n / sr, 1);
+                        const float sample = bus.click->sample(cursor + n / sr, 1, 1, 1, &trackScope(current,head,busIndex));
                         buffer.addSample(0, done + n, sample);
                         buffer.addSample(1, done + n, sample);
                     }

@@ -406,14 +406,19 @@ public extension TimelineTempo {
     static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool = true,
                      cursor: Double? = nil, enabled: Bool = true,
                      otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil,
-                     includeHiddenDivisions: Bool = false, includeItemEdges: Bool = false, excludingItems: Set<UUID> = []) -> Double {
+                     includeHiddenDivisions: Bool = false, includeItemEdges: Bool = false, excludingItems: Set<UUID> = [],
+                     maximumDistancePixels: Double? = nil) -> Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
         let position = max(0, time)
         guard enabled else { return position }
-        // Cursor and media edges win over musical divisions inside a screen-space capture radius.
+        // Item drags use a finite screen-space magnet. Ordinary cursor placement
+        // can still request unconditional musical division quantization.
+        let maximumDistance = maximumDistancePixels.map { $0.isFinite ? max(0, $0) : 0 }
+        let strongRadius = min(12, maximumDistance ?? 12)
+        // Cursor and media edges win over musical divisions inside this radius.
         var strong: Double?
         func considerStrong(_ anchor: Double) {
-            guard anchor.isFinite, anchor >= 0, abs(anchor - position) * pixelsPerSecond <= 12 + 1e-9 else { return }
+            guard anchor.isFinite, anchor >= 0, abs(anchor - position) * pixelsPerSecond <= strongRadius + 1e-9 else { return }
             if strong == nil || abs(anchor - position) < abs(strong! - position) || (abs(anchor - position) == abs(strong! - position) && anchor < strong!) { strong = anchor }
         }
         if let cursor { considerStrong(cursor) }
@@ -457,6 +462,10 @@ public extension TimelineTempo {
         }
         if let cursor { consider(cursor) }
         for cursor in otherCursors { consider(cursor) }
+        // The fallback must respect the same radius as the strong-anchor pass;
+        // otherwise an out-of-range cursor/item edge pulls a drop back to its
+        // original position, especially with sparse or disabled divisions.
+        if let maximumDistance, distance * pixelsPerSecond > maximumDistance + 1e-9 { return position }
         return nearest
     }
 }

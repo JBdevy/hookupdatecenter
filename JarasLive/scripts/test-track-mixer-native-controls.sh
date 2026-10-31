@@ -7,7 +7,9 @@ python3 - "$test_dir" <<'PY'
 from pathlib import Path
 import sys
 root=Path(sys.argv[1]);s=Path('Apple/Shared/TrackMixerRow.swift').read_text()
+theme=Path('Apple/Shared/Theme.swift').read_text()
 parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n', Path('Application/Transport/TransportFadeout.swift').read_text().split('extension ShowController {')[0], ('// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1])]
+parts.append(theme[theme.index('extension Color {'):theme.index('struct StageButtonStyle:')])
 # Exercise the real row equality gate, including the height-mode inputs supplied
 # by TimelineGridView. Omitting them from the fixture concealed boundary rebuilds.
 a=s.index('        #if os(macOS)', s.index('    static func ==', s.index('struct TrackMixerRow:')))
@@ -29,7 +31,7 @@ parts.append('private class GridNativeScrollView: NSScrollView { func prepareSel
 parts.append('''
 private enum AutomationTarget { enum Kind { case pan, volume } }
 @MainActor private final class ShowController: ObservableObject { let transportFadeout = TransportFadeout(); var projectSessionID = UUID(); @Published var snapshot = 0; func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? { nil } }
-private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white }
+private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white; static let trackButton = Color(hex: 0x484848) }
 private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
 private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }
 private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); func handle(_ event: NSEvent) {} ; func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }

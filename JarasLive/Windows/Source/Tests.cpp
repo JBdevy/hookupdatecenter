@@ -2204,7 +2204,12 @@ int runTests(const File &directory) {
                 if(button->getButtonText()==String::fromUTF8("Ø"))expect(!button->isVisible(),"Special tracks have no phase inversion button");
             }
             auto *pan=uiFeatureTests::find(*row,"trackPan");expect(pan&&!pan->isVisible(),"Standard pan hidden on special tracks");
-            if(track.role.id=="generatedClick")expect(uiFeatureTests::find(*controls,"insertClick")->isVisible(),"Click exposes Insert");
+            if(track.role.id=="generatedClick") {
+                auto *insert=uiFeatureTests::find(*controls,"insertClick"),*patch=uiFeatureTests::find(*controls,"specialPatch");
+                expect(insert->isVisible()&&patch&&patch->isVisible()&&patch->getRight()<insert->getX(),"Click must expose Patch immediately before Insert");
+                PatchPanel panel(session,track.id,[](String){});panel.setSize(360,250);
+                std::function<void(Component&)> inspect=[&](Component &part){if(auto *label=dynamic_cast<Label*>(&part))expect(!label->getText().containsIgnoreCase("MIDI")&&!label->getText().containsIgnoreCase("Entrada"),"Click Patch must only expose audio outputs");for(auto *child:part.getChildren())inspect(*child);};inspect(panel);
+            }
             expect(uiFeatureTests::find(*controls,"insertMedia")->isVisible()==(track.role.id=="video"),"Only legacy video tracks expose Add media");
             if(track.role.id=="chords"||jaras::isTeleprompterRole(track.role))expect(uiFeatureTests::find(*controls,"insertText")->isVisible(),"Text track exposes Add text");
         }
@@ -2295,6 +2300,22 @@ int runTests(const File &directory) {
             session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Single undo restores entire batch");
             session.redo();expect(session.song()->tracks.front().clips.size()==(same?2u:1u),"Redo restores batch and media references");
         }
+    });
+    test("Generated Click Subplay filters item owners without muting the incoming click", [&] {
+        jaras::Song song; song.duration=8; song.bpm=120; song.regionOwnershipInitialized=true;
+        jaras::Part previous{uuid(),"Previous",0,4}, incoming{uuid(),"Incoming",2,8}; song.parts={previous,incoming};
+        jaras::Track track;track.id=uuid();track.role.id="generatedClick";track.name="Click";
+        jaras::AudioClip a;a.id=uuid();a.startTime=0;a.duration=4;a.regionOwnerID=previous.id;a.clickDouble=true;
+        auto b=a;b.id=uuid();b.startTime=2;b.duration=6;b.regionOwnerID=incoming.id;b.clickDouble=false;track.clips={a,b};
+        ClickProgram program;program.prepare(song,&track);program.a=ClickProgram::tone("Digital",true);program.b=program.a;
+        auto energy=[&](double at,const jaras::PlaybackScope &scope){double sum=0;for(int i=0;i<1680;++i){const auto value=program.sample(at+i/48000.,1,1,1,&scope);sum+=value*value;}return sum;};
+        jaras::PlaybackScope all, outgoing, next;outgoing.requiredOwner=std::numeric_limits<std::uint32_t>::max();next.requiredOwner=2;
+        expect(energy(2.25,all)>1,"Normal overlap lost the denser click item");
+        expect(energy(2.25,next)==0,"Outgoing doubled item leaked into the incoming song's normal click");
+        expect(energy(2.5,next)>1 && energy(2.5,outgoing)==0,"Subplay must stop old items while the incoming click stays audible");
+        expect(energy(4.5,next)>1,"Incoming click stopped after the previous region ended");
+        track.clips[0].regionOwnerID.reset();track.clips[1].regionOwnerID.reset();program.prepare(song,&track);
+        expect(energy(2.25,next)==0&&energy(2.5,next)>1&&energy(2.5,outgoing)==0,"Legacy click ownership did not follow original regions");
     });
     test("Generated Click overview follows tempo origins and bounds pixel density", [&] {
         auto song=projectFixture().songs.front();song.bpm=120;song.beatsPerBar=4;song.beatUnit=4;song.parts.clear();
@@ -2759,6 +2780,36 @@ int runTests(const File &directory) {
         expect(std::abs(WaveformCache::sourcePosition(clip, .3) - .6) < 1e-8, "Loop maps wrapped source time");
         expect(cache.request(file) == data, "Repeated paint reuses analysis");
     });
+    test("Intermediate waveform zoom preserves isolated transients and silent detail", [&] {
+        const auto file = directory.getNonexistentChildFile("waveform-intermediate", ".wav");
+        AudioBuffer<float> samples(1,1024);samples.clear();samples.setSample(0,127,.9f);
+        WavAudioFormat wav;auto stream=file.createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),48000,1,24,{},0));
+        expect(writer!=nullptr,"Intermediate waveform fixture writer");stream.release();
+        expect(writer->writeFromAudioSampleBuffer(samples,0,1024),"Intermediate waveform fixture");writer.reset();
+        WaveformCache cache;auto ready=cache.request(file);
+        const auto deadline=Time::getMillisecondCounterHiRes()+5000;
+        while(!ready&&Time::getMillisecondCounterHiRes()<deadline){Thread::sleep(10);ready=cache.request(file);}
+        expect(ready!=nullptr,"Intermediate source prepared asynchronously");
+        auto summary=cache.detail(ready,0,true);
+        while(!summary&&Time::getMillisecondCounterHiRes()<deadline){Thread::sleep(10);summary=cache.detail(ready,0,true);}
+        expect(summary&&summary->samples.getNumSamples()==0,"Intermediate pages retain summaries instead of PCM");
+        expect(summary->peaks.alignedRange(0,0,64).second==0&&summary->peaks.alignedRange(0,64,128).second>.899f&&
+               summary->peaks.alignedRange(0,128,192).second==0,"An impulse does not leak into neighbouring 64-frame columns");
+        jaras::AudioClip clip;clip.duration=1024./48000;
+        Image impulse(Image::ARGB,16,80,true);Graphics impulseGraphics(impulse);
+        WaveformRenderer::draw(impulseGraphics,cache,ready,clip,{0,0,16,80},{0,0,16,80},750,Colours::white,false);
+        expect(impulse.getPixelAt(0,25).getAlpha()==0&&impulse.getPixelAt(1,30).getAlpha()>0&&impulse.getPixelAt(3,25).getAlpha()==0,
+               "Rendered impulse remains narrow rather than filling its old 256-frame interval");
+        auto pcm=cache.detail(ready,0);
+        while(!pcm&&Time::getMillisecondCounterHiRes()<deadline){Thread::sleep(10);pcm=cache.detail(ready,0);}
+        expect(pcm!=nullptr,"Close zoom PCM page prepared asynchronously");
+        clip.sourceOffset=256./48000;clip.duration=256./48000;
+        Image silence(Image::ARGB,32,80,true);Graphics silenceGraphics(silence);
+        WaveformRenderer::draw(silenceGraphics,cache,ready,clip,{0,0,32,80},{0,0,32,80},6000,Colours::white,false);
+        expect(silence.getPixelAt(10,48).getAlpha()>0&&silence.getPixelAt(10,45).getAlpha()==0,
+               "Zero PCM keeps a thin centre line at detailed zoom");
+    });
     test("Waveform hierarchy preserves signed peaks, mono cancellation and Mac cache format", [&] {
         const auto file = directory.getNonexistentChildFile("waveform-detail", ".wav");
         AudioBuffer<float> samples(2, 131071);
@@ -3068,6 +3119,13 @@ int runTests(const File &directory) {
         expect(request(first,"GET /media/current HTTP/1.1\r\nRange: bytes=99-\r\n\r\n").contains("416"),"Invalid range was accepted");
         expect(request(first,"GET /media/../anything HTTP/1.1\r\n\r\n").contains("404"),"Non-current media was exposed");
         expect(request(first,"POST /state HTTP/1.1\r\n\r\n").contains("405"),"TP accepted a write request");
+        auto notice=object();put(notice,"active",true);put(notice,"imageID","notice-1");put(one,"notice",notice);
+        Image noticeImage(Image::RGB,2,2,true);noticeImage.setPixelAt(0,0,Colours::red);first.publish(one,media,noticeImage);
+        const auto noticeHead=request(first,"HEAD /notice/notice-1 HTTP/1.1\r\n\r\n");
+        expect(noticeHead.contains("200 OK")&&noticeHead.contains("Content-Type: image/png")&&noticeHead.endsWith("\r\n\r\n"),"TP notice image not available as bounded PNG");
+        expect(request(second,"HEAD /notice/notice-1 HTTP/1.1\r\n\r\n").contains("404"),"TP notice image leaked into another profile");
+        put(one,"notice",object());first.publish(one,media);
+        expect(request(first,"HEAD /notice/notice-1 HTTP/1.1\r\n\r\n").contains("404"),"Withdrawn notice image remained available");
         first.stop();expect(!first.enabled()&&second.enabled(),"TP1 shutdown stopped TP2");
     });
     test("Resource metrics use process CPU normalized by cores and sample once per second", [&] {
@@ -5066,6 +5124,15 @@ int runTests(const File &directory) {
         clip.startTime = .5;
         clip.duration = 1;
         track.clips = {clip};
+        program.prepare(song, &track);
+        expect(beatEnergy(.75) == 0, "Normal click unexpectedly subdivided the beat");
+        track.clips[0].clickDouble = true; program.prepare(song, &track);
+        expect(beatEnergy(.75) > 1, "Double click did not produce the intermediate beat");
+        expect(program.sections.front().beats == 8, "Double click moved the bar accent");
+        auto normalPeaks = timelineGrid::clickBeats(song, clip, .5, 1.5, 100);
+        auto doublePeaks = timelineGrid::clickBeats(song, track.clips[0], .5, 1.5, 100);
+        expect(doublePeaks.size() > normalPeaks.size(), "Click waveform did not follow double speed");
+        track.clips[0].clickDouble = false;
         song.tracks = {track};
         AudioEngine engine;
         engine.prepareSong(song, directory);
@@ -5410,6 +5477,18 @@ int runTests(const File &directory) {
         expect(state.noticeText(noticeStyle) == String::fromUTF8("! ATENÇÃO !"),
                "Notice case or configured emoji was ignored");
         state.clearNotice();
+        transport.playing = false; state.observe(transport);
+        state.setPinWhenStopped(true, "Stopped message");
+        expect(state.noticeActive() && state.pinned && state.stoppedNoticeActive, "Stopped notice was not pinned");
+        transport.playing = true; state.observe(transport);
+        expect(!state.noticeActive() && state.pinWhenStopped, "Play did not clear the automatic stopped notice");
+        transport.playing = false; state.observe(transport);
+        expect(state.notice == "Stopped message" && state.pinned, "Stop did not restore the captured notice");
+        const auto sent = state.noticeSent; state.observe(transport);
+        expect(state.noticeSent == sent, "Stopped ticks retriggered the notice");
+        state.setPinWhenStopped(false); expect(!state.noticeActive(), "Disable did not clear the automatic notice");
+        state.sendNotice("Manual"); transport.playing = true; state.observe(transport);
+        expect(state.notice == "Manual", "Play cleared a manual notice"); state.clearNotice();
         state.set(1, "textScale", 140);
         state.set(2, "textScale", 65);
         state.selectPreset(1, "day");
@@ -5896,6 +5975,64 @@ int runTests(const File &directory) {
         clip=clipEditing::resizedSource(original,6,12);const auto left=playbackNotes(track);
         expect(left.size()==6 && left.front().start==6 && left.back().start==11 && clip.midi->notes[1].start==2,"Left extension changed original MIDI notes");
     });
+    test("Generated Click cannot leave its region through clipboard cut, paste or duplicate", [&] {
+        jaras::Project project;project.id=uuid();jaras::Song song;song.id=uuid();
+        jaras::Track click;click.id=uuid();click.role.id="generatedClick";click.name="Click";
+        jaras::AudioClip generated;generated.id=uuid();generated.startTime=10;generated.duration=20;click.clips={generated};
+        auto audio=click;audio.id=uuid();audio.role.id="other";audio.name="Audio";audio.clips[0].id=uuid();audio.clips[0].audioFile=jaras::AudioFile{"Stems/test.wav"};
+        song.tracks={click,audio};project.songs={song};
+        for(const bool moving:{false,true}) {
+            expect(!GridItemClipboard::copy(project,song.id,{generated.id},moving),"Copy/cut exposed a generated Click item");
+            const auto mixed=GridItemClipboard::copy(project,song.id,{generated.id,audio.clips[0].id},moving);
+            expect(mixed&&mixed->tracks.size()==1&&mixed->tracks[0].id==audio.id,"Mixed selection must preserve ordinary audio copying");
+            const GridItemClipboard stale{project.id,song.id,{click},moving};
+            bool rejected=false;try{stale.items(project,100);}catch(...){rejected=true;}
+            expect(rejected,"Stale clipboard pasted a generated Click into another region");
+            if(moving) {
+                auto staleAudio=stale;staleAudio.tracks[0].clips[0].audioFile=jaras::AudioFile{"Stems/old.wav"};
+                rejected=false;try{staleAudio.items(project,100);}catch(...){rejected=true;}
+                expect(rejected,"Paste ignored the current generated source when clipboard data was stale");
+            }
+        }
+    });
+    test("Generated Click splits and resizes inside its original region without moving", [&] {
+        jaras::Project project; jaras::Song song;
+        jaras::Part region{uuid(),"Original song",10,30}, other{uuid(),"Other song",30,60};
+        song.parts={region,other};
+        jaras::Track track; track.id=uuid(); track.role.id="generatedClick"; track.name="Click";
+        jaras::AudioClip clip; clip.id=clipEditing::generatedClickID(region.id); clip.startTime=10; clip.duration=20; clip.clickDouble=true;
+        track.clips={clip}; song.tracks={track}; project.songs={song};
+        auto &stored=project.songs[0].tracks[0];
+        const auto preview=clipEditing::resizedClick(project.songs[0],stored,stored.clips[0],5,45);
+        expect(preview.startTime==10 && preview.duration==20 && preview.regionOwnerID==region.id,
+               "Legacy click preview must clamp both edges to the original region");
+        clipEditing::resize(project,clip.id,12,24);
+        expect(stored.clips[0].startTime==12 && stored.clips[0].duration==12 && stored.clips[0].regionOwnerID==region.id,
+               "Click trim must store its owner and retain the trimmed duration");
+        clipEditing::resize(project,clip.id,0,100);
+        expect(stored.clips[0].startTime==10 && stored.clips[0].duration==20 && !stored.clips[0].loopLength,
+               "Click extension escaped its region or introduced repeated audio-source cuts");
+        std::map<ID,ID> sources; clipEditing::splitSelected(project.songs[0],{clip.id},18,&sources);
+        expect(stored.clips.size()==2 && stored.clips[0].duration==8 && stored.clips[1].startTime==18 && stored.clips[1].duration==12,
+               "Click must split exactly at the edit cursor");
+        for(const auto &part:stored.clips)
+            expect(part.regionOwnerID==region.id && part.clickDouble==true && !part.loopLength && part.sourceOffset==0,
+                   "Splitting changed the click multiplier, owner or beat phase");
+        expect(sources.size()==1 && sources.begin()->second==clip.id,"Split undo history lost its source");
+        for(const auto &part:stored.clips) {
+            bool rejected=false;
+            try {clipEditing::move(project,part.id,part.startTime+1);} catch(...) {rejected=true;}
+            expect(rejected,"A generated Click item can never be moved");
+        }
+        const auto rightID=stored.clips[1].id;
+        clipEditing::resize(project,rightID,18,50);
+        expect(stored.clips[1].startTime+stored.clips[1].duration==30,"Split fragment escaped into the next song");
+        auto unowned=stored.clips[1];unowned.regionOwnerID.reset();
+        expect(clipEditing::generatedClickRegion(project.songs[0],unowned)->id==region.id,
+               "Legacy split fragment did not recover its containing region");
+        unowned.regionOwnerID=uuid();
+        expect(!clipEditing::generatedClickRegion(project.songs[0],unowned),"Missing explicit owner silently changed songs");
+    });
     test("Timeline trimming preserves Mac source loops, MIDI notes and track constraints", [&] {
         auto p = projectFixture();
         auto &song = p.songs[0];
@@ -6271,6 +6408,78 @@ int runTests(const File &directory) {
         }
         expect(rejected, "Remote accepted invalid project identity");
         host.stop();
+    });
+    test("Remote stopped notice validates its draft and captures it through Preview and transport changes", [&] {
+        Session session;
+        session.inspection = true;
+        session.mediaDirectory = directory;
+        session.restoreSnapshot(ProjectCodec::encode(projectFixture()));
+        Appearance preferences(directory.getNonexistentChildFile("remote-stopped-notice", ".json"));
+        StageState stage(preferences);
+        remote::Presentation presentation(session, stage);
+        auto request = object();
+        put(request, "id", remote::wireID(uuid()));
+        put(request, "project", remote::wireID(session.project().id));
+        put(request, "action", "noticePinStopped");
+        put(request, "value", -1);
+        put(request, "text", "Captured global draft");
+        put(request, "enabled", true);
+        const auto command = remote::Command::decode(request);
+        expect(command.allowed("director") && command.allowed("notices") && !command.allowed("observer"),
+               "Stopped notices must use the same access roles as manual notices");
+        const auto rejects = [&](const char *key, const var &value) {
+            auto invalid = request.clone(); put(invalid, key, value);
+            try { remote::Command::decode(invalid); } catch (...) { return true; }
+            return false;
+        };
+        expect(rejects("enabled", var()) && rejects("enabled", 1) && rejects("text", var()) &&
+                   rejects("value", -2) && rejects("value", 3) && rejects("value", .5) &&
+                   rejects("target", remote::wireID(uuid())) && rejects("text", String::repeatedString("x", 501)),
+               "Stopped notice accepted a malformed enable, draft, slot or target");
+        expect(presentation.apply(command), "Remote could not enable a global stopped notice");
+        auto notice = get(presentation.snapshot(1), "notices");
+        expect(flag(notice, "pinWhenStopped") && flag(notice, "stoppedNoticeActive") &&
+                   flag(notice, "pinned") && flag(notice, "active") && str(notice, "message") == command.message,
+               "Remote stopped notice state was not published");
+        const auto browserNotice=get(StageContent::make(session,stage,1).payload,"notice");
+        expect(flag(browserNotice,"active")&&str(browserNotice,"message")==unicodeCase(command.message),
+               "Browser TP lost the stopped notice or its uppercase display text");
+        stage.preview = true;
+        auto snapshot = presentation.snapshot(1);
+        expect(flag(list(get(snapshot, "teleprompters"))[0], "preview") &&
+                   flag(get(snapshot, "notices"), "stoppedNoticeActive") && stage.noticeActive(),
+               "Preview must hide the stopped notice visually without discarding it");
+        expect(!flag(get(StageContent::make(session,stage,1).payload,"notice"),"active"),
+               "Browser TP notice overrode Preview");
+        stage.preview = false;
+        expect(stage.notice == command.message && stage.noticeActive(), "Leaving Preview lost the stopped notice");
+        session.command(jaras::CommandKind::play); stage.observe(session.presentationTransport());
+        expect(!stage.noticeActive() && stage.pinWhenStopped, "Play did not withdraw the automatic notice");
+        put(request, "text", "Selected template draft"); put(request, "value", 1);
+        Image source(Image::RGB, 2, 2, true); source.setPixelAt(0, 0, Colours::red);
+        MemoryOutputStream imageData; PNGImageFormat png;
+        expect(png.writeImageToStream(source, imageData), "Notice fixture encoding failed");
+        preferences.set("jaras.notices.image.1", imageData.getMemoryBlock().toBase64Encoding());
+        expect(presentation.apply(remote::Command::decode(request)) && !stage.noticeActive(),
+               "Arming a stopped notice while playing displayed it early");
+        preferences.set("jaras.notices.image.1", "");
+        preferences.set("jaras.notices.templates", Array<var>{"", "Changed later", ""});
+        session.command(jaras::CommandKind::stop); stage.observe(session.presentationTransport());
+        expect(stage.notice == "Selected template draft" && stage.noticeImage.getPixelAt(0, 0) == Colours::red,
+               "Stopped notice did not preserve the chosen draft and image at activation");
+        put(request, "enabled", false); put(request, "text", var());
+        expect(presentation.apply(remote::Command::decode(request)) && !stage.pinWhenStopped && !stage.noticeActive(),
+               "Remote disable must not require a draft and must withdraw the automatic notice");
+        stage.sendNotice("Manual notice");
+        expect(presentation.apply(remote::Command::decode(request)) && stage.notice == "Manual notice",
+               "Disabling stopped notices removed a manually sent notice");
+        put(request, "enabled", true); put(request, "text", ""); put(request, "value", -1);
+        expect(!presentation.apply(remote::Command::decode(request)) && !stage.pinWhenStopped,
+               "Empty global notice should not arm without an image");
+        preferences.set("jaras.notices.image.1", imageData.getMemoryBlock().toBase64Encoding());
+        put(request, "value", 1);
+        expect(presentation.apply(remote::Command::decode(request)) && stage.stoppedNoticeActive && stage.noticeImage.isValid(),
+               "An image-only stopped notice was rejected");
     });
     test("Remote presentation keeps paths private and applies only current project commands", [&] {
         Session session;

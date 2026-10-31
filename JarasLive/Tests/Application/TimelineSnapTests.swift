@@ -115,3 +115,62 @@ extension TimelineSnapTests {
         XCTAssertEqual(TimelineTempo.snap(1.01, song: song, pixelsPerSecond: 100, enabled: false, includeItemEdges: true),1.01)
     }
 }
+
+
+extension TimelineSnapTests {
+    func testItemDragOutsideMagnetRadiusKeepsItsDropPositionAtDistantZoom() throws {
+        var song = Project.empty(name: "Distant drag").songs[0]
+        song.parts = []; song.markers = []; song.duration = 10000
+        var settings = ProjectTimeSettings(); settings.divisions = 0; song.timeSettings = settings
+        let clip = AudioClip(id: UUID(), name: "Moving", startTime: 100, duration: 50)
+        var track = Track(id: UUID(), name: "Audio", role: .other); track.clips = [clip]; song.tracks = [track]
+        for scale in [0.01, 0.05, 0.3, 1.0, 10.0, 100.0] {
+            // This cursor coincides with the original item start. Releasing well
+            // outside its magnetic area must not pull the item back there.
+            let proposed = clip.startTime + 30 / scale
+            let target = TimelineTempo.snap(proposed, song: song, pixelsPerSecond: scale,
+                cursor: clip.startTime, includeItemEdges: true, excludingItems: [clip.id], maximumDistancePixels: 8)
+            XCTAssertEqual(target, proposed, accuracy: 1e-9, "drag moved 30 screen pixels at scale \(scale)")
+            let committed = try XCTUnwrap(song.movingItems([clip.id], anchor: clip.id, start: target, track: track.id))
+            XCTAssertEqual(committed.tracks[0].clips[0].startTime, proposed, accuracy: 1e-9,
+                           "the actual project move commits the displayed drop position")
+        }
+    }
+
+    func testItemMagnetExcludesWholeSelectionAndHasOneScreenSpaceRadius() {
+        var song = Project.empty(name: "Magnet radius").songs[0]
+        song.parts = []; song.markers = []; song.duration = 10000
+        var settings = ProjectTimeSettings(); settings.divisions = 0; song.timeSettings = settings
+        let first = AudioClip(id: UUID(), name: "First", startTime: 100, duration: 20)
+        let second = AudioClip(id: UUID(), name: "Second", startTime: 160, duration: 20)
+        let anchor = AudioClip(id: UUID(), name: "Other", startTime: 1000, duration: 50)
+        var track = Track(id: UUID(), name: "Audio", role: .other); track.clips = [first, second, anchor]; song.tracks = [track]
+        let moving: Set<UUID> = [first.id, second.id]
+        for scale in [0.05, 0.3, 1.0, 100.0] {
+            let snapped = TimelineTempo.snap(anchor.startTime - 7 / scale, song: song,
+                pixelsPerSecond: scale, includeItemEdges: true, excludingItems: moving, maximumDistancePixels: 8)
+            XCTAssertEqual(snapped, anchor.startTime, accuracy: 1e-9)
+            let free = anchor.startTime - 9 / scale
+            XCTAssertEqual(TimelineTempo.snap(free, song: song, pixelsPerSecond: scale,
+                includeItemEdges: true, excludingItems: moving, maximumDistancePixels: 8), free, accuracy: 1e-9)
+        }
+        XCTAssertEqual(TimelineTempo.snap(second.startTime, song: song, pixelsPerSecond: 1,
+            includeItemEdges: true, excludingItems: moving, maximumDistancePixels: 8), second.startTime)
+        let free = 163.0
+        XCTAssertEqual(TimelineTempo.snap(free, song: song, pixelsPerSecond: 1,
+            includeItemEdges: true, excludingItems: moving, maximumDistancePixels: 8), free)
+        XCTAssertEqual(TimelineTempo.snap(995, song: song, pixelsPerSecond: 1, enabled: false,
+            includeItemEdges: true, excludingItems: moving, maximumDistancePixels: 8), 995)
+    }
+
+    func testItemDragUsesNearbyGridButDoesNotForceDistantMusicalDivision() {
+        var song = Project.empty(name: "Magnetic divisions").songs[0]
+        song.bpm = 120; song.parts = []; song.markers = []; song.duration = 100
+        XCTAssertEqual(TimelineTempo.snap(1.12, song: song, pixelsPerSecond: 60,
+            maximumDistancePixels: 8), 1, accuracy: 1e-9)
+        XCTAssertEqual(TimelineTempo.snap(1.24, song: song, pixelsPerSecond: 60,
+            maximumDistancePixels: 8), 1.24, accuracy: 1e-9)
+        // Plain cursor placement retains its existing division quantization.
+        XCTAssertEqual(TimelineTempo.snap(1.24, song: song, pixelsPerSecond: 60), 1, accuracy: 1e-9)
+    }
+}

@@ -147,6 +147,20 @@ precondition(abs(setlistController.metrics.offset - setlistController.metrics.ma
 listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: 3, y: 398)))
 setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 1200))
 setlistController.scroll(to: 0)
+// A growing lazy extent must not reverse upward scrolling or move on release.
+setlistController.scroll(to: 600)
+listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y: 300)))
+listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 280)))
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 4800))
+let beforeUp = setlistController.metrics.offset
+listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 275)))
+precondition(setlistController.metrics.offset < beforeUp, "Growing lazy extent reversed an upward drag")
+let beforeRelease = setlistController.metrics.offset
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 6000))
+listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: 3, y: 275)))
+precondition(abs(setlistController.metrics.offset - beforeRelease) < 0.1, "Mouse-up moved the list without pointer movement")
+setlistScroll.documentView!.setFrameSize(CGSize(width: 280, height: 1200))
+setlistController.scroll(to: 0)
 print("SIDEBAR_LAZY_HEIGHT_CHANGE_DURING_THUMB_DRAG_OK")
 
 mixerController.scroll(to: 1_000_000)

@@ -597,7 +597,7 @@ struct SongListView: View {
                     .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(show.current?.tracks.filter { $0.kind == .standard } ?? []) { track in
+                        ForEach(show.current?.tracks.filter { $0.kind == .standard || $0.kind == .click } ?? []) { track in
                             Toggle(isOn: Binding(get: { subplayTrackDraft.contains(track.id) }, set: { enabled in
                                 if enabled { subplayTrackDraft.insert(track.id) } else { subplayTrackDraft.remove(track.id) }
                             })) { Text(verbatim: track.name) }

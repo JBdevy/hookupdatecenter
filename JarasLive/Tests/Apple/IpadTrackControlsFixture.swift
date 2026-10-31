@@ -4,12 +4,12 @@ struct DAWRemoteState {
  struct Track: Equatable, Identifiable {
   let id:UUID;var name:String;var mute=false;var solo=false;var pan=0.0;var volume=1.0
   var color:UInt32=0x338855;var nameColor:UInt32?=0xffffff;var emphasized:Bool?=false;var silenced:Bool?=false
-  var instrumentIcon:String?=nil;var canMeter:Bool?=true;var linkedTrack:UUID?=nil;var peakDB:Double? = -6
+  var instrumentIcon:String?=nil;var canMeter:Bool?=true;var linkedTrack:UUID?=nil;var parentTrack:UUID?=nil;var peakDB:Double? = -6
   func hasSameMixerControls(as other:Self)->Bool{self==other}
  }
 }
 enum DAWRemoteCommand { enum Action:String { case pan,volume,mute,solo,resetMeterPeak,tempo,pitch,phase } }
-enum TrackKind { case standard,click,chords;var isText:Bool{self == .chords};var isTeleprompter:Bool{false} }
+enum TrackKind { case standard,click,chords,teleprompt,teleprompt2;var isText:Bool{self == .chords || isTeleprompter};var isTeleprompter:Bool{self == .teleprompt || self == .teleprompt2} }
 struct FixtureTrackRole { var rawValue = "other" }
 struct FixturePlugin { var category = "Instrument" }
 struct FixtureFX { var instrumentKeys: [String] = []; var externalPlugins: [FixturePlugin]? }
@@ -88,11 +88,14 @@ struct TouchFixtureView:View {
  @StateObject private var show = ShowController([
   Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000001")!),
   Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000002")!, kind: .click),
-  Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000003")!, kind: .chords)
+  Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000003")!, kind: .chords),
+  Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000004")!, kind: .teleprompt),
+  Track(id: UUID(uuidString:"00000000-0000-0000-0000-000000000005")!, kind: .teleprompt2)
  ])
  @State private var rowWidth:CGFloat=450
  @State private var compactRows=false
  @State private var icons=false
+ @State private var nativeSpecialRows=true
  let id=UUID(uuidString:"00000000-0000-0000-0000-000000000001")!
  let click=UUID(uuidString:"00000000-0000-0000-0000-000000000002")!
  let text=UUID(uuidString:"00000000-0000-0000-0000-000000000003")!
@@ -101,6 +104,7 @@ struct TouchFixtureView:View {
   RemoteStepFixture()
   HStack {
    Button("Toggle icons"){icons.toggle()}
+   Button("Show Remote rows"){nativeSpecialRows.toggle()}
    Button("Compact 285"){rowWidth=285;compactRows=true}
    Button("Compact 235"){rowWidth=235;compactRows=true}
    Button("Compact 190"){rowWidth=190;compactRows=true}
@@ -117,6 +121,11 @@ struct TouchFixtureView:View {
     }.frame(width:rowWidth+(icons ? 40 : 0),height:compactRows ? 60 : 90).modifier(IpadTrackReorderModifier(show:show,track:id,enabled:probe.editing,controller:reordering)).modifier(IpadTrackAudioContextMenu(enabled:true,openPatch:{probe.log("context-patch")},addAudio:{probe.log("add-audio")},fx:{probe.log("context-fx")},group:probe.editing ? {probe.log("group")} : nil,edit:{probe.log("edit-track")},icon:{probe.log("track-icon")},duplicate:{probe.log("duplicate-track")},remove:{probe.log("delete-track")})).accessibilityIdentifier("normal-row").background(RowFrameProbe())
     RemoteNativeMixerRow(track:.init(id:click,name:"Click track"),project:id,song:nil,number:2,local:true,localShow:show,select:{probe.selection+=1}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:90).accessibilityIdentifier("click-row")
     RemoteNativeMixerRow(track:.init(id:text,name:"Text track"),project:id,song:nil,number:3,local:true,localShow:show,select:{probe.selection+=1},addText:{probe.log("text")}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:60)
+    ForEach(4...5, id: \.self) { number in
+     let target=UUID(uuidString:String(format:"00000000-0000-0000-0000-%012d",number))!
+     RemoteNativeMixerRow(track:.init(id:target,name:"TP \(number-3)"),project:id,song:nil,number:number,local:nativeSpecialRows,localShow:show,
+      select:{probe.selection+=1},addText:{probe.log("tp-text")},addMedia:{probe.log("tp-media")}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:80)
+    }
     ForEach(0..<12){n in Text("Track \(n)").frame(width:450,height:90).background(Color.gray)}
    }
   }.frame(width:530,height:550)

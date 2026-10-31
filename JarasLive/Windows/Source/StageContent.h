@@ -6,6 +6,7 @@ namespace catlive {
 struct StageContent {
     var payload = object();
     File media;
+    Image noticeImage;
     static StageContent make(const Session &session, const StageState &stage, int index) {
         StageContent result;
         auto &out=result.payload;
@@ -17,6 +18,20 @@ struct StageContent {
         put(out,"timer",stage.timeText(true));put(out,"expired",stage.seconds()<0);
         put(out,"localTime",Time::getCurrentTime().formatted("%H:%M:%S"));
         put(out,"mediaStretch",flag(settings,"mediaStretch"));
+        const auto noticeSettings=stage.preferences.value("jaras.notices.appearance",object());
+        const bool activeNotice=!preview && stage.noticeActive() && flag(noticeSettings,index==1?"window1":"window2",true);
+        auto notice=object();put(notice,"active",activeNotice);
+        if(activeNotice) {
+            put(notice,"message",stage.noticeText(noticeSettings));
+            put(notice,"font",str(noticeSettings,"font","Arial"));
+            put(notice,"scale",num(noticeSettings,"scale",100));
+            put(notice,"textColor",(int)(StageState::colour(noticeSettings,"text",0xffffff).getARGB()&0xffffff));
+            put(notice,"backgroundColor",(int)(StageState::colour(noticeSettings,"background",0).getARGB()&0xffffff));
+            put(notice,"flashColor",(int)(StageState::colour(noticeSettings,"flash",0xffdc52).getARGB()&0xffffff));
+            put(notice,"elapsed",std::max(0.,StageState::now()-stage.noticeSent));
+            if(stage.noticeImage.isValid()) { result.noticeImage=stage.noticeImage;put(notice,"imageID",String(stage.noticeSent,6)); }
+        }
+        put(out,"notice",notice);
         String name,queued,lyrics,chords;double progress=0;
         Array<var> blocks;
         if(const auto *song=session.song()) {

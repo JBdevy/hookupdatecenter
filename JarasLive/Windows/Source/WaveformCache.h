@@ -1,6 +1,7 @@
 #pragma once
 #include "Common.h"
 #include "MediaPath.h"
+#include "WaveformDetailPeaks.h"
 namespace catlive {
 // The same signed RPKL peak scale and 256/1024/... hierarchy as the Mac.
 // Immutable peak files are mapped, so a whole-show view touches only its coarse
@@ -63,7 +64,9 @@ class WaveformCache final {
     struct Detail {
         static constexpr int64 pageFrames = 65536;
         int64 start = 0;
+        int frames = 0;
         AudioBuffer<float> samples;
+        WaveformDetailPeaks peaks;
         float sample(int channel, int64 frame) const {
             return samples.getSample(jlimit(0, samples.getNumChannels() - 1, channel),
                 jlimit(0, samples.getNumSamples() - 1, (int)(frame - start)));
@@ -124,30 +127,38 @@ class WaveformCache final {
         }
         return std::atomic_load(&entry->data);
     }
-    std::shared_ptr<const Detail> detail(const std::shared_ptr<const Data> &data, int64 frame) {
+    std::shared_ptr<const Detail> detail(const std::shared_ptr<const Data> &data, int64 frame, bool extremaOnly = false) {
         if (!data || data->source == File() || frame < 0 || frame >= data->frames) return {};
         const int64 start = frame / Detail::pageFrames * Detail::pageFrames;
         const auto key = data->version + ":" + String(start);
-        auto it = details.find(key);
-        if (it == details.end()) {
-            if (details.size() >= 64) {
-                auto oldest = details.end();
-                for (auto i = details.begin(); i != details.end(); ++i)
-                    if (!i->second->pending.load() && (oldest == details.end() || i->second->used < oldest->second->used)) oldest = i;
-                if (oldest == details.end()) return {};
-                details.erase(oldest);
+        // Intermediate zoom can span many tracks/pages. Keep lightweight
+        // summaries separately so it cannot evict all close-zoom PCM pages.
+        auto &pages = extremaOnly ? detailSummaries : details;
+        auto it = pages.find(key);
+        if (it == pages.end()) {
+            const size_t summaryCost = extremaOnly ? (size_t)((std::min(Detail::pageFrames, data->frames-start)+15)/16) * data->storedChannels * sizeof(std::pair<float,float>) : 0;
+            while (pages.size() >= (extremaOnly ? 512u : 64u) || (extremaOnly && detailSummaryBytes+summaryCost>16*1024*1024)) {
+                auto oldest = pages.end();
+                for (auto i = pages.begin(); i != pages.end(); ++i)
+                    if (!i->second->pending.load() && (oldest == pages.end() || i->second->used < oldest->second->used)) oldest = i;
+                if (oldest == pages.end()) return {};
+                if (extremaOnly) detailSummaryBytes -= oldest->second->summaryBytes;
+                pages.erase(oldest);
             }
-            it = details.emplace(key, std::make_shared<DetailEntry>()).first;
+            it = pages.emplace(key, std::make_shared<DetailEntry>()).first;
+            it->second->summaryBytes = summaryCost;
+            detailSummaryBytes += summaryCost;
         }
         auto entry = it->second; entry->used = ++clock;
         if (!entry->pending.load() && !entry->attempted && worker.getNumJobs() < 16) {
             entry->attempted = true; entry->pending.store(true);
-            worker.addJob([this, entry, data, start] {
+            worker.addJob([this, entry, data, start, extremaOnly] {
                 AudioFormatManager formats; registerAudioFormats(formats);
                 std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(data->source));
                 if (reader && !cancelled.load()) {
                     auto page = std::make_shared<Detail>(); page->start = start;
                     const int count = (int)std::min(Detail::pageFrames, data->frames - start);
+                    page->frames = count;
                     AudioBuffer<float> input(data->sourceChannels, count);
                     if (reader->read(&input, 0, count, start, true, true)) {
                         page->samples.setSize(data->storedChannels, count);
@@ -156,6 +167,11 @@ class WaveformCache final {
                             page->samples.clear(data->sourceChannels, 0, count);
                             for (int c = 0; c < data->sourceChannels; ++c)
                                 page->samples.addFrom(data->sourceChannels, 0, input, c, 0, count, 1.f / data->sourceChannels);
+                        }
+                        if (extremaOnly) {
+                            page->peaks.prepare(data->storedChannels, count,
+                                [&](int channel, int frame) { return page->samples.getSample(channel, frame); });
+                            page->samples.setSize(0, 0);
                         }
                         std::atomic_store(&entry->data, std::shared_ptr<const Detail>(std::move(page)));
                         ++generation;
@@ -278,7 +294,7 @@ class WaveformCache final {
         put(result, "failures", failures);
         put(result, "sources", (int)entries.size()); put(result, "ready", ready); put(result, "pending", pending);
         put(result, "mappedBytes", mapped); put(result, "ownedPeakBytes", owned);
-        put(result, "detailPages", (int)details.size()); put(result, "analyses", (int64)analyses.load());
+        put(result, "detailPages", (int)details.size()); put(result, "detailSummaryPages", (int)detailSummaries.size()); put(result, "analyses", (int64)analyses.load());
         put(result, "diskHits", (int64)diskHits.load()); put(result, "evictions", (int64)evictions);
         return result;
     }
@@ -346,9 +362,11 @@ class WaveformCache final {
     }
     struct Entry { uint64 used = 0; double checkAfter = 0; int64 modified = -1, size = -1;
         std::atomic<bool> pending{false}; std::atomic<int> failure{0}; std::shared_ptr<const Data> data; };
-    struct DetailEntry { uint64 used = 0; bool attempted = false; std::atomic<bool> pending{false}; std::shared_ptr<const Detail> data; };
+    struct DetailEntry { uint64 used = 0; size_t summaryBytes = 0; bool attempted = false; std::atomic<bool> pending{false}; std::shared_ptr<const Detail> data; };
     std::map<String, std::shared_ptr<Entry>> entries;
     std::map<String, std::shared_ptr<DetailEntry>> details;
+    std::map<String, std::shared_ptr<DetailEntry>> detailSummaries;
+    size_t detailSummaryBytes = 0;
     uint64 clock = 0, evictions = 0;
     std::atomic<uint64> generation{0}, analyses{0}, diskHits{0};
     std::atomic<bool> cancelled{false};

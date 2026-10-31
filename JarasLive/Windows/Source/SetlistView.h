@@ -1206,7 +1206,7 @@ class Workspace::Setlist final : public Component,
         SubplayTracksPanel(const jaras::Song& song,const std::vector<ID>& selected,
                            std::function<void(std::vector<ID>)> save,std::function<void()> close) {
             for(const auto& track:song.tracks) {
-                if(!jaras::fixedTrackName(track.role).empty() || track.role.id=="vinhetas")continue;
+                if((!jaras::fixedTrackName(track.role).empty() && track.role.id!="generatedClick") || track.role.id=="vinhetas")continue;
                 auto row=std::make_unique<ToggleButton>(text(track.name));
                 row->setComponentID("subplayExclusiveTrack:"+text(track.id));
                 row->setToggleState(std::find(selected.begin(),selected.end(),track.id)!=selected.end(),dontSendNotification);

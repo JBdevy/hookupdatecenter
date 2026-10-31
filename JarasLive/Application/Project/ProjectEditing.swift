@@ -373,6 +373,11 @@ public extension Project {
         for song in songs.indices {
             for track in songs[song].tracks.indices {
                 guard let index = songs[song].tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
+                if songs[song].tracks[track].kind == .click, songs[song].tracks[track].clips[index].audioFile == nil {
+                    guard let resized = songs[song].resizedClick(songs[song].tracks[track].clips[index], start: start, end: end) else { return }
+                    songs[song].tracks[track].clips[index] = resized
+                    return
+                }
                 guard songs[song].tracks[track].canPlaceItem(start: start, duration: end - start, excluding: id) else { return }
                 if songs[song].tracks[track].clips[index].isProjectionMedia {
                     songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
@@ -403,11 +408,19 @@ public extension Project {
             var tempoPrograms = AudioTempoPrograms(song: songs[song])
             for track in songs[song].tracks.indices where songs[song].tracks[track].kind != .timecode {
                 let textTrack = songs[song].tracks[track].kind.isText
+                let clickTrack = songs[song].tracks[track].kind == .click
+                let clickOwners = clickTrack ? Dictionary(uniqueKeysWithValues: songs[song].tracks[track].clips.compactMap { clip in
+                    songs[song].clickRegion(for: clip).map { (clip.id, $0.id) }
+                }) : [:]
                 songs[song].tracks[track].clips = songs[song].tracks[track].clips.flatMap { clip -> [AudioClip] in
                     guard ids.contains(clip.id), position > clip.startTime + 0.000001, position < clip.startTime + clip.duration - 0.000001 else { return [clip] }
                     var left = clip, right = clip
                     left.duration = position - clip.startTime
                     right.id = UUID(); right.startTime = position; right.duration = clip.duration - left.duration
+                    if clickTrack && clip.audioFile == nil {
+                        left.regionOwnerID = clickOwners[clip.id]; right.regionOwnerID = clickOwners[clip.id]
+                        return [left, right]
+                    }
                     if textTrack && !clip.isProjectionMedia && clip.loopLength == nil { return [left, right] }
                     let followsTempo = !textTrack || clip.isProjectionMedia
                     let fragments = followsTempo ? tempoPrograms.fragments(for: clip) : [clip]
@@ -909,6 +922,7 @@ public extension Song {
         for (row, original) in selected {
             let to = row + rows
             guard tracks.indices.contains(to), tracks[row].kind != .timecode,
+                  tracks[row].kind != .click || original.isProjectionMedia,
                   row == to || (tracks[row].kind == .standard && tracks[to].kind == .standard) || original.isProjectionMedia else { return nil }
             var clip = original; clip.startTime += delta
             guard result.tracks[to].canPlaceItem(start: clip.startTime, duration: clip.duration, media: clip.isProjectionMedia) else { return nil }

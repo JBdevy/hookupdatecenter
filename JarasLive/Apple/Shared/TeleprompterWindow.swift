@@ -223,6 +223,33 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     }
 }
 
+/// Preview owns the projection first. A notice replaces the whole scene, so
+/// legacy banner settings cannot leave clocks, lyrics or video behind it.
+struct TeleprompterNoticeStage<Content: View, Notice: View>: View {
+    let settings: TeleprompterSettings
+    let preview: Bool
+    let noticeActive: Bool
+    @ViewBuilder let content: () -> Content
+    @ViewBuilder let notice: () -> Notice
+    private var showingNotice: Bool { noticeActive && !settings.displaysPreview(preview) }
+    var body: some View {
+        ZStack {
+            if showingNotice { notice() }
+            else { content() }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                if showingNotice && settings.windowBorderEnabled {
+                    TimelineView(.periodic(from: .now, by: settings.rgbWindowBorderEnabled ? 0.2 : 60)) { context in
+                        let color = settings.rgbWindowBorderEnabled
+                            ? Color(hue: context.date.timeIntervalSince1970.truncatingRemainder(dividingBy: 6) / 6, saturation: 0.9, brightness: 1)
+                            : Color(hex: settings.borderColor)
+                        RoundedRectangle(cornerRadius: 6).strokeBorder(color, lineWidth: 2)
+                    }.allowsHitTesting(false)
+                }
+            }
+    }
+}
+
 private let tpFontNames = ["arial":["Arial-BoldMT"],"segoe":["SegoeUI-Bold","HelveticaNeue-Bold"],"bahnschrift":["Bahnschrift","DINAlternate-Bold"],"verdana":["Verdana-Bold"],"tahoma":["Tahoma-Bold"],"georgia":["Georgia-Bold"],"trebuchet":["TrebuchetMS-Bold"],"impact":["Impact"],"mono":["CourierNewPS-BoldMT"]]
 private final class TPPreviewLayout: NSObject {
     let font: CGFloat
@@ -438,7 +465,10 @@ private struct LocalizedTeleprompterConfig: View {
     func invalidatePreview() { cachedRevision = nil }
     /// INIT AUTO observes only playback identity; closed projections do no content work.
     func update(_ snapshot: ShowSnapshot, revision: UInt64 = 0) {
-        if index == 1 { TeleprompterTimerController.shared.observePlayback(snapshot) }
+        if index == 1 {
+            TeleprompterTimerController.shared.observePlayback(snapshot)
+            TPNoticeController.shared.observeTransport(playing: snapshot.transport.playing || snapshot.transport.subPlay.playing)
+        }
         guard visible || TeleprompterRemote.panel(index).enabled else { return }
         if !visible {
             let now = ProcessInfo.processInfo.systemUptime
@@ -533,7 +563,7 @@ private struct LocalizedTeleprompterConfig: View {
             configuration.makeKeyAndOrderFront(nil)
             return
         }
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 760,height: 700),styleMask: [.titled,.closable,.resizable,.utilityWindow],backing: .buffered,defer: false)
+        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 760,height: 700),styleMask: [.titled,.closable,.utilityWindow],backing: .buffered,defer: false)
         panel.title = JarasLocalization.string("Teleprompter settings")
         panel.contentMinSize = NSSize(width: 500,height: 520)
         panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = true
@@ -648,6 +678,7 @@ private struct TeleprompterProjectionView: View {
     @ObservedObject var display: TPProjectionDisplay
     @ObservedObject var preferences: TeleprompterPreferences
     @ObservedObject var video: VideoPlayback
+    @ObservedObject private var notice = TPNoticeController.shared
     @ObservedObject private var timer = TeleprompterTimerController.shared
     @AppStorage("jaras.language") private var language = "en"
     private var content: DAWRemoteTeleprompter {
@@ -663,10 +694,14 @@ private struct TeleprompterProjectionView: View {
                      progress: data.progress, style: .init(), preview: display.previewActive, blocks: blocks, settings: settings)
     }
     var body: some View {
-        TeleprompterProjectionLayout(content: content, fullscreen: display.fullscreen,
-            timerValue: { (timer.displayText(spaced: true), timer.displayOpacity(), timer.expired()) },
-            media: { ProjectionMediaSurface(controller: video) })
-            .overlay { if !preferences.settings.displaysPreview(display.previewActive) && !preferences.settings.isClear { TPNoticeOverlay(index: index) } }.environment(\.locale, Locale(identifier: language))
+        TeleprompterNoticeStage(settings: preferences.settings, preview: display.previewActive,
+            noticeActive: notice.active && (index == 1 ? notice.appearance.window1 : notice.appearance.window2)) {
+                TeleprompterProjectionLayout(content: content, fullscreen: display.fullscreen,
+                    timerValue: { (timer.displayText(spaced: true), timer.displayOpacity(), timer.expired()) },
+                    media: { ProjectionMediaSurface(controller: video) })
+            } notice: {
+                TPNoticeOverlay(index: index)
+            }.environment(\.locale, Locale(identifier: language))
     }
 }
 #else
@@ -677,7 +712,10 @@ private struct TeleprompterProjectionView: View {
     func togglePreview() { previewActive.toggle() }
     func selectPreviewPage(_ page: Int) { previewPage = min(5, max(0, page)) }
     func invalidatePreview() {}
-    func update(_ snapshot: ShowSnapshot,revision: UInt64 = 0) { TeleprompterTimerController.shared.observePlayback(snapshot) }
+    func update(_ snapshot: ShowSnapshot,revision: UInt64 = 0) {
+        TeleprompterTimerController.shared.observePlayback(snapshot)
+        TPNoticeController.shared.observeTransport(playing: snapshot.transport.playing || snapshot.transport.subPlay.playing)
+    }
 }
 #endif
 
@@ -698,6 +736,34 @@ struct TPNoticeAppearance: Codable {
     @Published private(set) var message = ""
     @Published private(set) var image: NSImage?
     @Published private(set) var pinned = false
+    @Published private(set) var pinWhenStopped = false
+    private(set) var stoppedNoticeActive = false
+    private var playbackRunning = false
+    private var stoppedText = ""
+    private var stoppedSlot = -1
+    func setPinWhenStopped(_ enabled: Bool, text: String? = nil, selectedSlot: Int? = nil) {
+        pinWhenStopped = enabled
+        if enabled {
+            stoppedText = String((text ?? draft).prefix(500)); stoppedSlot = selectedSlot ?? slot
+            if !playbackRunning { presentStoppedNotice() }
+        } else if stoppedNoticeActive { clear() }
+    }
+    func observeTransport(playing: Bool) {
+        guard playing != playbackRunning else { return }
+        playbackRunning = playing
+        if playing { if stoppedNoticeActive { clear() } }
+        else if pinWhenStopped { presentStoppedNotice() }
+    }
+    private func presentStoppedNotice() {
+        let previousDraft = draft, previousSlot = slot
+        draft = stoppedText; slot = stoppedSlot
+        defer { draft = previousDraft; slot = previousSlot }
+        if send() {
+            stoppedNoticeActive = true; pinned = true
+            schedule(seconds: 20)
+        }
+    }
+
     @Published private(set) var flashing = false
     private var flashTask: Task<Void, Never>?
     private(set) var remoteImage: String?
@@ -740,6 +806,7 @@ struct TPNoticeAppearance: Codable {
         let value = String(draft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
         let selectedImage = slot >= 0 ? images[slot].flatMap(NSImage.init(data:)) : nil
         guard !value.isEmpty || selectedImage != nil else { return false }
+        stoppedNoticeActive = false
         message = value; image = selectedImage; sentAt = Date(); pausedRemaining = 20
         remoteImage = slot >= 0 ? images[slot].map { "data:image/jpeg;base64," + $0.base64EncodedString() } : nil
         flashing = true; flashTask?.cancel()
@@ -763,7 +830,7 @@ struct TPNoticeAppearance: Codable {
         pinned.toggle(); pausedRemaining = seconds
         if active { schedule(seconds: seconds) }
     }
-    func clear() { expiry?.cancel(); expiry = nil; flashTask?.cancel(); flashing = false; message = ""; image = nil; remoteImage = nil; deadline = nil; pinned = false }
+    func clear() { stoppedNoticeActive = false; expiry?.cancel(); expiry = nil; flashTask?.cancel(); flashing = false; message = ""; image = nil; remoteImage = nil; deadline = nil; pinned = false }
     func chooseImage(for index: Int? = nil) {
         let imageSlot = index ?? slot
         guard images.indices.contains(imageSlot) else { return }
@@ -780,10 +847,10 @@ struct TPNoticeAppearance: Codable {
     }
     func open() {
         if let panel { panel.makeKeyAndOrderFront(nil); return }
-        let window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 520,height: 430),styleMask: [.titled,.closable,.resizable],backing: .buffered,defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 700,height: 430),styleMask: [.titled,.closable],backing: .buffered,defer: false)
         window.title = JarasLocalization.string("Messages"); window.isReleasedWhenClosed = false
         window.delegate = self
-        window.contentMinSize = NSSize(width: 420,height: 360)
+        window.contentMinSize = NSSize(width: 660,height: 360)
         let host = NSHostingView(rootView: TPNoticeEditor(model: self).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host
@@ -792,7 +859,7 @@ struct TPNoticeAppearance: Codable {
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === panel else { return }
-        clear()
+        if !stoppedNoticeActive { clear() }
         panel = nil
     }
 }
@@ -809,6 +876,39 @@ struct TPNoticeButton: View {
             .jarasHelp("Messages")
     }
 }
+// Keep SwiftUI's editor and its selection/focus intact; only make its native
+// background transparent so the notice field stays visibly darker on macOS 12.
+private struct NoticeEditorBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> Surface { Surface() }
+    func updateNSView(_ view: Surface, context: Context) { view.refresh() }
+    final class Surface: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refresh() }
+        func refresh() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil else { return }
+                var ancestor = self.superview
+                while let container = ancestor {
+                    if let editor = self.textEditor(in: container) {
+                        editor.drawsBackground = false
+                        editor.enclosingScrollView?.drawsBackground = false
+                        editor.enclosingScrollView?.contentView.drawsBackground = false
+                        return
+                    }
+                    ancestor = container.superview
+                }
+            }
+        }
+        private func textEditor(in view: NSView) -> NSTextView? {
+            if let editor = view as? NSTextView { return editor }
+            for child in view.subviews {
+                if let editor = textEditor(in: child) { return editor }
+            }
+            return nil
+        }
+    }
+}
+
 private struct TPNoticeEditor: View {
     @AppStorage("jaras.language") private var language = "en"
     @ObservedObject var model: TPNoticeController
@@ -824,6 +924,9 @@ private struct TPNoticeEditor: View {
                     .keyboardShortcut(.return, modifiers: .command)
                 Button("Withdraw message") { model.clear() }.disabled(!model.active)
                 Toggle("Pin", isOn: Binding(get: { model.pinned },set: { _ in model.togglePin() })).toggleStyle(.button)
+                Toggle(isOn: Binding(get: { model.pinWhenStopped }, set: { model.setPinWhenStopped($0) })) {
+                    Text("Pin while transport is stopped").font(.jarasSystem(size: 12)).lineLimit(2).frame(maxWidth: 190)
+                }.toggleStyle(.button)
                 Spacer()
                 TimelineView(.animation(minimumInterval: 0.25, paused: !model.active || model.pinned)) { context in Text("\(Int(ceil(model.remaining(at: context.date))))s").monospacedDigit() }
             }
@@ -832,9 +935,14 @@ private struct TPNoticeEditor: View {
                 Text("Global").tag(-1)
                 ForEach(0..<3) { index in Text("Message \(index + 1)").tag(index) }
             }.pickerStyle(.segmented)
-            TextEditor(text: $model.draft).font(.jarasSystem(size: 18)).onChange(of: model.draft) { value in
-                if value.count > 500 { model.draft = String(value.prefix(500)) }
-            }
+            TextEditor(text: $model.draft).font(.jarasSystem(size: 18))
+                .background(NoticeEditorBackground())
+                .padding(8).background(Color(hex: 0x101010))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.14), lineWidth: 1).allowsHitTesting(false))
+                .onChange(of: model.draft) { value in
+                    if value.count > 500 { model.draft = String(value.prefix(500)) }
+                }
             HStack {
                 Text("\(model.draft.count) / 500").foregroundStyle(.secondary)
                 Spacer()
@@ -866,9 +974,9 @@ private struct TPNoticeOverlay: View {
                                 .font(tpNoticeFont(appearance.font,size: min(72,max(24,geometry.size.width * 0.078)) * appearance.scale / 100))
                                 .foregroundStyle(Color(hex: appearance.text)).multilineTextAlignment(.center).minimumScaleFactor(0.3)
                         }
-                    }.padding(24).frame(maxWidth: .infinity,maxHeight: appearance.cleanDisplay ? .infinity : nil)
+                    }.padding(24).frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
                         .background(Color(hex: flash ? appearance.flash : appearance.background))
-                        .frame(maxWidth: .infinity,maxHeight: .infinity,alignment: .top)
+                        .clipped()
                 }
             }.allowsHitTesting(false)
         }
@@ -892,7 +1000,6 @@ struct TPNoticeSettingsView: View {
             TextField("Emoji", text: $model.appearance.emoji).onChange(of: model.appearance.emoji) { value in
                 if value.count > 8 { model.appearance.emoji = String(value.prefix(8)) }
             }
-            Toggle("Hide content while showing a message", isOn: $model.appearance.cleanDisplay)
         }.padding(16)
     }
     private func color(_ label: String, path: WritableKeyPath<TPNoticeAppearance, UInt32>) -> some View {

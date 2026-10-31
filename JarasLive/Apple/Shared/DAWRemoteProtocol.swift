@@ -100,7 +100,7 @@ enum DAWRemoteAccessRules {
         if mode == .director { return true }
         if mode == .notices {
             switch command.action {
-            case .noticeSend, .noticeClear, .noticePin, .noticeDestination, .noticeSaveTemplate: return true
+            case .noticeSend, .noticeClear, .noticePin, .noticePinStopped, .noticeDestination, .noticeSaveTemplate: return true
             case .remotePanel: return command.value == 0 || command.value == 3
             default: return false
             }
@@ -127,7 +127,7 @@ struct DAWRemoteCommand: Codable {
     enum Action: String, Codable {
         case play, pause, stop, subPlay, subStop, toggleLoop, seek, queueSection, cancelSection, toggleMultiLoopBypass, toggleSetlistLive
         case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, openRecentProjectInNewTab, selectProjectTab, closeProjectTab
-        case remotePanel, noticeSend, noticeClear, noticePin, noticeDestination, noticeSaveTemplate
+        case remotePanel, noticeSend, noticeClear, noticePin, noticePinStopped, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStop
         case togglePreview, selectPreviewPage
@@ -150,14 +150,14 @@ struct DAWRemoteCommand: Codable {
     var valid: Bool {
         guard value.isFinite else { return false }
         if let text {
-            guard [.noticeSend, .noticeSaveTemplate, .editRegion, .renamePlaylist].contains(action), text.count <= 500, text.utf8.count <= 4000 else { return false }
+            guard [.noticeSend, .noticeSaveTemplate, .noticePinStopped, .editRegion, .renamePlaylist].contains(action), text.count <= 500, text.utf8.count <= 4000 else { return false }
         }
         if playlist != nil && ![.deleteRegion, .duplicateRegion].contains(action) { return false }
         let padActions: Set<Action> = [.vinhetasDown, .vinhetasVolume, .vinhetasGate]
         if padActions.contains(action) {
             guard let pad, (0..<16).contains(pad), let preset, (0..<6).contains(preset) else { return false }
         } else if pad != nil || preset != nil { return false }
-        if enabled != nil && action != .noticeDestination && action != .vinhetasGate { return false }
+        if enabled != nil && action != .noticeDestination && action != .noticePinStopped && action != .vinhetasGate { return false }
         if noticeReceiptRequested != nil && action != .noticeSend { return false }
         switch action {
         case .vinhetasDown: return target != nil && value == 0 && enabled == nil
@@ -182,6 +182,9 @@ struct DAWRemoteCommand: Codable {
         case .noticeSaveTemplate: return target == nil && text != nil && (0...2).contains(value) && value.rounded() == value
         case .noticeClear: return target == nil && value == 0
         case .noticePin: return target == nil && (value == 0 || value == 1)
+        case .noticePinStopped:
+            return target == nil && enabled != nil && (enabled == false || text != nil) &&
+                (-1...2).contains(value) && value.rounded() == value
         case .noticeDestination: return target == nil && (value == 1 || value == 2) && enabled != nil
         case .openRecentProject, .openRecentProjectInNewTab, .selectProjectTab, .closeProjectTab: return target != nil && value == 0
         case .clipGain: return target != nil && (0...pow(10, 24.0 / 20)).contains(value)
@@ -812,6 +815,9 @@ struct DAWRemoteNotices: Codable, Equatable {
     var cleanDisplay: Bool
     var sentAt: Double
     var imageID: UUID? = nil
+    /// Optional capability fields keep older desktop snapshots compatible.
+    var pinWhenStopped: Bool? = nil
+    var stoppedNoticeActive: Bool? = nil
     var valid: Bool {
         templates.count == 3 && imageSlots.count == 3 && templates.allSatisfy { $0.count <= 500 && $0.utf8.count <= 4000 } &&
         message.count <= 500 && message.utf8.count <= 4000 && (0...20).contains(remaining) &&

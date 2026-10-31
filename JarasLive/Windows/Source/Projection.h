@@ -49,6 +49,7 @@ class Projection final : public Component, private Timer {
     int profile = 1;
     double itemStart = 0, itemDuration = 0;
     void paintStage(Graphics &);
+    bool stageHidesMedia() const;
     juce::Rectangle<int> mediaBounds() const;
     Label status;
     TextButton fontUp{"A+"}, fontDown{"A-"};

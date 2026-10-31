@@ -431,6 +431,7 @@ void Engine::moveClip(const ID& clipId, double start, const ID& destination) {
             if (!mediaTransfer && !fixedTrackName(track.role).empty() && target->id != track.id) throw std::invalid_argument("Special items can only move horizontally on their own track");
             if (!mediaTransfer && fixedTrackName(track.role) != fixedTrackName(target->role)) throw std::invalid_argument("Items must stay on a compatible track");
             if (track.role.id == "timecode" && !projectionMedia) throw std::invalid_argument("Timecode items follow their regions");
+            if (track.role.id == "generatedClick" && !projectionMedia) throw std::invalid_argument("Click items follow their regions");
             auto clip = *it;
             clip.startTime = start;
             clip.regionOwnerID = regionOwnerAt(song, start);
@@ -796,6 +797,7 @@ void Engine::pasteItems(const ID& songID, std::vector<Track> tracks, bool moving
         if (target == song->tracks.end() || source.clips.empty()) throw std::invalid_argument("Invalid destination track");
         if (target->role.id == "timecode" && std::any_of(source.clips.begin(), source.clips.end(), [](const auto& clip) { return !clip.audioFile || clip.audioFile->path.rfind("Videos/", 0) != 0; })) throw std::invalid_argument("Timecode items cannot be pasted");
         for (const auto& clip : source.clips) {
+            if (target->role.id == "generatedClick" && (!clip.audioFile || clip.audioFile->path.rfind("Videos/", 0) != 0)) throw std::invalid_argument("Invalid destination track");
             if (!identifiers.insert(clip.id).second) throw std::invalid_argument("Duplicate pasted item");
             if (moving) {
                 auto item = std::find_if(target->clips.begin(), target->clips.end(), [&](const auto& value) { return value.id == clip.id; });

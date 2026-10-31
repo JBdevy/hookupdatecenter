@@ -8,7 +8,7 @@ class PatchPanel final : public Component {
   public:
     PatchPanel(Session &s, ID target, std::function<void(String)> report, std::set<ID> selection = {})
         : session(s), id(std::move(target)), error(std::move(report)), targets(std::move(selection)) {
-        if (const auto *t = track(); t && (t->role.id == "vinhetas" || t->role.id == "programChange")) targets = {id};
+        if (const auto *t = track(); t && (t->role.id == "vinhetas" || t->role.id == "programChange" || t->role.id == "generatedClick")) targets = {id};
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
         viewport.setScrollBarsShown(true, false); viewport.setScrollBarThickness(4);
@@ -287,7 +287,8 @@ class PatchPanel final : public Component {
         if (t->role.id == "timecode") { buildTimecode(*t); return; }
         auto *device = session.audio.devices.getCurrentAudioDevice();
         label(device ? device->getName() : String::fromUTF8("Áudio não iniciado"), 0, 8, 300);
-        if(t->role.id!="vinhetas") {
+        const bool outputOnly=t->role.id=="vinhetas" || t->role.id=="generatedClick";
+        if(!outputOnly) {
         StringArray inputs{"Nenhum"};
         std::vector<jaras::OutputPatch> inputPatches{{-1, 1}};
         const auto inputNames = device ? device->getInputChannelNames() : StringArray();
@@ -339,7 +340,7 @@ class PatchPanel final : public Component {
         choice(208, 108, 92, channels, t->midiChannel.value_or(0) + 1,
                [this](int n) { edit([&](auto &t) { if(n>1)t.midiChannel=n-1;else t.midiChannel.reset(); }, false); });
         }
-        const int outputTop=t->role.id=="vinhetas"?44:148;
+        const int outputTop=outputOnly?44:148;
         auto outputs = t->outputPatches();
         label(String::fromUTF8("Saída"), 0, outputTop, 200, true);
         button("+", 264, outputTop, 36, [this] {

@@ -34,12 +34,20 @@ class TeleprompterHTTP final : private Thread {
         const auto address=localAddress(IPAddress::getAllAddresses());
         return address.isEmpty()?String():"http://"+address+":"+String(port());
     }
-    void publish(const var &state, File media={}) {
+    void publish(const var &state, File media={}, Image notice={}) {
         Snapshot next;next.json=JSON::toString(state,true);next.media=std::move(media);next.id=str(state,"mediaID");
+        if(notice!=cachedNoticeImage) {
+            cachedNoticeImage=notice;cachedNoticePNG.reset();
+            if(notice.isValid()) { MemoryOutputStream bytes;PNGImageFormat png;
+                if(png.writeImageToStream(notice,bytes))cachedNoticePNG=std::make_shared<const MemoryBlock>(bytes.getMemoryBlock()); }
+        }
+        next.noticePNG=cachedNoticePNG;next.noticeID=str(get(state,"notice"),"imageID");
         const ScopedLock lock(mutex);snapshot=std::move(next);
     }
   private:
-    struct Snapshot {String json="{}",id;File media;};
+    struct Snapshot {String json="{}",id,noticeID;File media;std::shared_ptr<const MemoryBlock> noticePNG;};
+    Image cachedNoticeImage;
+    std::shared_ptr<const MemoryBlock> cachedNoticePNG;
     struct Client {
         std::unique_ptr<StreamingSocket> socket;
         String headers;
@@ -74,6 +82,11 @@ class TeleprompterHTTP final : private Thread {
         if(path=="/"){response(c,"200 OK",String::fromUTF8(BinaryData::Teleprompter_html,BinaryData::Teleprompter_htmlSize),"text/html; charset=utf-8",head);return;}
         Snapshot state;{const ScopedLock lock(mutex);state=snapshot;}
         if(path=="/state"){response(c,"200 OK",state.json,"application/json; charset=utf-8",head);return;}
+        if(state.noticeID.isNotEmpty() && path=="/notice/"+state.noticeID && state.noticePNG) {
+            queue(c,"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: "+String((int64)state.noticePNG->getSize())+"\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n\r\n");
+            if(!head)c.pending.append(state.noticePNG->getData(),state.noticePNG->getSize());
+            c.routed=true;return;
+        }
         if(state.id.isEmpty()||path!="/media/"+state.id||!state.media.existsAsFile()){response(c,"404 Not Found");return;}
         c.file=state.media.createInputStream();
         const int64 size=c.file?c.file->getTotalLength():0;

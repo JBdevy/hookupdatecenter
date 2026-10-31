@@ -126,7 +126,7 @@ MainActor.assumeIsolated {
     }
     expect(madeClosedContent == 0 && initiallyClosed.contentAssignments == 0,
            "closed mixer must not instantiate its controls on first launch")
-    expect(initiallyClosed.subviews.allSatisfy(\.isHidden), "closed mixer native subtree must be hidden")
+    expect(initiallyClosed.subviews.isEmpty, "closed mixer must be absent from native layout walks")
     initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: true, role: .mixer, coordinator: nil)
     initiallyClosed.setContent(identity: "closed", environment: EnvironmentValues()) {
         madeClosedContent += 1
@@ -141,7 +141,7 @@ MainActor.assumeIsolated {
     initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: false, role: .mixer, coordinator: nil)
     initiallyClosed.frame.size.height = 0
     initiallyClosed.layoutSubtreeIfNeeded()
-    expect(retainedMixerRoot.isHidden, "closing excludes retained controls from tracking traversal")
+    expect(retainedMixerRoot.isHidden && retainedMixerRoot.superview == nil && initiallyClosed.subviews.isEmpty, "closing detaches retained controls from window layout and tracking traversal")
     expect(retainedMixerRoot.frame == retainedFrame, "hidden mixer must retain its geometry instead of reflowing every control to zero height")
     initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: true, role: .mixer, coordinator: nil)
     initiallyClosed.setContent(identity: "closed", environment: EnvironmentValues()) {
@@ -150,7 +150,7 @@ MainActor.assumeIsolated {
     }
     expect(madeClosedContent == 1 && initiallyClosed.subviews.first === retainedMixerRoot,
            "reopening preserves the hosted root and its state")
-    print("FOOTER_CLOSED_LAZY_MOUNT_HIDDEN_NATIVE_TREE_AND_REOPEN_IDENTITY_OK")
+    print("FOOTER_CLOSED_LAZY_MOUNT_DETACHED_NATIVE_TREE_AND_REOPEN_IDENTITY_OK")
     let mixer = descendants(FooterMixerResizeView.self, in: root).first!
     let display = descendants(FooterDisplayResizeView.self, in: root).first!
     let mixerHost = parent(FooterHeightContainerView.self, of: mixer)!

@@ -1722,5 +1722,6 @@
   "The active project alternative is ambiguous.": "The active project alternative is ambiguous.",
   "Locate missing files": "Locate missing files",
   ": invalid project media path.": ": invalid project media path.",
-  "Could not recover the file.": "Could not recover the file."
+  "Could not recover the file.": "Could not recover the file.",
+  "Pin while transport is stopped": "Pin while transport is stopped"
 }
