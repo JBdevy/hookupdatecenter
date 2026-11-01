@@ -179,7 +179,7 @@ class ResolumePanel final : public Component {
         auto config=object();put(config,"host",remoteHost.getText().trim());put(config,"port",lighting.integrationPort);
         auto safe=SafePointer<ResolumePanel>(this);refresh.setEnabled(false);
         worker.addJob([safe,config]{var result;String error;try{result=IntegrationClient::request(config,"info");if(num(result,"protocol")!=1)throw std::runtime_error("Atualize o CatLive Integration.");}catch(const std::exception& e){error=String::fromUTF8(e.what());}
-            MessageManager::callAsync([safe,result,error]{if(!safe)return;safe->refresh.setEnabled(true);if(error.isNotEmpty()){safe->status.setText(error,dontSendNotification);return;}
+            MessageManager::callAsync([safe,result,error]{if(!safe)return;safe->refresh.setEnabled(true);if(error.isNotEmpty()){safe->status.setText(localization::translate(error),dontSendNotification);return;}
                 const auto selected=safe->lighting.integrationMIDIOutput;safe->midiIDs.clear();safe->midi.clear();safe->midi.addItem(String::fromUTF8("Automático"),1);int selection=1;
                 for(auto p:list(get(result,"midiOutputs"))){safe->midiIDs.add(str(p,"id"));int index=safe->midiIDs.size()+1;safe->midi.addItem(str(p,"name"),index);if(str(p,"id")==selected)selection=index;}
                 safe->midi.setSelectedId(selection,dontSendNotification);safe->status.setText(String::fromUTF8("Integration encontrado. Selecione a saída MIDI e aplique."),dontSendNotification);
@@ -195,9 +195,9 @@ class ResolumePanel final : public Component {
             put(plan,"decks",decks);setBusy(true);status.setText(String::fromUTF8("Criando composição no computador do Integration…"),dontSendNotification);
             auto safe=SafePointer<ResolumePanel>(this);auto cancel=cancelled;auto* client=&lighting.integration;
             worker.addJob([safe,cancel,plan,client]{String result;try{result=String::fromUTF8("Composição salva no computador do Integration: ")+client->create(plan,[cancel]{return cancel->load();});}catch(const std::exception& e){result=String::fromUTF8(e.what());}
-                MessageManager::callAsync([safe,result]{if(safe){safe->setBusy(false);safe->status.setText(result,dontSendNotification);}});
+                MessageManager::callAsync([safe,result]{if(safe){safe->setBusy(false);safe->status.setText(localization::translate(result),dontSendNotification);}});
             });
-        }catch(const std::exception& e){status.setText(String::fromUTF8(e.what()),dontSendNotification);}
+        }catch(const std::exception& e){status.setText(localization::translate(String::fromUTF8(e.what())),dontSendNotification);}
     }
     void setBusy(bool value) {
         busy = value;

@@ -617,7 +617,7 @@ class MAPanel final : public Panel, private TableListBoxModel {
         });
         advancedComponents.add(&save);
         save.setBounds(392, 222, 190, 28);
-        integrationButton = &button("CatLive Integration…",24,0,210,std::move(openIntegration));
+        integrationButton = &button(String::fromUTF8("CatLive Integration…"),24,0,210,std::move(openIntegration));
         midiLabel = &label(String::fromUTF8("Saída MIDI"), 24, 0, 86);
         exportButton = &button(
             String::fromUTF8("Exportar grandMA2…"), 222, 0, 190, [this] { exportFiles(); },
