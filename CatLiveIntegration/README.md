@@ -1,6 +1,6 @@
 # CatLive Integration 1.26
 
-Aplicativo receptor para Windows 10/11 (x64) e macOS 12 ou posterior (Intel e Apple Silicon). Recebe o transporte do CatLive 1.26 por rede local e envia OSC para o Resolume Arena e MIDI Time Code de 30 FPS para o grandMA2. Não abre dispositivos de áudio.
+Aplicativo receptor para Windows 10/11 (x64) e macOS 12 ou posterior (Intel e Apple Silicon). Recebe o transporte do CatLive 1.26 por rede local e envia OSC para o Resolume Arena e MIDI Time Code de 30 FPS para o grandMA2. Não abre dispositivos de áudio. Instalação independente, gratuita, sem conta, licença ou ativação.
 
 ## Usar em dois computadores
 
@@ -39,6 +39,6 @@ cd integration-build
 cpack -C Release
 ```
 
-No Mac, acrescente `-DCMAKE_OSX_ARCHITECTURES='arm64;x86_64'` para gerar Universal. No Windows, use Visual Studio 2022 com C++ e `-A x64` na configuração. A distribuição candidata do CI não é uma publicação comercial assinada/notarizada.
+No Mac, acrescente `-DCMAKE_OSX_ARCHITECTURES='arm64;x86_64'` para gerar Universal. No Windows, use Visual Studio 2022 com C++ e `-A x64` na configuração. O workflow gera instaladores separados: `.exe` no Windows e `.pkg` assinado/notarizado no Mac. O instalador Windows não usa Authenticode. Os ZIPs adicionais servem para validação técnica.
 
 Os testes exercitam HTTP real, sessão única, reconexão, rejeição de estados antigos, timeout, OSC real por UDP, criação local usando uma API Arena simulada e proteção de composições existentes. No Mac também capturam MIDI real através de uma porta CoreMIDI de teste. A validação final com Arena e grandMA2 físicos deve ser feita no ambiente de palco.

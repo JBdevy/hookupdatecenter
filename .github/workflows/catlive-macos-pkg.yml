@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão pública do CatLive (ex.: 1.25)'
         required: true
-        default: '1.25'
+        default: '1.26'
       audio_only:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
@@ -28,6 +28,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  integration:
+    if: ${{ !inputs.audio_only && !inputs.windows_only }}
+    uses: ./.github/workflows/catlive-integration.yml
+    secrets: inherit
+
   audio-validation:
     if: ${{ inputs.audio_only }}
     runs-on: macos-26
@@ -402,7 +407,7 @@ jobs:
 
   release:
     if: ${{ !inputs.audio_only && !inputs.windows_only }}
-    needs: [windows, macos-pkg, compatibility]
+    needs: [windows, macos-pkg, compatibility, integration]
     runs-on: ubuntu-latest
     steps:
       - name: Validate release publication credentials
@@ -421,6 +426,11 @@ jobs:
         with:
           name: Catlive-${{ inputs.version }}-Windows
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: CatLive-Integration-1.26-*-Installer
+          path: dist
+          merge-multiple: true
       - name: Verify release installers and checksums
         env:
           VERSION: ${{ inputs.version }}
@@ -431,6 +441,8 @@ jobs:
           test -s "Catlive-$VERSION.exe"
           sha256sum --check "Catlive-$VERSION.pkg.sha256"
           sha256sum --check "Catlive-$VERSION.exe.sha256"
+          test -s CatLive-Integration-1.26-Mac.pkg
+          test -s CatLive-Integration-1.26-Windows.exe
       - name: Publish both desktop installers together
         uses: softprops/action-gh-release@v2
         with:
@@ -443,12 +455,15 @@ jobs:
           fail_on_unmatched_files: true
           body: |
             CatLive ${{ inputs.version }} para macOS universal e Windows 10/11 x64.
+            CatLive Integration possui instaladores separados, gratuitos e sem login/licença: CatLive-Integration-1.26-Mac.pkg e CatLive-Integration-1.26-Windows.exe.
             Projeto .jl compartilhado entre as plataformas, com preservação do mapa grandMA2 ao salvar no Mac.
             Publicação condicionada aos testes nativos e à troca de documentos Windows → Mac → Windows e Mac → Windows.
             Instalador macOS assinado e notarizado. Instalador Windows sem assinatura Authenticode nesta configuração.
           files: |
             dist/Catlive-*.pkg
             dist/Catlive-*.exe
+            dist/CatLive-Integration-*.pkg
+            dist/CatLive-Integration-*.exe
       - name: Finalize release installers and source tag
         uses: actions/github-script@v7
         env:
@@ -463,7 +478,7 @@ jobs:
             const { owner, repo } = context.repo;
             const tag = `catlive-v${version}`;
             const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`]);
+            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`, `CatLive-Integration-1.26-Mac.pkg`, `CatLive-Integration-1.26-Windows.exe`]);
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id: release.id });
             for (const name of installers) {
               const matches = assets.filter(asset => asset.name === name);

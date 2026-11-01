@@ -24,8 +24,12 @@ elseif(APPLE)
   target_link_libraries(IntegrationCore PUBLIC "-framework Foundation" "-framework CoreMIDI" "-framework SystemConfiguration" "-framework Security")
   add_executable(CatLiveIntegration MACOSX_BUNDLE Source/MacMain.mm)
   target_compile_options(CatLiveIntegration PRIVATE -fobjc-arc)
+  add_custom_command(TARGET CatLiveIntegration POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:CatLiveIntegration>/Contents/Resources/Licenses"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/httplib/LICENSE" "$<TARGET_BUNDLE_DIR:CatLiveIntegration>/Contents/Resources/Licenses/cpp-httplib.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/nlohmann-json-LICENSE.txt" "$<TARGET_BUNDLE_DIR:CatLiveIntegration>/Contents/Resources/Licenses/nlohmann-json.txt")
   target_link_libraries(CatLiveIntegration PRIVATE "-framework AppKit")
-  set_target_properties(CatLiveIntegration PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER com.hookdeveloper.catlive.integration MACOSX_BUNDLE_BUNDLE_NAME "CatLive Integration" MACOSX_BUNDLE_SHORT_VERSION_STRING "1.26" MACOSX_BUNDLE_BUNDLE_VERSION "1" OUTPUT_NAME "CatLive Integration")
+  set_target_properties(CatLiveIntegration PROPERTIES MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Info.plist.in" MACOSX_BUNDLE_GUI_IDENTIFIER com.hookdeveloper.catlive.integration MACOSX_BUNDLE_BUNDLE_NAME "CatLive Integration" MACOSX_BUNDLE_SHORT_VERSION_STRING "1.26" MACOSX_BUNDLE_BUNDLE_VERSION "1" OUTPUT_NAME "CatLive Integration")
 else()
   message(FATAL_ERROR "CatLive Integration supports macOS and Windows")
 endif()
