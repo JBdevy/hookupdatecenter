@@ -15,10 +15,14 @@ on:
         description: 'Validar somente o Windows e gerar instalador de teste (sem publicar)'
         type: boolean
         default: false
-      full_fx_tests:
-        description: 'Executar a bateria completa de continuidade dos FX em 44,1 e 48 kHz'
+      audio_tests:
+        description: 'Executar testes de renderização, Dynamics e Trigger/Gate (ativar ao alterar áudio)'
         type: boolean
-        default: true
+        default: false
+      full_fx_tests:
+        description: 'Executar também a bateria completa dos FX em 44,1 e 48 kHz (ativar ao alterar áudio/FX)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -176,7 +180,11 @@ jobs:
         run: |
           python3 scripts/prepare-catstem.py
 
+      # UI/integration-only releases skip the expensive audio suites. Enable
+      # audio_tests and full_fx_tests for engine, DSP, recording or export changes.
+      # Requesting the full FX matrix also includes the base rendering suites.
       - name: Validate audio rendering and unified song entry
+        if: ${{ inputs.audio_tests || inputs.full_fx_tests }}
         working-directory: JarasLive
         run: bash scripts/test-audio.sh
 
@@ -186,10 +194,12 @@ jobs:
         run: JARAS_AUDIO_TEST_SOURCE=Tests/Apple/NativeFXPlaybackTests.swift bash scripts/test-audio.sh
 
       - name: Validate Cat Dynamics
+        if: ${{ inputs.audio_tests || inputs.full_fx_tests }}
         working-directory: JarasLive
         run: bash scripts/test-cat-dynamics.sh
 
       - name: Validate Trigger and Gate rendering
+        if: ${{ inputs.audio_tests || inputs.full_fx_tests }}
         working-directory: JarasLive
         run: JARAS_AUDIO_TEST_SOURCE=Tests/Apple/TriggerGateRenderTests.swift bash scripts/test-audio.sh
 
