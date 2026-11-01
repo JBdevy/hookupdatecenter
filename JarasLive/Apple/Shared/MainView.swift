@@ -646,6 +646,7 @@ struct MainView: View {
                 }
             }
             MacProjectionRail(show: show)
+            TeleprompterTimerToolbarButton()
             if desktopExtras {
             Button { keyboardOpen.toggle() } label: {
                 Image(systemName: "pianokeys")
@@ -677,7 +678,6 @@ struct MainView: View {
 
 
             }
-            TeleprompterTimerToolbarButton()
             Spacer(minLength: 0)
             AudioStatusView { openSettings(.audio) }
                 .font(.jarasSystem(size: 9, weight: .medium, design: .monospaced))

@@ -41,10 +41,11 @@ struct WorkspaceLayoutTests {
         DocumentWindow host("Workspace",theme::background,0);host.setContentNonOwned(&w,false);host.setBounds(50,50,1200,800);host.setVisible(true);w.projectOpened(false);
         for(const int width:{900,1200,1600}) {
             w.setSize(width,800);
-            require(w.controls["railClock"]->isVisible()&&w.controls["railClock"]->getX()>w.controls["railVinhetas"]->getRight(),"Timer icon is not after Pads");
+            require(w.controls["railClock"]->isVisible()&&w.controls["railClock"]->getX()>w.controls["railNotice"]->getRight()
+                    &&w.controls["railClock"]->getRight()<w.controls["railKeyboard"]->getX(),"Timer icon is not between Messages and Keyboard");
             require(!w.stageTimer->isVisible(),"Stopped timer should not display a count in the toolbar");
             require(std::abs(w.stageTimer->getBounds().getCentreX()-width/2)<=1,"Timer count is not centered in the whole toolbar");
-            require(w.stageTimer->getX()>w.controls["railClock"]->getRight(),"Timer overlaps toolbar icons");
+            require(w.stageTimer->getX()>w.controls["railVinhetas"]->getRight(),"Timer overlaps toolbar icons");
             require(w.stageTimer->getRight()<w.controls["audioStatus"]->getX(),"Timer overlaps audio status");
             require(uiFeatureTests::find(w,"timerHours")==nullptr,"Toolbar retained editable timer inputs");
             w.stage.target=65;w.stage.start();w.updateState();

@@ -5229,7 +5229,7 @@ void Workspace::resized() {
     controls["railTeleprompt"]->setVisible(false);
     controls["railTeleprompt2"]->setVisible(false);
     int toolX = 4;
-    for (auto id : {"menu", "mixer", "railMixer", "railParts", "railNotice", "railKeyboard", "railVinhetas", "railClock"}) {
+    for (auto id : {"menu", "mixer", "railMixer", "railParts", "railNotice", "railClock", "railKeyboard", "railVinhetas"}) {
         controls[id]->setBounds(toolX, title + 2, 26, 24);
         toolX += 32;
     }
