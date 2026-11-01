@@ -11,10 +11,9 @@ class Appearance final : public ChangeBroadcaster {
         auto loaded = JSON::parse(location);
         values = loaded.isObject() ? loaded : object();
     }
-    float interfaceScale() const {
-        const auto scale = (double)get(values, "jaras.interface.scale", 1.0);
-        return std::isfinite(scale) ? (float)(std::round(jlimit(.75, 1.25, scale) * 4) / 4) : 1.f;
-    }
+    // Legacy appearance files may contain 75%/125%. The workspace is now
+    // always 100%; the native peer still follows the monitor's system DPI.
+    float interfaceScale() const { return 1.f; }
     bool continuousScroll() const { return (bool)get(values, "jaras.timeline.continuousScroll", false); }
     int fontStyle() const { return jlimit(0, 2, (int)get(values, "jaras.setlist.fontStyle", 0)); }
     bool regionIDs() const { return str(values, "jaras.setlist.idMode", "playlist") == "region"; }

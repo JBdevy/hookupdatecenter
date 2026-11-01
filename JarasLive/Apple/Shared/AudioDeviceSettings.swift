@@ -164,6 +164,37 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     private var deviceListener: AudioObjectPropertyListenerBlock?
     private var listeningAddresses: [AudioObjectPropertyAddress] = []
     private var observedOutputUnit: AudioUnit?
+    private var observedRateDevice: AudioDeviceID?
+    private var outputRateListener: AudioObjectPropertyListenerBlock?
+    private func observeOutputRate(_ id: AudioDeviceID?) {
+        guard observedRateDevice != id else { return }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        if let previous = observedRateDevice, let outputRateListener {
+            _ = AudioObjectRemovePropertyListenerBlock(previous, &address, .main, outputRateListener)
+        }
+        observedRateDevice = nil; outputRateListener = nil
+        guard let id else { return }
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.observedRateDevice == id else { return }
+                self.refreshSampleRate(); self.refreshBuffer()
+                self.deviceChanged?()
+            }
+        }
+        if AudioObjectAddPropertyListenerBlock(id, &address, .main, listener) == noErr {
+            observedRateDevice = id; outputRateListener = listener
+        }
+    }
+    var currentOutputSampleRate: Double? {
+        guard let device = devices.first(where: { $0.id == selectedUID }) else { return nil }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var rate = 0.0, bytes = UInt32(MemoryLayout<Double>.size)
+        guard AudioObjectGetPropertyData(device.hardwareID, &address, 0, nil, &bytes, &rate) == noErr,
+              rate.isFinite, rate > 0 else { return nil }
+        return rate
+    }
     private var defaultRefreshPending = false
     private func systemDefaultDevice(input: Bool) -> OutputDevice? {
         var id: AudioDeviceID = 0, bytes = UInt32(MemoryLayout<AudioDeviceID>.size)
@@ -494,6 +525,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     // It must never use the public, user-initiated device-change path.
     private func bindOutput(_ uid: String) {
         if uid == "none" {
+            #if os(macOS)
+            observeOutputRate(nil)
+            #endif
             engine.stop()
             selectedUID = uid; channels = 0; configuredUID = nil; configuredHardwareID = nil
             UserDefaults.standard.set(uid, forKey: "jaras.audioOutputUID")
@@ -503,6 +537,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         guard let device = devices.first(where: { $0.id == uid }) else { return }
         #if os(macOS)
         if configuredUID == uid, configuredHardwareID == device.hardwareID, outputIsBound(to: device.hardwareID) {
+            observeOutputRate(device.hardwareID)
             error = ""
             if !engine.isRunning { deviceChanged?() }
             return
@@ -533,6 +568,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         }
         #endif
         configuredUID = uid; configuredHardwareID = device.hardwareID; selectedUID = uid; channels = device.channels; error = ""
+        #if os(macOS)
+        observeOutputRate(device.hardwareID)
+        #endif
         UserDefaults.standard.set(uid, forKey: "jaras.audioOutputUID")
         refreshSampleRate()
         refreshBuffer()

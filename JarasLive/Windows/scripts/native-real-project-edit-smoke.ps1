@@ -26,7 +26,7 @@ try {
  Copy-Item -LiteralPath $src -Destination "$dir\Validation.jl" -Force
  if(!(Test-Path "$dir\Stems")){New-Item -ItemType Junction -Path "$dir\Stems" -Target (Join-Path (Split-Path $src) 'Stems') | Out-Null}
  function Start-Preview([string]$extra){
-  $script:process=Start-Process $Executable -ArgumentList ('--project-preview "'+$dir+'\Validation.jl" --ui-scale 0.9 '+$extra) -PassThru
+  $script:process=Start-Process $Executable -ArgumentList ('--project-preview "'+$dir+'\Validation.jl" '+$extra) -PassThru
   $script:process.Id | Set-Content "$OutputDirectory/pid.txt"
   $deadline=[DateTime]::UtcNow.AddSeconds(60)
   do{Start-Sleep -Milliseconds 300;$script:process.Refresh();$script:main=$script:process.MainWindowHandle}while($script:main -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)

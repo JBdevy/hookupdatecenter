@@ -3,7 +3,7 @@ param([Parameter(Mandatory=$true)][string]$Executable,[string]$OutputDirectory=(
 Add-Type -AssemblyName System.Windows.Forms
 if(Get-Process CatLive -ErrorAction SilentlyContinue | Where-Object Path -EQ ([IO.Path]::GetFullPath($Executable))){throw 'The test executable is already running.'}
 $appearanceFile=Join-Path $OutputDirectory 'appearance.json'
-$launchMode=if($HomePreview){'--home-preview --ui-scale 1'}else{'--visual-test --ui-scale 1'}
+$launchMode=if($HomePreview){'--home-preview'}else{'--visual-test'}
 if($TextOnly){$launchMode+=' --audio-fixture'}
 $process=Start-Process -FilePath $Executable -ArgumentList ($launchMode+' --appearance-file "'+$appearanceFile+'"') -WindowStyle Hidden -PassThru
 try {

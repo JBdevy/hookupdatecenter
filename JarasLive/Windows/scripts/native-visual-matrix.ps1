@@ -66,7 +66,8 @@ function Stop-Fixture {
 }
 function Start-Fixture([string]$Scale='1') {
     $appearance = Join-Path $OutputDirectory 'appearance.json'
-    $launchArguments = '--visual-test --ui-scale ' + $Scale + ' --appearance-file "' + $appearance + '"'
+    @{'jaras.interface.scale'=[double]$Scale} | ConvertTo-Json | Set-Content $appearance -Encoding utf8
+    $launchArguments = '--visual-test --appearance-file "' + $appearance + '"'
     $script:process = Start-Process -FilePath $Executable -ArgumentList $launchArguments -PassThru
     $deadline = [DateTime]::UtcNow.AddSeconds(25)
     do {Start-Sleep -Milliseconds 200; $script:process.Refresh()} while($script:process.MainWindowHandle -eq 0 -and [DateTime]::UtcNow -lt $deadline)
@@ -162,7 +163,8 @@ try {
     ScreenCapture 'track-context'
     Key 0x1b
     Stop-Fixture
-    foreach($scale in @('0.9','1.25','1.5','2')) {
+    # Old saved custom scales must all open at 100%, including after a restart.
+    foreach($scale in @('0.75','1.25')) {
         Start-Fixture $scale
         [void](Check-Layout ('scale-' + $scale))
         ScreenCapture ('scale-' + $scale + '-screen')
@@ -185,7 +187,7 @@ try {
         }
         Stop-Fixture
     }
-    @{success=$true;scaleKind='JUCE application scale; monitor DPI recorded separately';layouts=@($results.ToArray())} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $OutputDirectory 'results.json') -Encoding utf8
+    @{success=$true;scaleKind='Fixed 100 percent with legacy preferences; monitor DPI recorded separately';layouts=@($results.ToArray())} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $OutputDirectory 'results.json') -Encoding utf8
 } catch {
     $_ | Out-String | Set-Content (Join-Path $OutputDirectory 'failure.txt') -Encoding utf8
     throw

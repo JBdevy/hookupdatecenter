@@ -16,7 +16,7 @@ try {
  Copy-Item -LiteralPath $Project -Destination $copy -Force
  $stems=Join-Path (Split-Path $Project) 'Stems'
  if(!(Test-Path "$copyDir\Stems")){New-Item -ItemType Junction -Path "$copyDir\Stems" -Target $stems | Out-Null}
- $args='--project-preview "'+$copy+'" --ui-scale 0.9 --appearance-file "'+$OutputDirectory+'\appearance.json"'
+ $args='--project-preview "'+$copy+'" --appearance-file "'+$OutputDirectory+'\appearance.json"'
  $process=Start-Process -FilePath $Executable -ArgumentList $args -PassThru
  $deadline=[DateTime]::UtcNow.AddSeconds(30)
  do {Start-Sleep -Milliseconds 200;$process.Refresh();$script:main=$process.MainWindowHandle}while($script:main -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)

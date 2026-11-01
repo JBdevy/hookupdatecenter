@@ -10,6 +10,13 @@ static void require(bool value, const char *message) {
 }
 int main() {
     using catlive::WaveformDetailPeaks;
+    require(WaveformDetailPeaks::overviewStride(2754) == 2048 && WaveformDetailPeaks::overviewStride(5510) == 4096,
+            "Overview source levels match Metal at distant zoom");
+    const auto overview = WaveformDetailPeaks::overviewRange(2754,5508,100000,2048);
+    require(overview.first == 2048 && overview.second == 6144,
+            "Physical columns include all touched extrema intervals");
+    const auto tail = WaveformDetailPeaks::overviewRange(99000,100500,100001,4096);
+    require(tail.first == 98304 && tail.second == 100001,"Overview must preserve the true EOF");
     constexpr int pageFrames=65536, frames=pageFrames+173;
     std::array<std::vector<float>,3> pcm;
     for(auto &channel:pcm)channel.assign(frames,0);

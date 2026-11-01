@@ -168,6 +168,41 @@ precondition(loudSource.alpha(40, 40) > 200 && quietSource.alpha(40, 40) == 0,
     "same-position source envelopes must never reuse another file's GPU pixels")
 precondition(render([envelopeFrame(loudEnvelope)]).bytes == loudSource.bytes)
 print("METAL_DERIVED_ENVELOPES_PRESERVE_SOURCE_IDENTITY_AND_GPU_PIXELS_OK")
+// At overview zoom, a transient shorter than a display pixel still reaches
+// its real amplitude. Fractional scroll translations move whole columns without
+// breathing, and adjacent source blocks share one peak-column partition.
+for density: Float in [1, 2] {
+    var points: [SIMD2<Float>] = []
+    for frame in stride(from: 0, to: 8192, by: 256) {
+        let level: Float = frame == 256 || frame == 4096 ? 0.8 : 0.1
+        points.append(SIMD2(Float(frame), -level))
+        points.append(SIMD2(Float(frame + 256), level))
+    }
+    let overview = TimelineAudioWaveform.VertexBlock(channels: [points], start: 0, end: 8192,
+        step: 256, rate: 48000, key: "subpixel-transients", isPeakEnvelope: true)
+    var totals: [Double] = []
+    for phase: Float in [0, 0.1, 0.25, 0.49, 0.75, 1] {
+        let stroke = MetalWaveformStroke(block: overview, channel: 0, scale: SIMD2(0.001, 40),
+            translation: SIMD2(20 + phase, 64), clip: item, color: SIMD4(repeating: 1), itemRect: item)
+        let pixels = render([stroke], density: density)
+        let x = Int(round((20 + phase) * density))
+        precondition(pixels.alpha(x, Int(34 * density)) > 240,
+            "A subpixel transient must retain its full peak in its output column")
+        totals.append(Double(stride(from: 3, to: pixels.bytes.count, by: 4).reduce(0) { $0 + Int(pixels.bytes[$1]) }))
+        precondition(engine.lastEncodedSegmentCount <= Int(ceil(9 * density)),
+            "Overview work must be bounded by physical columns, not source samples")
+    }
+    precondition((totals.max()! - totals.min()!) / totals.max()! < 0.001,
+        "Scrolling must not pulse the overview's peak coverage")
+}
+let coarseFallback = TimelineAudioWaveform.VertexBlock(channels: [[SIMD2<Float>(0, -0.5), SIMD2<Float>(65536, 0.5)]],
+    start: 0, end: 65536, step: 65536, rate: 48000, key: "zoomed-coarse-fallback", isPeakEnvelope: true)
+let coarseStroke = MetalWaveformStroke(block: coarseFallback, channel: 0, scale: SIMD2(1000, 40),
+    translation: SIMD2(-100000, 64), clip: item, color: SIMD4(repeating: 1), itemRect: item)
+_ = render([coarseStroke], density: 2)
+precondition(engine.lastEncodedSegmentCount < 225, "A zoomed coarse fallback must draw only visible pixel columns")
+print("METAL_OVERVIEW_SUBPIXEL_TRANSIENTS_KEEP_FULL_AMPLITUDE_AND_SCROLL_COVERAGE_OK")
+
 // Constant signed PCM envelopes test actual GPU pixels at known dBFS.
 for level: Float in [0.25, 0.5, pow(10, -1.4 / 20), 1] {
     let source = envelopeFixture("calibration-\(level)", level)
@@ -468,7 +503,7 @@ let benchmarkBlock = TimelineAudioWaveform.VertexBlock(channels: [(0..<4096).map
     SIMD2(Float($0), sin(Float($0) * 0.17) * sin(Float($0) * 0.003))
 }], start: 0, end: 4096, step: 1, rate: 48_000, key: "200-visible-strokes")
 func measureBatch(_ benchmarkBlock: TimelineAudioWaveform.VertexBlock, label: String,
-                  sourceBlocks: [TimelineAudioWaveform.VertexBlock] = []) {
+                  sourceBlocks: [TimelineAudioWaveform.VertexBlock] = [], sourceScale: Float = 0.053) {
 var encodeTimes: [Double] = [], scheduleTimes: [Double] = [], gpuTimes: [Double] = []
 for frameIndex in 0..<16 {
     var strokes: [MetalWaveformStroke] = []
@@ -477,7 +512,7 @@ for frameIndex in 0..<16 {
             let rect = CGRect(x: column * 220, y: row * 60, width: 218, height: 58)
             let source = sourceBlocks.isEmpty ? benchmarkBlock : sourceBlocks[(row * 10 + column) % sourceBlocks.count]
             strokes.append(MetalWaveformStroke(block: source, channel: 0,
-                scale: SIMD2(0.053 + Float(frameIndex) * 0.00001, 22),
+                scale: SIMD2(sourceScale * (1 + Float(frameIndex) * 0.0002), 22),
                 translation: SIMD2(Float(rect.minX), Float(rect.midY)), clip: rect,
                 color: SIMD4(0.65, 0.65, 0.65, 1), itemRect: rect))
         }
@@ -534,6 +569,9 @@ let unicodeBenchmarkBlocks = (0..<200).map { index in
 measureBatch(unicodeBenchmarkBlocks[0], label: "METAL_200_REPEATED_UNICODE_STROKES_2200x1200_MEASURED")
 measureBatch(unicodeBenchmarkBlocks[0], label: "METAL_200_DISTINCT_UNICODE_STROKES_2200x1200_MEASURED",
     sourceBlocks: unicodeBenchmarkBlocks)
+let overviewBenchmark = TimelineAudioWaveform.VertexBlock(channels: [intervalPeakPoints.map { SIMD2($0.x * 256, $0.y) }],
+    start: 0, end: 4096 * 256, step: 8 * 256, rate: 48000, key: "overview-200", isPeakEnvelope: true)
+measureBatch(overviewBenchmark, label: "METAL_200_OVERVIEW_PIXEL_COLUMN_STROKES_MEASURED", sourceScale: 0.053 / 256)
 
 if ProcessInfo.processInfo.environment["JARAS_METAL_OFFSCREEN_ONLY"] == "1" { exit(0) }
 

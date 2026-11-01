@@ -4,7 +4,7 @@ param(
 )
 . "$PSScriptRoot/native-ui-common.ps1"
 $appearance=Join-Path $OutputDirectory 'isolated-appearance.json'
-$process=Start-Process -FilePath $Executable -ArgumentList ('--visual-test --ui-scale 1 --appearance-file "'+$appearance+'"') -PassThru
+$process=Start-Process -FilePath $Executable -ArgumentList ('--visual-test --appearance-file "'+$appearance+'"') -PassThru
 try {
  Start-Sleep -Seconds 5
  $process.Refresh(); $handle=$process.MainWindowHandle

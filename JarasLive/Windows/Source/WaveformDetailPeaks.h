@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <utility>
 #include <vector>
@@ -15,6 +16,18 @@ class WaveformDetailPeaks {
     static constexpr int stride = 16;
     static constexpr double maximumSamplesPerPixel = 256;
     static bool needsDetail(double samplesPerPixel) { return samplesPerPixel <= maximumSamplesPerPixel; }
+    // Use the same source-aligned overview levels as Metal. Aggregate every
+    // interval touched by a physical pixel; no transient becomes a thin line.
+    static std::int64_t overviewStride(double samplesPerPixel) {
+        if (!std::isfinite(samplesPerPixel) || samplesPerPixel < 256) return 256;
+        return std::int64_t{1} << std::min(26, (int)std::floor(std::log2(samplesPerPixel)));
+    }
+    static std::pair<std::int64_t,std::int64_t> overviewRange(std::int64_t first, std::int64_t last,
+                                                           std::int64_t frames, std::int64_t step) {
+        first = std::clamp<std::int64_t>(first,0,frames);
+        last = std::clamp<std::int64_t>(last,first,frames);
+        return {first / step * step, std::min(frames, ((last + step - 1) / step) * step)};
+    }
     static float pixelWidth(float density) { return 1.f / std::clamp(density, 1.f, 8.f); }
     static std::pair<float, float> displayEdges(float low, float high, float middle,
                                                float amplitude, float density) {

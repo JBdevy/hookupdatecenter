@@ -27,7 +27,7 @@ try{
  $copyDir=Join-Path $OutputDirectory 'real-project';New-Item -ItemType Directory -Force $copyDir | Out-Null
  $copy=Join-Path $copyDir 'Validation.jl';Copy-Item -LiteralPath $Project -Destination $copy -Force
  if(!(Test-Path "$copyDir\Stems")){New-Item -ItemType Junction -Path "$copyDir\Stems" -Target (Join-Path (Split-Path $Project) 'Stems') | Out-Null}
- $arguments='--project-preview "'+$copy+'" --ui-scale 0.9 --appearance-file "'+$OutputDirectory+'\appearance.json"'
+ $arguments='--project-preview "'+$copy+'" --appearance-file "'+$OutputDirectory+'\appearance.json"'
  $process=Start-Process -FilePath $Executable -ArgumentList $arguments -PassThru
  $deadline=[DateTime]::UtcNow.AddSeconds(35)
  do{Start-Sleep -Milliseconds 200;$process.Refresh();$script:main=$process.MainWindowHandle}while($script:main -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)

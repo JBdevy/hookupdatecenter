@@ -162,6 +162,27 @@ class StageState final {
     std::optional<ID> observed;
     bool wasPlaying = false;
 };
+class StageTimerReadout final : public Label, private Timer {
+  public:
+    explicit StageTimerReadout(StageState &value) : state(value) {
+        setComponentID("stageTimerReadout");
+        setFont(Font(FontOptions(Font::getDefaultMonospacedFontName(), 16, Font::bold)));
+        setJustificationType(Justification::centred);
+        setInterceptsMouseClicks(false, false);
+        refresh(); startTimerHz(4);
+    }
+    void refresh() {
+        setVisible(state.running);
+        if (!state.running) return;
+        const bool expired = state.seconds() <= 0;
+        setText(state.timeText(), dontSendNotification);
+        setColour(textColourId, expired ? Colours::red : theme::green);
+        setAlpha(expired && (int)(StageState::now() * 2) % 2 ? .25f : 1.f);
+    }
+  private:
+    StageState &state;
+    void timerCallback() override { refresh(); }
+};
 class StageTimerControl final : public Component, private Timer {
   public:
     StageTimerControl(StageState &s, std::function<void()> configure = {})

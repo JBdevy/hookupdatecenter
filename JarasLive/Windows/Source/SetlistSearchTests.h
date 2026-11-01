@@ -30,6 +30,28 @@ inline void click(Workspace &workspace,int row) {
     floatingControlTests::pump();
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Search Enter returns focus to workspace instead of the inline timer",[&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(fixture()));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("search-enter-focus",".json"));
+        DocumentWindow host("Search focus",theme::background,0);
+        host.setContentNonOwned(&workspace,false);host.setBounds(50,50,1366,768);host.setVisible(true);
+        workspace.projectOpened(false);workspace.grabKeyboardFocus();floatingControlTests::pump();
+        for(int repeat=0;repeat<3;++repeat) {
+            workspace.keyStateChanged(false);
+            require(host.getPeer()->handleKeyPress(KeyPress(KeyPress::tabKey)),"Tab did not open search");floatingControlTests::pump();
+            auto *field=dynamic_cast<TextEditor*>(uiFeatureTests::find(host,"setlistSearchField"));
+            require(field&&field->hasKeyboardFocus(false),"Search did not receive keyboard focus");
+            field->setText("Final",false);field->onTextChange();
+            require(host.getPeer()->handleKeyPress(KeyPress(KeyPress::returnKey)),"Search did not consume Enter");
+            for(int i=0;i<4;++i)floatingControlTests::pump();
+            require(!flag(get(workspace.diagnostics(),"setlist"),"searching"),"Enter did not finish search");
+            require(workspace.hasKeyboardFocus(false),"Search focused a timer input after closing");
+            auto *hours=dynamic_cast<TextEditor*>(uiFeatureTests::find(workspace,"timerHours"));
+            require(hours==nullptr,"Toolbar still contains a timer Hours input");
+        }
+        host.clearContentComponent();
+    });
     test("Playlist chooser toggles plain clicks and retains selections across searches",[&] {
         const auto project=fixture();jaras::RegionPlaylist saved;bool committed=false;
         PlaylistEditor editor(project.songs[0],nullptr,[&](auto result){saved=std::move(result);committed=true;},[]{});

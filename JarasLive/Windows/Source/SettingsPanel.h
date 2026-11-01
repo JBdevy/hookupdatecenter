@@ -354,26 +354,18 @@ class SettingsPanel final : public Component, private Timer {
         auto &title = label(tabs[index]->getButtonText(), 20, 30, true);
         title.setFont(theme::font(18, true));
         if (index == 0) {
-            contentHeight = 510;
-            label(String::fromUTF8("Escala da interface"), 152, 26, true);
-            StringArray scales;
-            for (int percent = 75; percent <= 125; percent += 25) scales.add(String(percent) + "%");
-            choice("interfaceScale", scales, roundToInt(preferences.interfaceScale() * 4) - 2, 24, 188, 176,
-                   [this](int choice) {
-                       auto result = preferences.set("jaras.interface.scale", (choice + 2) / 4.0);
-                       if (result.failed()) error(result.getErrorMessage());
-                   });
-            label(localization::translate("Show Mode"), 240, 26, true);
-            showModeChoice = &choice("showMode", {"Disabled", "Enabled"}, showMode->enabled ? 2 : 1, 24, 276, 176,
+            contentHeight = 422;
+            label(localization::translate("Show Mode"), 152, 26, true);
+            showModeChoice = &choice("showMode", {"Disabled", "Enabled"}, showMode->enabled ? 2 : 1, 24, 188, 176,
                 [this](int id) { showMode->setEnabled(id == 2); timerCallback(); });
-            auto &description = label(localization::translate("When enabled, the notebook lid can be closed without stopping playback."), 310, 48, false, theme::secondary);
+            auto &description = label(localization::translate("When enabled, the notebook lid can be closed without stopping playback."), 222, 48, false, theme::secondary);
             description.setFont(theme::font(11));
-            showModeStatus = &label({}, 366, 38, false, theme::secondary);
+            showModeStatus = &label({}, 278, 38, false, theme::secondary);
             showModeStatus->setFont(theme::font(11));
             showMode->refresh(); timerCallback();
-            label(localization::translate("Startup sound"), 410, 26, true);
+            label(localization::translate("Startup sound"), 322, 26, true);
             choice("startupSound", {"Disabled", "Enabled"}, (bool)preferences.value("jaras.startup.sound", true) ? 2 : 1,
-                   24, 446, 176, [this](int id) {
+                   24, 358, 176, [this](int id) {
                        auto result = preferences.set("jaras.startup.sound", id == 2);
                        if (result.failed()) error(result.getErrorMessage());
                    });

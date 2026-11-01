@@ -9,6 +9,30 @@
 #include "ExportPanel.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void transportHitBounds(const File &directory) {
+        using floatingControlTests::require;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("transport-bounds",".json"));
+        DocumentWindow host("Transport",theme::background,0);host.setContentNonOwned(&w,false);host.setBounds(50,50,1400,800);host.setVisible(true);w.projectOpened(false);
+        w.syncNativeTransport();
+        const auto parent=static_cast<HWND>(host.getPeer()->getNativeHandle());
+        std::vector<std::pair<HWND,RECT>> original;
+        for(auto child=GetWindow(parent,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)) {
+            wchar_t name[64]{};GetClassNameW(child,name,64);
+            if(std::wstring(name)!=L"CatLiveTransportButton")continue;
+            RECT rect{};GetWindowRect(child,&rect);MapWindowPoints(HWND_DESKTOP,parent,reinterpret_cast<POINT*>(&rect),2);
+            original.emplace_back(child,rect);
+            SetWindowPos(child,nullptr,rect.left+43,rect.top+9,rect.right-rect.left+7,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_NOZORDER);
+        }
+        require(original.size()>=15,"Native transport buttons are missing");
+        w.syncNativeTransport();
+        for(const auto &[child,expected]:original) {
+            RECT rect{};GetWindowRect(child,&rect);MapWindowPoints(HWND_DESKTOP,parent,reinterpret_cast<POINT*>(&rect),2);
+            require(EqualRect(&rect,&expected)!=FALSE,"Input bounds stayed displaced despite unchanged transport state");
+        }
+        host.clearContentComponent();
+    }
     static void toolbarTimerAndHints(const File &directory) {
         using floatingControlTests::require;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
@@ -17,13 +41,20 @@ struct WorkspaceLayoutTests {
         DocumentWindow host("Workspace",theme::background,0);host.setContentNonOwned(&w,false);host.setBounds(50,50,1200,800);host.setVisible(true);w.projectOpened(false);
         for(const int width:{900,1200,1600}) {
             w.setSize(width,800);
-            require(!w.controls["railClock"]->isVisible(),"Old timer icon remains on the toolbar");
-            require(w.stageTimer->isVisible()&&w.stageTimer->getX()>w.controls["railVinhetas"]->getRight(),"Timer fields are not immediately after Pads");
+            require(w.controls["railClock"]->isVisible()&&w.controls["railClock"]->getX()>w.controls["railVinhetas"]->getRight(),"Timer icon is not after Pads");
+            require(!w.stageTimer->isVisible(),"Stopped timer should not display a count in the toolbar");
+            require(std::abs(w.stageTimer->getBounds().getCentreX()-width/2)<=1,"Timer count is not centered in the whole toolbar");
+            require(w.stageTimer->getX()>w.controls["railClock"]->getRight(),"Timer overlaps toolbar icons");
             require(w.stageTimer->getRight()<w.controls["audioStatus"]->getX(),"Timer overlaps audio status");
-            int fields=0;for(auto *child:w.stageTimer->getChildren())if(dynamic_cast<TextEditor*>(child)){++fields;require(child->getWidth()>=20&&child->getHeight()>=20,"Compact timer fields are clipped");}
-            require(fields==3,"Timer needs HH, MM and SS fields");
+            require(uiFeatureTests::find(w,"timerHours")==nullptr,"Toolbar retained editable timer inputs");
+            w.stage.target=65;w.stage.start();w.updateState();
+            require(w.stageTimer->isVisible()&&w.stageTimer->getText()=="00:01:05","Active countdown did not appear immediately");
+            w.stage.started-=2;w.updateState();
+            require(w.stageTimer->getText()=="00:01:03","Toolbar count did not advance");
+            w.stage.reset();w.updateState();
+            require(!w.stageTimer->isVisible(),"Timer count remained visible after stopping");
         }
-        for(const auto &spec:std::initializer_list<std::pair<const char*,const char*>>{{"mixer","Track-Mixer"},{"railMixer","Hoz-Mixer"},{"railParts","Parts"},{"railNotice","Recados"},{"railKeyboard","Keyboard"},{"railVinhetas","Pads"},{"settings","Configurações"}}) {
+        for(const auto &spec:std::initializer_list<std::pair<const char*,const char*>>{{"mixer","Track-Mixer"},{"railMixer","Hoz-Mixer"},{"railParts","Parts"},{"railNotice","Recados"},{"railKeyboard","Keyboard"},{"railVinhetas","Pads"},{"railClock","Cronômetro"},{"settings","Configurações"}}) {
             auto *button=w.controls[spec.first];const auto point=button->getLocalBounds().getCentre().toFloat();
             MouseEvent event(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys{},0,0,0,0,0,button,button,Time::getCurrentTime(),point,Time::getCurrentTime(),0,false);
             w.toolbarHints->mouseMove(event);
@@ -913,6 +944,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Tuner gestures retain the project and audio graph while playing and stopped",[&]{WorkspaceLayoutTests::pitchResponsiveness(directory);});
     test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
+    test("Native transport repairs externally displaced input bounds",[&]{WorkspaceLayoutTests::transportHitBounds(directory);});
     test("Toolbar timer and hints match item-knob style",[&]{WorkspaceLayoutTests::toolbarTimerAndHints(directory);});
     test("Advanced remains above workspace without blocking controls",[&]{WorkspaceLayoutTests::toolWindowOrdering(directory);});
     test("Empty track tail matches Mac and appending preserves vertical scroll",[&]{WorkspaceLayoutTests::trackTail(directory);});

@@ -1072,6 +1072,12 @@ struct TimecodePlaybackSpan {
     }
     private var outputFormatChanged: Bool {
         guard let previous = preparedOutputFormat else { return true }
+        #if os(macOS)
+        // Some HAL drivers keep the engine running when another client changes
+        // the physical clock. AVAudioEngine's cached format is not sufficient.
+        if usesSelectedHardware, let rate = AudioDeviceSettings.shared.currentOutputSampleRate,
+           abs(previous.sampleRate - rate) > 0.5 { return true }
+        #endif
         #if os(iOS)
         if mobileOutput != nil {
             let session = AVAudioSession.sharedInstance()
@@ -1097,6 +1103,12 @@ struct TimecodePlaybackSpan {
         }
         #endif
         guard deviceSessionActive, realtime else { return }
+        if outputFormatChanged {
+            // Gate the old-rate graph during the coalesced control-thread rebuild.
+            // No format preparation or allocation belongs to the render callback.
+            engine.mainMixerNode.outputVolume = 0
+            engine.stop()
+        }
         deviceRecovery?.cancel()
         guard outputAllowed else { deviceRecovery = nil; stop(); engine.stop(); return }
         // Core Audio may finish the output format change after CurrentDevice is
@@ -1594,7 +1606,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             return
         }
         #endif
-        if !engine.isRunning { scheduleDeviceRecovery() }
+        if !engine.isRunning || outputFormatChanged { scheduleDeviceRecovery() }
     }
     func effects(for target: UUID?) -> NativeEffectsChain? {
         guard masterConfigured else { return nil }

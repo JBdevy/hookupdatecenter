@@ -120,4 +120,28 @@ guard let configurationStop = configurationWindow.attachedSheet else { fatalErro
 press("Stop timer", in: configurationStop)
 precondition(!timer.running && timer.displayText() == "00:00:00", "configuration confirmation performs existing Stop/reset")
 configurationWindow.close()
+let readoutWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 28), styleMask: [.titled], backing: .buffered, defer: false)
+readoutWindow.isReleasedWhenClosed = false
+let readout = NSHostingView(rootView: Color.clear.overlay { TeleprompterTimerToolbarReadout(timer: timer) })
+readoutWindow.contentView = readout; readoutWindow.orderFront(nil); settle()
+precondition(displayedText(readout).isEmpty, "Stopped toolbar timer has no visible count")
+timer.setTargetText("00:01:05"); timer.start(); settle()
+precondition(displayedText(readout).contains("00:01:05") && fields(in: readout).isEmpty, "Toolbar shows only the running count")
+for width in [600.0, 1000.0] {
+    readoutWindow.setContentSize(NSSize(width: width, height: 28)); readout.layoutSubtreeIfNeeded(); settle()
+    func readoutField(_ view: NSView) -> NSTextField? {
+        if let field = view as? NSTextField { return field }
+        return view.subviews.lazy.compactMap(readoutField).first
+    }
+    let field = readoutField(readout)!
+    let rect = readout.convert(field.bounds, from: field)
+    precondition(abs(rect.midX-readout.bounds.midX)<1, "Countdown stays centered when the toolbar width changes")
+}
+clock += 2
+RunLoop.main.run(until: Date().addingTimeInterval(0.65))
+precondition(displayedText(readout).contains("00:01:03"), "Central countdown updates without editing controls")
+timer.stopAndReset(); settle()
+precondition(displayedText(readout).isEmpty, "Stopping clears the central countdown")
+readoutWindow.close()
+print("TIMER_TOOLBAR_CENTERED_RUNNING_READOUT_AND_HIDDEN_STOPPED_OK")
 print("TIMER_TOOLBAR_CONFIGURATION_START_IMMEDIATE_STOP_CONFIRM_CANCEL_STALE_RUN_AND_RESET_OK")

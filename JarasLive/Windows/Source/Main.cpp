@@ -245,13 +245,7 @@ class CatLiveApplication final : public JUCEApplication {
             const int appearanceArgument = args.indexOf("--appearance-file");
             if ((visualTest || previewHome) && appearanceArgument >= 0 && appearanceArgument + 1 < args.size())
                 appearanceFile = File(args[appearanceArgument + 1]);
-            float scale = Appearance(appearanceFile).interfaceScale();
-            const int scaleArg = args.indexOf("--ui-scale");
-            if (scaleArg >= 0 && scaleArg + 1 < args.size()) {
-                const auto requested = args[scaleArg + 1].getFloatValue();
-                if (std::isfinite(requested) && requested > 0) scale = std::round(jlimit(.6f, 1.2f, requested) * 10) / 10;
-            }
-            Desktop::getInstance().setGlobalScaleFactor(scale);
+            Desktop::getInstance().setGlobalScaleFactor(1.f);
             if (!visualTest && !args.contains("--imgui-ui"))
                 splash = std::make_unique<StartupSplash>();
             session = std::make_unique<Session>();

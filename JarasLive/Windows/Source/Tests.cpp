@@ -2735,22 +2735,14 @@ int runTests(const File &directory) {
         auto stream=directory.getChildFile("project-open-confirmation.png").createOutputStream();
         expect(stream&&PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),*stream),"Could not capture confirmation");
     });
-    test("Interface scale defaults to 100 percent and persists separately from projects", [&] {
+    test("Interface scale stays at 100 percent with legacy preferences", [&] {
         auto file = directory.getNonexistentChildFile("interface-scale", ".json");
         Appearance preferences(file);
         expect(std::abs(preferences.interfaceScale() - 1.f) < 1e-6, "First-install default");
-        expect(preferences.set("jaras.interface.scale", 1.1).wasOk(), "Scale saved");
-        expect(std::abs(Appearance(file).interfaceScale() - 1.f) < 1e-6, "Scale restored");
-        for (int percent = 75; percent <= 125; percent += 25) {
-            expect(preferences.set("jaras.interface.scale", percent / 100.0).wasOk(), "Save scale option");
-            expect(std::abs(Appearance(file).interfaceScale() - percent / 100.f) < 1e-6, "Restore scale option");
+        for (double legacy : {.6, .7, .75, 1., 1.1, 1.25, 1.5}) {
+            expect(preferences.set("jaras.interface.scale", legacy).wasOk(), "Legacy scale saved");
+            expect(std::abs(Appearance(file).interfaceScale() - 1.f) < 1e-6, "Legacy scale must not affect layout or input");
         }
-        for (double legacy : {.6, .7}) {
-            expect(preferences.set("jaras.interface.scale", legacy).wasOk(), "Legacy small scale saved");
-            expect(std::abs(Appearance(file).interfaceScale() - .75f) < 1e-6, "Legacy scale upgrades to 75 percent");
-        }
-        expect(preferences.set("jaras.interface.scale", 1.5).wasOk(), "Legacy scale saved");
-        expect(std::abs(Appearance(file).interfaceScale() - 1.25f) < 1e-6, "Legacy scale is limited to 125 percent");
     });
     test("Waveforms analyse real stereo media asynchronously and map offsets, rates and loops", [&] {
         const auto file = directory.getNonexistentChildFile("waveform-source", ".wav");
@@ -2797,16 +2789,22 @@ int runTests(const File &directory) {
         expect(summary->peaks.alignedRange(0,0,64).second==0&&summary->peaks.alignedRange(0,64,128).second>.899f&&
                summary->peaks.alignedRange(0,128,192).second==0,"An impulse does not leak into neighbouring 64-frame columns");
         jaras::AudioClip clip;clip.duration=1024./48000;
-        Image impulse(Image::ARGB,16,80,true);Graphics impulseGraphics(impulse);
-        WaveformRenderer::draw(impulseGraphics,cache,ready,clip,{0,0,16,80},{0,0,16,80},750,Colours::white,false);
+        Image impulse(Image::ARGB,16,80,true);
+        {
+            Graphics impulseGraphics(impulse);
+            WaveformRenderer::draw(impulseGraphics,cache,ready,clip,{0,0,16,80},{0,0,16,80},750,Colours::white,false);
+        } // Complete Direct2D drawing before mapping its pixels for CPU readback.
         expect(impulse.getPixelAt(0,25).getAlpha()==0&&impulse.getPixelAt(1,30).getAlpha()>0&&impulse.getPixelAt(3,25).getAlpha()==0,
                "Rendered impulse remains narrow rather than filling its old 256-frame interval");
         auto pcm=cache.detail(ready,0);
         while(!pcm&&Time::getMillisecondCounterHiRes()<deadline){Thread::sleep(10);pcm=cache.detail(ready,0);}
         expect(pcm!=nullptr,"Close zoom PCM page prepared asynchronously");
         clip.sourceOffset=256./48000;clip.duration=256./48000;
-        Image silence(Image::ARGB,32,80,true);Graphics silenceGraphics(silence);
-        WaveformRenderer::draw(silenceGraphics,cache,ready,clip,{0,0,32,80},{0,0,32,80},6000,Colours::white,false);
+        Image silence(Image::ARGB,32,80,true);
+        {
+            Graphics silenceGraphics(silence);
+            WaveformRenderer::draw(silenceGraphics,cache,ready,clip,{0,0,32,80},{0,0,32,80},6000,Colours::white,false);
+        }
         expect(silence.getPixelAt(10,48).getAlpha()>0&&silence.getPixelAt(10,45).getAlpha()==0,
                "Zero PCM keeps a thin centre line at detailed zoom");
     });

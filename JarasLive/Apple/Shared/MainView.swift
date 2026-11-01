@@ -677,7 +677,7 @@ struct MainView: View {
 
 
             }
-            TeleprompterTimerControl(compact: true)
+            TeleprompterTimerToolbarButton()
             Spacer(minLength: 0)
             AudioStatusView { openSettings(.audio) }
                 .font(.jarasSystem(size: 9, weight: .medium, design: .monospaced))
@@ -693,6 +693,7 @@ struct MainView: View {
         .padding(.horizontal, 4)
         .frame(height: 28)
         .background(JarasTheme.panel)
+        .overlay { TeleprompterTimerToolbarReadout().allowsHitTesting(false) }
         .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.secondary.opacity(0.2)).frame(height: 1) }
     }
     #endif

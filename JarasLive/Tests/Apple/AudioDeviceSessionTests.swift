@@ -152,6 +152,33 @@ setbuf(stdout, nil)
     try requireSharedOutput()
     concurrent.prepareForClosing()
     print("TWO_SHARED_CLIENTS_RENDER_ON_SELECTED_OUTPUT_OK")
+    // Opt-in hardware check: emulate another DAW writing the HAL clock, without
+    // going through CatLive's sample-rate setter. Always restore the device.
+    if ProcessInfo.processInfo.environment["CATLIVE_TEST_EXTERNAL_RATE"] == "1",
+       settings.sampleRateChoices.contains(44100), settings.sampleRateChoices.contains(48000),
+       let originalRate = settings.currentOutputSampleRate {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        defer {
+            var restore = originalRate
+            AudioObjectSetPropertyData(target.hardwareID, &address, 0, nil, UInt32(MemoryLayout<Double>.size), &restore)
+        }
+        for rate in [originalRate == 44100 ? 48000.0 : 44100.0, originalRate] {
+            var requested = rate
+            try require(AudioObjectSetPropertyData(target.hardwareID, &address, 0, nil,
+                UInt32(MemoryLayout<Double>.size), &requested) == noErr, "External HAL change was refused")
+            for _ in 0..<40 {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                if settings.engine.isRunning && settings.sampleRate == rate &&
+                   selected.effects(for: nil)?.output.outputFormat(forBus: 0).sampleRate == rate { break }
+            }
+            try require(settings.engine.isRunning && settings.sampleRate == rate,
+                        "External rate change did not recover the selected hardware")
+            try require(selected.effects(for: nil)?.output.outputFormat(forBus: 0).sampleRate == rate,
+                        "DSP graph kept the old sample rate while HAL used a new clock")
+        }
+        print("EXTERNAL_HAL_44100_48000_RECOVERS_DSP_GRAPH_AND_RESTORES_HARDWARE_OK")
+    }
     selected.prepareForClosing()
     settings.select("none")
     try selected.startDeviceSession()

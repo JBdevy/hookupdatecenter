@@ -869,6 +869,26 @@ final class MetalWaveformEngine {
             let faded = stroke.fadeRange.z > 0 || stroke.fadeRange.w > 0
             let detailSteps = faded && !stroke.block.isPeakEnvelope && range.count < 64
                 ? max(1, min(4096, Int(ceil(clip.width / CGFloat(max(1, range.count)) / 0.5)))) : 1
+            // Aggregate every source interval that contributes to a physical
+            // column. Subpixel peak polygons otherwise thin out loud transients
+            // at overview zoom. Columns are anchored to the file, never the crop.
+            let peakColumns = stroke.block.isPeakEnvelope && stroke.block.step >= TimelineAudioWaveform.peakFramesPerInterval && stroke.scale.x > 0
+            var columnFrames = 0.0, columnOffset = 0.0
+            var drawRange = range
+            if peakColumns {
+                columnFrames = 1 / (Double(stroke.scale.x) * Double(max(1, density)))
+                columnOffset = -Double(stroke.block.start).truncatingRemainder(dividingBy: columnFrames)
+                let points = stroke.block.channels[stroke.channel]
+                // A coarse fallback can cover minutes inside one bucket at a
+                // close zoom. Limit columns to the viewport, not that bucket.
+                let visibleFirst = (Double(clip.minX) - Double(stroke.translation.x)) / Double(stroke.scale.x)
+                let visibleLast = (Double(clip.maxX) - Double(stroke.translation.x)) / Double(stroke.scale.x)
+                let firstFrame = max(Double(points[range.lowerBound * 2].x), visibleFirst - columnFrames)
+                let lastFrame = min(Double(points[(range.upperBound - 1) * 2 + 1].x), visibleLast + columnFrames)
+                let first = Int(floor((firstFrame - columnOffset) / columnFrames))
+                let last = Int(ceil((lastFrame - columnOffset) / columnFrames))
+                drawRange = first..<max(first + 1, last)
+            }
             var uniforms = Uniforms(
                 transform: SIMD4(stroke.scale.x, stroke.scale.y, stroke.translation.x, stroke.translation.y),
                 viewportAndWidth: SIMD4(Float(frame.size.width), Float(frame.size.height), stroke.lineWidth * 0.5, max(1, density)),
@@ -876,17 +896,17 @@ final class MetalWaveformEngine {
                 item: SIMD4(Float(stroke.itemRect.minX), Float(stroke.itemRect.minY), Float(stroke.itemRect.maxX), Float(stroke.itemRect.maxY)),
                 notch: SIMD4(seam, spacing.isFinite && spacing > 0 ? spacing : 0, 4, 5),
                 colour: stroke.color,
-                corner: SIMD4(stroke.itemRect.width < 20 ? 0 : max(0, stroke.itemCornerRadius), stroke.block.isPeakEnvelope ? 1 : 0, Float(stroke.block.channels[stroke.channel].count / 2), Float(range.lowerBound)),
+                corner: SIMD4(stroke.itemRect.width < 20 ? 0 : max(0, stroke.itemCornerRadius), peakColumns ? 2 : stroke.block.isPeakEnvelope ? 1 : 0, Float(stroke.block.channels[stroke.channel].count / 2), Float(drawRange.lowerBound)),
                 fadeRange: stroke.fadeRange, fadeShape: stroke.fadeShape,
-                fadeCenterAndSteps: SIMD4(stroke.fadeCenter ?? stroke.translation.y, Float(detailSteps), 0, 0))
+                fadeCenterAndSteps: SIMD4(stroke.fadeCenter ?? stroke.translation.y, Float(detailSteps), Float(columnFrames), Float(columnOffset)))
             let pointsPerInstance = stroke.block.isPeakEnvelope ? 2 : 1
             encoder.setVertexBuffer(source.buffer, offset: stroke.block.isPeakEnvelope ? 0 : range.lowerBound * pointsPerInstance * MemoryLayout<SIMD2<Float>>.stride, index: 0)
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
             // One quad per sample segment or min/max interval. Envelopes cover
             // the entire source interval, including a trim inside one bucket.
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: stroke.block.isPeakEnvelope ? 12 : 6, instanceCount: range.count * detailSteps)
-            lastEncodedSegmentCount += range.count
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: stroke.block.isPeakEnvelope && !peakColumns ? 12 : 6, instanceCount: drawRange.count * detailSteps)
+            lastEncodedSegmentCount += drawRange.count
             lastEncodedStrokeCount += 1
         }
         encoder.endEncoding()
@@ -1040,6 +1060,38 @@ final class MetalWaveformEngine {
                                     float2(0,1),float2(1,-1),float2(1,1)};
         WaveformRaster out;
         float2 corner = corners[vertexID % 6];
+        if (u.corner.y > 1.5) {
+            float first = u.fadeCenterAndSteps.w + (float(segment) + u.corner.w) * u.fadeCenterAndSteps.z;
+            float last = first + u.fadeCenterAndSteps.z;
+            uint count = uint(u.corner.z), lo = 0, hi = count;
+            while (lo < hi) {
+                uint mid = (lo + hi) / 2;
+                if (points[mid * 2 + 1].x <= first) lo = mid + 1; else hi = mid;
+            }
+            float low = INFINITY, high = -INFINITY;
+            for (uint i = lo; i < count && points[i * 2].x < last; ++i) {
+                low = min(low, min(points[i * 2].y, points[i * 2 + 1].y));
+                high = max(high, max(points[i * 2].y, points[i * 2 + 1].y));
+            }
+            if (!isfinite(low)) low = high = 0;
+            float left = first * u.transform.x + u.transform.z;
+            // Whole-pixel translation keeps a stationary peak's coverage stable
+            // during continuous scrolling, including fractional display scaling.
+            left = round(left * u.viewportAndWidth.w) / u.viewportAndWidth.w;
+            float x = left + corner.x / u.viewportAndWidth.w;
+            float fade = waveformFade(left + 0.5 / u.viewportAndWidth.w, u);
+            float2 edge = float2(low, high) * u.transform.y + u.transform.w;
+            edge = u.fadeCenterAndSteps.x + (edge - u.fadeCenterAndSteps.x) * fade;
+            float centerY = (edge.x + edge.y) * 0.5;
+            float halfHeight = max(abs(edge.y - edge.x) * 0.5, 0.5 / u.viewportAndWidth.w);
+            float y = corner.y * (halfHeight + 1.0 / u.viewportAndWidth.w);
+            float2 screen = float2(x, centerY + y);
+            out.position = float4(screen.x / u.viewportAndWidth.x * 2.0 - 1.0,
+                                  1.0 - screen.y / u.viewportAndWidth.y * 2.0, 0, 1);
+            out.local = float2(0, y); out.screen = screen; out.length = 0;
+            out.peakHalfHeight = halfHeight;
+            return out;
+        }
         if (u.corner.y > 0) {
             uint bucket = segment + uint(u.corner.w);
             float2 a = points[bucket * 2] * u.transform.xy + u.transform.zw;

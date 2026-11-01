@@ -693,7 +693,7 @@ struct SongListView: View {
         guard show.selectRegionSearchResult(id) else { return }
         // Search is an explicit request to reveal this child, unlike playback focus.
         if let parent = show.current?.parts.first(where: { $0.id == id })?.parentRegionID { expandedRegions.insert(parent) }
-        searching = false; query = ""; choosingPlaylist = false
+        searchFocused = false; searching = false; query = ""; choosingPlaylist = false
     }
     private func moveSearchHighlight(_ delta: Int) {
         let results = show.searchRegions(query, byRegionID: idMode == "region")
@@ -1519,7 +1519,26 @@ private struct SetlistArrowKeys: NSViewRepresentable {
     func updateNSView(_ view: SetlistKeyView, context: Context) { view.searching = searching; view.searchMove = searchMove; view.searchChoose = searchChoose; view.move = move; view.playlist = playlist; view.search = search; view.released = released; view.activate = activate; view.delete = delete }
 }
 final class SetlistKeyView: NSView {
-    var searching = false
+    var searching = false {
+        didSet {
+            guard oldValue && !searching else { return }
+            restoreSearchFocus = true
+            DispatchQueue.main.async { [weak self] in self?.restoreFocusAfterSearch() }
+        }
+    }
+    override var acceptsFirstResponder: Bool { true }
+    private var restoreSearchFocus = false
+    private var searchFocusObserver: NSObjectProtocol?
+    private func restoreFocusAfterSearch() {
+        guard restoreSearchFocus, !searching, let window, window.isKeyWindow,
+              window.attachedSheet == nil, !isHiddenOrHasHiddenAncestor else { return }
+        // Dismissing an NSPopover can select the first TextField in the document
+        // (the toolbar timer). Keep keyboard navigation in the Setlist instead.
+        restoreSearchFocus = false
+        window.makeFirstResponder(self)
+        Self.deleteOwner = self
+        EditorSelectionRouter.shared.activate(.setlist, in: window)
+    }
     var search: (() -> Bool)?
     var searchMove: ((Int) -> Void)?
     var searchChoose: (() -> Void)?
@@ -1550,6 +1569,7 @@ final class SetlistKeyView: NSView {
     }
     func notePointerEvent(_ event: NSEvent) {
         guard event.window === window else { return }
+        restoreSearchFocus = false
         let point = convert(event.locationInWindow, from: nil)
         if bounds.contains(point) && visibleRect.contains(point) {
             if window?.firstResponder is any TimelineGridKeyboardTarget { window?.makeFirstResponder(nil) }
@@ -1579,8 +1599,12 @@ final class SetlistKeyView: NSView {
         if Self.deleteOwner === self { Self.deleteOwner = nil }
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver); self.focusObserver = nil }
+        if let searchFocusObserver { NotificationCenter.default.removeObserver(searchFocusObserver); self.searchFocusObserver = nil }
         guard let window else { return }
         focusObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,object: window,queue: .main) { [weak self] _ in self?.stopRepeating(commit: false) }
+        searchFocusObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification,object: window,queue: .main) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in self?.restoreFocusAfterSearch() }
+        }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown,.keyUp,.flagsChanged,.leftMouseDown,.rightMouseDown]) { [weak self] event in
             guard let self else { return event }
             if RegionShortcutView.envelopeOwnsEditingKey(event) {
@@ -1663,6 +1687,7 @@ final class SetlistKeyView: NSView {
         repeatTimer?.invalidate()
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+        if let searchFocusObserver { NotificationCenter.default.removeObserver(searchFocusObserver) }
     }
 }
 #endif

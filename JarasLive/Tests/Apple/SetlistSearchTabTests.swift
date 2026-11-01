@@ -34,6 +34,7 @@ MainActor.assumeIsolated {
     window.isReleasedWhenClosed = false
     let host = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 240))
     window.contentView = host
+    let timer = NSTextField(frame: NSRect(x: 10, y: 10, width: 40, height: 24)); host.addSubview(timer)
     let keys = SetlistKeyView(frame: host.bounds); host.addSubview(keys)
     let popup = NSPopover(); popup.behavior = .transient
     let panel = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 120))
@@ -84,6 +85,17 @@ MainActor.assumeIsolated {
         for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!.post(tap: .cghidEventTap) }
         pump(0.1)
     }
+    keys.searchChoose = {
+        keys.searching = false; popup.performClose(nil)
+    }
+    for _ in 0..<3 {
+        tab(); require(popup.isShown, "Search must open before selecting a result")
+        press(36); pump(0.9)
+        require(!popup.isShown && window.firstResponder === keys,
+                "Choosing a search result must focus Setlist, never the timer field")
+        require(timer.currentEditor() == nil, "Enter must not start editing timer hours")
+    }
+    print("SETLIST_SEARCH_ENTER_RESTORES_FOCUS_WITH_INLINE_TIMER_OK")
     pump(0.3); press(125); press(125); press(126); press(36); press(76)
     require(moves == [1, 1, -1], "Arrows must browse one row per press")
     require(activations == 2, "Return and keypad Enter must activate the browsed selection")

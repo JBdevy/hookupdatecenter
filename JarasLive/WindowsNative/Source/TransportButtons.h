@@ -60,6 +60,13 @@ class TransportButtons final {
     void update(size_t index, HWND parent, const State &state, Click click) {
         while(buttons.size()<=index) buttons.push_back(std::make_unique<Button>(*this));
         auto &button=*buttons[index]; button.click=std::move(click);
+        // A plugin may temporarily change the UI thread's DPI context. Native
+        // transport children must always use their parent's coordinate space.
+        struct DPIContext {
+            DPI_AWARENESS_CONTEXT previous = nullptr;
+            explicit DPIContext(HWND owner) { if(owner) previous=SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(owner)); }
+            ~DPIContext() { if(previous) SetThreadDpiAwarenessContext(previous); }
+        } dpi(parent);
         if(button.window && (!IsWindow(button.window)||GetParent(button.window)!=parent)) button.destroy();
         if(!button.window && parent) {
             static const bool registered=[] { WNDCLASSW c{};c.lpfnWndProc=proc;c.hInstance=GetModuleHandleW(nullptr);c.lpszClassName=L"CatLiveTransportButton";c.hCursor=LoadCursorW(nullptr,MAKEINTRESOURCEW(32512));return RegisterClassW(&c)!=0||GetLastError()==ERROR_CLASS_ALREADY_EXISTS;}();
@@ -68,8 +75,13 @@ class TransportButtons final {
             if(!button.window) throw std::runtime_error("Não foi possível criar os controles do transporte.");
         }
         if(!button.window) return;
-        if(!(button.state==state)) {
-            const bool resize=!EqualRect(&button.state.rect,&state.rect);
+        RECT actual{};
+        const bool hasBounds=GetWindowRect(button.window,&actual)!=FALSE;
+        if(hasBounds) MapWindowPoints(HWND_DESKTOP,parent,reinterpret_cast<POINT*>(&actual),2);
+        // The OS can resize child windows on a display/DPI change without
+        // changing our cached State. Repair the actual input rectangle too.
+        const bool resize=!hasBounds || !EqualRect(&actual,&state.rect);
+        if(resize || !(button.state==state)) {
             button.state=state;
             if(resize) {
                 SetWindowPos(button.window,HWND_TOP,state.rect.left,state.rect.top,state.rect.right-state.rect.left,state.rect.bottom-state.rect.top,SWP_NOACTIVATE);
@@ -140,6 +152,7 @@ class TransportButtons final {
         if(!b)return DefWindowProcW(h,m,w,l);
         switch(m){
         case WM_ERASEBKGND:return 1;
+        case WM_SIZE:b->target.Reset();InvalidateRect(h,nullptr,FALSE);return 0;
         case WM_TIMER:if((w==1 && b->fallbackPulse) || (w==2 && b->recordingPulse))InvalidateRect(h,nullptr,FALSE);return 0;
         case WM_PAINT:{PAINTSTRUCT ps{};BeginPaint(h,&ps);b->owner.paint(*b);EndPaint(h,&ps);return 0;}
         case WM_MOUSEMOVE:if(!b->hover){b->hover=true;TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,h,0};TrackMouseEvent(&t);InvalidateRect(h,nullptr,FALSE);}return 0;

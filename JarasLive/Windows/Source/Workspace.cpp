@@ -3798,8 +3798,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     addAndMakeVisible(*caption);
     addAndMakeVisible(*timeline);
     addAndMakeVisible(*setlist);
-    stageTimer = std::make_unique<StageTimerControl>(stage, [this] { openTimer(true); });
-    addAndMakeVisible(*stageTimer);
+    stageTimer = std::make_unique<StageTimerReadout>(stage);
+    addChildComponent(*stageTimer);
     tempoControl =
         std::make_unique<TempoControl>(session, [this](String error) { showError(error); },
             [this] { perform([&] { performAction("tapTempo", 1, 0); }); },
@@ -4144,7 +4144,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     remoteButton.setTooltip(String::fromUTF8("Remote · clique direito para configurar"));
     static_cast<QuietButton &>(remoteButton).context = [this](Point<int>) { openRemote(); };
     button("railNotice", "", [this] { openNotices(); }).getProperties().set("icon", "notice");
-    button("railClock", "", [this] { openTimer(); }).getProperties().set("icon", "clock");
+    button("railClock", "", [this] { openTimer(true); }).getProperties().set("icon", "clock");
     controls["railNotice"]->setTooltip("Recados");
     controls["railClock"]->setTooltip(String::fromUTF8("Cronômetro"));
     controls["railNotice"]->getProperties().set("plain", true);
@@ -4173,7 +4173,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     std::vector<std::pair<Component*,String>> toolbarHintTargets;
     for(const auto &entry:std::initializer_list<std::pair<const char*,const char*>>{
             {"mixer","Track-Mixer"},{"railMixer","Hoz-Mixer"},{"railParts","Parts"},
-            {"railNotice","Recados"},{"railKeyboard","Keyboard"},{"railVinhetas","Pads"},{"settings","Configurações"}}) {
+            {"railNotice","Recados"},{"railKeyboard","Keyboard"},{"railVinhetas","Pads"},{"railClock","Cronômetro"},{"settings","Configurações"}}) {
         auto *control=controls[entry.first];control->setTooltip({});
         const auto label=String::fromUTF8(entry.second);control->setTitle(localization::translate(label));
         toolbarHintTargets.emplace_back(control,label);
@@ -5220,7 +5220,7 @@ void Workspace::resized() {
     for (Component *component : std::initializer_list<Component *>{&masterVolume, &masterPan,
             &songDisplay, &transportInfo, &transportTime, tempoControl.get(), tuner.get(), masterPeakReadout.get()})
         if (component) component->setTopLeftPosition(component->getX(), component->getY() + toolBarHeight);
-    stageTimer->setVisible(true);
+    stageTimer->refresh();
     tempo.setVisible(false);
     // Commands not present in the Mac transport remain available through menus/shortcuts.
     for (auto id : {"stopall", "previous", "next", "audio", "soundfont", "railProjects",
@@ -5229,12 +5229,11 @@ void Workspace::resized() {
     controls["railTeleprompt"]->setVisible(false);
     controls["railTeleprompt2"]->setVisible(false);
     int toolX = 4;
-    for (auto id : {"menu", "mixer", "railMixer", "railParts", "railNotice", "railKeyboard", "railVinhetas"}) {
+    for (auto id : {"menu", "mixer", "railMixer", "railParts", "railNotice", "railKeyboard", "railVinhetas", "railClock"}) {
         controls[id]->setBounds(toolX, title + 2, 26, 24);
         toolX += 32;
     }
-    controls["railClock"]->setVisible(false);controls["railClock"]->setBounds({});
-    stageTimer->setBounds(toolX,title+2,157,24);toolX+=163;
+    stageTimer->setBounds((getWidth()-132)/2,title+2,132,24);
     controls["settings"]->setBounds(getWidth() - 30, title + 2, 26, 24);
     const int audioWidth = std::min(300, std::max(1, getWidth() - toolX - 40));
     controls["audioStatus"]->setBounds(getWidth() - 36 - audioWidth, title + 2, audioWidth, 24);
@@ -5516,6 +5515,8 @@ void Workspace::updateState() {
     // Their controls and timeline need one refresh on activation, not 60 per
     // second competing with the visible tab during an Auto transition.
     if (!layoutActive) return;
+    stageTimer->refresh();
+    controls["railClock"]->setColour(TextButton::textColourOffId, stage.running ? theme::green : Colour(0xff299df8));
     // Owned, non-topmost projection windows stay visible above the workspace,
     // while independent FX/plugin windows can take focus and move in front.
     // A sheet is painted inside this HWND, so temporarily drop the ownership
@@ -7771,7 +7772,7 @@ void Workspace::openTimer(bool settings) {
             });
         component->setSize(164, 30);
         CallOutBox::launchAsynchronously(std::move(component),
-                                         getLocalArea(stageTimer.get(),stageTimer->getLocalBounds()), this);
+                                         controls["railClock"]->getBounds(), this);
         return;
     }
     showPanel(String::fromUTF8("Cronômetro"),

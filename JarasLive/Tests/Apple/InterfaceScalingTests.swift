@@ -10,7 +10,24 @@ struct Anchor: NSViewRepresentable {
 struct ScaledRoot<Content: View>: View {
  @ObservedObject var state: ScaleState
  let content: Content
- var body: some View { InterfaceScaleLayout(factor: state.factor, content: content) }
+ var body: some View { InterfaceScaleLayout(factor: CGFloat(InterfaceScale.factor(Double(state.factor))), content: content) }
+}
+// The workspace has a persistent hosting view inside a native deck. This is
+// intentionally different from a SwiftUI-only fixture: scaling its ancestor
+// can shrink drawing while leaving the nested host's click coordinates intact.
+struct WorkspaceDeck: NSViewRepresentable {
+ let record: Recorder
+ final class Deck: NSView {
+  override var isFlipped: Bool { true }
+  override func layout() { super.layout(); for view in subviews { view.frame = bounds } }
+ }
+ func makeNSView(context: Context) -> Deck {
+  let deck = Deck(), host = NSHostingView(rootView: Fixture(record: record))
+  if #available(macOS 13, *) { host.sizingOptions = [] }
+  if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+  deck.addSubview(host); return deck
+ }
+ func updateNSView(_ view: Deck, context: Context) { view.needsLayout = true }
 }
 struct Nested: NSViewRepresentable {
  let record: Recorder
@@ -38,6 +55,13 @@ struct Fixture: View {
  let record: Recorder
  var body: some View {
  VStack {
+ HStack(spacing: 6) {
+ ForEach(["PLAY", "TP-1", "TP-2", "RECADOS", "VIDEO"], id: \.self) { name in
+ Button(name) { record.clicks.append(name) }
+ .buttonStyle(TransportButtonStyle(color: .red, active: true, width: 72, height: 28, bordered: false))
+ .background(Anchor(name:name))
+ }
+ }
  HStack { Button("Top Left") { record.clicks.append("TL") }.background(Anchor(name:"TL"));Spacer();Button("Top Right") { record.clicks.append("TR") }.background(Anchor(name:"TR")) }
  Spacer()
  Native(record:record).frame(width:100,height:30).background(Anchor(name:"NATIVE"))
@@ -51,21 +75,21 @@ struct Fixture: View {
 @main struct Test {
  @MainActor static func main() {
  let app=NSApplication.shared;app.setActivationPolicy(.regular)
- let record=Recorder();let state=ScaleState();let host=NSHostingView(rootView:ScaledRoot(state:state,content:Fixture(record:record)))
+ let record=Recorder();let state=ScaleState();let host=NSHostingView(rootView:ScaledRoot(state:state,content:WorkspaceDeck(record:record)))
  let win=NSWindow(contentRect:NSRect(x:300,y:200,width:900,height:600),styleMask:[.titled,.resizable],backing:.buffered,defer:false)
  win.contentView=host;win.makeKeyAndOrderFront(nil);app.activate(ignoringOtherApps:true)
 
  func spin(_ secs:Double) { let end=Date().addingTimeInterval(secs);while Date() < end { if let e=app.nextEvent(matching:.any,until:Date().addingTimeInterval(0.01),inMode:.default,dequeue:true) { app.sendEvent(e) };RunLoop.main.run(until:Date().addingTimeInterval(0.001)) } }
  func find(_ v:NSView,_ name:String)->NSView? { if v.identifier?.rawValue == name{return v};return v.subviews.compactMap{find($0,name)}.first }
  spin(0.5)
- for percent in InterfaceScale.percentages {
- let scale=Double(percent)/100
- state.factor=scale;spin(0.4)
+ for saved in [0.75, 1.0, 1.25, 0.6, 1.5] {
+ let scale=InterfaceScale.factor(saved)
+ state.factor=saved;spin(0.4)
  let fill=find(host,"FILL")!;let occupied=fill.convert(fill.bounds,to:nil)
  precondition(abs(occupied.width-host.frame.width)<0.51 && abs(occupied.height-host.frame.height)<0.51, "Layout fills window at every scale")
  let native=find(host,"NATIVE")!
  precondition(abs(native.convertToBacking(native.bounds).width-100*scale*win.backingScaleFactor)<0.01, "Backing resolution follows UI scale")
- for name in ["TL","TR","BL","BR","NATIVE","NESTED"] {
+ for name in ["PLAY","TP-1","TP-2","RECADOS","VIDEO","TL","TR","BL","BR","NATIVE","NESTED"] {
  let v=find(host,name)!;let rect=v.convert(v.bounds,to:nil);let screen=win.convertToScreen(rect);let point=CGPoint(x:screen.midX,y:NSScreen.main!.frame.height-screen.midY)
  for type in [CGEventType.leftMouseDown,.leftMouseUp] {CGEvent(mouseEventSource:nil,mouseType:type,mouseCursorPosition:point,mouseButton:.left)?.post(tap:.cghidEventTap);spin(0.08)}
  spin(0.04)
@@ -84,9 +108,10 @@ struct Fixture: View {
  }
  let suite="CatLive.PanelScale.\(UUID())"
  let prefs=UserDefaults(suiteName:suite)!
- precondition(InterfaceScale.percentages == [75, 100, 125])
- precondition(InterfaceScale.percent(0.6) == 75 && InterfaceScale.percent(0.7) == 75)
- precondition(InterfaceScale.percent(1.5) == 125 && InterfaceScale.percent(.nan) == 100)
+ precondition(InterfaceScale.percentages == [100])
+ for saved in [0.6, 0.75, 1.0, 1.25, 1.5, .nan, .infinity] {
+  precondition(InterfaceScale.percent(saved) == 100 && InterfaceScale.factor(saved) == 1)
+ }
  let sizing=InterfaceScaling(defaults:prefs)
  let original=win.contentView
  sizing.register(win,preserveFrame:true)
@@ -94,6 +119,6 @@ struct Fixture: View {
  precondition(win.contentView === original, "Scale preserves hosting identity and view tasks")
  prefs.removePersistentDomain(forName:suite)
  win.orderOut(nil)
- print("INTERFACE_SCALE_3_OPTIONS_PHYSICAL_CORNER_CLICKS_NATIVE_AND_SWIFTUI_OK")
+ print("FIXED_100_PERCENT_LEGACY_PREFERENCES_NESTED_WORKSPACE_PHYSICAL_CLICKS_AND_DRAGS_OK")
  }
 }

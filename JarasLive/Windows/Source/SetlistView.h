@@ -730,11 +730,22 @@ class Workspace::Setlist final : public Component,
             searching=false;
             w.heldShortcutKeys.erase(KeyPress::tabKey);
             auto panel=searchPanel; searchPanel=nullptr;
+            auto restoreFocus=[safe=SafePointer<Setlist>(this)] {
+                MessageManager::callAsync([safe] {
+                    if(safe && !safe->searching && safe->w.isShowing() &&
+                       Component::getCurrentlyModalComponent()==nullptr)
+                        safe->w.grabKeyboardFocus();
+                });
+            };
+            // Closing the callout also runs JUCE's focus traversal. Restore
+            // workspace shortcuts after that teardown, not while it is modal
+            // (which can focus the first toolbar TextEditor: timer Hours).
+            auto *box=panel ? panel->findParentComponentOfClass<CallOutBox>() : nullptr;
+            if(box) ModalComponentManager::getInstance()->attachCallback(box,
+                ModalCallbackFunction::create([restoreFocus](int) {restoreFocus();}));
             addChildComponent(search); search.setVisible(false); search.setText({},false);
-            if (panel) { panel->setComponentID({});panel->setVisible(false);if (auto *box=panel->findParentComponentOfClass<CallOutBox>()) box->dismiss(); }
-            MessageManager::callAsync([safe=SafePointer<Setlist>(this)] {
-                if(safe && !safe->searching)safe->w.grabKeyboardFocus();
-            });
+            if (panel) { panel->setComponentID({});panel->setVisible(false); }
+            if(box) box->dismiss(); else restoreFocus();
             return;
         }
         if (!w.session.song()) return;

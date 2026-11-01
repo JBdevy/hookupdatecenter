@@ -4,7 +4,6 @@ struct SettingsView: View {
     @ObservedObject var show: ShowController
     let backend: any BackendClient
     @AppStorage("jaras.language") private var language = "en"
-    @AppStorage(InterfaceScale.key) private var interfaceScale = 1.0
     #if os(macOS)
     @AppStorage("jaras.startup.sound") private var startupSound = true
     @ObservedObject private var showMode = MacShowMode.shared
@@ -65,10 +64,6 @@ struct SettingsView: View {
                         Text("Language").font(.jarasHeadline)
                         Picker("Language", selection: $language) { Text("English").tag("en"); Text("Português").tag("pt-BR") }.pickerStyle(.segmented).labelsHidden()
                         #if os(macOS)
-                        Text("Interface scale").font(.jarasHeadline)
-                        Picker("Interface scale", selection: Binding(get: { InterfaceScale.percent(interfaceScale) }, set: { interfaceScale = Double($0) / 100 })) {
-                            ForEach(InterfaceScale.percentages, id: \.self) { percent in Text(verbatim: "\(percent)%").tag(percent) }
-                        }.labelsHidden().frame(width: 176)
                         Text("Startup sound").font(.jarasHeadline)
                         Picker("Startup sound", selection: $startupSound) {
                             Text("Disabled").tag(false)

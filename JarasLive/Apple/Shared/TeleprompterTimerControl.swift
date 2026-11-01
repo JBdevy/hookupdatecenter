@@ -2,6 +2,33 @@ import SwiftUI
 import Combine
 
 #if os(macOS)
+@MainActor struct TeleprompterTimerToolbarButton: View {
+    @ObservedObject private var timer = TeleprompterTimerController.shared
+    var body: some View {
+        Button { timer.showConfiguration() } label: {
+            Image(systemName: "clock")
+                .font(.jarasSystem(size: 16, weight: .semibold))
+                .foregroundStyle(timer.running ? JarasTheme.green : Color(hex: 0x299df8))
+                .frame(width: 26, height: 24).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("Timer").desktopIconTooltip("Timer")
+    }
+}
+
+/// Updates only the central readout; the project and toolbar do not tick.
+@MainActor struct TeleprompterTimerToolbarReadout: View {
+    @ObservedObject var timer: TeleprompterTimerController = .shared
+    var body: some View {
+        Group {
+            if timer.running {
+                TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                    TimerReadout(text: timer.displayText(), expired: timer.expired(), fontSize: 16)
+                        .opacity(timer.displayOpacity())
+                }
+            }
+        }.frame(width: 132, height: 24).allowsHitTesting(false)
+    }
+}
+
 /// Only this small control redraws with the independent timer clock.
 @MainActor struct TeleprompterTimerControl: View {
     private let compact: Bool
@@ -108,10 +135,11 @@ import Combine
 private struct TimerReadout: NSViewRepresentable {
     let text: String
     let expired: Bool
+    var fontSize: CGFloat = 12
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField(labelWithString: text)
         field.alignment = .center
-        field.font = .jarasMonospacedSystemFont(ofSize: 12, weight: .semibold)
+        field.font = .jarasMonospacedSystemFont(ofSize: fontSize, weight: .semibold)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return field
     }

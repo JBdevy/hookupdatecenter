@@ -135,6 +135,7 @@ struct WaveformRenderer {
         // repartition a transient or change its height. One column per device
         // pixel bounds work by the visible width, including fractional DPI.
         const double secondsPerColumn = 1.0 / (scale * physical);
+        const auto overviewStep = WaveformDetailPeaks::overviewStride(secondsPerColumn * data.sampleRate);
         const int64 first = std::max<int64>(0, (int64)std::floor(start / secondsPerColumn) - 1);
         const int64 last = std::min<int64>((int64)std::ceil(data.duration / secondsPerColumn) - 1,
                                           (int64)std::ceil(end / secondsPerColumn) + 1);
@@ -143,8 +144,9 @@ struct WaveformRenderer {
         std::vector<Edge> edges; edges.reserve((size_t)(last - first + 3));
         for (int64 column = first; column <= last; ++column) {
             const double a = column * secondsPerColumn, b = std::min(data.duration, (column + 1) * secondsPerColumn);
-            const auto peak = data.rangeFrames(channel, (int64)std::floor(a * data.sampleRate),
-                std::min(data.frames, (int64)std::ceil(b * data.sampleRate) + 1));
+            const auto interval = WaveformDetailPeaks::overviewRange((int64)std::floor(a * data.sampleRate),
+                (int64)std::ceil(b * data.sampleRate), data.frames, overviewStep);
+            const auto peak = data.rangeFrames(channel, interval.first, interval.second);
             const auto edgeAt = [&](double time) {
                 const float px = (float)(x + (time - start) * scale), level = amplitude * fade.at(px);
                 const auto edges = WaveformDetailPeaks::displayEdges(peak.first, peak.second, middle, level, physical);
