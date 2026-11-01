@@ -785,6 +785,11 @@ enum PortableProjectImportPrompt: String, Identifiable {
         else if let song = project.songs.first { GlobalProjectTiming(song: song).save() }
         try project.validate()
         await preloadTimelineWaveforms(project, at: url)
+        #if os(macOS)
+        // File reading and waveform preparation can overlap the startup sound;
+        // resetting the hardware graph must wait until that sound has finished.
+        try await AppStartupPresentation.waitForSound()
+        #endif
         try Task.checkCancellation()
         canCancelOpening = false
         let canExecute = show.canExecute

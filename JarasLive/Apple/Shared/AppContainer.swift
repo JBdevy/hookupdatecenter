@@ -13,6 +13,7 @@ enum AppStartupPresentation {
     #if os(macOS)
     @MainActor private static var startupSound: NSSound?
     @MainActor private static var soundPlayed = false
+    @MainActor private static var soundDeadline: TimeInterval = 0
     @MainActor static func playSoundOnce() {
         guard !soundPlayed else { return }
         soundPlayed = true
@@ -20,7 +21,25 @@ enum AppStartupPresentation {
         guard defaults.object(forKey: "jaras.startup.sound") == nil || defaults.bool(forKey: "jaras.startup.sound"),
               let url = Bundle.main.url(forResource: "StartupSound", withExtension: "wav") else { return }
         startupSound = NSSound(contentsOf: url, byReference: false)
-        startupSound?.play()
+        if let sound = startupSound, sound.play() {
+            soundDeadline = ProcessInfo.processInfo.systemUptime + sound.duration + 1
+        } else { startupSound = nil }
+    }
+    @MainActor static func waitForSound() async throws {
+        try Task.checkCancellation()
+        // Finder can deliver a document before the splash's queued play call.
+        // Finish the introduction before replacing/restarting the project graph:
+        // CoreAudio shares the output with NSSound, and a graph rebuild here
+        // was dropping output cycles in the last second of the introduction.
+        playSoundOnce()
+        while let sound = startupSound, sound.isPlaying,
+              ProcessInfo.processInfo.systemUptime < soundDeadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        try Task.checkCancellation()
+        // A lost output route must not hold project opening indefinitely.
+        startupSound?.stop()
+        startupSound = nil
     }
     #endif
     static let minimumDuration = 3.0
@@ -30,6 +49,9 @@ enum AppStartupPresentation {
         if remaining > 0 {
             try await Task.sleep(nanoseconds: UInt64((remaining * 1_000_000_000).rounded(.up)))
         }
+        #if os(macOS)
+        try await waitForSound()
+        #endif
     }
 }
 @MainActor final class AppContainer: ObservableObject {

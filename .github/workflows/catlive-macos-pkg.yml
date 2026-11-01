@@ -161,6 +161,8 @@ jobs:
           bash scripts/test-show-mode.sh
           bash scripts/test-project-tabs.sh
           bash scripts/test-remote-project-opening.sh
+          bash scripts/test-app-startup-presentation.sh
+          bash scripts/test-app-startup-lifecycle.sh
           bash scripts/test-name-color-editor.sh
           bash scripts/test-catstem-session.sh
 
