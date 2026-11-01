@@ -5,7 +5,26 @@
 #include <mmsystem.h>
 #include <shlobj.h>
 #include <bcrypt.h>
+#include <thread>
 namespace integration {
+struct TimecodeClock::Impl {
+    HANDLE timer=CreateWaitableTimerExW(nullptr,nullptr,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_MODIFY_STATE|SYNCHRONIZE);
+    bool fallbackResolution=false;
+    Impl(){if(!timer)fallbackResolution=timeBeginPeriod(1)==TIMERR_NOERROR;}
+    ~Impl(){if(timer)CloseHandle(timer);if(fallbackResolution)timeEndPeriod(1);}
+};
+TimecodeClock::TimecodeClock():impl(std::make_unique<Impl>()){}
+TimecodeClock::~TimecodeClock()=default;
+void TimecodeClock::waitUntil(Clock::time_point deadline) {
+    auto remaining=std::chrono::duration_cast<std::chrono::nanoseconds>(deadline-Clock::now()).count();
+    if(remaining<=0)return;
+    LARGE_INTEGER due;due.QuadPart=-std::max<int64_t>(1,(remaining+99)/100);
+    if(impl->timer && SetWaitableTimer(impl->timer,&due,0,nullptr,nullptr,FALSE)) {
+        WaitForSingleObject(impl->timer,100);return;
+    }
+    std::this_thread::sleep_until(deadline);
+}
+
 static std::string utf(const wchar_t* value) {
     if(!value) return {}; int n=WideCharToMultiByte(CP_UTF8,0,value,-1,nullptr,0,nullptr,nullptr);
     std::string result(n,'\0'); WideCharToMultiByte(CP_UTF8,0,value,-1,result.data(),n,nullptr,nullptr); if(!result.empty()) result.pop_back(); return result;

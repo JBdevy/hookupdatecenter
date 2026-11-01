@@ -7,7 +7,13 @@
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <map>
+#include <thread>
 namespace integration {
+struct TimecodeClock::Impl {};
+TimecodeClock::TimecodeClock():impl(std::make_unique<Impl>()){}
+TimecodeClock::~TimecodeClock()=default;
+void TimecodeClock::waitUntil(Clock::time_point deadline){std::this_thread::sleep_until(deadline);}
+
 static std::string utf(CFStringRef value) {
     if(!value) return {};
     return [(__bridge NSString*)value UTF8String] ?: "";

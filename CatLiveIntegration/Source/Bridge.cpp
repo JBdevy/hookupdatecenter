@@ -122,15 +122,18 @@ struct Bridge::Impl {
         });
     }
     void timecodeLoop() {
+        TimecodeClock clock;
         bool activeBefore=false; uint64_t lastGeneration=0,lastJump=0; double expected=0;
         int piece=0; std::array<int,8> parts{}; auto previous=Clock::now(),next=previous;
         while(!stopping) {
-            next+=std::chrono::microseconds(8333); auto now=Clock::now(); if(now-next>std::chrono::milliseconds(100))next=now;
+            next+=std::chrono::nanoseconds(8333333);auto now=Clock::now();
+            const bool delayed=now-next>std::chrono::milliseconds(17);
+            if(delayed){next=now+std::chrono::nanoseconds(8333333);piece=0;}
             State current; bool enabled,leased; uint64_t gen;
             {std::lock_guard lock(mutex);current=state;enabled=mtc;leased=connected;gen=generation;}
             bool fresh=current.fresh(now)&&leased,active=enabled&&fresh&&current.playing;
             double position=current.at(now);
-            const bool seek=gen!=lastGeneration||current.jump!=lastJump||std::abs(position-expected)>0.15;
+            const bool seek=delayed||gen!=lastGeneration||current.jump!=lastJump||std::abs(position-expected)>0.15;
             if(enabled && fresh && (active||seek||activeBefore)) {
                 const int frames=int(std::llround(position*30))%2592000;
                 int frame=frames%30,sec=frames/30%60,min=frames/1800%60,hour=frames/108000%24;
@@ -143,7 +146,7 @@ struct Bridge::Impl {
             }
             activeBefore=active;lastGeneration=gen;lastJump=current.jump;previous=now;
             expected=position+(active?0.008333:0);
-            std::this_thread::sleep_until(next);
+            clock.waitUntil(next);
         }
     }
     void oscLoop() {

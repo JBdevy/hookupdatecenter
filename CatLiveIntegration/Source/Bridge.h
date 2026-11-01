@@ -13,6 +13,14 @@ using JSON = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 constexpr int protocolVersion = 1, defaultPort = 48726;
 constexpr double stateTimeout = 0.5, leaseTimeout = 3.0;
+// Dedicated waits keep 120 MIDI quarter-frames/s independent of UI timers.
+class TimecodeClock {
+public:
+    TimecodeClock(); ~TimecodeClock();
+    void waitUntil(Clock::time_point deadline);
+private:
+    struct Impl; std::unique_ptr<Impl> impl;
+};
 struct Adapter { std::string id, name, address; };
 struct MIDIPort { std::string id, name; };
 std::vector<Adapter> adapters();
