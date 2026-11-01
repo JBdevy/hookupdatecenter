@@ -492,6 +492,14 @@ public struct ResolumeSettings: Codable, Equatable, Sendable {
     public var includeMarkers = true
     public var withMarkers: [String: String] = [:]
     public var regionsOnly: [String: String] = [:]
+    /// Optional for backward-compatible documents. Receiver paths and MIDI
+    /// identifiers belong to CatLive Integration, never to this computer.
+    public var integrationEnabled: Bool?
+    public var integrationHost: String?
+    public var integrationPort: Int?
+    public var integrationMTCEnabled: Bool?
+    public var integrationMIDIOutput: String?
+    public var usesIntegration: Bool { integrationEnabled == true }
     public init() {}
     public static func assignment(_ text: String) -> (deck: Int, column: Int)? {
         let pair = text.split(separator: ":", omittingEmptySubsequences: false)
@@ -505,6 +513,14 @@ public struct ResolumeSettings: Codable, Equatable, Sendable {
               (1...65535).contains(oscPort), (1...65535).contains(webPort),
               withMarkers.count <= 100_000, regionsOnly.count <= 100_000 else {
             throw ProjectError.invalid("Invalid Resolume settings")
+        }
+        if usesIntegration {
+            let address = integrationHost ?? ""
+            guard !address.isEmpty, address.count <= 253,
+                  !address.contains(where: { $0.isWhitespace || "/\\?#@".contains($0) }),
+                  (1...65535).contains(integrationPort ?? 48726), (integrationMIDIOutput?.count ?? 0) <= 512 else {
+                throw ProjectError.invalid("Invalid CatLive Integration settings")
+            }
         }
     }
 }

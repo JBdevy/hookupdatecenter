@@ -34,6 +34,15 @@ class ResolumePanel final : public Component {
                 ModalSheet::dismiss(*this);
         };
         create.onClick = [this] { confirmCreate(); };
+        remote.setButtonText("CatLive Integration");remote.setToggleState(lighting.integrationEnabled,dontSendNotification);
+        mtc.setButtonText(String::fromUTF8("Enviar MTC para grandMA2"));mtc.setToggleState(lighting.integrationMTC,dontSendNotification);
+        remoteHost.setText(lighting.integrationHost,false);remoteHost.setTextToShowWhenEmpty("IP do CatLive Integration",theme::secondary);
+        remoteHost.setFont(theme::font(13));remoteHost.setColour(TextEditor::backgroundColourId,theme::display);
+        midi.addItem(String::fromUTF8("Automático"),1);midi.setSelectedId(1,dontSendNotification);
+        if(lighting.integrationMIDIOutput.isNotEmpty()){midiIDs.add(lighting.integrationMIDIOutput);midi.addItem(lighting.integrationMIDIOutput,2);midi.setSelectedId(2,dontSendNotification);}
+        for(auto* child:std::initializer_list<Component*>{&remote,&mtc,&remoteHost,&refresh,&midi})addAndMakeVisible(child);
+        remote.onClick=[this]{host.setEnabled(!remote.getToggleState());};host.setEnabled(!remote.getToggleState());
+        refresh.onClick=[this]{refreshPorts();};
         apply.setColour(TextButton::buttonColourId, Colour(0xff69b83d));
         addAndMakeVisible(status);
         status.setFont(theme::font(12));
@@ -82,7 +91,9 @@ class ResolumePanel final : public Component {
         follow.setBounds(20, 93, getWidth() - 40, 27);
         map.setBounds(24, 232, 154, 26);
         create.setBounds(186, 232, 193, 26);
-        status.setBounds(24, 275, getWidth() - 48, std::max(20, getHeight() - 350));
+        remote.setBounds(20,275,270,26);remoteHost.setBounds(24,309,290,26);refresh.setBounds(324,309,300,26);
+        mtc.setBounds(20,348,270,26);midi.setBounds(294,348,getWidth()-318,26);
+        status.setBounds(24,400,getWidth()-48,std::max(20,getHeight()-475));
         apply.setBounds(getWidth() - 90, getHeight() - 48, 66, 26);
     }
     bool keyPressed(const KeyPress &key) override {
@@ -99,6 +110,8 @@ class ResolumePanel final : public Component {
     std::function<void(String)> error;
     TextEditor host, osc, web;
     ToggleButton markers, follow;
+    ToggleButton remote,mtc;TextEditor remoteHost;ComboBox midi;StringArray midiIDs;
+    TextButton refresh{String::fromUTF8("Conectar / atualizar MIDI")};
     TextButton map{localization::translate("Criar / atualizar mapa")},
         create{String::fromUTF8("Criar projeto do Resolume…")}, apply{"Aplicar"};
     Label status;
@@ -118,6 +131,9 @@ class ResolumePanel final : public Component {
             lighting.port = port;
             lighting.webPort = webPort;
             lighting.includeMarkers = markers.getToggleState();
+            if(remote.getToggleState() && (remoteHost.getText().trim().isEmpty() || remoteHost.getText().containsAnyOf("/\\?#@ \r\n\t")))throw std::runtime_error("Informe o IP do CatLive Integration.");
+            lighting.integrationEnabled=remote.getToggleState();lighting.integrationHost=remoteHost.getText().trim();lighting.integrationMTC=mtc.getToggleState();
+            lighting.integrationMIDIOutput=midi.getSelectedId()>1?midiIDs[midi.getSelectedId()-2]:String();
             lighting.enableResolume(follow.getToggleState());
             lighting.refresh();
             if (lighting.resolumeEnabled && !lighting.connectResolume())
@@ -145,6 +161,7 @@ class ResolumePanel final : public Component {
             }));
     }
     void chooseDestination() {
+        if(lighting.integrationEnabled){createRemote();return;}
         chooser = std::make_unique<FileChooser>(
             String::fromUTF8("Salvar composição Resolume"),
             session.mediaDirectory.getChildFile(
@@ -158,12 +175,37 @@ class ResolumePanel final : public Component {
                     safe->createComposition(picker.getResult().withFileExtension("avc"));
             });
     }
+    void refreshPorts() {
+        auto config=object();put(config,"host",remoteHost.getText().trim());put(config,"port",lighting.integrationPort);
+        auto safe=SafePointer<ResolumePanel>(this);refresh.setEnabled(false);
+        worker.addJob([safe,config]{var result;String error;try{result=IntegrationClient::request(config,"info");if(num(result,"protocol")!=1)throw std::runtime_error("Atualize o CatLive Integration.");}catch(const std::exception& e){error=String::fromUTF8(e.what());}
+            MessageManager::callAsync([safe,result,error]{if(!safe)return;safe->refresh.setEnabled(true);if(error.isNotEmpty()){safe->status.setText(error,dontSendNotification);return;}
+                const auto selected=safe->lighting.integrationMIDIOutput;safe->midiIDs.clear();safe->midi.clear();safe->midi.addItem(String::fromUTF8("Automático"),1);int selection=1;
+                for(auto p:list(get(result,"midiOutputs"))){safe->midiIDs.add(str(p,"id"));int index=safe->midiIDs.size()+1;safe->midi.addItem(str(p,"name"),index);if(str(p,"id")==selected)selection=index;}
+                safe->midi.setSelectedId(selection,dontSendNotification);safe->status.setText(String::fromUTF8("Integration encontrado. Selecione a saída MIDI e aplique."),dontSendNotification);
+            });
+        });
+    }
+    void createRemote() {
+        if(session.transport().playing){status.setText(String::fromUTF8("Pare a reprodução antes de criar a composição."),dontSendNotification);return;}
+        try {
+            auto source=ResolumeComposition::plan(lighting,text(session.project().name));auto plan=object();put(plan,"name",source.name);Array<var> decks;
+            for(auto& entry:source.decks){auto deck=object();put(deck,"number",entry.first);put(deck,"name",entry.second.name);Array<var> columns;
+                for(auto& column:entry.second.columns){auto c=object();put(c,"number",column.first);put(c,"name",column.second);columns.add(c);}put(deck,"columns",columns);decks.add(deck);}
+            put(plan,"decks",decks);setBusy(true);status.setText(String::fromUTF8("Criando composição no computador do Integration…"),dontSendNotification);
+            auto safe=SafePointer<ResolumePanel>(this);auto cancel=cancelled;auto* client=&lighting.integration;
+            worker.addJob([safe,cancel,plan,client]{String result;try{result=String::fromUTF8("Composição salva no computador do Integration: ")+client->create(plan,[cancel]{return cancel->load();});}catch(const std::exception& e){result=String::fromUTF8(e.what());}
+                MessageManager::callAsync([safe,result]{if(safe){safe->setBusy(false);safe->status.setText(result,dontSendNotification);}});
+            });
+        }catch(const std::exception& e){status.setText(String::fromUTF8(e.what()),dontSendNotification);}
+    }
     void setBusy(bool value) {
         busy = value;
         session.busy = value;
         for (auto *child : getChildren())
             child->setEnabled(!value);
         status.setEnabled(true);
+        if(!value)host.setEnabled(!remote.getToggleState());
         ModalSheet::blockDismiss(*this, value);
     }
     void createComposition(const File &file) {

@@ -516,7 +516,7 @@ class Panel : public Component {
 };
 class MAPanel final : public Panel, private TableListBoxModel {
   public:
-    MAPanel(Session &s, Lighting &l, std::function<void(String)> fail)
+    MAPanel(Session &s, Lighting &l, std::function<void(String)> fail, std::function<void()> openIntegration)
         : Panel("grandMA2",
                 String::fromUTF8("Selecione as músicas e exporte para o grandMA2. Timecode: 30 FPS.")),
           session(s), lighting(l), error(std::move(fail)) {
@@ -617,6 +617,7 @@ class MAPanel final : public Panel, private TableListBoxModel {
         });
         advancedComponents.add(&save);
         save.setBounds(392, 222, 190, 28);
+        integrationButton = &button("CatLive Integration…",24,0,210,std::move(openIntegration));
         midiLabel = &label(String::fromUTF8("Saída MIDI"), 24, 0, 86);
         exportButton = &button(
             String::fromUTF8("Exportar grandMA2…"), 222, 0, 190, [this] { exportFiles(); },
@@ -642,6 +643,7 @@ class MAPanel final : public Panel, private TableListBoxModel {
         mtc.setBounds(450, getHeight() - 148, 180, 28);
         status.setBounds(24, getHeight() - 112, getWidth() - 48, 24);
         exportButton->setBounds(getWidth() - 232, getHeight() - 78, 208, 30);
+        integrationButton->setBounds(24,getHeight()-78,210,30);
         for (auto *c : owned)
             if (c->getName() == "instructions") c->setTopLeftPosition(24, getHeight() - 38);
     }
@@ -655,7 +657,7 @@ class MAPanel final : public Panel, private TableListBoxModel {
     ComboBox midi;
     ToggleButton mtc;
     Label status;
-    TextButton *exportButton = nullptr, *advanced = nullptr, *selectAll = nullptr, *clearSelection = nullptr;
+    TextButton *integrationButton = nullptr, *exportButton = nullptr, *advanced = nullptr, *selectAll = nullptr, *clearSelection = nullptr;
     Label *advancedSummary = nullptr, *midiLabel = nullptr;
     Array<Component *> advancedComponents;
     bool advancedOpen = false;
@@ -4515,6 +4517,7 @@ void Workspace::resetProjectTab() {
     showProjectBrowser();
 }
 void Workspace::deactivateProjectTab() {
+    lighting.setIntegrationForeground(false);
     saveWorkspaceLayout();
     layoutActive = false;
     for (const auto &name : {"Mixer", "Parts"})
@@ -4529,6 +4532,7 @@ void Workspace::deactivateProjectTab() {
     if (nativeTransport) nativeTransport->hide();
 }
 void Workspace::activateProjectTab() {
+    lighting.setIntegrationForeground(true);
     layoutActive = true;
     restoreWorkspaceLayout();
     session.audio.liveInputEnabled = true;
@@ -6761,6 +6765,8 @@ void Workspace::openGrandMA2() {
                                   [safe = Component::SafePointer<Workspace>(this)](String message) {
                                       if (safe)
                                           safe->showError(message);
+                                  }, [safe = Component::SafePointer<Workspace>(this)] {
+                                      MessageManager::callAsync([safe] { if(safe)safe->openResolume(); });
                                   }),
         800, 660);
 }
@@ -6772,7 +6778,7 @@ void Workspace::openResolume() {
                       if (safe)
                           safe->showError(message);
                   }),
-              680, 454);
+              680, 600);
 }
 void Workspace::openAudioSettings() {
     openSettingsPage(1);

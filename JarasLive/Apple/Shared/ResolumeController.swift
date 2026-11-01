@@ -60,10 +60,17 @@ private final class ResolumeOSC {
     private var follower = ResolumeFollower()
     private var selectedDeck: Int?
     private var socket: ResolumeOSC?
+    private var integration: IntegrationConnection?
+    private var disconnectTask: Task<Void, Never>?
+    private var previousRemotePosition: Double?
+    private var previousRemoteClock: Double = 0
+    private var remoteJump: UInt64 = 0
+    private var retryAfter: Double = 0
+    private var timelineStarts: [String: Double] = [:]
     private var task: Task<Void, Never>?
     private var generation = UUID()
     func bind(_ show: ShowController) {
-        if self.show === show { settings = nil; configure(); return }
+        if self.show === show { configure(); return }
         stop(); self.show = show
         subscription = show.objectWillChange.sink { [weak self] _ in
             guard let self, !self.pending else { return }
@@ -77,8 +84,10 @@ private final class ResolumeOSC {
         let next = show.snapshot.project.resolume ?? ResolumeSettings()
         if settings != next || session != show.projectSessionID {
             stop(); settings = next; session = show.projectSessionID; revision = nil
-            guard next.enabled else { return }
-            socket = ResolumeOSC(settings: next); active = true; error = ""
+            guard next.enabled || next.usesIntegration else { return }
+            if next.usesIntegration { integration = IntegrationConnection(settings: next, name: show.snapshot.project.name) }
+            else { socket = ResolumeOSC(settings: next) }
+            active = true; error = ""
             let timer = Timer(timeInterval: 0.035, repeats: true) { [weak self] _ in self?.tick() }
             self.timer = timer; RunLoop.main.add(timer, forMode: .common)
         }
@@ -86,10 +95,37 @@ private final class ResolumeOSC {
         revision = show.projectRevision
         // Playback never assigns new columns implicitly: keep the exported deck layout stable.
         map = ResolumeMap.build(project: show.snapshot.project, settings: next, createMissing: false)
+        timelineStarts = [:]
+        if let lighting = show.snapshot.project.windowsLighting, let data = try? JSONEncoder().encode(lighting),
+           let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let starts = raw["starts"] as? [String: [String: Any]] {
+            for (id, value) in starts { timelineStarts[id.uppercased()] = value["start"] as? Double ?? 0 }
+        }
     }
     private func tick() {
-        guard task == nil, let show, let socket, active else { return }
+        guard task == nil, let show, active else { return }
         let transport = show.snapshot.transport
+        if let integration {
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now >= retryAfter else { return }
+            if let previousRemotePosition, transport.position < previousRemotePosition - 0.08 || transport.position > previousRemotePosition + max(0.35, now - previousRemoteClock + 0.25) { remoteJump += 1 }
+            previousRemotePosition = transport.position; previousRemoteClock = now
+            let cue = map.cue(song: transport.songId, at: transport.position), token = generation, jump = remoteJump
+            let closing = disconnectTask
+            let position = transport.position + (transport.songId.flatMap { timelineStarts[$0.uuidString] } ?? 0)
+            task = Task { [weak self] in
+                do {
+                    await closing?.value
+                    try Task.checkCancellation()
+                    try await integration.update(position: position, playing: transport.playing, deck: cue?.deck, column: cue?.column, jump: jump)
+                    guard let self, self.generation == token else { return }; self.error = ""; self.task = nil
+                } catch {
+                    guard let self, self.generation == token else { return }
+                    self.error = error.localizedDescription; self.task = nil; self.retryAfter = ProcessInfo.processInfo.systemUptime + 1
+                }
+            }
+            return
+        }
+        guard let socket else { return }
         let action = follower.update(map: map, song: transport.songId, position: transport.position,
                                      playing: transport.playing, time: ProcessInfo.processInfo.systemUptime)
         guard action.cue != nil || action.speed != nil else { return }
@@ -110,6 +146,17 @@ private final class ResolumeOSC {
         generation = UUID(); task?.cancel(); task = nil; timer?.invalidate(); timer = nil
         if let socket { Task { try? await socket.send("/composition/speed", absolute: 1) } }
         socket = nil; active = false; follower = ResolumeFollower(); selectedDeck = nil
+        if let integration {
+            let previous = disconnectTask
+            disconnectTask = Task { await previous?.value; await integration.disconnect() }
+        }
+        settings = nil; session = nil
+        integration = nil; previousRemotePosition = nil; previousRemoteClock = 0; remoteJump = 0; retryAfter = 0
+    }
+    func createRemoteComposition(project: Project) async throws -> String {
+        guard let integration else { throw NSError(domain: "CatLive Integration", code: 1, userInfo: [NSLocalizedDescriptionKey: "Connect CatLive Integration first"]) }
+        await disconnectTask?.value
+        return try await integration.create(project: project)
     }
 }
 
@@ -122,13 +169,29 @@ struct ResolumeSettingsView: View {
     @State private var busy = false
     @State private var status = ""
     @State private var confirmCreate = false
+    @State private var remotePorts: [IntegrationConnection.Port] = []
     init(show: ShowController) { self.show = show; _settings = State(initialValue: show.snapshot.project.resolume ?? ResolumeSettings()) }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack { Text(verbatim: "Resolume").font(.jarasTitle2.bold()); Spacer(); Button("Close") { (closeEditor ?? { dismiss() })() }.disabled(busy) }
             Divider()
+            Toggle("Use CatLive Integration on another computer", isOn: Binding(get: { settings.usesIntegration }, set: { settings.integrationEnabled = $0 }))
+            if settings.usesIntegration {
+                HStack {
+                    Text("Integration IP"); TextField("192.168.1.20", text: Binding(get: { settings.integrationHost ?? "" }, set: { settings.integrationHost = $0 })).frame(width: 170)
+                    Button("Connect / refresh MIDI") { refreshRemote() }
+                }
+                HStack {
+                    Toggle("Send MTC to grandMA2", isOn: Binding(get: { settings.integrationMTCEnabled == true }, set: { settings.integrationMTCEnabled = $0 }))
+                    Picker("MIDI output", selection: Binding(get: { settings.integrationMIDIOutput ?? "" }, set: { settings.integrationMIDIOutput = $0 })) {
+                        Text("Automatic").tag("")
+                        ForEach(remotePorts) { Text(verbatim: $0.name).tag($0.id) }
+                        if let selected = settings.integrationMIDIOutput, !selected.isEmpty, !remotePorts.contains(where: { $0.id == selected }) { Text(verbatim: selected).tag(selected) }
+                    }
+                }
+            }
             HStack {
-                Text("Host"); TextField("127.0.0.1", text: $settings.host).frame(width: 170)
+                if !settings.usesIntegration { Text("Host"); TextField("127.0.0.1", text: $settings.host).frame(width: 170) }
                 Text("OSC"); TextField("7000", value: $settings.oscPort, formatter: Self.portFormatter).frame(width: 70)
                 Text("Webserver"); TextField("8080", value: $settings.webPort, formatter: Self.portFormatter).frame(width: 70)
             }
@@ -149,7 +212,7 @@ struct ResolumeSettingsView: View {
             Spacer(minLength: 0)
             Divider()
             HStack { Text("The map and connection settings are saved with this CatLive project.").font(.jarasCaption).foregroundStyle(JarasTheme.secondary); Spacer(); Button("Apply") { if saveMap() { (closeEditor ?? { dismiss() })() } }.keyboardShortcut(.defaultAction).disabled(busy) }
-        }.padding(24).frame(width: 680, height: 520)
+        }.padding(24).frame(width: 680, height: settings.usesIntegration ? 660 : 560)
             .foregroundStyle(JarasTheme.text).background(JarasTheme.background)
             .interactiveDismissDisabled(busy)
             .confirmationDialog("Create a new Resolume composition?", isPresented: $confirmCreate) {
@@ -160,6 +223,7 @@ struct ResolumeSettingsView: View {
     @discardableResult private func saveMap() -> Bool {
         do {
             settings.host = settings.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            settings.integrationHost = settings.integrationHost?.trimmingCharacters(in: .whitespacesAndNewlines)
             try settings.validate()
             let map = ResolumeMap.build(project: show.snapshot.project, settings: settings)
             if settings.includeMarkers { settings.withMarkers = map.assignments } else { settings.regionsOnly = map.assignments }
@@ -171,6 +235,16 @@ struct ResolumeSettingsView: View {
     }
     private func create() {
         guard !busy, saveMap() else { return }
+        if settings.usesIntegration {
+            guard !show.snapshot.transport.playing else { status = "Stop playback before creating the composition"; return }
+            busy = true; status = "Creating composition on CatLive Integration…"
+            Task {
+                defer { busy = false }
+                do { let file = try await runtime.createRemoteComposition(project: show.snapshot.project); status = JarasLocalization.string("Composition saved on the Integration computer:") + " " + file }
+                catch { status = error.localizedDescription }
+            }
+            return
+        }
         let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: "avc") ?? .data]
         panel.nameFieldStringValue = LightingExportName.fileStem(show.snapshot.project.name) + ".avc"
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -181,6 +255,15 @@ struct ResolumeSettingsView: View {
             do {
                 try await ResolumeComposition(settings: config).create(project: project, destination: url)
                 status = "Resolume composition created. Place your videos in the generated columns."
+            } catch { status = error.localizedDescription }
+        }
+    }
+    private func refreshRemote() {
+        Task {
+            do {
+                try settings.validate()
+                remotePorts = try await IntegrationConnection(settings: settings, name: show.snapshot.project.name).ports()
+                status = "CatLive Integration found. Select the MIDI output and apply."
             } catch { status = error.localizedDescription }
         }
     }

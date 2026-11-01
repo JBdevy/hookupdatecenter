@@ -1,0 +1,68 @@
+name: CatLive Integration 1.26 - validation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: catlive-integration-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  receiver:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Mac universal receiver
+        if: runner.os == 'macOS'
+        run: cmake -S CatLiveIntegration -B integration-build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Configure Windows receiver
+        if: runner.os == 'Windows'
+        run: cmake -S CatLiveIntegration -B integration-build -A x64
+      - name: Build
+        run: cmake --build integration-build --config Release --parallel 3
+      - name: Test connection, OSC, MTC and local composition creation
+        run: ctest --test-dir integration-build -C Release --output-on-failure
+      - name: Package candidate
+        working-directory: integration-build
+        run: cpack -C Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-Integration-1.26-${{ runner.os }}
+          path: integration-build/CatLive-Integration-1.26-*.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: Integration-diagnostics-${{ runner.os }}
+          path: integration-build/Testing/Temporary/
+  windows-sender:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/CatLiveBuild/JUCE-8.0.15
+          key: catlive-juce-8.0.15-windows
+      - name: Prepare existing desktop dependencies
+        shell: pwsh
+        run: |
+          $juce = Join-Path $env:LOCALAPPDATA 'CatLiveBuild/JUCE-8.0.15'
+          if (-not (Test-Path (Join-Path $juce 'CMakeLists.txt'))) {
+            git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git $juce
+            if ($LASTEXITCODE) { throw 'JUCE checkout failed.' }
+          }
+          cmake -S JarasLive/Windows -B desktop-build -A x64 '-DCATLIVE_VERSION=1.26' "-DCATLIVE_JUCE_SOURCE=$juce"
+          if ($LASTEXITCODE) { throw 'Configure failed.' }
+      - name: Compile Windows sender and desktop
+        run: cmake --build desktop-build --config Release --target CatLive --parallel 4
+      - name: Retain candidate executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-1.26-Windows-compile-check
+          path: desktop-build/CatLive_artefacts/Release/CatLive.exe
+          if-no-files-found: error

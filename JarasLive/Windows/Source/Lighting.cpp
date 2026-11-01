@@ -130,6 +130,11 @@ void Lighting::loadSettings() {
     webPort = 8080;
     includeMarkers = flag(raw, "includeMarkers", true);
     auto resolume = get(session.original, "resolume");
+    integrationEnabled = flag(resolume,"integrationEnabled");
+    integrationHost = str(resolume,"integrationHost");
+    integrationPort = (int)num(resolume,"integrationPort",48726);
+    integrationMTC = flag(resolume,"integrationMTCEnabled");
+    integrationMIDIOutput = str(resolume,"integrationMIDIOutput");
     if (resolume.isObject()) {
         host = str(resolume, "host", host);
         port = (int)num(resolume, "oscPort", port);
@@ -146,6 +151,8 @@ void Lighting::loadSettings() {
     refresh();
     if (resolumeEnabled)
         connectResolume();
+    remoteMTCActive = integrationEnabled && integrationMTC;
+    integration.configure(integrationConfiguration());
 }
 void Lighting::saveSettings() {
     auto root = session.original.isObject() ? session.original.clone() : object();
@@ -173,10 +180,22 @@ void Lighting::saveSettings() {
     put(resolume, "includeMarkers", includeMarkers);
     put(resolume, "withMarkers", resolumeAssignments.clone());
     put(resolume, "regionsOnly", resolumeRegionsOnly.clone());
+    put(resolume,"integrationEnabled",integrationEnabled);
+    put(resolume,"integrationHost",integrationHost);
+    put(resolume,"integrationPort",integrationPort);
+    put(resolume,"integrationMTCEnabled",integrationMTC);
+    put(resolume,"integrationMIDIOutput",integrationMIDIOutput);
     put(root, "resolume", resolume);
     session.original = root;
     session.dirty = true;
     session.notify();
+    remoteMTCActive = integrationEnabled && integrationMTC;
+    integration.configure(integrationConfiguration());
+}
+var Lighting::integrationConfiguration() const {
+    auto value=object();put(value,"enabled",integrationEnabled && (integrationForeground || integrationSending));put(value,"host",integrationHost);put(value,"port",integrationPort);
+    put(value,"project",text(session.project().id));put(value,"name",text(session.project().name));put(value,"resolume",resolumeEnabled);put(value,"mtc",integrationMTC);put(value,"midiOutput",integrationMIDIOutput);
+    put(value,"oscPort",port);put(value,"webPort",webPort);return value;
 }
 void Lighting::refresh(bool assignMissing) {
     regions.clear();
@@ -558,6 +577,7 @@ String Lighting::exportGrandMA2(const File &folder, bool selectedOnly) {
 bool Lighting::connectResolume() {
     ++oscGeneration;
     osc.disconnect();
+    if(integrationEnabled) {lastResolumeClock=0;lastColumn=lastDeck=-1;return true;}
     bool ok = osc.connect(host, port);
     error = ok ? String() : String::fromUTF8("Não foi possível abrir a saída OSC.");
     lastColumn = lastDeck = -1;
@@ -565,7 +585,7 @@ bool Lighting::connectResolume() {
     return ok;
 }
 void Lighting::enableResolume(bool value) {
-    if (resolumeEnabled && !value)
+    if (resolumeEnabled && !value && !integrationEnabled)
         osc.send("/composition/speed", String("a"), 1.0f);
     if (resolumeEnabled != value)
         ++oscGeneration;
@@ -590,13 +610,21 @@ double Lighting::absolutePosition(const ID &song, double local) const {
     auto reservation = get(starts, Identifier(text(song)));
     return local + (reservation.isObject() ? num(reservation, "start") : 0);
 }
+void Lighting::setIntegrationForeground(bool foreground) {
+    integrationForeground = foreground;
+    integration.configure(integrationConfiguration());
+}
 void Lighting::update(const jaras::TransportState &state) {
+    if(integrationSending != state.playing) {
+        integrationSending = state.playing;
+        integration.configure(integrationConfiguration());
+    }
     mtcPosition = absolutePosition(state.songId.value_or(""), state.position);
     mtcBase = absolutePosition(state.songId.value_or(""), 0);
     if (mtcPlaying.load() != state.playing)
         notify();
     mtcPlaying = state.playing;
-    if (!resolumeEnabled) {
+    if (!resolumeEnabled && !integrationEnabled) {
         wasPlaying = false;
         lastResolumeClock = 0;
         return;
@@ -606,23 +634,26 @@ void Lighting::update(const jaras::TransportState &state) {
         wasPlaying && state.playing && lastResolumeClock > 0 &&
         (state.position < lastResolumePosition - .08 ||
          state.position > lastResolumePosition + std::max(.35, now - lastResolumeClock + .25));
-    if (state.playing != wasPlaying || lastResolumeClock == 0)
+    if (!integrationEnabled && (state.playing != wasPlaying || lastResolumeClock == 0))
         osc.send("/composition/speed", String("a"), state.playing ? 1.0f : 0.0f);
     lastResolumePosition = state.position;
     lastResolumeClock = now;
     wasPlaying = state.playing;
-    if (!state.songId)
-        return;
     int deck = -1, column = -1;
     double best = -1;
     for (auto &cue : resolumeCues)
-        if (std::get<0>(cue) == *state.songId && std::get<1>(cue) <= state.position + .0001 &&
+        if (state.songId && std::get<0>(cue) == *state.songId && std::get<1>(cue) <= state.position + .0001 &&
             std::get<1>(cue) >= best && state.position >= std::get<4>(cue) - .0005 &&
             state.position < std::get<5>(cue) - .0005) {
             best = std::get<1>(cue);
             deck = std::get<2>(cue);
             column = std::get<3>(cue);
         }
+    if(integrationEnabled) {
+        if(jump)++integrationJump;
+        integration.update(absolutePosition(state.songId.value_or(""),state.position),state.playing,std::max(0,deck),std::max(0,column),integrationJump);
+        return;
+    }
     if (deck < 0)
         return;
     bool changedDeck = deck != lastDeck;
@@ -667,7 +698,7 @@ void Lighting::run() {
     bool previous = false;
     double lastPosition = 0, next = Time::getMillisecondCounterHiRes();
     while (!threadShouldExit()) {
-        if (!mtcEnabled.load()) {
+        if (!mtcEnabled.load() || remoteMTCActive.load()) {
             wait(100);
             next = Time::getMillisecondCounterHiRes();
             previous = false;
