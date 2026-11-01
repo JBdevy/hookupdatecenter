@@ -1252,12 +1252,15 @@ struct ChannelRouteKernel {
     [self configurePatches:node firsts:@[@(first)] counts:@[@(count)]];
 }
 + (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts {
+    [self configurePatches:node firsts:firsts counts:counts outputChannels:node.AUAudioUnit.outputBusses[0].format.channelCount];
+}
++ (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts outputChannels:(NSUInteger)outputChannels {
     // Build the hardware matrix on the control thread. Changing route count
     // needs no new audio units, graph rebuilds or render-time allocations.
     auto *unit=(JarasChannelRouteUnit*)node.AUAudioUnit;
     std::array<uint32_t,1024> gains{};
     std::set<std::pair<unsigned,unsigned>> seen;
-    const unsigned channels=unit.outputBusses[0].format.channelCount;
+    const unsigned channels=static_cast<unsigned>(std::min<NSUInteger>(1024,outputChannels));
     for (NSUInteger i=0; i<MIN(firsts.count, counts.count); ++i) {
         const NSInteger first=firsts[i].integerValue, count=counts[i].integerValue;
         if (first<1 || first>1024 || count<1 || count>2 || first+count-1>channels || !seen.insert({unsigned(first),unsigned(count)}).second) continue;

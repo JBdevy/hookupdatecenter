@@ -5,7 +5,7 @@ import Darwin
 setbuf(stdout, nil)
 UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forName: UserDefaults.argumentDomain)
 
-@MainActor func verifyPatchChannels() throws {
+@MainActor func verifyPatchChannels(legacyRouting: Bool) throws {
     let rate = Double(ProcessInfo.processInfo.environment["JARAS_TEST_SAMPLE_RATE"] ?? "44100")!
     let stereo = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
     let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 6)!
@@ -23,7 +23,7 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
     }
     let engine = AVAudioEngine()
     try engine.enableManualRenderingMode(.offline, format: hardware, maximumFrameCount: 512)
-    let audio = StemAudioPlayback(engine: engine, realtime: true)
+    let audio = StemAudioPlayback(engine: engine, realtime: true, pauseForRoutingChanges: legacyRouting)
     audio.open(directory: directory)
     defer { audio.prepareForClosing() }
     var project = Project.empty(name: "iPad shared Patch PCM")
@@ -129,4 +129,7 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         print("IPAD_REBUILT_ROUTE_NEXT_PLAY_SAMPLE_CLOCK_PCM_OK rate=\(nextRate) channels=\(channels)")
     }
 }
-try MainActor.assumeIsolated { try verifyPatchChannels() }
+try MainActor.assumeIsolated {
+    try verifyPatchChannels(legacyRouting: false)
+    try verifyPatchChannels(legacyRouting: true)
+}

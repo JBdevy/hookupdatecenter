@@ -111,6 +111,9 @@ NS_ASSUME_NONNULL_BEGIN
 + (float)takeInputPeak:(AVAudioUnitEffect *)node channel:(NSUInteger)channel;
 + (void)configure:(AVAudioUnitEffect *)node first:(NSInteger)first count:(NSInteger)count;
 + (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts;
+/// Use the graph's prepared format during live Patch edits; avoid querying an
+/// Audio Unit bus format while Core Audio is rendering that graph.
++ (void)configurePatches:(AVAudioUnitEffect *)node firsts:(NSArray<NSNumber *> *)firsts counts:(NSArray<NSNumber *> *)counts outputChannels:(NSUInteger)channels;
 @end
 NS_ASSUME_NONNULL_END
 

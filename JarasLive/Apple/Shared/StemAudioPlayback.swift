@@ -964,6 +964,7 @@ struct TimecodePlaybackSpan {
     private var meterTimer: Timer?
     private var meterTimerActive = false
     private let realtime: Bool
+    private let pauseForRoutingChanges: Bool
     private struct VoiceKey: Hashable { let clip: UUID; let head: Int }
     private struct Voice {
         let player: AVAudioPlayerNode
@@ -1050,9 +1051,15 @@ struct TimecodePlaybackSpan {
         guard clock.sampleTime + lead >= first else { return nil }
         return Double(voice.scheduledSourceStart + max(0, clock.sampleTime - first)) / voice.file.processingFormat.sampleRate
     }
-    init(engine: AVAudioEngine, realtime: Bool = true, mobileOutput: JarasMobileAudioOutput? = nil, auxiliarySelectedHardware: Bool = false) {
+    init(engine: AVAudioEngine, realtime: Bool = true, mobileOutput: JarasMobileAudioOutput? = nil, auxiliarySelectedHardware: Bool = false, pauseForRoutingChanges: Bool? = nil) {
         self.auxiliarySelectedHardware = auxiliarySelectedHardware
         self.engine = engine; self.realtime = realtime
+        #if os(macOS)
+        if #available(macOS 13, *) { self.pauseForRoutingChanges = pauseForRoutingChanges ?? false }
+        else { self.pauseForRoutingChanges = pauseForRoutingChanges ?? true }
+        #else
+        self.pauseForRoutingChanges = pauseForRoutingChanges ?? false
+        #endif
         self.mobileOutput = mobileOutput
         #if os(iOS)
         if mobileOutput == nil, realtime, engine === AudioDeviceSettings.shared.engine {
@@ -1273,7 +1280,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         let format = AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)!
         engine.connect(bus.masterSend, to: masterBus, fromBus: 0, toBus: masterBus.nextAvailableInputBus, format: format)
         // The permanent Master send keeps this source graph clocked. Group
-        // and internal sends acquire an output in connectGroups/connectTracks
+        // and internal sends acquire an output in connectTrackRouting
         // when first routed, so unused branches need no silent mixer render.
         for send in [bus.groupSend, bus.internalSend] {
             do {
@@ -1313,25 +1320,13 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // a fresh hardware snapshot and rebuilds the graph for it.
         preparedOutputFormat!
     }
-    private func connectGroups() {
-        let format = AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)!
-        let changed = trackBuses.filter {
-            let row = tracks[$0.key]
-            let parent = (row?.outputPatches.contains(.masterGroup) == true) ? row?.parentTrackID : nil
-            return parent != groupConnections[$0.key]
-        }
-        // Disconnect old links first so regrouping cannot briefly form a cycle.
-        for (_, bus) in changed { engine.disconnectNodeOutput(bus.groupSend) }
-        for (id, bus) in changed {
-            let row = tracks[id]
-            let parent = (row?.outputPatches.contains(.masterGroup) == true) ? row?.parentTrackID : nil
-            let destination = parent.flatMap { trackBuses[$0]?.mix } ?? masterBus
-            engine.connect(bus.groupSend, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: format)
-            groupConnections[id] = parent
-        }
-    }
-
-    private func connectTracks() {
+    private func connectTrackRouting() {
+        let groups = Dictionary(uniqueKeysWithValues: tracks.values.compactMap { row -> (UUID, UUID)? in
+            guard row.outputPatches.contains(.masterGroup), let parent = row.parentTrackID,
+                  trackBuses[row.id] != nil, trackBuses[parent] != nil else { return nil }
+            return (row.id, parent)
+        })
+        let changedGroups = trackBuses.keys.filter { groups[$0] != groupConnections[$0] }
         var next: Set<TrackConnection> = []
         for row in tracks.values {
             for destination in row.routing?.transmitters.compactMap({ $0 }) ?? [] { next.insert(TrackConnection(source: row.id, destination: destination)) }
@@ -1343,9 +1338,29 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             return source?.parentTrackID != $0.destination || (source?.outputPatches.contains(.masterGroup) != true)
         }
         let changed = Set(trackConnections.symmetricDifference(next).map(\.source))
-        guard !changed.isEmpty else { return }
+        guard !changedGroups.isEmpty || !changed.isEmpty else { return }
+        // Monterey must not reconnect a live mixer fanout. Pause only for an
+        // actual topology edit, keeping scheduled players and FX state intact.
+        // Hardware channel changes use the existing atomic matrix and never
+        // reach this transaction. Do not stop/reset or rebuild the project.
+        let resume = pauseForRoutingChanges && engine.isRunning
+        if resume { engine.pause() }
+        defer {
+            if resume {
+                do { try engine.start() }
+                catch { onError(error) }
+            }
+        }
         let format = AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)!
+        // Remove both kinds of old edges before adding either kind of new
+        // edge: a valid final routing must never pass through a feedback loop.
+        for id in changedGroups { if let bus = trackBuses[id] { engine.disconnectNodeOutput(bus.groupSend) } }
         for id in changed { if let bus = trackBuses[id] { engine.disconnectNodeOutput(bus.internalSend) } }
+        for id in changedGroups {
+            guard let bus = trackBuses[id] else { continue }
+            let destination = groups[id].flatMap { trackBuses[$0]?.mix } ?? masterBus
+            engine.connect(bus.groupSend, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: format)
+        }
         for id in changed {
             guard let bus = trackBuses[id] else { continue }
             var destinations: [AVAudioConnectionPoint] = []
@@ -1356,11 +1371,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             if destinations.isEmpty { destinations = [AVAudioConnectionPoint(node: masterBus, bus: masterBus.nextAvailableInputBus)] }
             engine.connect(bus.internalSend, to: destinations, fromBus: 0, format: format)
         }
+        groupConnections = groups
         trackConnections = next
     }
     func previewRouting(_ routes: [UUID: TrackRouting]) {
         for (id, routing) in routes { tracks[id]?.routing = routing }
-        connectTracks()
+        connectTrackRouting()
     }
     private func configureMaster() throws {
         guard !masterConfigured else { return }
@@ -2558,7 +2574,7 @@ for (key, sampler) in samplers where key.track == track && !settings.isEnabled(k
         if let id {
             guard let track = tracks[id], patches.allSatisfy({ (try? $0.validate(allowMaster: true, allowGroup: track.parentTrackID != nil, allowNone: true)) != nil }) else { return }
             tracks[id]?.outputs = patches
-            if let updated = tracks[id], let bus = trackBuses[id] { connectGroups(); connectTracks(); applyTrackRoutes(updated, bus: bus) }
+            if let updated = tracks[id], let bus = trackBuses[id] { connectTrackRouting(); applyTrackRoutes(updated, bus: bus) }
         } else {
             guard patches.allSatisfy({ (try? $0.validate(allowMaster: false, allowNone: true)) != nil }) else { return }
             masterPatches = patches; applyMasterRoutes()
@@ -2643,7 +2659,7 @@ for (key, sampler) in samplers where key.track == id {
         for node in nodes {
             let key = ObjectIdentifier(node)
             guard appliedRoutes[key] != patches else { continue }
-            JarasChannelRouter.configurePatches(node, firsts: patches.map { NSNumber(value: $0.firstChannel) }, counts: patches.map { NSNumber(value: $0.channelCount) })
+            JarasChannelRouter.configurePatches(node, firsts: patches.map { NSNumber(value: $0.firstChannel) }, counts: patches.map { NSNumber(value: $0.channelCount) }, outputChannels: UInt(hardwareFormat.channelCount))
             appliedRoutes[key] = patches
         }
     }
@@ -3607,7 +3623,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             // Prepare routing before Play so starting a file only adds its source.
             for track in song.tracks where track.kind == .standard || track.kind == .click || track.clips.contains(where: \.isProjectionMedia) { _ = trackBus(for: track.id) }
             try prepareClickTrack(song: song)
-            connectGroups(); connectTracks()
+            connectTrackRouting()
             for id in Array(idleVoices.keys) where tracks[id] == nil {
                 for voice in idleVoices.removeValue(forKey: id) ?? [] { detach(voice) }
             }

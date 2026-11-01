@@ -2,6 +2,28 @@ import Foundation
 import AVFoundation
 import Darwin
 setbuf(stdout, nil)
+// Exercise the Monterey routing transaction on every CI host. A regression
+// must fail before a live mixer reconnect can hang the render thread.
+private final class PatchTestEngine: AVAudioEngine {
+    var requirePausedRouting = false
+    var routingPauses = 0
+    override func pause() {
+        if requirePausedRouting { routingPauses += 1 }
+        super.pause()
+    }
+    override func disconnectNodeOutput(_ node: AVAudioNode) {
+        precondition(!requirePausedRouting || !isRunning, "Patch disconnected a live mixer")
+        super.disconnectNodeOutput(node)
+    }
+    override func connect(_ node1: AVAudioNode, to node2: AVAudioNode, fromBus bus1: AVAudioNodeBus, toBus bus2: AVAudioNodeBus, format: AVAudioFormat?) {
+        precondition(!requirePausedRouting || !isRunning, "Patch connected a live mixer")
+        super.connect(node1, to: node2, fromBus: bus1, toBus: bus2, format: format)
+    }
+    override func connect(_ sourceNode: AVAudioNode, to destNodes: [AVAudioConnectionPoint], fromBus sourceBus: AVAudioNodeBus, format: AVAudioFormat?) {
+        precondition(!requirePausedRouting || !isRunning, "Patch changed live mixer fanout")
+        super.connect(sourceNode, to: destNodes, fromBus: sourceBus, format: format)
+    }
+}
 @MainActor func audioAutoreleasepool(_ body: @MainActor () throws -> Void) rethrows {
     try autoreleasepool { try MainActor.assumeIsolated { try body() } }
 }
@@ -98,10 +120,10 @@ try audioAutoreleasepool {
     project.songs[0].tracks = [parent, receiver, child]
     var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
         position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
-    @MainActor func makeRenderer() throws -> (AVAudioEngine, StemAudioPlayback) {
-        let engine = AVAudioEngine()
+    @MainActor func makeRenderer(legacyRouting: Bool = false) throws -> (PatchTestEngine, StemAudioPlayback) {
+        let engine = PatchTestEngine()
         try engine.enableManualRenderingMode(.offline, format: routeFormat, maximumFrameCount: 512)
-        let audio = StemAudioPlayback(engine: engine, realtime: false)
+        let audio = StemAudioPlayback(engine: engine, realtime: false, pauseForRoutingChanges: legacyRouting)
         audio.open(directory: directory)
         try audio.update(state, revision: 1)
         let monitor = AVAudioSourceNode(format: routeFormat) { silent, _, frames, buffers in
@@ -115,11 +137,18 @@ try audioAutoreleasepool {
         return (engine, audio)
     }
     let (referenceEngine, referenceAudio) = try makeRenderer()
-    let (changingEngine, changingAudio) = try makeRenderer()
+    let (changingEngine, changingAudio) = try makeRenderer(legacyRouting: true)
     defer { referenceAudio.prepareForClosing(); changingAudio.prepareForClosing() }
     let referencePCM = AVAudioPCMBuffer(pcmFormat: routeFormat, frameCapacity: 512)!
     let changingPCM = AVAudioPCMBuffer(pcmFormat: routeFormat, frameCapacity: 512)!
     let originalNodes = changingEngine.attachedNodes
+    changingEngine.requirePausedRouting = true
+    defer { changingEngine.requirePausedRouting = false }
+    for index in 0..<32 {
+        changingAudio.previewPatches(child.id, patches: [index.isMultiple(of: 2) ? .stereo : .master])
+    }
+    precondition(changingEngine.routingPauses == 0 && changingEngine.attachedNodes == originalNodes,
+                 "Physical channel changes must not pause or reconnect the prepared graph")
     var capturedMIDI: [UInt8] = []
     changingAudio.armedMIDIRecordingTracks = [child.id]
     changingAudio.onLiveKeyboardMIDI = { _, status, _, _ in capturedMIDI.append(status) }
@@ -157,6 +186,8 @@ try audioAutoreleasepool {
     precondition(tailPeak > 0.00001, "item effect tails remain audible across routing changes after the file ends")
     precondition(changingAudio.hasInputMonitor(child.id) && capturedMIDI == Array(repeating: [UInt8(0x90), 0x80], count: 8).flatMap { $0 },
                  "live monitoring and MIDI capture stay attached through all routing changes")
+    precondition(changingEngine.routingPauses > 0, "The legacy mixer transaction must be exercised on modern CI hosts")
+    print("LEGACY_MAC_PATCH_PAUSES_ONLY_TOPOLOGY_AND_PRESERVES_PHASE_FX_INPUT_OK rate=\(rate)")
     print("DORMANT_SEND_LIVE_MASTER_GROUP_INTERNAL_CYCLE_PHASE_TAIL_MONITOR_MIDI_OK rate=\(rate)")
 }
 // Compare each rendered sample with the established manual-fader path. This
