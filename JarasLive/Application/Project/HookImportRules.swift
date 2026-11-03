@@ -945,6 +945,10 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
 }
 
 function canonicalExistingTrackKey(trackName) {
+  // Numbered internal channels were created to keep simultaneous stems apart.
+  // Classifying them as filenames would discard that distinguishing suffix.
+  const exact = normalizeTrackKey(trackName);
+  if (/^(click|guia|regencia) [1-9]\d*$/.test(exact)) return exact;
   const classification = classifyCreateProjectTrack(`${String(trackName || '')}.wav`);
   return classification.recognized ? classification.key : normalizeTrackKey(trackName);
 }

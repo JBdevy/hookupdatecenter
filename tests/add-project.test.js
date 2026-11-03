@@ -11,6 +11,7 @@ const {
   buildAddProjectRpp,
   inspectRppProject
 } = require('../src/add-project');
+const { canonicalExistingTrackKey } = require('../src/add-project');
 
 function makeTrack(name, fileCount = 1) {
   const classification = classifyCreateProjectTrack(`${name}.wav`);
@@ -73,6 +74,21 @@ function countTrackName(rpp, name) {
 }
 
 function main() {
+  for (const name of ['Click 2', 'Guia 2', 'Regência 3', 'Guitarra 2']) {
+    assert.notStrictEqual(canonicalExistingTrackKey(name), canonicalExistingTrackKey(name.replace(/ \d+$/, '')));
+  }
+  const numberedFiles = ['Click', 'Click 2', 'Guia', 'Guitarra', 'Guitarra 2'].map(name => ({
+    ...makeFile(name), trackName: name, trackKey: name.toLowerCase()
+  }));
+  const numbered = makeAudit('Existing numbered stems', numberedFiles);
+  numbered.tracks = numberedFiles.map(file => ({...makeTrack(file.trackName), name: file.trackName, key: file.trackKey}));
+  numbered.groups = createProjectTrackGroups(numbered.tracks);
+  const numberedRpp = buildCreateProjectRpp(numbered, { platform: 'win32' });
+  const numberedAppend = auditAddProjectRpp(numberedRpp, numbered);
+  assert.strictEqual(numberedAppend.reusedTrackCount, 5);
+  assert.strictEqual(numberedAppend.newTrackCount, 0);
+  const numberedResult = buildAddProjectRpp(numberedRpp, numberedAppend);
+  for (const file of numberedFiles) assert.strictEqual(countTrackName(numberedResult, file.trackName), 1);
   const baseAudit = makeAudit('Música existente', [makeFile('Click', 2)]);
   const baseRpp = buildCreateProjectRpp(baseAudit, { platform: 'win32' });
   const incomingAudit = makeAudit('Música nova', [
