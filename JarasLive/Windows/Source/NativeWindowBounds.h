@@ -30,7 +30,10 @@ class NativeWindowBounds final {
         } else {
             markShellFullscreen(false);
             fullscreen = false;
-            SetWindowLongPtrW(hwnd, GWL_STYLE, windowedStyle);
+            // Let SetWindowPlacement perform the normal/maximized transition.
+            // Pre-setting WS_MAXIMIZE can leave Windows believing a fullscreen
+            // sized HWND is already maximized, skipping the work-area resize.
+            SetWindowLongPtrW(hwnd, GWL_STYLE, windowedStyle & ~(WS_MAXIMIZE | WS_MINIMIZE));
             if (windowedNonRude) SetPropW(hwnd, L"NonRudeHWND", windowedNonRude);
             SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                          SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);

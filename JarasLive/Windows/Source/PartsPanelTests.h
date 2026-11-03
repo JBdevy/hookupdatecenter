@@ -317,9 +317,9 @@ void addPartsPanelTests(const File &directory, Register &&test) {
                             "Two Parts docks overlap or swap sides");
                 if (leftVisible && tracksVisible) {
                     const auto tracks=workspace.getLocalArea(trackViewport,trackViewport->getLocalBounds());
-                    require(left->getRight()==tracks.getX() && tracks.getRight()+20==grid.getX() &&
+                    require(left->getRight()==tracks.getX() && tracks.getRight()+6==grid.getX() &&
                             !left->getBounds().intersects(tracks),
-                            "Left Parts must precede the independent track mixer and its reserved 20 px divider margin");
+                            "Left Parts must precede the independent track mixer and its 6 px resize area");
                 }
                 require((int)Appearance(file).value("jaras.trackColumnWidth",0)==420,
                         "Parts layout overwrote the user's track mixer width");
