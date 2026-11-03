@@ -785,7 +785,7 @@ jaras::TransportState Session::presentationTransport() const {
     auto value = transport();
     // The core/UI state is sampled at 8 Hz. The running needle and viewport
     // must use the device's sample clock even when no plugin adds latency.
-    if (audio.transportClockPending() ||
+    if ((!value.playing && !value.subPlay.playing) || audio.transportClockPending() ||
         (audio.presentationLatencyFrames() == 0 && !audio.hasLiveDevice())) return value;
     const auto audible = audio.presentationState();
     value.position = audible.position;
@@ -1109,7 +1109,8 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     startTimerHz(transport().playing || transport().subPlay.playing ? 60 : 8);
     if (fadeoutRequested && !completingFadeout && !transport().playing) cancelTransportFadeout();
     const bool stoppedAtQueuedSelection = (kind == jaras::CommandKind::stop || kind == jaras::CommandKind::stopAll) &&
-        !transport().playing && (beforeCommand.regionId != transport().regionId || beforeCommand.editPosition != transport().editPosition);
+        !transport().playing && (beforeCommand.regionId != transport().regionId ||
+            beforeCommand.playlistEntryId != transport().playlistEntryId || beforeCommand.editPosition != transport().editPosition);
     if(stoppedAtQueuedSelection) focusSetlistRegion(transport().playlistEntryId ? transport().playlistEntryId : transport().regionId,true);
     if(mixer) notifyMixer();
     else if ((kind == jaras::CommandKind::selectRegion || stoppedAtQueuedSelection) && old == transport().songId && selectionChanged)

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 /// A network worker shared by transport updates and composition requests.
 /// The UI submits one latest state at a time; no network work touches audio.
@@ -7,12 +8,12 @@ public actor IntegrationConnection {
     private struct Failure: LocalizedError { let text: String; var errorDescription: String? { text } }
     private let settings: ResolumeSettings
     private let name: String
-    private let session: URLSession
+    private let session: URLSession?
     private var token: String?
     private var connection: Task<String, Error>?
     private var sequence: UInt64 = 0
     private var closed = false
-    public init(settings: ResolumeSettings, name: String, session: URLSession = .shared) {
+    public init(settings: ResolumeSettings, name: String, session: URLSession? = nil) {
         self.settings = settings; self.name = name; self.session = session
     }
     private func request(_ path: String, body: [String: Any]? = nil, authorized: Bool = true) async throws -> [String: Any] {
@@ -21,7 +22,9 @@ public actor IntegrationConnection {
         var request = URLRequest(url: destination, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1.5)
         if authorized { request.setValue(try await connect(), forHTTPHeaderField: "X-CatLive-Token") }
         if let body { request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        let (data, response) = try await session.data(for: request)
+        let data: Data, response: URLResponse
+        if let session { (data, response) = try await session.data(for: request) }
+        else { (data, response) = try await IntegrationEthernetHTTP.data(for: request) }
         guard let http = response as? HTTPURLResponse else { throw Failure(text: "Invalid Integration response") }
         let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(http.statusCode) else {
@@ -96,5 +99,117 @@ public actor IntegrationConnection {
             try await Task.sleep(nanoseconds: 300_000_000)
         }
         throw Failure(text: "Integration did not confirm saving the files")
+    }
+}
+
+/// A separate transport for the desktop Integration link. Remote app sessions
+/// continue to use their existing Wi-Fi-capable networking.
+enum IntegrationEthernetHTTP {
+    static func parameters() -> NWParameters {
+        let tcp = NWProtocolTCP.Options(); tcp.noDelay = true
+        let value = NWParameters(tls: nil, tcp: tcp)
+        value.requiredInterfaceType = .wiredEthernet
+        value.includePeerToPeer = false
+        return value
+    }
+    struct Failure: LocalizedError {
+        let errorDescription: String?
+        init(_ message: String) { errorDescription = message }
+    }
+    static func decode(_ bytes: Data, url: URL, complete: Bool) throws -> (Data, URLResponse)? {
+        guard bytes.count <= 2 * 1024 * 1024 + 16384 else { throw Failure("Integration response too large") }
+        guard let boundary = bytes.range(of: Data("\r\n\r\n".utf8)) else {
+            if complete || bytes.count > 16384 { throw Failure("Invalid Integration response") }
+            return nil
+        }
+        guard boundary.lowerBound <= 16384,
+              let text = String(data: bytes[..<boundary.lowerBound], encoding: .utf8) else { throw Failure("Invalid Integration headers") }
+        let lines = text.components(separatedBy: "\r\n")
+        let status = lines[0].split(separator: " ")
+        guard status.count >= 2, status[0] == "HTTP/1.1" || status[0] == "HTTP/1.0",
+              let code = Int(status[1]), (200...599).contains(code) else { throw Failure("Invalid Integration status") }
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            guard let separator = line.firstIndex(of: ":") else { throw Failure("Invalid Integration header") }
+            let name = line[..<separator].lowercased()
+            guard headers[name] == nil else { throw Failure("Duplicate Integration header") }
+            headers[name] = line[line.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+        }
+        // Integration returns bounded JSON with Content-Length. Never follow a
+        // redirect, use a proxy, or change interfaces to fetch another response.
+        guard headers["transfer-encoding"] == nil,
+              let rawLength = headers["content-length"], let length = Int(rawLength),
+              (0...2 * 1024 * 1024).contains(length) else { throw Failure("Invalid Integration content length") }
+        let body = bytes[boundary.upperBound...]
+        if body.count < length, !complete { return nil }
+        guard body.count == length,
+              let response = HTTPURLResponse(url: url, statusCode: code, httpVersion: String(status[0]), headerFields: headers) else { throw Failure("Incomplete Integration response") }
+        return (Data(body), response)
+    }
+    static func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard let url = request.url, let host = url.host, let port = NWEndpoint.Port(rawValue: UInt16(url.port ?? 48726)) else { throw Failure("Invalid Integration address") }
+        let exchange = Exchange(request: request, connection: NWConnection(host: .init(host), port: port, using: parameters()))
+        return try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation()
+            return try await exchange.run()
+        }, onCancel: { exchange.cancel() })
+    }
+    private final class Exchange: @unchecked Sendable {
+        let request: URLRequest, connection: NWConnection
+        let queue = DispatchQueue(label: "CatLive Integration Ethernet")
+        var completion: CheckedContinuation<(Data, URLResponse), Error>?
+        var timeout: DispatchWorkItem?, bytes = Data(), finished = false
+        init(request: URLRequest, connection: NWConnection) { self.request = request; self.connection = connection }
+        func run() async throws -> (Data, URLResponse) {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    if self.finished { continuation.resume(throwing: CancellationError()); return }
+                    self.completion = continuation
+                    let timeout = DispatchWorkItem { self.finish(.failure(Failure("CatLive Integration requires an Ethernet cable. Check the adapter and IP address."))) }
+                    self.timeout = timeout
+                    self.queue.asyncAfter(deadline: .now() + self.request.timeoutInterval, execute: timeout)
+                    self.connection.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready: self.send()
+                        case .failed(let error): self.finish(.failure(error))
+                        case .cancelled: self.finish(.failure(CancellationError()))
+                        default: break
+                        }
+                    }
+                    self.connection.start(queue: self.queue)
+                }
+            }
+        }
+        func cancel() { queue.async { self.finish(.failure(CancellationError())) } }
+        func finish(_ result: Result<(Data, URLResponse), Error>) {
+            guard !finished else { return }; finished = true
+            timeout?.cancel(); timeout = nil
+            connection.stateUpdateHandler = nil; connection.cancel()
+            completion?.resume(with: result); completion = nil
+        }
+        func send() {
+            let url = request.url!, body = request.httpBody ?? Data()
+            var text = "\(request.httpMethod ?? "GET") \(url.path) HTTP/1.1\r\nHost: \(url.host!):\(url.port ?? 48726)\r\nConnection: close\r\nContent-Length: \(body.count)\r\n"
+            for (key, value) in request.allHTTPHeaderFields ?? [:] where !["host", "connection", "content-length"].contains(key.lowercased()) {
+                guard !key.contains("\r"), !key.contains("\n"), !value.contains("\r"), !value.contains("\n") else { finish(.failure(Failure("Invalid Integration request"))); return }
+                text += "\(key): \(value)\r\n"
+            }
+            var packet = Data((text + "\r\n").utf8); packet.append(body)
+            connection.send(content: packet, completion: .contentProcessed { error in
+                if let error { self.finish(.failure(error)) } else { self.receive() }
+            })
+        }
+        func receive() {
+            guard !finished else { return }
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 32768) { data, _, complete, error in
+                guard !self.finished else { return }
+                if let error { self.finish(.failure(error)); return }
+                if let data { self.bytes.append(data) }
+                do {
+                    if let response = try IntegrationEthernetHTTP.decode(self.bytes, url: self.request.url!, complete: complete) { self.finish(.success(response)) }
+                    else { self.receive() }
+                } catch { self.finish(.failure(error)) }
+            }
+        }
     }
 }

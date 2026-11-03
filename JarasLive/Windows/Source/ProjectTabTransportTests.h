@@ -66,6 +66,28 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                     "Block boundary stopped without the next song ready and selected blue");
         }
     });
+    test("Manual Stop prepares the next block and reveals it through the selection callback", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        auto project=fixture(0,0);auto &list=*project.regionSetlist;
+        list.autoUntilBlockEnd=true;list.autoAdvance=false;
+        list.blocks=std::vector<jaras::SetlistBlock>{{"block-next",project.songs[0].id,"playlist","Next block",0,"second"}};
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        session.command(jaras::CommandKind::selectRegion,"first");session.command(jaras::CommandKind::play);
+        int revealed=0;
+        session.selectionChanged=[&] {
+            if(session.focusedRegion=="second") {
+                ++revealed;
+                require(!session.presentationTransport().playing && session.presentationTransport().editPosition==.25,
+                        "Old audio frame replaced the prepared cursor during grid reveal");
+            }
+        };
+        session.command(jaras::CommandKind::stop);
+        require(revealed==1 && session.focusedRegion=="second" && !session.transport().playing,
+                "Manual Stop did not select and reveal the next block");
+        session.command(jaras::CommandKind::stop);
+        require(session.focusedRegion=="second","Repeated Stop changed the prepared selection");
+        session.selectionChanged={};
+    });
     test("Project tabs return to idle timer cadence after an automatic region stop", [&] {
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
         auto project=fixture(0,0); project.regionSetlist->autoAdvance=false;

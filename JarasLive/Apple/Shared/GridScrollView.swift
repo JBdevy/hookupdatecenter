@@ -365,7 +365,7 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
     private var resizing = false
     private var applyingFrames = false
     private var onEnd: (CGFloat) -> Void = { _ in }
-    private let dividerWidth: CGFloat = 14
+    private let dividerWidth: CGFloat = 6
 
     init(actions: GridHostedActions, leading: GridHostedContent<Leading>, trailing: GridHostedContent<Trailing>) {
         self.actions = actions
@@ -385,6 +385,7 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         self.trailing.identifier = NSUserInterfaceItemIdentifier("workspace-setlist")
         addSubview(self.leading); addSubview(divider); addSubview(self.trailing)
         divider.direction = -1
+        divider.showsScrollRail = false
         divider.setAccessibilityElement(true)
         divider.setAccessibilityRole(.splitter)
         divider.setAccessibilityLabel("Resize setlist")

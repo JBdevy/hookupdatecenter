@@ -3162,6 +3162,24 @@ int runTests(const File &directory) {
         expect(!usage.cpu && usage.ram && *usage.ram > 0 && *usage.ram < 100, "Initial CPU awaits an interval; RAM belongs to the process");
         expect(!usage.sample() && usage.samples == 1, "Paint/timer frequency cannot resample within a second");
     });
+    test("Footer next song is limited to the current unified region", [&] {
+        jaras::Song song;
+        jaras::Part root; root.id="unified";root.startTime=0;root.endTime=30;
+        jaras::Part first;first.id="first";first.parentRegionID=root.id;first.startTime=0;first.endTime=10;
+        jaras::Part second=first;second.id="second";second.startTime=10;second.endTime=20;
+        jaras::Part third=first;third.id="third";third.startTime=20;third.endTime=30;
+        jaras::Part normal;normal.id="outside";normal.startTime=30;normal.endTime=50;
+        song.parts={normal,third,root,second,first};
+        jaras::TransportState state;state.playing=true;state.regionId=root.id;state.queuedRegionId=normal.id;
+        expect(nextUnifiedSong(song,state)->id==second.id,"Next followed playlist instead of internal chronology");
+        state.position=10;expect(nextUnifiedSong(song,state)->id==third.id,"Next did not advance at the child boundary");
+        state.regionId=second.id;expect(nextUnifiedSong(song,state)->id==third.id,"Playing a drawer child lost its parent");
+        state.position=20;expect(!nextUnifiedSong(song,state),"Last internal song leaked the following grid region");
+        state.regionId=normal.id;state.position=0;expect(!nextUnifiedSong(song,state),"Ordinary region showed unrelated songs");
+        state.regionId=root.id;state.playing=false;expect(!nextUnifiedSong(song,state),"Stopped transport still has an internal next song");
+        state.playing=true;state.ignoreNextAfter=5;expect(!nextUnifiedSong(song,state),"Ignore Next did not hide the display");
+        expect(state.queuedRegionId==normal.id,"Display changed the independently armed queue");
+    });
     test("Song display tempo belongs to its own region", [&] {
         auto song = projectFixture().songs.front();
         jaras::TimelineMarker tempo; tempo.id = uuid(); tempo.position = 10; tempo.tempoBPM = 123;

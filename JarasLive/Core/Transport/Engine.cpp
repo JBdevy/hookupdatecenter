@@ -1281,7 +1281,16 @@ void Engine::execute(const Command& c) {
         if (transport_.subPlay.playing) { promoteSubPlay(); break; }
         {
             const auto* queued = region(transport_.queuedRegionId);
+            // Manual Stop at the last song follows the same block preparation
+            // as natural completion. Repeated Stop while idle must not advance.
+            const auto prepared = !queued && (transport_.playing || transport_.paused)
+                ? nextBlockPreparationTarget() : std::optional<ID>{};
             transport_.paused = false; resumeSub_ = false; execute({CommandKind::subStop}); transport_.playing = false;
+            if (prepared) {
+                playStart_.reset();
+                execute({CommandKind::selectRegion, *prepared});
+                break;
+            }
             if (queued) {
                 transport_.position = queued->startTime; transport_.editPosition = queued->startTime; transport_.regionId = queued->id;
                 transport_.playlistEntryId = transport_.queuedPlaylistEntryId;

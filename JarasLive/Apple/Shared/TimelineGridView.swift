@@ -5,9 +5,9 @@ import CoreText
 enum TimelineZoomLimits {
     static let minimum = 0.001
     static let maximum = 8192.0
-    static let preciseSensitivity = 0.0021
+    static let preciseSensitivity = 0.0084
     static let maximumPreciseSensitivity = 0.035
-    static let wheelSensitivity = 0.065
+    static let wheelSensitivity = 0.26
     // Reserve minimum-zoom blank space in screen-width buckets. Resizing a
     // window must not change the whole timeline's extent for every pixel.
     static func minimumExtent(viewportWidth: CGFloat) -> Double {
@@ -248,7 +248,7 @@ private struct TimelineGridContent: View, Equatable {
     }
     private var dividerWidth: CGFloat {
         #if os(macOS)
-        20
+        6
         #else
         4
         #endif
@@ -710,8 +710,13 @@ private struct TimelineGridContent: View, Equatable {
                         }
                         .overlay(alignment: .topLeading) {
                             mixerDivider(columns: mixerColumns, maximum: maximumLabelWidth)
+                                #if os(macOS)
+                                .frame(width: dividerWidth, height: geometry.size.height)
+                                .offset(x: labelWidth)
+                                #else
                                 .frame(width: 20, height: geometry.size.height)
                                 .offset(x: labelWidth + dividerWidth / 2 - 10)
+                                #endif
                         }
                     }
                 }
@@ -1786,7 +1791,7 @@ private struct TimelineGridContent: View, Equatable {
     @ViewBuilder
     private func mixerDivider(columns: TrackMixerColumnGeometry, maximum: CGFloat) -> some View {
         #if os(macOS)
-        MixerResizeHandle(width: columns.totalWidth, maximum: maximum + columns.iconExtension, minimum: SidebarWidthLimits.trackMixer + columns.iconExtension, scrollController: mixerScrollController, onToggle: toggleMixer, onEnd: { totalWidth in
+        MixerResizeHandle(width: columns.totalWidth, maximum: maximum + columns.iconExtension, minimum: SidebarWidthLimits.trackMixer + columns.iconExtension, scrollController: mixerScrollController, showsScrollRail: false, onToggle: toggleMixer, onEnd: { totalWidth in
             let finalWidth = columns.storedWidth(for: totalWidth)
             if finalWidth > 0 { restoreLabelWidth = Double(finalWidth) }
             savedLabelWidth = Double(finalWidth)
@@ -5689,6 +5694,7 @@ struct MixerResizeHandle: NSViewRepresentable {
     var minimum: CGFloat = 0
     var direction: CGFloat = 1
     var scrollController: SidebarScrollController? = nil
+    var showsScrollRail = true
     var onStart: () -> Void = {}
     var onToggle: () -> Void = {}
     var onEnd: (CGFloat) -> Void = { _ in }
@@ -5707,6 +5713,7 @@ struct MixerResizeHandle: NSViewRepresentable {
         view.onResize = onResize
         view.direction = direction
         view.scrollController = scrollController
+        view.showsScrollRail = showsScrollRail
         view.onStart = onStart
         view.onToggle = onToggle
         view.onEnd = onEnd
@@ -5732,7 +5739,8 @@ final class MixerDividerView: NSView {
     private var hoverArea: NSTrackingArea?
     private var pointerCursorMonitor: Any?
     private static weak var pointerCursorOwner: MixerDividerView?
-    var scrollIndicatorVisible: Bool { scrollController?.metrics.canScroll == true }
+    var showsScrollRail = true { didSet { if oldValue != showsScrollRail { needsDisplay = true } } }
+    var scrollIndicatorVisible: Bool { showsScrollRail && scrollController?.metrics.canScroll == true }
     private var latestWidth: CGFloat = 0
     private var resizeLayoutInProgress = false
     var resizeLayout: (() -> Void)?
@@ -5872,7 +5880,7 @@ final class MixerDividerView: NSView {
         scrollPerPoint = metrics.canScroll && travel > 0 ? metrics.maximumOffset / travel : 0
         if dragAxis == .pending {
             guard max(abs(dx), abs(dy)) >= 3 else { return }
-            if abs(dy) > abs(dx), scrollPerPoint > 0 { dragAxis = .scroll }
+            if showsScrollRail, abs(dy) > abs(dx), scrollPerPoint > 0 { dragAxis = .scroll }
             else if abs(dx) >= abs(dy) { dragAxis = .resize; onStart?() }
             else { return }
         }

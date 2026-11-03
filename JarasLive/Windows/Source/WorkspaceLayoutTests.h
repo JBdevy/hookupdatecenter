@@ -250,8 +250,8 @@ struct WorkspaceLayoutTests {
             w.mixerVisible=mixer;w.setlistVisible=setlist;
             w.setlistPlacement=leading?Workspace::SetlistPlacement::left:Workspace::SetlistPlacement::right;w.resized();
             const auto state=get(w.diagnostics(),"timeline");
-            require(num(state,"x")==w.tracksViewport.getRight()+(mixer?20:0),"Mixer divider lost its reserved Mac margin");
-            require(w.mixerDivider.getWidth()==(mixer?20:0)&&w.setlistDivider.getWidth()==(setlist?14:0),"Hidden divider retained a margin or visible rail collapsed");
+            require(num(state,"x")==w.tracksViewport.getRight()+(mixer?6:0),"Mixer divider lost its narrow resize area");
+            require(w.mixerDivider.getWidth()==(mixer?6:0)&&w.setlistDivider.getWidth()==(setlist?6:0),"Hidden divider retained a margin or visible resize area collapsed");
             require(w.tracksViewport.getWidth()==(mixer?350:0),"Divider margin reduced mixer controls");
             if(setlist&&!leading)require(num(state,"x")+num(state,"width")==w.setlistDivider.getX(),"Setlist rail overlaps the grid");
             if(setlist&&leading)require(w.setlistDivider.getRight()==w.tracksViewport.getX(),"Leading setlist gap was not reserved");

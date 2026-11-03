@@ -525,13 +525,19 @@ public struct ShowTimelinePresentationState: Equatable {
         focusedRegion = nil
     }
     private func focusPreparedRegion(previous: TransportState) {
-        guard previous.playing, !snapshot.transport.playing, snapshot.transport.paused != true,
+        guard previous.playing || previous.paused == true,
+              !snapshot.transport.playing, snapshot.transport.paused != true,
               !snapshot.transport.subPlay.playing, let queued = snapshot.transport.regionId,
               previous.queuedRegionId == queued || (regionSetlist.autoUntilBlockEnd == true &&
                 (previous.regionId != queued || previous.playlistEntryId != snapshot.transport.playlistEntryId)) else { return }
         regionNavigationTask?.cancel(); regionNavigationTask = nil
-        navigationFocusPosition = nil
-        focusedRegion = snapshot.transport.playlistEntryId ?? previous.queuedPlaylistEntryId ?? queued; regionFocusRequest = UUID()
+        // A restored cursor belongs to project opening, not this new selection.
+        // Publish an explicit position so Mac and Native reveal the same song.
+        restoredCursorPosition = nil
+        navigationFocusPosition = snapshot.transport.editPosition ?? snapshot.transport.position
+        lastSetlistNavigationID = nil; selectedSetlistBlock = nil
+        focusedRegion = snapshot.transport.playlistEntryId ?? previous.queuedPlaylistEntryId ?? queued
+        setlistFocusRequest = UUID(); regionFocusRequest = UUID()
     }
     private func focusTimelineRegion(at position: Double, preferredRegion: UUID? = nil, forceReveal: Bool = false) {
         guard let song = current else { return }

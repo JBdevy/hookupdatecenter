@@ -375,7 +375,7 @@ FBDF9DFF296781DD41356F31 = {isa = PBXFileReference; lastKnownFileType = wrapper.
 92B1FED2DBA6139B05776B6B = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT;};
 210420D2D4CE930FF79003A4 = {isa = PBXFileReference; explicitFileType = wrapper.application; path = "CatLive.app"; sourceTree = BUILT_PRODUCTS_DIR;};
 4EF08EC3B7CCDB2869F36015 = {isa = PBXBuildFile; fileRef = A95B68F678640847767AF9BF;};
-F402CA1AE5570666D47710DC = {isa = PBXBuildFile; fileRef = 91EE2EBC0D126DF6ECFB59AD;};
+F402CA1AE5570666D47710DC = {isa = PBXBuildFile; fileRef = 91EE2EBC0D126DF6ECFB59AD; settings = {COMPILER_FLAGS = "-O3";};};
 2DBE57D7DFCF522FB79397D5 = {isa = PBXBuildFile; fileRef = BCBD133F7DF86865385A73A1;};
 672FE378C6EFAA7E0FAACD7B = {isa = PBXBuildFile; fileRef = 9F55B9CB2DB232CA01AE4221;};
 D490CE382AD294BF2B9517C7 = {isa = PBXBuildFile; fileRef = 64526AAE059ECBC8319DE5D0;};
@@ -610,7 +610,7 @@ EB89FF85814AAA3ADD6DA0B9 = {isa = XCBuildConfiguration; name = Debug; buildSetti
 12B8F7BB61F8B510166DE3BF = {isa = PBXNativeTarget; buildConfigurationList = 03B67C1639C5865634D6F136; buildPhases = (6F9592638C25B79E7C76D41F,BFE345F0B6F2743F553F8A13,6CFA80DA52F0622166F86BC7); buildRules = (); dependencies = (); name = "CatLive macOS"; productName = "CatLive"; productReference = 210420D2D4CE930FF79003A4; productType = "com.apple.product-type.application";};
 BD55B937FE89448404734B6A = {isa = PBXFileReference; explicitFileType = wrapper.application; path = "CatLive.app"; sourceTree = BUILT_PRODUCTS_DIR;};
 0289E72AEC1B877BEB429FEB = {isa = PBXBuildFile; fileRef = A95B68F678640847767AF9BF;};
-C8389D22B1076D3E116BDB4C = {isa = PBXBuildFile; fileRef = 91EE2EBC0D126DF6ECFB59AD;};
+C8389D22B1076D3E116BDB4C = {isa = PBXBuildFile; fileRef = 91EE2EBC0D126DF6ECFB59AD; settings = {COMPILER_FLAGS = "-O3";};};
 1DA435347CAED0164F1C5BCB = {isa = PBXBuildFile; fileRef = BCBD133F7DF86865385A73A1;};
 D4261A949D1BDCE5D16C00CA = {isa = PBXBuildFile; fileRef = 9F55B9CB2DB232CA01AE4221;};
 CB8F6B0E456524582C78F950 = {isa = PBXBuildFile; fileRef = 64526AAE059ECBC8319DE5D0;};

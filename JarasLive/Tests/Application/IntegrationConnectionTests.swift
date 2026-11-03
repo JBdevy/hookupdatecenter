@@ -121,3 +121,34 @@ final class IntegrationConnectionTests: XCTestCase {
         await client.disconnect()
     }
 }
+
+extension IntegrationConnectionTests {
+    func testIntegrationRequiresEthernetWithoutPeerToPeerFallback() {
+        let parameters = IntegrationEthernetHTTP.parameters()
+        XCTAssertEqual(parameters.requiredInterfaceType, .wiredEthernet)
+        XCTAssertFalse(parameters.includePeerToPeer)
+    }
+    func testEthernetResponseHandlesFragmentsAndRejectsTruncationAndOversize() throws {
+        let url = URL(string: "http://192.168.1.2:48726/v1/info")!
+        let body = Data("{\"name\":\"Conexão\"}".utf8)
+        let headers = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\n\r\n".utf8)
+        let complete = headers + body
+        for size in 0..<complete.count {
+            XCTAssertNil(try IntegrationEthernetHTTP.decode(complete.prefix(size), url: url, complete: false))
+        }
+        let decoded = try XCTUnwrap(IntegrationEthernetHTTP.decode(complete, url: url, complete: false))
+        XCTAssertEqual(decoded.0, body)
+        XCTAssertEqual((decoded.1 as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertThrowsError(try IntegrationEthernetHTTP.decode(complete.dropLast(), url: url, complete: true))
+        XCTAssertThrowsError(try IntegrationEthernetHTTP.decode(complete + Data([0]), url: url, complete: true))
+        XCTAssertThrowsError(try IntegrationEthernetHTTP.decode(Data("HTTP/1.1 200 OK\r\nContent-Length: 2097153\r\n\r\n".utf8), url: url, complete: false))
+        XCTAssertThrowsError(try IntegrationEthernetHTTP.decode(Data("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nContent-Length: 2\r\n\r\n".utf8), url: url, complete: false))
+    }
+    func testLiveEthernetTransportWhenReceiverIsProvided() async throws {
+        guard let host = ProcessInfo.processInfo.environment["CATLIVE_INTEGRATION_TEST_HOST"] else { throw XCTSkip("No wired receiver supplied") }
+        let url = URL(string: "http://\(host):48729/v1/info")!
+        let (body, response) = try await IntegrationEthernetHTTP.data(for: URLRequest(url: url, timeoutInterval: 1.5))
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String], ["transport": "ethernet"])
+    }
+}

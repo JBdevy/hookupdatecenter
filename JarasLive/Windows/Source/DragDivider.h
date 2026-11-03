@@ -12,6 +12,7 @@ class DragDivider final : public Component {
     std::function<void(int)> moved, scrollTo;
     std::function<ScrollMetrics()> scrollMetrics;
     void setThinRail(bool value) { thinRail=value;repaint(); }
+    void setScrollRailVisible(bool value) { scrollRailVisible=value;repaint(); }
     void refreshScroll() {
         const auto next = scrollMetrics ? scrollMetrics() : ScrollMetrics{};
         if (metrics.offset != next.offset || metrics.viewport != next.viewport || metrics.document != next.document) {
@@ -30,7 +31,7 @@ class DragDivider final : public Component {
         const auto delta=e.getScreenPosition()-origin;
         if (axis==Axis::pending) {
             if (std::max(std::abs(delta.x),std::abs(delta.y))<3) return;
-            if (alongX && scrollPerPoint>0 && std::abs(delta.y)>std::abs(delta.x)) axis=Axis::scroll;
+            if (scrollRailVisible && alongX && scrollPerPoint>0 && std::abs(delta.y)>std::abs(delta.x)) axis=Axis::scroll;
             else if (!alongX || std::abs(delta.x)>=std::abs(delta.y)) { axis=Axis::resize; if(started)started(); }
             else return;
         }
@@ -49,7 +50,7 @@ class DragDivider final : public Component {
         if(alongX) {
             const float width=thinRail?2.f:4.f;
             g.fillRect(getWidth()/2.f-width/2,0.f,width,(float)getHeight());
-            if(metrics.document>metrics.viewport && metrics.viewport>0) {
+            if(scrollRailVisible && metrics.document>metrics.viewport && metrics.viewport>0) {
                 const auto green=Colour::fromFloatRGBA(.22f,1,.55f,1);
                 g.setColour(green.withAlpha(.25f));g.fillRect(getWidth()/2.f-1,0.f,2.f,(float)getHeight());
                 g.setColour(green);g.fillRoundedRectangle(thumbBounds(),3);
@@ -66,7 +67,7 @@ class DragDivider final : public Component {
   private:
     enum class Axis { pending, resize, scroll };
     Axis axis=Axis::pending;
-    bool alongX,thinRail=false; Point<int> origin; ScrollMetrics metrics;
+    bool alongX,thinRail=false,scrollRailVisible=true; Point<int> origin; ScrollMetrics metrics;
     int initialScroll=0;float scrollPerPoint=0;
     juce::Rectangle<float> thumbBounds() const {
         const float height=std::max(0,getHeight()-4),width=std::min(thinRail?2:6,getWidth());
@@ -90,6 +91,19 @@ class SongDisplayLabel final : public Label {
         g.drawFittedText(song, width + 15, 0, std::max(0, getWidth() - width - 23), getHeight(), Justification::centredLeft, 1, .6f);
     }
 };
+// The footer previews only a later child of the current unified region.
+// The separately armed queue is shown in its own display.
+inline const jaras::Part *nextUnifiedSong(const jaras::Song &song, const jaras::TransportState &state) {
+    if (!state.playing || state.ignoreNextAfter || !state.regionId) return nullptr;
+    const auto current = std::find_if(song.parts.begin(),song.parts.end(),[&](const auto &p){return p.id == *state.regionId;});
+    if (current == song.parts.end()) return nullptr;
+    const auto parent = current->parentRegionID.value_or(current->id);
+    const jaras::Part *next = nullptr;
+    for (const auto &part : song.parts)
+        if (part.parentRegionID == parent && part.startTime > state.position &&
+            (!next || part.startTime < next->startTime || (part.startTime == next->startTime && part.id < next->id))) next = &part;
+    return next;
+}
 inline String regionCaption(const jaras::Song &song, const jaras::Part *part, std::optional<double> at = {}) {
     if (!part) return String::fromUTF8("—");
     const jaras::TimelineMarker *first = nullptr, *active = nullptr;

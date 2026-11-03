@@ -1,4 +1,5 @@
 #pragma once
+#include "IntegrationEthernetHTTP.h"
 #include "Common.h"
 namespace catlive {
 // This worker owns all network I/O. The presentation timer only replaces one
@@ -17,14 +18,10 @@ public:
     static var request(const var& config,const String& path,const var& body={},const String& token={}) {
         const auto host=str(config,"host").trim();const int port=(int)num(config,"port",48726);
         if(host.isEmpty()||host.containsAnyOf("/\\?#@ \r\n\t")||port<1||port>65535)throw std::runtime_error("Endereço do CatLive Integration inválido.");
-        URL url("http://"+host+":"+String(port)+"/v1/"+path);if(body.isObject())url=url.withPOSTData(JSON::toString(body,true));
-        int status=0;auto stream=url.createInputStream(URL::InputStreamOptions(URL::ParameterHandling::inAddress).withHttpRequestCmd(body.isObject()?"POST":"GET")
-            .withConnectionTimeoutMs(1000).withNumRedirectsToFollow(0).withStatusCode(&status)
-            .withExtraHeaders("Content-Type: application/json\r\nCache-Control: no-cache\r\n"+(token.isNotEmpty()?"X-CatLive-Token: "+token+"\r\n":String())));
-        if(!stream)throw std::runtime_error("CatLive Integration não respondeu. Confira o IP e o cabo.");
-        MemoryOutputStream bytes;std::array<char,4096> buffer{};
-        while(!stream->isExhausted()){auto read=stream->read(buffer.data(),(int)buffer.size());if(read<=0)break;if(bytes.getDataSize()+read>2*1024*1024)throw std::runtime_error("Resposta Integration grande demais.");bytes.write(buffer.data(),(size_t)read);}
-        auto value=JSON::parse(bytes.toUTF8());
+        const std::string payload = body.isObject() ? utf8(JSON::toString(body,true)) : std::string();
+        const auto response = integration::ethernetRequest(utf8(host),port,utf8(path),body.isObject()?&payload:nullptr,utf8(token));
+        const int status = response.status;
+        auto value=JSON::parse(String::fromUTF8(response.body.data(),static_cast<int>(response.body.size())));
         if(status<200||status>=300)throw std::runtime_error(utf8(str(value,"error","CatLive Integration HTTP "+String(status))));
         if(!value.isObject())throw std::runtime_error("Resposta inválida do CatLive Integration.");return value;
     }

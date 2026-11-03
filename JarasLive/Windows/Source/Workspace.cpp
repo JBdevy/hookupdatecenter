@@ -4454,6 +4454,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     };
     bindDivider(mixerDivider, "trackMixerDivider", mixerWidth, 281, 900, 1, "jaras.trackColumnWidth");
     bindDivider(setlistDivider, "setlistDivider", setlistWidth, minimumSetlistWidth, 900, -1, "jaras.setlistWidth");
+    mixerDivider.setScrollRailVisible(false);
+    setlistDivider.setScrollRailVisible(false);
     setlistDivider.moved = [this](int delta) {
         setlistWidth=jlimit(minimumSetlistWidth,900,resizeStart+(setlistPlacement==SetlistPlacement::left?delta:-delta));
         resized(); repaint();
@@ -5066,17 +5068,9 @@ void Workspace::paint(Graphics &g) {
         };
         String nextName, queueName;
         if (const auto *song = session.song()) {
-            const auto order = setlist->orderedRoots();
-            auto selected = state.regionId ? std::find(order.begin(), order.end(), *state.regionId)
-                                           : order.end();
-            std::optional<ID> nextID;
-            if (selected != order.end() && ++selected != order.end())
-                nextID = *selected;
-            else if (!state.regionId && !order.empty())
-                nextID = order.front();
+            if (const auto *internalNext = nextUnifiedSong(*song,state))
+                nextName = regionCaption(*song,internalNext);
             for (const auto &part : song->parts) {
-                if (state.playing && !state.ignoreNextAfter && nextID == part.id)
-                    nextName = regionCaption(*song, &part);
                 if ((!state.subPlay.playing && state.queuedRegionId == part.id) ||
                     (state.subPlay.playing && part.startTime <= state.subPlay.position && part.endTime > state.subPlay.position))
                     queueName = regionCaption(*song, &part, state.subPlay.playing ? std::optional<double>(state.subPlay.position) : std::nullopt);
@@ -5182,8 +5176,8 @@ void Workspace::resized() {
                        std::max(1, getHeight() - title - transport - bottom)};
     const int availableWidth = workspaceBounds.getWidth();
     const bool detachedSetlist = setlistPlacement == SetlistPlacement::detached;
-    const int mixerGap=mixerVisible?20:0;
-    const int setlistGap=setlistVisible&&!detachedSetlist?14:0;
+    const int mixerGap=mixerVisible?6:0;
+    const int setlistGap=setlistVisible&&!detachedSetlist?6:0;
     const int columnsBudget=std::max(0,availableWidth-100-mixerGap-setlistGap);
     const int mixerMinimum=mixerVisible?std::min(180,columnsBudget):0;
     const int setlistMinimum=setlistVisible&&!detachedSetlist?std::min(minimumSetlistWidth,std::max(0,columnsBudget-mixerMinimum)):0;
