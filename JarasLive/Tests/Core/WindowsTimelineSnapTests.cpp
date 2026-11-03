@@ -52,6 +52,10 @@ int main() {
     }
     check(snapSelection(163,song,1,transport,false,&multi,&index),163,"entire moving selection excluded");
     song.tracks.clear(); song.timeSettings->divisions = 4;
+    for(double scale:{.01,.05,.3,1.,10.,100.}) {
+        check(snapSelection(103.52,song,scale,transport,false),103.5,"hidden divisions remain magnetic for item drags");
+        check(snap(103.52,song,scale,false,true),103.5,"hidden divisions remain magnetic for marker drags");
+    }
     check(snapSelection(1.12,song,60,transport,false),1,"nearby grid attracts");
     check(snapSelection(1.24,song,60,transport,false),1.24,"distant grid does not force drop");
     check(snapCursor(1.24,song,60,false),1,"cursor click keeps division quantization");

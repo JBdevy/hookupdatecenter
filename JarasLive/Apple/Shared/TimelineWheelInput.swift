@@ -495,8 +495,10 @@ private struct TimelineWheelZoomTransition {
     func value(at time: Double) -> Double {
         let progress = min(1, max(0, (time - began) / Self.duration))
         guard progress < 1 else { return to }
-        let eased = 1 - (1 - progress) * (1 - progress)
-        return exp(log(from) + (log(to) - log(from)) * (0.6 + 0.4 * eased))
+        // Keep adjacent display frames close. A 60% initial jump followed by
+        // tiny corrections made steady wheel input visibly lurch on each notch.
+        // Use the same even response as track-height zoom, in logarithmic space.
+        return exp(log(from) + (log(to) - log(from)) * (0.15 + 0.85 * progress))
     }
 }
 

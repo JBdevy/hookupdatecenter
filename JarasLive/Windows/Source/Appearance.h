@@ -28,6 +28,7 @@ class Appearance final : public ChangeBroadcaster {
                      : playlist ? colour("jaras.setlist.playlistTextColor", 0x00ff9a)
                                 : colour("jaras.setlist.allRegionsTextColor", 0xffffff);
     }
+    bool invertWaveformColors() const { return flag(values, "jaras.timeline.invertWaveformColors", false); }
     bool gridlines() const { return flag(values, "jaras.timeline.gridlines", true); }
     var value(const String &key, var fallback = {}) const { return get(values, Identifier(key), fallback); }
     File storageFile() const { return location; }

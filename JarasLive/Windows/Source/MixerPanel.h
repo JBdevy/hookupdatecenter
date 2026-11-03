@@ -223,6 +223,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             return nullptr;
         }
         void refresh() {
+            peak->refresh();
             if(id.empty()) {
                 const auto &project=mixer.session.project();
                 masterPresentation.volume=project.masterVolume;masterPresentation.pan=project.masterPan;
@@ -242,15 +243,14 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 const auto levels = mixer.slotsOnly ? std::array<float,2>{} : mixer.session.audio.meterLevels(id);
                 if (lastRevision == mixer.session.revision && lastSelection == selected &&
                     lastVolume == volume && lastLocked == mixer.session.trackFaderLocked(id)) {
-                    if (!mixer.slotsOnly && lastLevels != levels) {
+                    if (!mixer.slotsOnly && meterPaint.update(levels)) {
                         const auto bounds = fader.getBounds();
                         repaint(69 + controlsOffset(), bounds.getY(), 12, bounds.getHeight());
                     }
-                    lastLevels = levels;
                     return;
                 }
                 lastRevision = mixer.session.revision; lastSelection = selected;
-                lastVolume = volume; lastLocked = mixer.session.trackFaderLocked(id); lastLevels = levels;
+                lastVolume = volume; lastLocked = mixer.session.trackFaderLocked(id); meterPaint.update(levels);
                 fader.setValue(id.empty()?t->volume:mixer.session.trackDisplayVolume(id,t->volume),dontSendNotification);
                 fader.setEnabled(!mixer.session.trackFaderLocked(id));
                 pan.setValue(t->pan, dontSendNotification);
@@ -276,6 +276,15 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             if (!id.empty() && mixer.selectedTrack(id)) { g.setColour(Colours::white.withAlpha(.08f)); g.fillAll(); }
             g.setColour(colour);
             g.fillRect(0, 0, getWidth(), 3);
+            const auto meterBounds = fader.getBounds();
+            if (!mixer.slotsOnly && juce::Rectangle<int>(69 + controlsOffset(), meterBounds.getY(),
+                    12, meterBounds.getHeight()).contains(g.getClipBounds())) {
+                const auto levels = mixer.session.audio.meterLevels(id);
+                for (int ch=0; ch<2; ++ch)
+                    meterDisplay::bar(g, {70.f + controlsOffset() + ch*5, (float)meterBounds.getY()+4,
+                        3, (float)std::max(0, meterBounds.getHeight()-8)}, levels[(size_t)ch]);
+                return;
+            }
             const auto &settings = slotSettings();
             const auto chain = list(get(settings, "inserted"));
             const auto geometry = layout();
@@ -306,7 +315,6 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             }
             if(!mixer.slotsOnly) {
             const int controls = geometry.controlsY;
-            const auto meterBounds=fader.getBounds();
             const int meterTop=meterBounds.getY()+4,meterBottom=meterBounds.getBottom()-4;
             const auto levels = mixer.session.audio.meterLevels(id);
             for (int ch = 0; !jaras::isTeleprompterRole(t->role) && t->role.id!="chords" && t->role.id!="programChange" && ch < 2; ++ch)
@@ -452,7 +460,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         uint64 lastRevision = ~uint64(0);
         bool lastSelection = false, lastLocked = false;
         double lastVolume = -1;
-        std::array<float, 2> lastLevels{};
+        meterDisplay::RepaintState meterPaint;
         mutable std::optional<std::string> cachedFX;
         mutable var cachedSettings;
         mutable uint64 cachedFXRevision = ~uint64(0);
@@ -599,8 +607,14 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
     OwnedArray<Strip> strips;
     std::vector<ID> ids;
     void timerCallback() override {
-        if (isShowing())
-            refresh();
+        if (isShowing()) {
+            // Structure changes have a revision; audio level changes do not.
+            // Avoid rebuilding the track ID list on every meter tick.
+            if (structureRevision != session.revision) {
+                refresh(); structureRevision = session.revision;
+            } else refreshVisible();
+        }
     }
+    uint64 structureRevision = ~uint64(0);
 };
 } // namespace catlive

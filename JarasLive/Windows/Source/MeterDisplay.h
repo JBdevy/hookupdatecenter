@@ -1,18 +1,36 @@
 #pragma once
 #include "Common.h"
+#include "MeterRepaint.h"
 #include "../../Core/Audio/MeterState.hpp"
 namespace catlive::meterDisplay {
 using PeakHold = audio::PeakHold;
-class PeakReadout final : public Component, private Timer {
+inline bool visibleInViewport(const Component& component) {
+    if (!component.isShowing()) return false;
+    auto bounds = component.getLocalBounds();
+    for (auto* child = &component; auto* parent = child->getParentComponent(); child = parent) {
+        bounds = parent->getLocalArea(child, bounds).getIntersection(parent->getLocalBounds());
+        if (bounds.isEmpty()) return false;
+    }
+    return !bounds.isEmpty();
+}
+class PeakReadout final : public Component {
     std::function<float()> read;
     std::function<void()> clear;
     std::function<Colour()> colour;
     float shown=-1;
-    void timerCallback()override{const auto value=read();if(value!=shown){shown=value;repaint();}}
 public:
+    // The owning mixer polls visible meters together. One timer per peak
+    // multiplied the idle workload by every track, including offscreen rows.
+    void refresh(){
+        if (!visibleInViewport(*this)) return;
+        const auto amplitude=read();
+        const auto value=amplitude>0 && std::isfinite(amplitude)
+            ? std::round(20*std::log10(amplitude)*100) : -100000.f;
+        if(value!=shown){shown=value;repaint();}
+    }
     PeakReadout(std::function<float()> get,std::function<void()> reset,std::function<Colour()> foreground=[] {return Colours::white;})
         :read(std::move(get)),clear(std::move(reset)),colour(std::move(foreground)){
-        setComponentID("peakReadout");setTitle("Reset peak");startTimerHz(20);
+        setComponentID("peakReadout");setTitle("Reset peak");
     }
     bool hitTest(int x, int y) override {
         const auto amplitude=read();
@@ -51,13 +69,12 @@ inline void bar(Graphics &g, juce::Rectangle<float> bounds, float amplitude) {
         std::max(1.f,std::round(bounds.getWidth()*scale))/scale,std::max(1.f,std::round(bounds.getHeight()*scale))/scale};
     g.setColour(Colours::black.withAlpha(.55f));
     g.fillRect(bounds);
-    const float fraction = amplitude > 0 && std::isfinite(amplitude)
-        ? jlimit(0.f, 1.f, (20 * std::log10(amplitude) + 60) / 60) : 0;
-    if (fraction <= 0) return;
+    const float level = fraction(amplitude);
+    if (level <= 0) return;
     ColourGradient gradient(Colour(0xff0a84ff), bounds.getX(), bounds.getBottom(),
                             Colour(0xffff4245), bounds.getX(), bounds.getY(), false);
     gradient.addColour(.5,Colour(0xffffd600));
     g.setGradientFill(gradient);
-    g.fillRect(bounds.withTop(bounds.getBottom() - bounds.getHeight() * fraction));
+    g.fillRect(bounds.withTop(bounds.getBottom() - bounds.getHeight() * level));
 }
 }

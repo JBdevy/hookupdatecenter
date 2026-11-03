@@ -38,6 +38,8 @@ private:
 };
 void sendOSC(int port, const std::string& address, int value, bool speed = false);
 JSON validatePlan(const JSON& input);
+JSON validateGrandMA2Plan(const JSON& input);
+void createGrandMA2(const JSON& plan, const std::filesystem::path& directory, const std::atomic<bool>& cancelled);
 void createComposition(const JSON& plan, const std::filesystem::path& file, int port,
                        const std::atomic<bool>& cancelled, const std::function<void(std::string)>& progress);
 struct State {

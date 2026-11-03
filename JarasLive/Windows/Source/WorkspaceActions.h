@@ -22,6 +22,8 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         if (value > 0 && navigateProjectTab) navigateProjectTab(action == "previousProjectTab" ? -1 : 1);
     } else if (action == "saveProject") {
         if (value > 0) chooseSave(false);
+    } else if (action == "toggleFullscreen") {
+        if (value > 0 && toggleWorkspaceFullscreen) toggleWorkspaceFullscreen();
     } else if (action == "transportFadeout") {
         triggerTransportFadeout();
     } else if (action == "selectTrack") {
@@ -128,7 +130,7 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         }
         if (song->markers)
             for (const auto &marker : *song->markers)
-                points.push_back(marker.position);
+                if (!marker.tempoBPM) points.push_back(marker.position);
         std::sort(points.begin(), points.end());
         const auto at = session.transport().editPosition;
         double dest = at;

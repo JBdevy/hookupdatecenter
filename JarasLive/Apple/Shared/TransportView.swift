@@ -9,6 +9,7 @@ struct TransportView: View {
     @State private var showingReduction = false
     @State private var showingExport = false
     @State private var showingResolume = false
+    @State private var showingGrandMA2 = false
     @State private var showingAdvanced = false
     @State private var showingFadeout = false
     let show: ShowController
@@ -66,6 +67,7 @@ struct TransportView: View {
             #if os(macOS)
             .background { if !remotePresentation { TransportFadeoutPresenter(show: show).frame(width: 0, height: 0) } }
             .workspaceEditor("Resolume", isPresented: $showingResolume) { ResolumeSettingsView(show: show) }
+            .workspaceEditor("grandMA2", isPresented: $showingGrandMA2) { GrandMA2SettingsView(show: show) }
             .sheet(isPresented: $showingPortableExport) {
                 if let documents { PortableProjectExportView(documents: documents) }
             }
@@ -138,8 +140,8 @@ struct TransportView: View {
                         }.buttonStyle(.plain).accessibilityLabel("Advanced").jarasHelp("Advanced")
                         #if os(macOS)
                         if !remotePresentation {
-                        ForEach(["Resolume"], id: \.self) { title in
-                            Button { showingResolume = true } label: {
+                        ForEach(["grandMA2", "Resolume"], id: \.self) { title in
+                            Button { if title == "grandMA2" { showingGrandMA2 = true } else { showingResolume = true } } label: {
                                 Text(verbatim: title).font(.jarasSystem(size: 10, weight: .semibold)).frame(width: 64, height: 25).contentShape(Rectangle())
                                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: 0x454545)))
                             }.buttonStyle(.plain).accessibilityLabel(title).jarasHelp(title)

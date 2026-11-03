@@ -871,11 +871,9 @@ struct TimecodePlaybackSpan {
     private var lastVideoNoAudio: Bool?
     private var silentVideoFiles = Set<String>()
     private var tempo: Double?
-    #if os(macOS)
     private var preparedSourcesByPlayer: [ObjectIdentifier: JarasPreparedClip] = [:]
     private var preparedSourcesByStretch: [ObjectIdentifier: JarasPreparedClip] = [:]
     private var preparedSourceEnabled: Bool { realtime && ProcessInfo.processInfo.environment["CATLIVE_PREPARED_SOURCE"] != "0" }
-    #endif
     private var allowsTempoChanges = false
     private var voiceClockAnchors: [ObjectIdentifier: (node: AVAudioTime, player: AVAudioTime)] = [:]
     private var clockedIdlePlayers = Set<ObjectIdentifier>()
@@ -920,12 +918,10 @@ struct TimecodePlaybackSpan {
         return anchor.sampleTime + AVAudioFramePosition((elapsed * anchor.sampleRate / (anchor.audioTimeStamp.mRateScalar > 0 ? anchor.audioTimeStamp.mRateScalar : 1)).rounded())
     }
     private func configureStretch(_ stretch: AVAudioUnitTimePitch, clock: AVAudioUnitVarispeed, rate: Double, pitch: Float) {
-        #if os(macOS)
         if let source = preparedSourcesByStretch[ObjectIdentifier(stretch)] {
             source.setRate(rate, pitch: Double(pitch) / 100)
             return
         }
-        #endif
         let rate = Float(rate)
         // TimePitch rounds fractional rates to its analysis hop: 61/60 can
         // render as 521/512, accumulating ~54 ms/min against the sample clock.
@@ -984,47 +980,35 @@ struct TimecodePlaybackSpan {
         var scheduledSourceEnd: AVAudioFramePosition = 0
         var continuousSource = false
         var mixInputBus: AVAudioNodeBus = 0
-        #if os(macOS)
         var prepared: JarasPreparedClip?
         var preparedMix: AVAudioMixerNode?
         var preparedFormat: AVAudioFormat?
-        #endif
         var processingFormat: AVAudioFormat {
-            #if os(macOS)
             if let preparedFormat { return preparedFormat }
-            #endif
             return file.processingFormat
         }
         var volume: Float {
             get { player.volume }
             nonmutating set {
                 player.volume = newValue
-                #if os(macOS)
                 preparedMix?.outputVolume = newValue
-                #endif
             }
         }
         var pan: Float {
             get { player.pan }
             nonmutating set {
                 player.pan = newValue
-                #if os(macOS)
                 preparedMix?.pan = newValue
-                #endif
             }
         }
         func stopSource(silenceOutput: Bool = true) {
             player.stop()
-            #if os(macOS)
             if prepared != nil && silenceOutput { JarasVoiceGain.setStartHostTime(gain, hostTime: UInt64.max) }
             prepared?.stop()
             preparedMix?.reset()
-            #endif
         }
         var effectsInput: AVAudioNode {
-            #if os(macOS)
             if let preparedMix { return preparedMix }
-            #endif
             return usesStretch ? rateClock : player
         }
         var automationApplied = false
@@ -1033,12 +1017,10 @@ struct TimecodePlaybackSpan {
         var automationExternalValues: [String: Double] = [:]
     }
     private func sourcePositionAtRenderClock(_ voice: Voice, protectingOnsetFor leadTime: Double = 0) -> Double? {
-        #if os(macOS)
         if let source = voice.prepared, let onset = voice.scheduledOnset, onset.isHostTimeValid {
             let now = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: max(0, leadTime))
             return now >= onset.hostTime ? source.sourcePosition : nil
         }
-        #endif
         guard let onset = voice.scheduledOnset, let node = voice.player.lastRenderTime,
               node.isSampleTimeValid,
               let clock = voice.player.playerTime(forNodeTime: node) else { return nil }
@@ -1853,19 +1835,14 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         engine.attach(player); engine.attach(gain); engine.attach(stretch); engine.attach(rateClock)
         let bus = trackBus(for: track).input(for: clip)
         let inputBus = availableInputBus(track: track, node: bus)
-        #if os(macOS)
         let prepared = preparedSourceEnabled && file.processingFormat.channelCount <= 2
             ? JarasPreparedClip(format: file.processingFormat) : nil
-        #else
-        let prepared: AVAudioNode? = nil
-        #endif
         if usesStretch && prepared == nil {
             engine.connect(player, to: stretch, format: file.processingFormat)
             engine.connect(stretch, to: rateClock, format: file.processingFormat)
         }
         var voice = Voice(player: player, gain: gain, stretch: stretch, rateClock: rateClock, pitch: pitch, usesStretch: usesStretch, track: track, clip: clip, file: playbackFile)
         voice.mixInputBus = inputBus
-        #if os(macOS)
         if let prepared {
             let mix = AVAudioMixerNode()
             mix.outputVolume = 0
@@ -1880,7 +1857,6 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             preparedSourcesByPlayer[ObjectIdentifier(player)] = prepared
             preparedSourcesByStretch[ObjectIdentifier(stretch)] = prepared
         }
-        #endif
         applyClipFX(clip.fx ?? emptyFX, to: &voice)
         engine.connect(gain, to: bus, fromBus: 0, toBus: inputBus, format: voice.processingFormat)
         return voice
@@ -1937,7 +1913,6 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         return try makeVoice(track: track, clip: clip, file: file)
     }
-    #if os(macOS)
     private func prepareSource(_ voice: Voice, position: Double) throws {
         guard let source = voice.prepared else { return }
         let clip = voice.clip, sampleRate = voice.file.processingFormat.sampleRate
@@ -1950,7 +1925,6 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             rate: clip.audioRate, pitch: Double(clipPitches[clip.id] ?? voice.pitch) / 100,
             loopStart: loopFirst, loopEnd: loopEnd)
     }
-    #endif
     private func prepareIdleVoices(position: Double, revision: UInt64) {
         let key = "\(songID?.uuidString ?? "")/\(revision)/\(position)"
         guard preparationKey != key else { return }
@@ -2016,7 +1990,6 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                         try self.warmIdleVoice(voice)
                         #endif
                     }
-                    #if os(macOS)
                     if var voice = self.idleVoices[track, default: []].filter({
                         $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001
                     }).prefix(count).last, voice.prepared != nil {
@@ -2024,6 +1997,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                         try self.prepareSource(voice, position: max(position, clip.startTime))
                         continue
                     }
+                    #if os(macOS)
                     if self.realtime, self.deviceSessionActive, self.outputAllowed, abs(clip.audioRate - 1) < 0.000001,
                        let voice = self.idleVoices[track, default: []].filter({
                            $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001
@@ -2070,7 +2044,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     /// audible deadline. A finite silent buffer bounds CPU work and never touches
     /// the source file, transport position or the user's first transient.
     private func warmIdleVoice(_ voice: Voice) throws {
-        guard realtime, deviceSessionActive, outputAllowed, !transportWasRunning else { return }
+        guard voice.prepared == nil, realtime, deviceSessionActive, outputAllowed, !transportWasRunning else { return }
         // Opening a document rebuilds and stops the engine. Do not postpone its
         // first render until Play or the one-second device-health timer.
         try startEngineIfNeeded()
@@ -2132,17 +2106,13 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     }
     private func warmPlayer(_ voice: Voice) throws {
         try startEngineIfNeeded()
-        #if os(macOS)
         if voice.prepared != nil { return }
-        #endif
         preparePlayerWarmup(voice)
         try JarasAudioOutputConnection.start(voice.player)
         capturePlayerClock(voice)
     }
     private func warmPlayers(_ voices: [Voice], restoringLevels: Bool = true) throws {
-        #if os(macOS)
         let voices = voices.filter { $0.prepared == nil }
-        #endif
         guard !voices.isEmpty else { return }
         try startEngineIfNeeded()
         for voice in voices {
@@ -2165,14 +2135,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain))
         voice.stopSource()
         voice.effects?.detach(from: engine)
-        #if os(macOS)
         if let prepared = voice.prepared {
             preparedSourcesByPlayer[ObjectIdentifier(voice.player)] = nil
             preparedSourcesByStretch[ObjectIdentifier(voice.stretch)] = nil
             engine.detach(prepared.node)
             if let mix = voice.preparedMix { engine.detach(mix) }
         }
-        #endif
         engine.detach(voice.player); engine.detach(voice.gain); engine.detach(voice.stretch); engine.detach(voice.rateClock)
     }
     private func remove(_ key: VoiceKey, keepingTailAt position: Double? = nil) {
@@ -3721,9 +3689,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                         if count > 0 && count <= Int64(UInt32.max) {
                             let player = voice.player, file = voice.file, first = voice.scheduledSourceEnd
                             tempoAppendCommands.append {
-                                #if os(macOS)
                                 if let source = voice.prepared { source.setEndFrame(Double(end)); return }
-                                #endif
                                 player.scheduleSegment(file, startingFrame: first,
                                     frameCount: AVAudioFrameCount(count), at: nil, completionHandler: nil)
                             }
@@ -4043,9 +4009,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 if let prepareEnd, clip.startTime >= prepareEnd { continue }
                 let key = VoiceKey(clip: clip.id, head: head)
                 if var voice = voices[key], clip.loopLength != nil {
-                    #if os(macOS)
                     if voice.prepared != nil { continue }
-                    #endif
                     let deadline = min(clip.startTime + clip.duration, schedulingPosition + 5)
                     if !voice.continuousSource && voice.scheduledUntil < deadline - 1 {
                         voice.scheduledUntil = try scheduleLoop(file: voice.file, player: voice.player, clip: clip, from: voice.scheduledUntil, until: deadline, onset: false)
@@ -4113,11 +4077,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             func playerLatency(_ player: AVAudioPlayerNode) -> Double {
                 let key = ObjectIdentifier(player)
                 if let latency = playerLatencies[key] { return latency }
-                #if os(macOS)
                 let latency = presentationLatency(preparedSourcesByPlayer[key]?.node ?? player)
-                #else
-                let latency = presentationLatency(player)
-                #endif
                 playerLatencies[key] = latency
                 return latency
             }
@@ -4165,7 +4125,6 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             }
             let commands = try scheduled.map { entry -> (end: Double, command: @Sendable (AVAudioTime?) -> Void) in
                 let voice = entry.1, clip = voice.clip
-                #if os(macOS)
                 if let source = voice.prepared {
                     try prepareSource(voice, position: schedulingPosition)
                     let ramp = (startingFromStop && head < 2 && entry.4 < 0.000001) || entry.2 > 0
@@ -4173,7 +4132,6 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                         source.start(atHostTime: time?.hostTime ?? mach_absolute_time(), ramp: ramp)
                     })
                 }
-                #endif
                 if let length = clip.loopLength {
                     let sampleRate = voice.file.processingFormat.sampleRate
                     let loopFirst = AVAudioFramePosition((clip.loopStart ?? 0) * sampleRate)
@@ -4217,11 +4175,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 if !realtime && delay > 0 {
                     playbackTime = AVAudioTime(sampleTime: AVAudioFramePosition((delay * voice.file.processingFormat.sampleRate * clip.audioRate).rounded()), atRate: voice.file.processingFormat.sampleRate)
                 }
-                #if os(macOS)
                 let needsPlayerClock = voice.prepared == nil
-                #else
-                let needsPlayerClock = true
-                #endif
                 if realtime, needsPlayerClock, let hostTime = playbackTime {
                     let key = ObjectIdentifier(voice.player)
                     capturePlayerClock(voice)
@@ -4238,13 +4192,11 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 }
                 voice.scheduledOnset = playbackTime ?? AVAudioTime(sampleTime: 0, atRate: voice.file.processingFormat.sampleRate)
                 voice.scheduledProcessingDelay = preparedDelays[index]
-                #if os(macOS)
                 if voice.prepared != nil {
                     let gainLatency = max(0, presentationLatency(voice.gain) - referenceLatency)
                     JarasVoiceGain.setStartHostTime(voice.gain,
                         hostTime: audioHostTime(position: schedulingPosition + delay - gainLatency, head: head) ?? 0)
                 }
-                #endif
                 voice.scheduledSourceStart = first
                 let fadeLatency = preparedFadeDelays[index]
                 let fadeHost = realtime ? (audioHostTime(position: schedulingPosition + delay - fadeLatency, head: head) ?? 0) : 0

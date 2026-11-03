@@ -46,7 +46,7 @@ struct ActionDefinition {
     bool supportsMIDI() const {
         const String action(id);
         return action != "normalizeItems" && action != "reRenderItems" &&
-               action != "unifyAudioItems" && action != "createTempoMarker";
+               action != "unifyAudioItems" && action != "createTempoMarker" && action != "toggleFullscreen";
     }
     bool fixedKeyboard() const { return String(id) == "setlistUp" || String(id) == "setlistDown"; }
     bool repeats() const {
@@ -90,6 +90,7 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"toggleMultiLoopBypass", "Multiloops BYPASS on/off", 4, ""},
         {"selectTrack", "Select Track", 5, "", true},
         {"saveProject", "Salvar projeto", 5, "ctrl + S"},
+        {"toggleFullscreen", "Toggle fullscreen", 5, "ctrl + F11"},
         {"addTrack", "Add Track", 5, "ctrl + T"},
         {"splitItems", "Split stems", 5, "S"},
         {"projectStart", "Go to project start", 5, "Q"},

@@ -140,6 +140,7 @@ private struct TimelineGridContent: View, Equatable {
         lhs.remotePresentation == rhs.remotePresentation && lhs.show === rhs.show && lhs.presentation == rhs.presentation && lhs.visibility == rhs.visibility
     }
     @AppStorage(TimelineSnapPreference.key) private var snapEnabled = true
+    @AppStorage("jaras.timeline.invertWaveformColors") private var invertWaveformColors = false
     @ObservedObject private var recordingLayout = RecordingLaneLayout.shared
     @Environment(\.locale) private var locale
     @Environment(\.openClipFXChain) private var openClipFXChain
@@ -295,7 +296,7 @@ private struct TimelineGridContent: View, Equatable {
                     let nativeAudioBody = nativeBodyCache.configuration(song: song, renderKey: renderKey, rows: rows,
                         metadata: renderMetadata, rulerHeight: rulerHeight, selectedClips: selectedClips,
                         mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
-                        missingAudioPaths: documents.missingAudioPaths, language: locale.identifier, preview: itemWaveformPreview)
+                        missingAudioPaths: documents.missingAudioPaths, language: locale.identifier, preview: itemWaveformPreview, invertWaveformColors: invertWaveformColors)
                     let hostedItems = renderMetadata.hasItems && (nativeAudioBody?.hasFallbackItems ?? true)
                     let hostedItemCoverage = nativeAudioBody.map { TimelineHostedItemCoverage(items: $0.fallbackItems, identity: $0.fallbackIdentity) }
                     let nativeAudioItems = nativeAudioBody?.itemIDs ?? []
@@ -730,9 +731,9 @@ private struct TimelineGridContent: View, Equatable {
             switch GridMediaClipboard.shared.source() {
             case .files(let urls):
                 show.cancelGridCut()
-                documents.pasteMedia(urls, track: selectedTrack)
+                documents.pasteMedia(urls, track: show.current?.tracks.first { selectedTracks.contains($0.id) }?.id)
             case .items:
-                let pasted = show.pasteItems()
+                let pasted = show.pasteItems(selectedTracks: selectedTracks)
                 if !pasted.isEmpty { selectedClips = pasted; selectedClip = pasted.first }
             case .none: show.cancelGridCut()
             }
@@ -1769,7 +1770,7 @@ private struct TimelineGridContent: View, Equatable {
         return TimelineTempo.snap(time, song: song, pixelsPerSecond: pixelsPerSecond, regionEnds: snappingRegionEnds,
                                   cursor: transport.editPosition ?? transport.position,
                                   otherCursors: [transport.position] + (transport.subPlay.playing ? [transport.subPlay.position] : []),
-                                  excludingRegion: excludingRegion, includeItemEdges: true,
+                                  excludingRegion: excludingRegion, includeHiddenDivisions: true, includeItemEdges: true,
                                   excludingItems: excludingItems ?? movingClip.map { selectedClips.union([$0]) } ?? resizingItem.map { Set([$0]) } ?? [],
                                   maximumDistancePixels: 8)
     }
@@ -1875,6 +1876,7 @@ private struct TimelineGridContent: View, Equatable {
         let mediaDirectory: URL?
         let missingAudioPaths: Set<String>
         let language: String
+        var invertWaveformColors = false
     }
     var presentationKey: TimelineRenderKey
     let contentKey: ContentKey
@@ -1900,7 +1902,7 @@ private struct TimelineGridContent: View, Equatable {
 
     static func make(song: Song, key: TimelineRenderKey, rows: TrackRowLayout, metadata: TimelineRenderMetadata,
                      rulerHeight: CGFloat, selectedClips: Set<UUID>, mediaDirectory: URL?,
-                     missingAudioPaths: Set<String>, identity: Int = 0, language: String = "") -> Self? {
+                     missingAudioPaths: Set<String>, identity: Int = 0, language: String = "", invertWaveformColors: Bool = false) -> Self? {
         guard MetalWaveformRenderer.isSupported, let mediaDirectory else { return nil }
         var ids = Set<UUID>(), hasFallbackItems = false, hasFallbackWaveforms = false
         var fallbackItems: [CGRect] = []
@@ -1931,7 +1933,7 @@ private struct TimelineGridContent: View, Equatable {
             return Palette(normal: color(false), selected: color(true))
         }
         let contentKey = ContentKey(document: TimelineContentKey(key), metadataIdentity: ObjectIdentifier(metadata), rows: rows, rulerHeight: rulerHeight,
-            selectedClips: selectedClips, mediaDirectory: mediaDirectory, missingAudioPaths: missingAudioPaths, language: language)
+            selectedClips: selectedClips, mediaDirectory: mediaDirectory, missingAudioPaths: missingAudioPaths, language: language, invertWaveformColors: invertWaveformColors)
         let movingItems: Set<UUID> = key.movingClip.map { selectedClips.contains($0) ? selectedClips : [$0] } ?? []
         let movementRows = metadata.movementRows(items: movingItems, destination: key.movingTrack, tracks: song.tracks)
         return Self(presentationKey: key, contentKey: contentKey, song: song, rows: rows, metadata: metadata, rulerHeight: rulerHeight,
@@ -1950,9 +1952,9 @@ private struct TimelineGridContent: View, Equatable {
     private var identity = 0
     func configuration(song: Song, renderKey: TimelineRenderKey, rows: TrackRowLayout, metadata: TimelineRenderMetadata,
                        rulerHeight: CGFloat, selectedClips: Set<UUID>, mediaDirectory: URL?,
-                       missingAudioPaths: Set<String>, language: String = "", preview: ItemWaveformPreview? = nil) -> NativeTimelineAudioBodyConfiguration? {
+                       missingAudioPaths: Set<String>, language: String = "", preview: ItemWaveformPreview? = nil, invertWaveformColors: Bool = false) -> NativeTimelineAudioBodyConfiguration? {
         let next = NativeTimelineAudioBodyConfiguration.ContentKey(document: TimelineContentKey(renderKey), metadataIdentity: ObjectIdentifier(metadata), rows: rows, rulerHeight: rulerHeight,
-            selectedClips: selectedClips, mediaDirectory: mediaDirectory, missingAudioPaths: missingAudioPaths, language: language)
+            selectedClips: selectedClips, mediaDirectory: mediaDirectory, missingAudioPaths: missingAudioPaths, language: language, invertWaveformColors: invertWaveformColors)
         let isSupported = MetalWaveformRenderer.isSupported
         if self.key == next, supported == isSupported, value?.metadata.soloAudibleTracks == metadata.soloAudibleTracks {
             value?.presentationKey = renderKey
@@ -1965,7 +1967,7 @@ private struct TimelineGridContent: View, Equatable {
         self.key = next; supported = isSupported; identity &+= 1
         value = NativeTimelineAudioBodyConfiguration.make(song: song, key: renderKey, rows: rows, metadata: metadata,
             rulerHeight: rulerHeight, selectedClips: selectedClips, mediaDirectory: mediaDirectory,
-            missingAudioPaths: missingAudioPaths, identity: identity, language: language)
+            missingAudioPaths: missingAudioPaths, identity: identity, language: language, invertWaveformColors: invertWaveformColors)
         value?.preview = preview
         return value
     }
@@ -2244,7 +2246,8 @@ private struct TimelineGridContent: View, Equatable {
                 let rgb = selected ? palette.selected : palette.normal
                 let color = silenced ? SIMD4<Float>(repeating: selected ? 0.7 : 0.55) : rgb
                 func alpha(_ color: SIMD4<Float>, _ value: Float) -> SIMD4<Float> { SIMD4(color.x, color.y, color.z, value) }
-                let top = alpha(color, 1)
+                let inverted = value.contentKey.invertWaveformColors && TimelineItemWaveformColors.hasWaveform(clip, track: track)
+                let top = inverted ? SIMD4<Float>(72.0 / 255, 72.0 / 255, 72.0 / 255, 1) : alpha(color, 1)
                 let bottom = top
                 let border = selected ? SIMD4<Float>(128.0 / 255, 1, 156.0 / 255, 1) : alpha(color, 0.75)
                 let item = MetalTimelineItem(rect: rect.offsetBy(dx: -tile.minX, dy: -tile.minY),
@@ -2281,7 +2284,8 @@ private struct TimelineGridContent: View, Equatable {
                     guard let mediaSource = mediaURLs.resolveClipSource(clip.id, path: file.path) else { continue }
                     visibleWaveforms.append(TimelineWaveformItem(clip: clip,
                         fragments: value.metadata.fragments(for: clip),
-                        url: mediaSource.url, rect: rect, gray: gray, sourcePath: mediaSource.path, mediaSource: mediaSource))
+                        url: mediaSource.url, rect: rect, gray: gray, sourcePath: mediaSource.path, mediaSource: mediaSource,
+                        tint: inverted ? TimelineItemWaveformColors.ink(rgb: rgb, silenced: silenced) : nil))
                 }
             }
         }
@@ -4596,8 +4600,9 @@ private struct TimelineViewportLayer<Content: View>: View {
 }
 
 struct TimelineDrawing: View, Equatable {
+    @AppStorage("jaras.timeline.invertWaveformColors") private var invertWaveformColors = false
     static func == (lhs: Self, rhs: Self) -> Bool {
-        guard lhs.nativeAudioItems == rhs.nativeAudioItems, lhs.hostedMetalRequired == rhs.hostedMetalRequired else { return false }
+        guard lhs.nativeAudioItems == rhs.nativeAudioItems, lhs.hostedMetalRequired == rhs.hostedMetalRequired, lhs.invertWaveformColors == rhs.invertWaveformColors else { return false }
         return lhs.trackHeightScales == rhs.trackHeightScales && lhs.selectedTracks == rhs.selectedTracks && lhs.documentWidth == rhs.documentWidth && lhs.visibleRect == rhs.visibleRect && lhs.renderKey == rhs.renderKey && lhs.rowHeight == rhs.rowHeight && lhs.rulerHeight == rhs.rulerHeight && lhs.extent == rhs.extent && lhs.selectedClips == rhs.selectedClips && lhs.movingClip == rhs.movingClip && lhs.movingStart == rhs.movingStart && lhs.colorScheme == rhs.colorScheme && lhs.mediaDirectory == rhs.mediaDirectory && lhs.missingAudioPaths == rhs.missingAudioPaths
     }
     @Environment(\.colorScheme) private var colorScheme
@@ -4635,8 +4640,8 @@ struct TimelineDrawing: View, Equatable {
         ZStack(alignment: .topLeading) {
         if needsItems {
         TimelineWaveformReadinessLayer(observesWaveforms: !MetalWaveformRenderer.isSupported) { waveformRevision in
-        ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth, batchesViewport: MetalWaveformRenderer.isSupported, diagnosticName: "items", identity: TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, trackHeights: rows.heights, rulerHeight: rulerHeight, selectedClips: selectedClips, waveformRevision: waveformRevision, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory), tileIdentity: { tile, size in
-            var identity = TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, trackHeights: rows.heights, rulerHeight: rulerHeight, selectedClips: selectedClips, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory)
+        ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth, batchesViewport: MetalWaveformRenderer.isSupported, diagnosticName: "items", identity: TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, trackHeights: rows.heights, rulerHeight: rulerHeight, selectedClips: selectedClips, waveformRevision: waveformRevision, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory, gridStyle: [invertWaveformColors ? 1 : 0]), tileIdentity: { tile, size in
+            var identity = TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, rowHeight: rowHeight, trackHeights: rows.heights, rulerHeight: rulerHeight, selectedClips: selectedClips, missingAudioPaths: missingAudioPaths, mediaDirectory: mediaDirectory, gridStyle: [invertWaveformColors ? 1 : 0])
             if MetalWaveformRenderer.isSupported { return identity }
             let scale = size.width / extent
             var fingerprint = Hasher()
@@ -4692,7 +4697,7 @@ struct TimelineDrawing: View, Equatable {
                     let selected = selectedClips.contains(clip.id)
                     let rect = CGRect(x: clip.startTime * scale + 1, y: y + rows.itemLaneOffset(clip.id, track: index) + 3, width: max(2, clip.duration * scale - 2), height: rows.itemLaneHeight(clip.id, track: index) - 6)
                     guard rect.intersects(tile.insetBy(dx: -6, dy: -6)) else { continue }
-                    drawTimelineItem(clip, track: track, title: metadata.itemTitle(for: clip, track: track), rect: rect, selected: selected, silenced: silenced, scale: scale, tile: tile, context: &context, mediaDirectory: mediaDirectory, tempoSegments: metadata.affectsAudio && (!MetalWaveformRenderer.isSupported || clip.loopLength != nil) ? metadata.fragments(for: clip) : nil, missingAudio: (clip.audioFile ?? track.audioFile).map { missingAudioPaths.contains($0.path) } ?? false, waveformOwner: waveformOwner, drawWaveform: !MetalWaveformRenderer.isSupported, clickTiming: track.kind == .click ? clickTiming : [])
+                    drawTimelineItem(clip, track: track, title: metadata.itemTitle(for: clip, track: track), rect: rect, selected: selected, silenced: silenced, scale: scale, tile: tile, context: &context, mediaDirectory: mediaDirectory, tempoSegments: metadata.affectsAudio && (!MetalWaveformRenderer.isSupported || clip.loopLength != nil) ? metadata.fragments(for: clip) : nil, missingAudio: (clip.audioFile ?? track.audioFile).map { missingAudioPaths.contains($0.path) } ?? false, waveformOwner: waveformOwner, drawWaveform: !MetalWaveformRenderer.isSupported, clickTiming: track.kind == .click ? clickTiming : [], invertWaveformColors: invertWaveformColors)
                 }
             }
             // On macOS, marker flags and lines use a separate drag layer.
@@ -4753,6 +4758,7 @@ private struct TimelineObservedWaveformReadinessLayer<Content: View>: View {
 /// One GPU surface batches all visible audio, including a bounded overscan for
 /// native scrolling. It never allocates a texture as large as the whole project.
 private struct TimelineMetalWaveformLayer: View {
+    @AppStorage("jaras.timeline.invertWaveformColors") private var invertWaveformColors = false
     @Environment(\.displayScale) private var waveformPixelDensity
 
     @State private var mediaURLs = TimelineMediaURLCache()
@@ -4795,7 +4801,7 @@ private struct TimelineMetalWaveformLayer: View {
             pixelDensity: Double(waveformPixelDensity))
     }
     private var contentRevision: Int {
-        var key = Hasher()
+        var key = Hasher(); key.combine(invertWaveformColors)
         key.combine(renderKey)
         key.combine(rows.heights)
         key.combine(rulerHeight)
@@ -4836,7 +4842,8 @@ private struct TimelineMetalWaveformLayer: View {
                 let mediaSource = mediaURLs.resolveSource(file.path, directory: mediaDirectory)
                 items.append(TimelineWaveformItem(clip: clip,
                     fragments: metadata.fragments(for: clip, preview: preview != nil),
-                    url: mediaSource.url, rect: rect, gray: gray, sourcePath: mediaSource.path, mediaSource: mediaSource))
+                    url: mediaSource.url, rect: rect, gray: gray, sourcePath: mediaSource.path, mediaSource: mediaSource,
+                    tint: invertWaveformColors ? TimelineItemWaveformColors.ink(rgb: SIMD4(Float(rgb.red), Float(rgb.green), Float(rgb.blue), 1), silenced: silenced) : nil))
             }
         }
         return items
@@ -5234,6 +5241,7 @@ private struct TimelineContentKey: Hashable {
 /// During a gain or fade gesture only this bounded surface is invalidated. The base grid,
 /// headers, mixer and lane geometry keep their existing render and layout.
 private struct ItemWaveformPreviewOverlay: View {
+    @AppStorage("jaras.timeline.invertWaveformColors") private var invertWaveformColors = false
     @ObservedObject private var backgroundColor = AppearanceColor.shared("jaras.timeline.background", default: TimelineAppearanceDefaults.background)
     @ObservedObject var preview: ItemWaveformPreview
     @ObservedObject private var metalRenderer = MetalWaveformRenderer.shared
@@ -5267,7 +5275,7 @@ private struct ItemWaveformPreviewOverlay: View {
             let clip = state.applying(to: source)
             let silenced = renderMetadata.isSilenced(track) || source.muted == true
             TimelineWaveformReadinessLayer(observesWaveforms: !MetalWaveformRenderer.isSupported) { waveformRevision in
-            ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth, diagnosticName: "waveform-preview", identity: TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, trackHeights: rows.heights, waveformPreview: state, waveformRevision: waveformRevision, mediaDirectory: mediaDirectory, gridStyle: [backgroundColor.value])) { context, size, tile, waveformOwner in
+            ViewportTimelineCanvas(visibleRect: visibleRect, synchronized: true, documentWidth: documentWidth, diagnosticName: "waveform-preview", identity: TimelineTileIdentity(renderKey: renderKey, extent: extent, light: colorScheme == .light, trackHeights: rows.heights, waveformPreview: state, waveformRevision: waveformRevision, mediaDirectory: mediaDirectory, gridStyle: [backgroundColor.value, invertWaveformColors ? 1 : 0])) { context, size, tile, waveformOwner in
                 let scale = size.width / extent
                 let rect = CGRect(x: source.startTime * scale + 1, y: y, width: max(2, source.duration * scale - 2), height: height)
                 guard rect.intersects(tile) else { return }
@@ -5276,7 +5284,7 @@ private struct ItemWaveformPreviewOverlay: View {
                 let path = Path(roundedRect: rect, cornerRadius: 3)
                 context.fill(path, with: .color(Color(hex: UInt32(backgroundColor.value))))
                 let clickTiming = track.kind == .click ? renderMetadata.sections(until: song.duration) : []
-                drawTimelineItem(clip, track: track, title: renderMetadata.itemTitle(for: clip, track: track), rect: rect, selected: selectedClips.contains(source.id), silenced: silenced, scale: scale, tile: tile, context: &context, mediaDirectory: mediaDirectory, tempoSegments: renderMetadata.affectsAudio && (!MetalWaveformRenderer.isSupported || clip.loopLength != nil) ? renderMetadata.fragments(for: clip, preview: true) : nil, waveformOwner: waveformOwner, drawWaveform: !MetalWaveformRenderer.isSupported, clickTiming: clickTiming)
+                drawTimelineItem(clip, track: track, title: renderMetadata.itemTitle(for: clip, track: track), rect: rect, selected: selectedClips.contains(source.id), silenced: silenced, scale: scale, tile: tile, context: &context, mediaDirectory: mediaDirectory, tempoSegments: renderMetadata.affectsAudio && (!MetalWaveformRenderer.isSupported || clip.loopLength != nil) ? renderMetadata.fragments(for: clip, preview: true) : nil, waveformOwner: waveformOwner, drawWaveform: !MetalWaveformRenderer.isSupported, clickTiming: clickTiming, invertWaveformColors: invertWaveformColors)
             }.overlay(alignment: .topLeading) {
                 if MetalWaveformRenderer.isSupported, let mediaDirectory {
                     TimelineMetalWaveformLayer(visibleRect: visibleRect, song: song, rows: rows, renderKey: renderKey,
@@ -5467,7 +5475,7 @@ private enum TimelineItemGlyphs {
         return glyph
     }()
 }
-private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, rect: CGRect, selected: Bool, silenced: Bool, scale: Double, tile: CGRect, context: inout GraphicsContext, mediaDirectory: URL? = nil, tempoSegments: [AudioClip]? = nil, missingAudio: Bool = false, waveformOwner: TimelineAudioWaveform.PresentationStore? = nil, drawWaveform: Bool = true, clickTiming: [TimelineTempoSection] = []) {
+private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, rect: CGRect, selected: Bool, silenced: Bool, scale: Double, tile: CGRect, context: inout GraphicsContext, mediaDirectory: URL? = nil, tempoSegments: [AudioClip]? = nil, missingAudio: Bool = false, waveformOwner: TimelineAudioWaveform.PresentationStore? = nil, drawWaveform: Bool = true, clickTiming: [TimelineTempoSection] = [], invertWaveformColors: Bool = false) {
     let color = silenced ? Color(white: selected ? 0.7 : 0.55) : JarasTheme.track(track, emphasized: selected)
     let compact = rect.width < 20
     var path = compact ? Path(rect) : Path(roundedRect: rect, cornerRadius: 3)
@@ -5502,7 +5510,8 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
             context.stroke(path, with: .color(Color(hex: 0x80ff9c)), lineWidth: 0.7)
         }
     }
-    context.fill(path, with: .color(color))
+    let inverted = invertWaveformColors && TimelineItemWaveformColors.hasWaveform(clip, track: track)
+    context.fill(path, with: .color(inverted ? Color(hex: 0x484848) : color))
     if !compact {
         if !selected { context.stroke(path, with: .color(color.opacity(0.75)), lineWidth: 0.6) }
     }
@@ -5593,8 +5602,8 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
     }
     let rgb = TrackNameContrast.components(track.color ?? JarasTheme.roleHex(track.role), emphasized: selected)
     let luminance = 0.2126 * rgb.red + 0.7152 * rgb.green + 0.0722 * rgb.blue
-    // Audio and generated Click items share the same neutral waveform ink.
-    let waveColor = Color(white: silenced ? 0.78 : luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8)
+    // Audio and generated Click items share the selected waveform appearance.
+    let waveColor = inverted ? JarasTheme.track(track, emphasized: selected).opacity(silenced ? 0.55 : 1) : Color(white: silenced ? 0.78 : luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8)
     if track.kind == .click && !clip.isProjectionMedia {
         let body = CGRect(x: rect.minX, y: rect.minY + GridSelectionItem.bodyInset, width: rect.width, height: max(0, rect.height - GridSelectionItem.bodyInset - 2))
         let visible = body.intersection(tile)

@@ -1,6 +1,6 @@
 // Included by JarasEffects.mm. Only file playback uses this source; live inputs
 // and plug-in routing stay on AVAudioEngine's existing graph.
-#if TARGET_OS_OSX
+#if TARGET_OS_OSX || TARGET_OS_IOS
 #include "../../Windows/ThirdParty/Signalsmith/signalsmith-stretch.h"
 #include <thread>
 #include <mutex>
@@ -8,6 +8,7 @@
 #include <deque>
 #include "../../Core/Audio/SingleReaderSlots.hpp"
 #include "../../Core/Audio/RealtimeRunState.hpp"
+#include "JarasRealtimeClock.hpp"
 
 namespace {
 struct PreparedPCMPage {
@@ -129,6 +130,8 @@ struct PreparedClipKernel {
     std::atomic<double> rate{1}, semitones{0}, endFrame{0}, position{0};
     double source = 0, ahead = 0, preparedFrame = -1, preparedRate = 1, preparedPitch = 0;
     bool spectral = false, ramp = false;
+    bool mobileClockAnchored = false;
+    double mobileClockOffset = 0;
     int rampFrame = 0;
     PreparedClipKernel(double sr, int ch) : sampleRate(sr), channels(ch) {
         pitch.presetDefault(2, float(sr));
@@ -188,6 +191,26 @@ struct PreparedClipKernel {
         if (!playback.enter()) return noErr;
         struct Exit { catlive::audio::RealtimeRunState& state; ~Exit(){state.leave();} } exit{playback};
         if (!cache) return noErr;
+        // RemoteIO drives the iPad graph in manual realtime mode. Its nodes
+        // only carry sample timestamps; use the physical callback's common
+        // clock rather than starting each source on its first render pull.
+        auto sourceTime = *time;
+        if (jaras::realtimeClock.host && jaras::realtimeClock.rate > 0 &&
+            (time->mFlags & kAudioTimeStampSampleTimeValid)) {
+            // A rate converter owns a local sample epoch. After it has been
+            // gated or reset, dividing that counter by its rate does not give
+            // the device timeline. Anchor each scheduled run to the physical
+            // callback during preroll (the converter can reset while other
+            // sources are connected), then retain sample-accurate progression
+            // once PCM starts, including converter lookahead.
+            if (!mobileClockAnchored || source == preparedFrame) {
+                mobileClockOffset = jaras::realtimeClock.sample / jaras::realtimeClock.rate - time->mSampleTime / sampleRate;
+                mobileClockAnchored = true;
+            }
+            sourceTime.mSampleTime += mobileClockOffset * sampleRate;
+        }
+        const auto physicalTime = jaras::physicalRenderTime(sourceTime, sampleRate);
+        time = &physicalTime;
         const uint64_t start = startHost.load();
         int offset = 0;
         if (time->mFlags & kAudioTimeStampHostTimeValid) {
@@ -295,6 +318,7 @@ struct PreparedClipKernel {
     _kernel->playback.stop();
     _kernel->playback.waitStopped();
     _kernel->ramp = ramp; _kernel->rampFrame = 0;
+    _kernel->mobileClockAnchored = false;
     _kernel->startHost.store(host);
     if (_kernel->cache) _kernel->cache->active.store(true);
     _kernel->playback.start();

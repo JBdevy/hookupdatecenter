@@ -48,10 +48,12 @@ inline void panel(Component &component) {
     if (auto *button = dynamic_cast<ToggleButton *>(&component))
         button->setButtonText(localization::translate(button->getButtonText()));
     if (auto *combo = dynamic_cast<ComboBox *>(&component)) {
-        if (!(bool)combo->getProperties().getWithDefault("preserveNames", false))
-            for (int i = 0; i < combo->getNumItems(); ++i)
-                combo->changeItemText(combo->getItemId(i),
-                                      localization::translate(combo->getItemText(i)));
+        // The selected value is a child Label. Preserve it along with the menu
+        // entries, otherwise "Default" changes to "Padrão" after selection.
+        if ((bool)combo->getProperties().getWithDefault("preserveNames", false)) return;
+        for (int i = 0; i < combo->getNumItems(); ++i)
+            combo->changeItemText(combo->getItemId(i),
+                                  localization::translate(combo->getItemText(i)));
     }
     for (auto *child : component.getChildren())
         panel(*child);

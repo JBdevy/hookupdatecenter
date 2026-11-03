@@ -104,6 +104,7 @@ private:
     void syncPlaylistEntries();
     // Returns an occurrence ID; queue transport still stores physical regions.
     std::optional<ID> automaticRegionQueueTarget(bool ignoreBlockBoundary = false) const;
+    std::optional<ID> nextBlockPreparationTarget() const;
     void refreshAutomaticRegionQueue();
     void autoQueueRegion();
     void clearIgnoreNext();

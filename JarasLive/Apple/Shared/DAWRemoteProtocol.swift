@@ -468,7 +468,78 @@ enum DAWRemoteFaderScale {
     }
 }
 
-/// Drawer state belongs to the iPad presentation; choosing a child still sends
+/// Predict only the stopped selection at a block boundary. Playback commands
+/// remain exclusively owned by the host; this never starts or stops audio.
+struct DAWRemoteBlockPreparation: Equatable {
+    var project: UUID
+    var song: UUID?
+    var playlist: UUID?
+    var current: UUID
+    var occurrence: UUID?
+    var destination: DAWRemoteState.Region
+    var end: Double
+
+    init?(_ state: DAWRemoteState) {
+        guard state.playing, !state.paused, !state.subPlaying, !state.loop,
+              state.regionAutoUntilBlockEnd == true, state.queuedRegion == nil,
+              state.sectionPlayback?.queuedMarker == nil,
+              let current = state.currentRegion else { return nil }
+        let physical = state.timelineRegions.first { $0.id == current }
+        let root = physical?.parentRegion ?? current
+        var entries = state.regions.filter { $0.parentRegion == nil }
+        if state.selectedPlaylist == nil { entries.sort { $0.start == $1.start ? $0.id.uuidString < $1.id.uuidString : $0.start < $1.start } }
+        guard let index = entries.firstIndex(where: { $0.id == (state.currentPlaylistEntryId ?? root) }),
+              entries.indices.contains(index + 1) else { return nil }
+        let target = entries[index + 1]
+        guard state.setlistBlocks?.contains(where: { $0.beforeRegion == target.id }) == true,
+              let owner = state.timelineRegions.first(where: { $0.id == root }) ?? entries.first(where: { $0.id == root }),
+              owner.end.isFinite, owner.end > state.position else { return nil }
+        // Ignore-next and section jumps can change the real completion boundary.
+        guard state.playbackEnd == nil || abs(state.playbackEnd! - owner.end) < 1e-6 else { return nil }
+        project = state.project; song = state.song; playlist = state.selectedPlaylist
+        self.current = current; occurrence = state.currentPlaylistEntryId
+        destination = target; end = owner.end
+    }
+    func applying(to state: DAWRemoteState) -> DAWRemoteState {
+        var next = state
+        next.playing = false; next.paused = false
+        next.position = destination.start; next.editPosition = destination.start
+        next.currentRegion = destination.sourceRegionId ?? destination.id
+        next.currentPlaylistEntryId = playlist == nil ? nil : destination.id
+        next.focusedRegion = destination.id; next.gridRegion = next.currentRegion
+        next.queuedRegion = nil; next.queuedPlaylistEntryId = nil; next.queueStartedAt = nil
+        next.playbackEnd = destination.end; next.sectionPlayback = nil
+        // Derived titles from the outgoing packet must not cover the local selection.
+        next.songDisplays = nil
+        return next
+    }
+}
+
+/// Keeps the predicted selection through a late packet for the same advancing
+/// song. A seek, a new queue, loop, project or playlist immediately supersedes it.
+struct DAWRemoteBlockFeedback {
+    private(set) var confirmed: DAWRemoteState?
+    private(set) var plan: DAWRemoteBlockPreparation?
+    private(set) var deadline: Double?
+    private var completed = false
+    mutating func receive(_ state: DAWRemoteState, now: Double) -> DAWRemoteState {
+        let next = DAWRemoteBlockPreparation(state)
+        let samePosition = next == plan && state.position == confirmed?.position
+        let previousDeadline = deadline
+        if next != plan || state.position + 1e-6 < (confirmed?.position ?? 0) { completed = false }
+        confirmed = state; plan = next
+        deadline = next == nil || completed ? nil : (samePosition ? previousDeadline : nil) ?? (now + max(0, next!.end - state.position))
+        return completed ? next!.applying(to: state) : state
+    }
+    mutating func advance(now: Double) -> DAWRemoteState? {
+        guard let deadline, now >= deadline, let plan, let confirmed else { return nil }
+        completed = true; self.deadline = nil
+        return plan.applying(to: confirmed)
+    }
+    mutating func reset() { self = Self() }
+}
+
+/// Drawer state belongs to the local presentation; choosing a child still sends
 /// the normal selectRegion command to the authoritative Mac controller.
 enum DAWRemoteSetlistPresentation {
     enum Entry: Identifiable {

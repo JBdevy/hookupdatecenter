@@ -46,6 +46,7 @@
 #include "StageTimerSettings.h"
 #include "MixerPanel.h"
 #include "DesktopLayout.h"
+#include "NativeWindowBoundsTests.h"
 #include "ProjectOpenConfirmationPanel.h"
 #include "BPMInputPanel.h"
 #include "SettingsPanel.h"
@@ -531,6 +532,32 @@ int runTests(const File &directory) {
                    "Overflow failed to apply the final master/track gain and mute before rendering");
         }
     });
+    test("Audio render advances while the message thread is occupied", [&] {
+        jaras::Project project; project.id=uuid(); project.masterVolume=1;
+        jaras::Song song; song.id=uuid(); song.duration=60;
+        jaras::Track track; track.id=uuid(); track.role.id="other"; track.volume=1;
+        track.inputPatch=jaras::OutputPatch{1,2}; track.inputMonitoring=true;
+        track.outputs=std::vector<jaras::OutputPatch>{{0,2}}; song.tracks={track};
+        AudioEngine audio(48000,true); audio.prepareSong(song,directory,{},&project);
+        audio.armTrack(track.id,true); audio.instrumentAllowed=true;
+        AudioEngine::State state; state.playing=true; audio.transport(state);
+        AudioBuffer<float> output(2,256), input(2,256);
+        for (int c=0;c<2;++c) for (int i=0;i<256;++i) input.setSample(c,i,.2f);
+        std::atomic<int> blocks{0}; std::atomic<bool> audible{true};
+        // Deliberately pump no messages. Render owns the clock and consumes
+        // prepared control state without requiring a UI timer/paint to finish.
+        std::thread callback([&] {
+            for (int i=0;i<128;++i) {
+                audio.render(output.getArrayOfWritePointers(),2,256,input.getArrayOfReadPointers(),2);
+                if (output.getMagnitude(0,256)<.1f) audible.store(false);
+                blocks.fetch_add(1);
+            }
+        });
+        callback.join();
+        expect(blocks.load()==128 && audible.load(),"Occupied UI interrupted the engine's live audio");
+        expect(std::abs(audio.state().position-128.*256/48000)<.00001,
+               "Audio clock depended on a message-thread transport tick");
+    });
     test("Armed input meters work before REC with monitoring off and no master leakage", [&] {
         jaras::Song song; song.id = uuid(); song.duration = 60; song.bpm = 120;
         jaras::Track track; track.id = uuid(); track.role.id = "other"; track.name = "Input 3/4";
@@ -599,6 +626,7 @@ int runTests(const File &directory) {
     });
     transportFadeoutTests::registerTests(directory, test);
     addActionBindingsTests(directory, test);
+    nativeWindowBoundsTests::registerTests(test);
     addUIFeatureTests(directory, test);
     addPartsPanelTests(directory, test);
     stemGraphTests::registerTests(directory, test, skipped);
@@ -5959,6 +5987,39 @@ int runTests(const File &directory) {
         expect(duplicate[0].clips[0].startTime==28 && duplicate[1].clips[0].startTime==38,"Duplicate must begin immediately after the selected span");
         auto foreign=p;foreign.id=uuid();bool rejected=false;try{clipboard->items(foreign,0);}catch(...){rejected=true;}
         expect(rejected,"Clipboard crossed project media roots");
+    });
+    test("Timeline clipboard pastes on the topmost selected track and cuts across tracks atomically", [&] {
+        auto p = projectFixture();
+        auto &song = p.songs[0];
+        const auto original = song.tracks[0].clips[0];
+        auto second = song.tracks[0]; second.id = "z-upper-destination"; second.clips.clear();
+        auto third = second; third.id = "a-lower-destination";
+        song.tracks.push_back(second); song.tracks.push_back(third);
+        for (bool moving : {false, true}) {
+            const auto clipboard = GridItemClipboard::copy(p, song.id, {original.id}, moving);
+            expect(bool(clipboard), "Could not copy/cut item");
+            const auto entries = clipboard->items(p, 73.125, {third.id, second.id});
+            expect(entries.size() == 1 && entries[0].id == second.id && entries[0].clips[0].startTime == 73.125,
+                   "Paste used ID order/source track instead of topmost selection and edit cursor");
+            jaras::Engine engine; engine.loadProject(p); engine.execute({jaras::CommandKind::play}); engine.advance(.5);
+            engine.pasteItems(song.id, entries, moving);
+            const auto &result = engine.project().songs[0];
+            expect(result.tracks[0].clips.size() == (moving ? 0 : 1) && result.tracks[1].clips.size() == 1 && result.tracks[2].clips.empty(),
+                   "Cross-track paste lost, duplicated or misplaced an item");
+            expect((result.tracks[1].clips[0].id == original.id) == moving, "Cut must preserve the item ID; copy must replace it");
+            expect(engine.transport().playing && engine.transport().position == .5, "Paste changed the running transport");
+            auto invalid = entries; invalid[0].clips.push_back(original); invalid[0].clips.back().id = "missing-cut-item";
+            const auto before = JSON::toString(ProjectCodec::encode(engine.project()));
+            bool rejected = false;
+            try { engine.pasteItems(song.id, invalid, true); } catch (...) { rejected = true; }
+            expect(rejected && JSON::toString(ProjectCodec::encode(engine.project())) == before, "Failed cut partially removed an item");
+        }
+        auto other = original; other.id = uuid(); other.startTime += 10;
+        song.tracks[1].clips = {other};
+        auto clipboard = GridItemClipboard::copy(p, song.id, {original.id, other.id}, true);
+        const auto entries = clipboard->items(p, 51.75, {second.id});
+        expect(entries[0].id == second.id && entries[1].id == third.id && entries[1].clips[0].startTime == 61.75,
+               "Multi-track paste lost its row/time offsets");
     });
     test("MIDI timeline extension repeats notes and draws bottom triangular cuts", [&] {
         auto p=projectFixture();auto &track=p.songs[0].tracks[0];auto &clip=track.clips[0];

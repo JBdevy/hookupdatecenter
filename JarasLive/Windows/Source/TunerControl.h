@@ -65,6 +65,7 @@ class TunerControl final : public Component, private Timer {
     Session &session;
     std::function<void()> configure;
     QuietButton down{String::fromUTF8("−")}, up{"+"};
+    std::optional<int> shownPitch;
     void timerCallback() override {
         if (!isShowing())
             return;
@@ -73,7 +74,8 @@ class TunerControl final : public Component, private Timer {
             part && !session.busy;
         down.setEnabled(allowed && part->pitchSemitones.value_or(0) > -12);
         up.setEnabled(allowed && part->pitchSemitones.value_or(0) < 12);
-        repaint();
+        const int pitch = part ? part->pitchSemitones.value_or(0) : 0;
+        if (!shownPitch || *shownPitch != pitch) { shownPitch = pitch; repaint(); }
     }
 };
 class PitchTargetsPanel final : public Component {

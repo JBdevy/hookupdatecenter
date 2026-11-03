@@ -249,7 +249,13 @@ void AdvancedPanel::select(int index) {
                     }));
             };
         }
-        contentHeight = 630;
+        contentHeight = 670;
+        for(auto* component:page.getChildren())if(component->getY()>=142)component->setTopLeftPosition(component->getX(),component->getY()+40);
+        label(String::fromUTF8("Inverter cores dos itens com waveform"),18,138,410);
+        auto &waveformColors = choice(String::fromUTF8("Inverter cores dos itens com waveform"), {"Default", localization::translate("Invertido")},
+            appearance.invertWaveformColors()?2:1,436,139,148,
+            [this](int id){save("jaras.timeline.invertWaveformColors",id==2);});
+        waveformColors.getProperties().set("preserveNames", true);
     } else if (index == 2 || index == 3) {
         const String prefix = String("jaras.media.") + (index == 2 ? "record." : "rerender.");
         const auto format = appearance.value(prefix + "format", "WAV").toString();

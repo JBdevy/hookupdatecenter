@@ -28,6 +28,19 @@ static void testAutoUntilBlockEnd() {
     expect(legacy.transport().playing && legacy.transport().regionId == "c", "default Auto crosses block headings");
 
     state.autoUntilBlockEnd = true; project.regionSetlist = state;
+    for (bool automatic : {false, true}) for (bool stop : {false, true}) {
+        auto combination = project;
+        combination.regionSetlist->autoAdvance = automatic;
+        combination.regionSetlist->stopAtRegionEnd = stop;
+        Engine boundary; boundary.loadProject(combination); start(boundary, "b");
+        boundary.advance(10);
+        expect(!boundary.transport().playing && boundary.transport().regionId == "c" &&
+               boundary.transport().position == 20 && boundary.transport().editPosition == 20,
+               "block completion prepares the next block independently of AUTO and STOP");
+        boundary.execute({CommandKind::stop});
+        expect(boundary.transport().position == 20 && boundary.transport().regionId == "c",
+               "Stop after block completion must not restore the previous song's play start");
+    }
     for (bool stop : {false, true}) {
         auto combination = project; combination.regionSetlist->stopAtRegionEnd = stop;
         Engine boundary; boundary.loadProject(combination); start(boundary, "b");

@@ -60,7 +60,8 @@ class TempoControl final : public Component {
         bpm.setColour(TextButton::textColourOffId, colour);
         bpm.setColour(TextButton::textColourOnId, colour);
         if (!beats.hasKeyboardFocus(false) && !unit.hasKeyboardFocus(false)) refreshMeter();
-        repaint();
+        const bool hasSong = song != nullptr;
+        if (!shownSong || *shownSong != hasSong) { shownSong = hasSong; repaint(); }
     }
     void paint(Graphics &g) override {
         g.setColour(Colour(0xff121212));
@@ -98,6 +99,7 @@ class TempoControl final : public Component {
     uint64 tempoRevision = std::numeric_limits<uint64>::max();
     ID tempoRegion;
     bool tempoNeedsRender = false;
+    std::optional<bool> shownSong;
     void refreshMeter() {
         const auto *song = session.song();
         beats.setText(String(song ? song->beatsPerBar : 4), false);

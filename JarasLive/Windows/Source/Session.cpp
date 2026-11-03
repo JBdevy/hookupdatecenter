@@ -17,6 +17,7 @@
 #include "FXSchema.h"
 #include "WaveformCache.h"
 #include "ProjectMediaRecovery.h"
+#include "ProjectBackups.h"
 #include "ClipEditing.h"
 #include "FinishedSetlistSelection.h"
 namespace catlive {
@@ -174,7 +175,9 @@ void Session::load(const File &file) {
     if (busy || audio.isRecording())
         throw std::runtime_error("Conclua a gravação antes de abrir outro projeto.");
     auto raw = ProjectCodec::read(file);
-    loadPrepared(file, raw, ProjectCodec::decode(raw));
+    auto project = ProjectCodec::decode(raw);
+    const auto document = file.hasFileExtension("bkjl") ? projectBackups::restore(file, project) : file;
+    loadPrepared(document, raw, std::move(project));
 }
 void Session::loadPrepared(const File &file, var raw, jaras::Project p) {
     cancelBPMDetection();
@@ -365,7 +368,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
     auto prepared=std::shared_ptr<PreparedLoad>(new PreparedLoad,[](PreparedLoad *value) {
         if(!projectPreparationQueue().addJob([value]{delete value;}))delete value;
     });
-    prepared->document=file;prepared->mediaDirectory=file.getParentDirectory();
+    prepared->document=file;prepared->mediaDirectory=projectBackups::mediaDirectory(file);
     projectPreparationQueue().addJob([this, weak, cancellation, prepared, sampleRate, offline, multiLoopsBypassed, progress, beforeCommit, completed, missingMedia] {
         String failure;
         const auto checkpoint=[weak,cancellation] {
@@ -398,6 +401,11 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                     });
                     return;
                 }
+            }
+            if (prepared->document.hasFileExtension("bkjl")) {
+                prepared->document = projectBackups::restore(prepared->document, incoming);
+                prepared->mediaDirectory = prepared->document.getParentDirectory();
+                checkpoint();
             }
             // Validate and establish the saved selection on an isolated core.
             // No encode/snapshot of the live project's opaque FX states is needed.
@@ -631,7 +639,7 @@ void Session::writeSave(ProjectSave &operation) {
     operation.encoded = ProjectCodec::encode(p, operation.original);
     operation.references = mediaCleanup::references(p);
     mediaCleanup::remember(p, target, operation.remembered);
-    ProjectCodec::write(target, operation.encoded, savingCurrentDocument);
+    ProjectCodec::saveWithBackup(target, operation.encoded, savingCurrentDocument);
 }
 void Session::save(const File &file) {
     if (activeSave) throw std::runtime_error("Aguarde o projeto terminar de salvar.");

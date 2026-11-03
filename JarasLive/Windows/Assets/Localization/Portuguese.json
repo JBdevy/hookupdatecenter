@@ -1,4 +1,6 @@
 {
+  "Inverter cores dos itens com waveform": "Inverter cores dos itens com waveform",
+  "Invertido": "Invertido",
   "Favoritos": "Favoritos",
   "Windows: latência de 1,5 s, compensada entre as pistas. Essa latência adicional não se aplica ao Mac.": "Windows: latência de 1,5 s, compensada entre as pistas. Essa latência adicional não se aplica ao Mac.",
   "Entrar": "Entrar",
@@ -794,6 +796,7 @@
   "A multiloop cannot exist inside another multiloop.": "Um multiloop não pode existir dentro de outro multiloop.",
   "Total Loop": "Total Loop",
   "Session": "Sessão",
+  "Loading": "Carregando…",
   "Recent backups": "Backups recentes",
   "No backups found": "Nenhum backup encontrado",
   "Invert polarity": "Inverter fase",
@@ -804,10 +807,10 @@
   "Playback cursor color": "Cor do cursor de reprodução",
   "Edit cursor color": "Cor do cursor de edição",
   "Sub Play cursor color": "Cor do cursor Sub Play",
-  "Open Remote on the iPad and choose this computer.": "Abra Remote no iPad e escolha este computador.",
+  "Open Remote on your device and choose this computer.": "Abra o Remote no seu dispositivo e escolha este computador.",
   "Audio continues on the computer. Both devices must be on the same local network.": "O áudio continua no computador. Os dois dispositivos precisam estar na mesma rede local.",
   "Disable Remote": "Desativar Remote",
-  "Waiting for iPad": "Aguardando iPad",
+  "Waiting for connection": "Aguardando conexão",
   "Connected": "Conectado",
   "Searching for computers…": "Buscando computadores…",
   "Connecting…": "Conectando…",
@@ -1755,5 +1758,14 @@
   "Select a MIDI output on CatLive. For grandMA2 onPC, create a CatLive Integration port in loopMIDI.": "Selecione uma saída MIDI no CatLive. Para grandMA2 onPC, crie a porta CatLive Integration no loopMIDI.",
   "IP do CatLive Integration": "IP do CatLive Integration",
   "Informe o IP do CatLive Integration.": "Informe o IP do CatLive Integration.",
-  "CatLive Integration encontrado. Escolha a saída MIDI e aplique.": "CatLive Integration encontrado. Escolha a saída MIDI e aplique."
+  "CatLive Integration encontrado. Escolha a saída MIDI e aplique.": "CatLive Integration encontrado. Escolha a saída MIDI e aplique.",
+  "Could not access the project backup folder.": "Não foi possível acessar a pasta de backups do projeto.",
+  "Could not create the project backup folder.": "Não foi possível criar a pasta de backups do projeto.",
+  "Could not create the project backup. The project was not saved.": "Não foi possível criar o backup. O projeto não foi salvo.",
+  "Could not write the project backup. The project was not saved.": "Não foi possível gravar o backup. O projeto não foi salvo.",
+  "The project was saved, but an old backup could not be removed.": "O projeto foi salvo, mas não foi possível remover um backup antigo.",
+  "Could not create the recovered project folder.": "Não foi possível criar a pasta do projeto recuperado.",
+  "Could not copy media for the recovered project.": "Não foi possível copiar as mídias do projeto recuperado.",
+  "Could not restore the project backup.": "Não foi possível restaurar o backup do projeto.",
+  "Toggle fullscreen": "Alternar tela cheia"
 }

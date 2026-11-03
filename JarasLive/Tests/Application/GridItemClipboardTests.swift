@@ -10,13 +10,69 @@ import XCTest
     func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: transport) }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws { try project.pasteItems(entries, song: song, moving: moving); pastes += 1 }
     func applyProjectEdit(_ value: Project) throws { project = value }
-    func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {}
+    func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
+        if command == .editSeek { transport.editPosition = value }
+    }
     func addTrack(id: UUID, name: String, role: TrackRole) throws {}
     func advance(_ elapsed: Double) {}
     func finishCurrentSong(_ enabled: Bool) {}
 }
 
 final class GridItemClipboardTests: XCTestCase {
+    @MainActor func testCopyAndCutPasteAtLatestEditCursorOnTopmostSelectedTrack() throws {
+        for moving in [false, true] {
+            var project = fixture()
+            project.songs[0].tracks.append(Track(id: UUID(), name: "Third", role: .other))
+            let executor = ClipboardExecutor()
+            executor.transport.playing = true
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+            let original = project.songs[0].tracks[0].clips[0]
+            let destination = project.songs[0].tracks[1].id, last = project.songs[0].tracks[2].id
+            XCTAssertTrue(show.copyItems([original.id], moving: moving))
+            show.setMixerTrackSelection([last, destination], anchor: last)
+            show.send(.editSeek, value: 73.125)
+            let pasted = show.pasteItems()
+            let value = try XCTUnwrap(show.current?.tracks[1].clips.first { pasted.contains($0.id) })
+            var expected = original; expected.id = value.id; expected.startTime = 73.125
+            XCTAssertEqual(value, expected)
+            XCTAssertEqual(show.current?.tracks[0].clips.count, moving ? 0 : 1)
+            XCTAssertTrue(show.current?.tracks[2].clips.isEmpty == true)
+            XCTAssertEqual(value.id == original.id, moving)
+            XCTAssertTrue(show.snapshot.transport.playing)
+            XCTAssertEqual(show.snapshot.transport.position, 7)
+            XCTAssertTrue(show.cutGridItems.isEmpty)
+            show.undo(); XCTAssertEqual(show.snapshot.project, project)
+            show.redo(); XCTAssertEqual(show.current?.tracks[1].clips.last, expected)
+            show.send(.stopAll)
+        }
+    }
+    func testMultiTrackPasteTranslatesRowsAndPreservesGapsForCopyAndCut() throws {
+        for moving in [false, true] {
+            var project = fixture()
+            project.songs[0].tracks.insert(Track(id: UUID(), name: "Gap", role: .other), at: 1)
+            project.songs[0].tracks.append(Track(id: UUID(), name: "Fourth", role: .other))
+            let ids = Set(project.songs[0].tracks.flatMap(\.clips).map(\.id))
+            let clipboard = try XCTUnwrap(GridItemClipboard(project: project, song: project.songs[0].id, selected: ids, moving: moving))
+            let tracks = project.songs[0].tracks
+            let entries = try clipboard.items(in: project, at: 51.75, selectedTracks: [tracks[1].id, tracks[3].id])
+            XCTAssertEqual(entries.map(\.track), [tracks[1].id, tracks[3].id])
+            XCTAssertEqual(entries.map { $0.clip.startTime }, [51.75, 61.75])
+            try project.pasteItems(entries, song: clipboard.song, moving: moving)
+            XCTAssertEqual(project.songs[0].tracks.map { $0.clips.count }, moving ? [0, 1, 0, 1] : [1, 1, 1, 1])
+        }
+    }
+    @MainActor func testFailedCrossTrackCutKeepsOriginalAndPendingCut() throws {
+        var project = fixture()
+        let special = Track(id: UUID(), name: "Program Change", role: TrackRole(rawValue: "programChange"))
+        project.songs[0].tracks.append(special)
+        let show = try ShowController(executor: ClipboardExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let original = project.songs[0].tracks[0].clips[0]
+        XCTAssertTrue(show.copyItems([original.id], moving: true))
+        XCTAssertTrue(show.pasteItems(selectedTracks: [special.id]).isEmpty)
+        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertEqual(show.cutGridItems, [original.id])
+        XCTAssertEqual(show.pasteItems(selectedTracks: [project.songs[0].tracks[1].id]), [original.id])
+    }
     @MainActor func testDuplicateAppendsAfterSelectionAndKeepsClipboard() throws {
         let executor = ClipboardExecutor(), project = fixture()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)

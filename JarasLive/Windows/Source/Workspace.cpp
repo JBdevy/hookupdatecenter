@@ -17,6 +17,7 @@
 #include "TeleprompterRemotePanel.h"
 #include "StageContent.h"
 #include "Workspace.h"
+#include "RecentBackupsPanel.h"
 #include "Projection.h"
 #include "PortablePackage.h"
 #include "PortableExportPanel.h"
@@ -1045,6 +1046,16 @@ class Workspace::Caption final : public Component {
         if (e.mods.isLeftButtonDown())
             dragger.dragComponent(getTopLevelComponent(), e, nullptr);
     }
+    void mouseUp(const MouseEvent &e) override {
+        if (w.browserVisible || w.loginPanel || e.mods.isPopupMenu() || e.getDistanceFromDragStart() >= 4 || e.getNumberOfClicks() != 1) return;
+        const int accessWidth = std::min(440, std::max(80, getWidth() - 604));
+        const juce::Rectangle<int> nameBounds(14, 0, std::max(0, (getWidth() - accessWidth) / 2 - 28), getHeight());
+        if (!nameBounds.contains(e.getPosition())) return;
+        auto panel = std::make_unique<RecentBackupsPanel>(w.session.document, [safe = SafePointer<Workspace>(&w)](File file) {
+            if (safe) safe->openProject(file);
+        });
+        CallOutBox::launchAsynchronously(std::move(panel), getScreenBounds().withX(getScreenX() + 14).withWidth(nameBounds.getWidth()), nullptr);
+    }
     void mouseDoubleClick(const MouseEvent &) override { toggleMaximise(); }
 
   private:
@@ -1279,9 +1290,25 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
     }
     int iconWidth() const { return w.showsTrackIcons?40:0; }
     int bodyWidth() const { return getWidth()-iconWidth(); }
+    void refreshMeters() {
+        if (peak) peak->refresh();
+        if (!meterArea.isEmpty() && meterPaint.update(w.session.audio.meterLevels(id)))
+            repaint(meterArea);
+    }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         if (auto *t = track()) {
+            // Meter ticks must not parse automation, shape names or draw icons.
+            // Their background is the same surface used by the complete row.
+            if (!meterArea.isEmpty() && meterArea.contains(g.getClipBounds())) {
+                g.setColour(theme::trackSurface(theme::track(*t), w.trackSelected(id),
+                    w.session.song() ? trackTree::silenced(*w.session.song(), *t) : t->mute));
+                g.fillRect(meterArea);
+                const auto levels = w.session.audio.meterLevels(id);
+                for (int ch=0; ch<2; ++ch)
+                    meterDisplay::bar(g, {(float)meterArea.getX()+1+ch*6.f, meterY, 5, meterHeight}, levels[(size_t)ch]);
+                return;
+            }
             const int indent = groupIndent();
             if (indent > 0) {
                 const auto *song = w.session.song();
@@ -1363,6 +1390,12 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
     void resized() override {
         const auto *t = track();
         const int body = getHeight() - (t ? automation::visible(*t).size() * 32 : 0);
+        meterY = body >= 64 ? 4.f : 2.f;
+        meterHeight = std::max(0.f, body - 2 * meterY);
+        meterArea = t && t->role.id != "programChange"
+            ? juce::Rectangle<int>(groupIndent()+1, (int)meterY, 13, (int)meterHeight)
+            : juce::Rectangle<int>();
+        meterPaint.invalidate();
         const bool expanded = body >= 64;
         const int y = expanded ? 3 : std::max(0, (body - 21) / 2);
         const int h = expanded ? 24 : 21;
@@ -1473,6 +1506,9 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
     GainFader volume;
     ParameterSlider pan;
     bool updating = false, dragging = false, pendingSelection = false;
+    meterDisplay::RepaintState meterPaint;
+    juce::Rectangle<int> meterArea;
+    float meterY=0, meterHeight=0;
     std::optional<std::string> fxColourSource;
     Colour fxColour=Colours::white;
 };
@@ -2295,6 +2331,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             stage();
             g.saveState();
             g.reduceClipRegion(0, headerHeight(), getWidth(), getHeight() - headerHeight());
+            const bool invertWaveformColors = t.w.appearance.invertWaveformColors();
             int rowTop = 0;
             for (size_t row = 0; row < song->tracks.size(); ++row) {
                 if (t.w.rowHidden((int)row))
@@ -2406,7 +2443,12 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     }
                     const float luminance = .2126f * colour.getFloatRed() + .7152f * colour.getFloatGreen() + .0722f * colour.getFloatBlue();
                     const float waveGray = muted ? .78f : luminance > .68f ? .52f : luminance > .42f ? .9f : .8f;
+                    const bool inverted = invertWaveformColors && !clip.text && !clipEditing::projection(clip) &&
+                        (!clip.midi || clip.frozenMIDI.value_or(false)) &&
+                        (track.role.id=="generatedClick" || jaras::fixedTrackName(track.role).empty());
+                    const auto waveformInk = inverted ? (muted ? colour.withMultipliedBrightness(.55f) : colour) : Colour::greyLevel(waveGray);
                     if (muted) colour = Colour::greyLevel(selected ? .7f : .55f);
+                    if (inverted) colour = Colour(0xff484848);
                     const bool compact=rect.getWidth()<20;
                     const auto outline=itemOutline(clip,rect,(float)getWidth(),t.w.pixelsPerSecond,
                         clip.loopLength?&waveformTiming(clip,*song):nullptr);
@@ -2461,12 +2503,12 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             pulses.addTriangle(x,middle-amplitude,x+tail,middle,x,middle+amplitude);
                         }
                         g.saveState();g.reduceClipRegion(body.getSmallestIntegerContainer());
-                        g.setColour(Colour::greyLevel(waveGray));g.fillPath(pulses);g.restoreState();
+                        g.setColour(waveformInk);g.fillPath(pulses);g.restoreState();
                     } else if (!clip.text && (!clip.midi || clip.frozenMIDI.value_or(false))) {
                         const auto &source = clip.audioFile ? clip.audioFile : track.audioFile;
                         const auto data = source ? t.waveforms.request(t.waveformFile(source->path)) : nullptr;
                         if (data) {
-                            const auto ink=Colour::greyLevel(waveGray);
+                            const auto ink=waveformInk;
                             const bool overview=t.gestureMode==0 && !controlApplies && !movingClipPreview && !resizedClipPreview && !t.regionPreview;
                             if(!overview || !drawOverviewWaveform(g,data,clip,rect,ink,*song))
                                 WaveformRenderer::draw(g, t.waveforms, data, clip, rect,
@@ -2479,7 +2521,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             const float top = rect.getY() + 18.f;
                             const float laneHeight = std::max(1.f, rect.getBottom() - top - 2.f) / channels;
                             const float baseAmplitude = WaveformRenderer::fullScale(laneHeight) * (float)WaveformRenderer::gain(clip,gainOverride);
-                            g.setColour(Colour::greyLevel(waveGray));
+                            g.setColour(waveformInk);
                             for (int channel = 0; channel < channels; ++channel) {
                                 const auto pan = controlApplies && controlKind==ItemHeader::pan ? controlClip->pan : clip.pan;
                                 const float amplitude = baseAmplitude * (float)WaveformRenderer::panGain(pan.value_or(0), channel, channels);
@@ -2716,6 +2758,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             stopTimer(); rightSelection = false; itemEdgeActive = false;
             itemDragSong.clear();
             dragClip.clear(); dragRegion.clear(); dragMarker.clear(); regionEdge=0;
+            regionDeleteGesture.reset();
             dragOriginalClip.reset();
             dragOriginalValid=false;
             previewPlacements.clear();
@@ -2764,7 +2807,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 return;
             }
             if (e.y < t.regionHeight()) {
-                const auto hit=regionHit(e.position,!e.mods.isPopupMenu());
+                const auto hit=regionHit(e.position,!e.mods.isPopupMenu() && !e.mods.isAltDown());
                 if (hit.first) {
                             const auto &p=*hit.first;
                             t.selectedHeaderRegion=p.id;t.selectedHeaderProject=t.w.session.project().id;
@@ -2772,6 +2815,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             if (e.mods.isPopupMenu()) {
                                 ++t.w.contextCount;
                                 t.w.showRegionMenu(p.id, e.getScreenPosition());
+                            } else if (e.mods.isLeftButtonDown() && e.mods.isAltDown()) {
+                                regionDeleteGesture=RegionDeleteGesture{t.w.session.project().id,t.w.session.song()->id,p.id};
                             } else {
                                 dragRegion=p.id; originalStart=p.startTime; clipLength=p.endTime-p.startTime;
                                 regionEdge=hit.second;
@@ -2881,6 +2926,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
 
         void mouseDrag(const MouseEvent &e) override {
+            if (regionDeleteGesture) {
+                if (e.getDistanceFromDragStart() >= 3) regionDeleteGesture->dragged=true;
+                return;
+            }
             if (rulerPan) {
                 if (e.getDistanceFromDragStart() >= 3) rulerPanDragged=true;
                 if (rulerPanDragged) {
@@ -2957,6 +3006,17 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
         void mouseUp(const MouseEvent &e) override {
             stopTimer(); itemEdgeActive=false;
+            if (regionDeleteGesture) {
+                const auto request=*regionDeleteGesture;
+                regionDeleteGesture.reset();
+                const auto *song=t.w.session.song();
+                const auto hit=regionHit(e.position,false);
+                if (!request.dragged && e.getDistanceFromDragStart()<3 &&
+                    t.w.session.project().id==request.project && song && song->id==request.song &&
+                    hit.first && hit.first->id==request.region)
+                    t.w.deleteRegions({request.region});
+                return;
+            }
             if (rulerPan) {
                 rulerPan=false;
                 if (!rulerPanDragged) t.w.perform([&]{t.w.session.command(jaras::CommandKind::editSeek,{},pointerPosition(startTime,e.mods,false));});
@@ -3076,6 +3136,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             repaint();
         }
         void mouseDoubleClick(const MouseEvent &e) override {
+            if (e.y<t.regionHeight() && e.mods.isAltDown()) return;
             if (const auto *song=t.w.session.song()) {
                 const int row=t.w.rowAt(e.y-headerHeight()+t.w.verticalOffset);
                 if (row>=0 && row<(int)song->tracks.size()) for (const auto &clip:song->tracks[(size_t)row].clips) {
@@ -3118,6 +3179,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             t.mouseWheelMove(e, d);
         }
         void cancelDrag() {
+            regionDeleteGesture.reset();
             t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
             rulerPan=false;rulerPanDragged=false;
             timeRangeGesture=false;timeRangeDragged=false;timeRangeResize=0;timeRangeBefore.reset();
@@ -3174,20 +3236,20 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         double markerEditPosition(const MouseEvent &e) const {
             const double at=std::max(0.,originalStart+(e.position.x-startPosition.x)/t.w.pixelsPerSecond);
             const auto *song=t.w.session.song();
-            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),false,&t.w.session.transport(),false,nullptr,nullptr,&dragMarker):at;
+            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),true,&t.w.session.transport(),false,nullptr,nullptr,&dragMarker):at;
         }
         std::pair<double,double> regionEditBounds(const MouseEvent &e) const {
             const double delta=(e.position.x-startPosition.x)/t.w.pixelsPerSecond;
             if(!regionEdge) {
                 double start=std::max(0.,originalStart+delta);
                 if(const auto *song=t.w.session.song())start=timelineGrid::snap(start,*song,t.w.pixelsPerSecond,
-                    t.w.freeTimelinePosition(e.mods),false,&t.w.session.transport(),true,nullptr,&dragRegion);
+                    t.w.freeTimelinePosition(e.mods),true,&t.w.session.transport(),true,nullptr,&dragRegion);
                 if(regionRepulsion)start=regionRepulsion->resolve(start);
                 return {start,start+clipLength};
             }
             double boundary=(regionEdge<0?originalStart:originalStart+clipLength)+delta;
             if(const auto *song=t.w.session.song())boundary=timelineGrid::snap(boundary,*song,t.w.pixelsPerSecond,
-                t.w.freeTimelinePosition(e.mods),false,&t.w.session.transport(),true,nullptr,&dragRegion);
+                t.w.freeTimelinePosition(e.mods),true,&t.w.session.transport(),true,nullptr,&dragRegion);
             return {regionEdge<0?std::max(0.,std::min(originalStart+clipLength-.01,boundary)):originalStart,
                     regionEdge>0?std::max(originalStart+.01,boundary):originalStart+clipLength};
         }
@@ -3476,6 +3538,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         double startTime = 0, originalStart = 0, clipLength = 0;
         Point<float> startPosition;
         ID dragClip, dragRegion, dragMarker, collapseSelectionOnRelease;
+        struct RegionDeleteGesture { ID project,song,region; bool dragged=false; };
+        std::optional<RegionDeleteGesture> regionDeleteGesture;
         bool clearSelectionOnRelease=false;
         int regionEdge=0;
         bool mainDrag = false, subDrag = false;
@@ -4355,6 +4419,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     session.transportChanged = [this] { refreshPlaybackState(); };
     session.selectionChanged = [this] {
         setlist->refresh();
+        repaint(footerBounds);
         timeline->revealEditPosition();
         timeline->repaint();
         updateState();
@@ -4963,10 +5028,10 @@ void Workspace::paint(Graphics &g) {
         return;
     g.setColour(theme::panel);
     g.fillRect(transportBounds);
-    g.fillRect(0, 32, getWidth(), 28);
+    g.fillRect(0, transportBounds.getY() - 28, getWidth(), 28);
     g.fillRect(footerBounds);
     g.fillRect(tracksViewport.getX(), workspaceBounds.getY(), tracksViewport.getWidth(), workspaceBounds.getHeight());
-    {
+    if (g.clipRegionIntersects(footerBounds)) {
         const auto state = session.presentationTransport();
         const auto cpu = footerBounds.withWidth(footerSongBounds.getX() - footerBounds.getX());
         const int totalWidth = roundToInt(footerSongBounds.getWidth() * .10);
@@ -5036,20 +5101,20 @@ void Workspace::paint(Graphics &g) {
     g.drawVerticalLine(transportInfo.getX() - 1, (float)displayFrame.getY(), (float)displayFrame.getBottom());
     g.drawVerticalLine(transportTime.getX() - 1, (float)displayFrame.getY(), (float)displayFrame.getBottom());
     g.setColour(theme::line);
-    g.drawHorizontalLine(59, 0, (float)getWidth());
+    g.drawHorizontalLine(transportBounds.getY() - 1, 0, (float)getWidth());
     g.drawHorizontalLine(transportBounds.getBottom(), 0, (float)getWidth());
     {
     Graphics::ScopedSaveState masterState(g);
-    g.addTransform(AffineTransform::translation(0, 28));
+    g.addTransform(AffineTransform::translation(0, (float)transportBounds.getY()));
     const auto masterColour = Colour(0xff000000 | session.project().masterColor.value_or(0x414141)).withAlpha(.5f);
     g.setColour(masterColour);
-    g.fillRoundedRectangle(4, 40, 266, 70, 5);
+    g.fillRoundedRectangle(4, 8, 266, 70, 5);
     const auto masterLevels = session.audio.meterLevels();
     for (int ch = 0; ch < 2; ++ch)
-        meterDisplay::bar(g, {9.f + ch * 6, 44, 5, 62}, masterLevels[(size_t)ch]);
+        meterDisplay::bar(g, {9.f + ch * 6, 12, 5, 62}, masterLevels[(size_t)ch]);
     g.setColour(theme::surfaceText(masterColour));
     g.setFont(theme::semiboldFont(11));
-    g.drawText("Master", 31, 69, 226, 18, Justification::centred);
+    g.drawText("Master", 31, 37, 226, 18, Justification::centred);
     }
     if (mixerVisible) {
         g.setColour(theme::panel);
@@ -5068,7 +5133,7 @@ void Workspace::resized() {
     if(audioPreparationOverlay)audioPreparationOverlay->setBounds(getLocalBounds());
     if (fadeoutOverlay) fadeoutOverlay->setBounds(getLocalBounds());
     const bool compactTransport = getWidth() < 1270, narrowTransport = getWidth() < 900;
-    const int rail = 0, title = 32, toolBarHeight = 28;
+    const int rail = 0, title = workspaceFullscreen ? 0 : 32, toolBarHeight = 28;
     const int transport = toolBarHeight + (narrowTransport ? 166 : compactTransport ? 126 : 86);
     const int footerHeight = jlimit(27, 161, footerHeightSetting);
     const int otherPanels=(keyboardVisible?108:0)+(vinhetasVisible&&!vinhetasDetached?240:0);
@@ -5080,6 +5145,7 @@ void Workspace::resized() {
     const int visibleDockHeight = std::min(dockHeight, std::max(0, getHeight() - title - transport - footerHeight - 128));
     const int bottom = footerHeight + visibleDockHeight;
     caption->setBounds(0, 0, getWidth(), title);
+    caption->setVisible(!workspaceFullscreen);
     const bool editorVisible = !browserVisible && !loginPanel;
     const bool visibilityChanged = !lastEditorVisible || *lastEditorVisible != editorVisible;
     lastEditorVisible = editorVisible;
@@ -5139,18 +5205,18 @@ void Workspace::resized() {
     const int partsX = rail + leadingSetlist;
     const int mixerX = partsX + leftPartsWidth;
     // The master is independent of track mixer visibility, as in the Mac transport.
-    masterVolume.setBounds(28, 86, 232, 20);
-    if(masterPeakReadout)masterPeakReadout->setBounds(31,73,43,12);
-    masterPan.setBounds(128, 45, 46, 25);
-    controls["masterMono"]->setBounds(26, 46, 49, 20);
-    controls["masterPatch"]->setBounds(79, 46, 45, 20);
-    controls["masterFX"]->setBounds(178, 46, 26, 20);
-    controls["masterMute"]->setBounds(210, 46, 22, 20);
-    controls["masterSolo"]->setBounds(240, 46, 22, 20);
+    masterVolume.setBounds(28, 54, 232, 20);
+    if(masterPeakReadout)masterPeakReadout->setBounds(31,41,43,12);
+    masterPan.setBounds(128, 13, 46, 25);
+    controls["masterMono"]->setBounds(26, 14, 49, 20);
+    controls["masterPatch"]->setBounds(79, 14, 45, 20);
+    controls["masterFX"]->setBounds(178, 14, 26, 20);
+    controls["masterMute"]->setBounds(210, 14, 22, 20);
+    controls["masterSolo"]->setBounds(240, 14, 22, 20);
     const bool multipleProjects = canNavigateProjectTab && (canNavigateProjectTab(-1) || canNavigateProjectTab(1));
     for (auto id : {"previousProjectTab", "nextProjectTab"}) controls[id]->setVisible(multipleProjects);
-    controls["previousProjectTab"]->setBounds(276, 39, 26, 26);
-    controls["nextProjectTab"]->setBounds(304, 39, 26, 26);
+    controls["previousProjectTab"]->setBounds(276, 7, 26, 26);
+    controls["nextProjectTab"]->setBounds(304, 7, 26, 26);
     const int edge = getWidth() - 8, start = multipleProjects ? 336 : 276;
     int topRight = edge;
     for (auto spec : std::initializer_list<std::pair<const char *, int>>{{"export", 66},
@@ -5158,7 +5224,7 @@ void Workspace::resized() {
                                                                          {"grandma2", 62},
                                                                          {"advanced", 60}}) {
         topRight -= spec.second;
-        controls[spec.first]->setBounds(topRight, narrowTransport ? 119 : 39, spec.second, 26);
+        controls[spec.first]->setBounds(topRight, narrowTransport ? 87 : 7, spec.second, 26);
         topRight -= 5;
     }
     const int toolsLeft = topRight + 5;
@@ -5166,9 +5232,9 @@ void Workspace::resized() {
         topRight = edge;
     const int displayWidth = std::max(80, topRight - start - 4);
     const int nameWidth = std::max(1, roundToInt((displayWidth - 102 - (narrowTransport ? 0 : 35)) * .75));
-    songDisplay.setBounds(start, 39, nameWidth, 26);
-    transportInfo.setBounds(start + nameWidth + 1, 39, std::max(1, displayWidth - 102 - nameWidth), 26);
-    transportTime.setBounds(start + displayWidth - 100, 39, 100, 26);
+    songDisplay.setBounds(start, 7, nameWidth, 26);
+    transportInfo.setBounds(start + nameWidth + 1, 7, std::max(1, displayWidth - 102 - nameWidth), 26);
+    transportTime.setBounds(start + displayWidth - 100, 7, 100, 26);
     // Match the Mac's growing control widths. Fill the entire row so extra room
     // cannot accumulate between Remote and Save on wider windows.
     const float buttonWidth = std::max(52.f, std::floor(52.f + (getWidth() - rail - 1296) / 13.f));
@@ -5206,24 +5272,25 @@ void Workspace::resized() {
             x += 5;
         }
     };
-    layoutRow(0, narrowTransport ? 6 : compactTransport ? 8 : 16, start, 80);
+    layoutRow(0, narrowTransport ? 6 : compactTransport ? 8 : 16, start, 48);
     if (compactTransport)
-        layoutRow(8, 16, narrowTransport ? 40 : start, narrowTransport ? 160 : 120);
+        layoutRow(8, 16, narrowTransport ? 40 : start, narrowTransport ? 128 : 88);
     if (narrowTransport) {
         const int available = std::max(1, toolsLeft - 40 - 13);
         const int tempoWidth = roundToInt(available * 171.f / 328.f);
-        tempoControl->setBounds(40, 111, tempoWidth, 43);
-        tuner->setBounds(45 + tempoWidth, 120, available - tempoWidth, 25);
+        tempoControl->setBounds(40, 79, tempoWidth, 43);
+        tuner->setBounds(45 + tempoWidth, 88, available - tempoWidth, 25);
     }
-    // The tools occupy their own top row; retain the transport's internal layout.
+    // All transport coordinates above are local to its panel. The caption can
+    // disappear in fullscreen without leaving buttons or native hit areas behind.
     for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo",
                     "previousProjectTab", "nextProjectTab", "export", "resolume",
                     "grandma2", "advanced", "play", "pause", "subplay", "loop", "record",
                     "metronome", "tp1", "tp2", "notices", "preview", "video", "remote", "save", "setlist"})
-        controls[id]->setTopLeftPosition(controls[id]->getX(), controls[id]->getY() + toolBarHeight);
+        controls[id]->setTopLeftPosition(controls[id]->getX(), controls[id]->getY() + transportBounds.getY());
     for (Component *component : std::initializer_list<Component *>{&masterVolume, &masterPan,
             &songDisplay, &transportInfo, &transportTime, tempoControl.get(), tuner.get(), masterPeakReadout.get()})
-        if (component) component->setTopLeftPosition(component->getX(), component->getY() + toolBarHeight);
+        if (component) component->setTopLeftPosition(component->getX(), component->getY() + transportBounds.getY());
     stageTimer->refresh();
     tempo.setVisible(false);
     // Commands not present in the Mac transport remain available through menus/shortcuts.
@@ -5322,6 +5389,7 @@ void Workspace::resized() {
         if (dynamic_cast<ModalSheet *>(child)) child->toFront(false);
     if (navigation->isVisible()) navigation->toFront(false);
     if(audioPreparationOverlay)audioPreparationOverlay->toFront(false);
+    syncNativeTransport();
 }
 String Workspace::itemTitle(const jaras::AudioClip &clip) const {
     const auto *song=session.song();
@@ -5464,7 +5532,7 @@ void Workspace::refreshPlaybackState() {
     if(itemTitleRevision+1==session.revision)itemTitleRevision=session.revision;
     tempoControl->retainTempoAfterMixerChange();
     timeline->refreshMixer();
-    setlist->refresh();caption->repaint();updateState();
+    setlist->refresh();caption->repaint();repaint(footerBounds);updateState();
 }
 void Workspace::rebuild() {
     if(!session.preparingLiveAudio()){audioPreparationOverlay.reset();audioPreparationStarted.reset();}
@@ -5652,7 +5720,8 @@ void Workspace::updateState() {
     const auto information = t.loop.enabled ? String("Loop Ativo") : t.ignoreNextAfter ? String("Ignore Next") : String();
     transportInfo.setText(information, dontSendNotification);
     const int phase = (int)(Time::getMillisecondCounterHiRes() / 500) % 4;
-    transportInfo.setColour(Label::textColourId, information.isNotEmpty() && phase % 2 == 0 ? Colours::red : phase == 1 ? theme::green : theme::yellow);
+    transportInfo.setColour(Label::textColourId, information.isEmpty() ? theme::yellow
+        : phase % 2 == 0 ? Colours::red : phase == 1 ? theme::green : theme::yellow);
     transportInfo.setColour(Label::backgroundColourId, information.isNotEmpty() && phase % 2 == 0 ? theme::yellow : theme::display);
     auto *device = session.audio.devices.getCurrentAudioDevice();
     String audioInfo = device ? device->getName() + String::fromUTF8(" · ") +
@@ -5672,18 +5741,19 @@ void Workspace::updateState() {
                        String(session.audio.cpu() * 100, 1) + "%     " + session.message,
                    dontSendNotification);
     footer.setTooltip(session.message);
-    repaint(footerBounds);
+    // CPU/RAM has its own sampling clock; stopped transport notifications do
+    // not change the custom footer. Selection/queue edits explicitly refresh it.
+    if (audible.playing || audible.subPlay.playing || lastSetlistPlaying)
+        repaint(footerBounds);
     timeline->followPlayback();
     timeline->animate();
-    for (auto *row : rows)
-        if (row->isShowing())
-            row->repaint(0, 0, 22, row->getHeight());
     for (const auto &entry : controls) {
         auto *button = entry.second;
         button->setButtonText(localization::translate(button->getButtonText()));
         button->setTooltip(localization::translate(button->getTooltip()));
     }
-    setlist->repaint();
+    if (audible.playing || lastSetlistPlaying) setlist->repaint();
+    lastSetlistPlaying = audible.playing;
 }
 void Workspace::showLoginPreview() {
     if (!session.inspection) return;
@@ -5756,10 +5826,14 @@ void Workspace::timerCallback() {
     if (fadeoutOverlay) fadeoutOverlay->update();
     timeline->refreshWaveforms();
     if (resourceUsage.sample()) repaint(footerBounds);
-    // Master bars are drawn at x=9/15, y=44 plus the 28px toolbar offset.
+    // Follow the transport origin when its caption is hidden in fullscreen.
     // Include the complete bars and antialiased edges in the timer invalidation.
-    repaint(8, 71, 14, 64);
-    for (auto *row : rows) if (row->isShowing()) row->repaint(0, 0, 22 + row->groupIndent(), row->getHeight());
+    if (masterPeakReadout) masterPeakReadout->refresh();
+    if (masterMeterPaint.update(session.audio.meterLevels())) repaint(8, transportBounds.getY() + 11, 14, 64);
+    const auto visibleTracks = tracksViewport.getViewArea();
+    if (tracksViewport.isShowing())
+        for (auto *row : rows)
+            if (row->isVisible() && row->getBounds().intersects(visibleTracks)) row->refreshMeters();
     controls["remote"]->setColour(TextButton::buttonColourId, remoteHost->enabled() ? theme::green : theme::liveOffRed);
     controls["remote"]->setColour(TextButton::textColourOffId, Colours::black);
     if(!scrollingTrackDrag.empty()) {
@@ -6925,10 +6999,10 @@ void Workspace::showRegionMenu(ID id, Point<int> point) {
 }
 void Workspace::deleteRegions(std::set<ID> ids, bool withContents) {
     if (!session.song()) return;
-    const auto songID=session.song()->id;
+    const auto projectID=session.project().id, songID=session.song()->id;
     confirm(String::fromUTF8("Excluir região"), withContents ? String::fromUTF8("Excluir as músicas selecionadas, seus itens e marcadores? Os arquivos de mídia permanecem na pasta do projeto.") : String::fromUTF8("Excluir esta região?"),
-        [safe=SafePointer<Workspace>(this),ids,withContents,songID] {
-        if (!safe || !safe->session.song() || safe->session.song()->id!=songID) return;
+        [safe=SafePointer<Workspace>(this),ids,withContents,projectID,songID] {
+        if (!safe || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID) return;
         safe->perform([&] { safe->session.editTimeline([&](jaras::Project &project) {
             regionEditing::erase(project, songID, ids, withContents);
         }); });
@@ -7584,9 +7658,9 @@ void Workspace::pasteGridItems(bool duplicate) {
             if (paths.isEmpty()) return;
             Array<File> media;
             for (const auto &path : paths) media.add(File(path));
-            auto target = selectedTrack;
-            if (std::none_of(session.song()->tracks.begin(), session.song()->tracks.end(),
-                             [&](const auto &track) { return track.id == target; })) target.clear();
+            ID target;
+            for (const auto &track : session.song()->tracks)
+                if (trackSelected(track.id)) { target = track.id; break; }
             importMediaAt(media, session.transport().editPosition, target);
         });
         return;
@@ -7596,7 +7670,8 @@ void Workspace::pasteGridItems(bool duplicate) {
     if (!clipboard || clipboard->song != session.song()->id ||
         (clipboard->moving && timelineGrid::movementLocked(session.project()))) return;
     perform([&] {
-        const auto entries = clipboard->items(session.project(), duplicate ? clipboard->endPosition() : session.transport().editPosition);
+        const auto entries = clipboard->items(session.project(), duplicate ? clipboard->endPosition() : session.transport().editPosition,
+                                              duplicate ? std::set<ID>{} : selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks);
         session.edit([&](auto &project) {
             auto edit = session.core;
             edit.pasteItems(clipboard->song, entries, clipboard->moving);

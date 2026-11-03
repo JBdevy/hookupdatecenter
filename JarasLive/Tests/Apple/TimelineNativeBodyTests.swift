@@ -184,6 +184,39 @@
         "PCM readiness must leave retained text/media ink untouched")
     print("NATIVE_BODY_FILL_AND_TEXT_BEFORE_PCM_READINESS_WITHOUT_FILL_OR_INK_REDRAW_OK")
 
+    // A preference-only change must replace cached GPU colors without changing
+    // the document, its selection, its source data or text/media appearances.
+    let appearanceCache = NativeTimelineAudioBodyCache()
+    func appearance(_ inverted: Bool) -> NativeTimelineAudioBodyConfiguration {
+        appearanceCache.configuration(song: song, renderKey: mixed.presentationKey, rows: mixed.rows,
+            metadata: mixed.metadata, rulerHeight: 55, selectedClips: [], mediaDirectory: directory,
+            missingAudioPaths: ["missing.wav"], invertWaveformColors: inverted)!
+    }
+    let normal = appearance(false), inverted = appearance(true)
+    precondition(normal.contentKey != inverted.contentKey && normal.fallbackIdentity != inverted.fallbackIdentity)
+    body.configure(inverted)
+    for scale in [20.0, 300, 2400] {
+        body.project(viewport: viewport, documentSize: CGSize(width: 12 * scale, height: 400), scale: scale)
+        let frame = body.fillsForTest!, origin = frame.coordinateSpace!.documentOrigin
+        let item = frame.items.first { abs($0.rect.minX + origin.x - 1) < 0.001 && abs($0.rect.minY + origin.y - 58) < 0.001 }!
+        precondition(item.topColor == item.headerColor && item.bottomColor == item.headerColor,
+            "Inverted item body must use its header gray at every zoom")
+        awaitValue({ body.waveformsForTest?.strokes.contains { $0.block.key != "timeline-centerline-unit" } == true },
+            "Overview/detail readiness must update the inverted waveform without another zoom event")
+        let waves = body.waveformsForTest!.strokes.filter { $0.block.key != "timeline-centerline-unit" }
+        precondition(waves.allSatisfy { $0.color.x == inverted.palettes[0].normal.x &&
+            $0.color.y == inverted.palettes[0].normal.y && $0.color.z == inverted.palettes[0].normal.z },
+            "Every waveform primitive must use the track's ink, including cached overviews")
+        let text = frame.items.first { abs($0.rect.minY + origin.y - 186) < 0.001 }!
+        precondition(text.topColor == mixed.palettes[2].normal,
+            "Inverting waveform colors must not recolor teleprompter items")
+    }
+    body.configure(appearance(false))
+    body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
+    precondition(body.fillsForTest!.items.map(\.topColor) == cold.items.map(\.topColor),
+        "Switching back restores the original cached body colors immediately")
+    print("NATIVE_BODY_INVERTED_COLORS_CACHE_ZOOM_TEXT_ISOLATION_AND_RESTORE_OK")
+
     body.project(viewport: CGRect(x: 700, y: 0, width: 600, height: 260), documentSize: CGSize(width: 8000, height: 400), scale: 600)
     let zoomed = body.fillsForTest!
     precondition(zoomed.coordinateSpace?.pixelsPerSecond == 600)

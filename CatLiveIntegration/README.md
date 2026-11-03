@@ -12,6 +12,14 @@ Aplicativo receptor para Windows 10/11 (x64) e macOS 12 ou posterior (Intel e Ap
 
 O mapa/show do grandMA2 precisa estar importado e configurado como na integração existente. Este aplicativo transmite MTC; não substitui a importação do show ou as exigências de hardware/licença da MA Lighting.
 
+## Criar os macros grandMA2 a partir do Mac
+
+No CatLive para Mac, abra **grandMA2** na barra de transporte. Informe o IP do Integration, selecione a saída MIDI do receptor e as músicas. A configuração avançada permite escolher os números iniciais de Sequence, página, executor, timecode e slot MTC.
+
+Com o transporte parado, clique **Criar macros grandMA2**. O Integration gera uma nova pasta dentro de `Documentos/CatLive Integration/grandMA2/`, no computador receptor. Ela contém `macros`, `import`, o mapa CSV e as instruções. Copie os arquivos para os diretórios correspondentes do grandMA2, importe o macro **Importar tudo** e execute-o uma vez. A geração não depende de ter o grandMA2 instalado; a importação e a execução acontecem nele depois.
+
+O mapa e a conexão ficam no projeto CatLive. Os números já atribuídos permanecem estáveis quando outras músicas são adicionadas. A exportação parcial mantém os eventos de desligamento nas entradas das demais músicas.
+
 ## Criar a composição do Resolume no receptor
 
 Com o transporte parado, salve o trabalho no Resolume e abra uma composição nova e vazia. No CatLive, crie/atualize o mapa e clique **Criar projeto Resolume**. O Integration usa a API local do Arena 7.22+ para criar um deck por música e as colunas dos marcadores. O arquivo `.avc` fica em:

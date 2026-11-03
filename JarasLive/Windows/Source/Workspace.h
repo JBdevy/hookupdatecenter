@@ -97,6 +97,8 @@ class Workspace final : public Component,
     std::function<void(File)> openInNewProjectTab;
     std::function<void(File, ID)> openRemoteProjectInNewTab;
     std::function<void(int)> navigateProjectTab;
+    std::function<void()> toggleWorkspaceFullscreen;
+    bool workspaceFullscreen = false;
     const jaras::ID remoteProjectTabID = uuid();
     std::function<var()> remoteProjectTabs;
     std::function<void(const String &)> selectRemoteProjectTab;
@@ -133,7 +135,9 @@ class Workspace final : public Component,
 
   private:
     std::set<int> heldShortcutKeys;
-    std::unique_ptr<Component> masterPeakReadout;
+    std::unique_ptr<meterDisplay::PeakReadout> masterPeakReadout;
+    meterDisplay::RepaintState masterMeterPaint;
+    bool lastSetlistPlaying = false;
     std::unique_ptr<native::TransportButtons> nativeTransport;
     void syncNativeTransport();
     void refreshPlaybackState();

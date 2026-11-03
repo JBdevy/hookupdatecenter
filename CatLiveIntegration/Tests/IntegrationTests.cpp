@@ -7,6 +7,7 @@
 using namespace integration;
 void require(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
 void testOSC();
+void testGrandMA2();
 #ifdef __APPLE__
 void testMIDI();
 #endif
@@ -49,6 +50,7 @@ int main(int argc,char** argv){try{
     } catch(...){arena.stop();api.join();throw;}
     arena.stop();api.join();std::filesystem::remove_all(directory);
     testOSC();
+    testGrandMA2();
 #ifdef __APPLE__
     testMIDI();
 #endif

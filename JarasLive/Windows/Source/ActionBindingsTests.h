@@ -45,6 +45,17 @@ void addActionBindingsTests(const File &directory, Register &&test) {
         Appearance restored(file);ActionBindings reopened(restored,devices);
         require(reopened.midiInput("cancelSection").isObject(),"Cancel section MIDI was not saved");
     });
+    test("Fullscreen defaults to Ctrl F11 and respects custom shortcuts", [&, require] {
+        Appearance settings(directory.getNonexistentChildFile("fullscreen-actions", ".json")); AudioDeviceManager devices;
+        ActionBindings bindings(settings, devices);
+        int calls = 0; bindings.invoke = [&](const String &id, float, int) { require(id == "toggleFullscreen", "Wrong fullscreen action"); ++calls; };
+        const auto key = KeyPress::createFromDescription("ctrl + F11");
+        require(bindings.key(key) && calls == 1, "Ctrl F11 did not dispatch fullscreen");
+        bindings.key(key, true); require(calls == 1, "Held Ctrl F11 kept toggling fullscreen");
+        require(bindings.assign("toggleFullscreen", "keyboard", "F8"), "Fullscreen cannot be remapped");
+        bindings.key(key); require(calls == 1, "Old fullscreen shortcut remained active after remapping");
+        require(bindings.key(KeyPress::createFromDescription("F8")) && calls == 2, "Custom fullscreen mapping was ignored");
+    });
     test("Setlist block MIDI learns candidates, persists globally, transfers conflicts and dispatches once per press", [&, require] {
         const auto file = directory.getChildFile("setlist-block-midi.json");
         require(file.replaceWithText("{}"), "Could not create block MIDI preferences fixture");

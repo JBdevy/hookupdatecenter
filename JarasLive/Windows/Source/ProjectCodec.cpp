@@ -1,4 +1,5 @@
 #include "ProjectCodec.h"
+#include "ProjectBackups.h"
 #include "MediaPath.h"
 #include "FXSchema.h"
 #include "MarkerEditing.h"
@@ -500,6 +501,12 @@ bool ProjectCodec::isMacMetadata(const File &file) {
     return input.openedOk() && input.readIntBigEndian() == 0x00051607;
 }
 void ProjectCodec::write(const File &file, const var &input, bool savingCurrentDocument) {
+    writeDocument(file, input, savingCurrentDocument, false);
+}
+void ProjectCodec::saveWithBackup(const File &file, const var &input, bool savingCurrentDocument) {
+    writeDocument(file, input, savingCurrentDocument, true);
+}
+void ProjectCodec::writeDocument(const File &file, const var &input, bool savingCurrentDocument, bool withBackup) {
     const bool profiling=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_SAVE",{})=="1";
     auto timings=object();auto started=Time::getMillisecondCounterHiRes();
     const auto record=[&](const char *stage){if(profiling){const auto now=Time::getMillisecondCounterHiRes();put(timings,stage,now-started);started=now;}};
@@ -525,9 +532,20 @@ void ProjectCodec::write(const File &file, const var &input, bool savingCurrentD
         require(out.getStatus().wasOk(), "Could not flush project.");
     }
     record("diskMilliseconds");
-    require(tmp.overwriteTargetFileWithTemporary(),
-            "Could not replace project; the previous file was preserved.");
+    std::vector<File> previous;
+    File backup;
+    if (withBackup) {
+        previous = projectBackups::files(file);
+        backup = projectBackups::create(file, bytes);
+    }
+    record("backupMilliseconds");
+    if (!tmp.overwriteTargetFileWithTemporary()) {
+        if (backup != File()) backup.deleteFile();
+        require(false, "Could not replace project; the previous file was preserved.");
+    }
     record("replaceMilliseconds");
+    if (withBackup) projectBackups::prune(previous);
+    record("backupRetentionMilliseconds");
     if(profiling)file.withFileExtension("save-profile.json").replaceWithText(JSON::toString(timings));
 }
 File ProjectCodec::resolveMedia(const File &directory, const std::string &relative, bool resolveExisting) {

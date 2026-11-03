@@ -3,6 +3,22 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testAppendUsesExistingNumberedInternalTracksAndGroups() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Song", file: "Click.wav")
+        _ = try fixture(root, folder: "Song", file: "Click alternate.wav")
+        _ = try fixture(root, folder: "Song", file: "Guia.wav")
+        let destination = root.appendingPathComponent("Project/Show.jl")
+        let scan = try StemProjectImporter.scan([folder])
+        let base = try StemProjectImporter.build(scan: scan, remove: "", base: .empty(name: "Import"), destination: destination)
+        let appended = try StemProjectImporter.build(scan: scan, remove: "", base: base, destination: destination)
+        XCTAssertEqual(appended.songs[0].tracks.map(\.id), base.songs[0].tracks.map(\.id))
+        for track in appended.songs[0].tracks where ["Click", "Click 2", "Guia"].contains(track.name) {
+            XCTAssertEqual(track.clips.count, 2, track.name)
+            XCTAssertEqual(track.parentTrackID, base.songs[0].tracks.first { $0.id == track.id }?.parentTrackID)
+        }
+    }
     func testGridDropCanInsertPortableItemsBeforeWaveformAnalysis() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

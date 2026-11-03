@@ -286,6 +286,8 @@ struct VoiceGainKernel {
         // Prepared sources drain their converters while silent. Enforce the
         // audible deadline after conversion/insert FX so cached samples cannot
         // escape before a newly scheduled onset, even on an immediate replay.
+        const auto physicalTime = jaras::physicalRenderTime(*time, state->sampleRate);
+        time = &physicalTime;
         const auto start = state->startHost.load(std::memory_order_acquire);
         if (start && ((time->mFlags & kAudioTimeStampHostTimeValid) || start == UINT64_MAX)) {
             const double before = start == UINT64_MAX ? double(frames) :

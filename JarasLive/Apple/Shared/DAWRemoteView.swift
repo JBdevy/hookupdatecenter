@@ -18,7 +18,7 @@ struct DAWRemoteHostView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(verbatim: "Remote").font(.jarasHeadline)
             #if os(macOS)
-            Text("Open Remote on the iPad and choose this computer.").font(.jarasCallout)
+            Text("Open Remote on your device and choose this computer.").font(.jarasCallout)
             #else
             Text("Open Remote on another device and choose this iPad.").font(.jarasCallout)
             #endif
@@ -1519,7 +1519,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     return true
                 }
                 if !event.isRepeat {
-                    let pasted = show.pasteItems()
+                    let pasted = show.pasteItems(selectedTracks: selectedTracks)
                     if !pasted.isEmpty { trackScrolling.itemSelection.replace(pasted); trackScrolling.selectionScope = .grid }
                 }
                 return true

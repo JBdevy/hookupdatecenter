@@ -392,6 +392,26 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     @Published private(set) var peerName = ""
     @Published private(set) var status = ""
     @Published private(set) var remoteState: DAWRemoteState?
+    private var blockFeedback = DAWRemoteBlockFeedback()
+    private var blockTimer: Timer?
+    private func cancelBlockFeedback() {
+        blockTimer?.invalidate(); blockTimer = nil
+        blockFeedback.reset()
+    }
+    private func receiveBlockFeedback(_ state: DAWRemoteState) -> DAWRemoteState {
+        blockTimer?.invalidate(); blockTimer = nil
+        let now = ProcessInfo.processInfo.systemUptime
+        let displayed = blockFeedback.receive(state, now: now)
+        if let deadline = blockFeedback.deadline {
+            let timer = Timer(timeInterval: max(0.001, deadline - now), repeats: false) { [weak self] _ in
+                guard let self, self.connected, self.enabled, !self.clientSuspended,
+                      let prepared = self.blockFeedback.advance(now: ProcessInfo.processInfo.systemUptime) else { return }
+                self.remoteState = prepared; self.blockTimer = nil
+            }
+            blockTimer = timer; RunLoop.main.add(timer, forMode: .common)
+        }
+        return displayed
+    }
     @Published private(set) var accessMode: DAWRemoteAccess?
     @Published private(set) var directorRequiresPIN = false
     @Published private(set) var noticesRequiresPIN = false
@@ -646,6 +666,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         handledCommands.removeAll(); noticeReceipts.removeAll()
         listener?.cancel(); listener = nil; stopDiscovery()
         channel?.close(); channel = nil; endpoints = [:]
+        cancelBlockFeedback()
         enabled = false; connected = false; connecting = false; remoteState = nil; receivedStateSequence = 0
         peers = []; peerName = ""; status = ""
         setImageProject(nil)
@@ -668,6 +689,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         dispatchPrecondition(condition: .onQueue(.main))
         guard role == .client, enabled, !clientSuspended, !isLocalWorkspace else { return }
         clientSuspended = true
+        cancelBlockFeedback()
         reconnectTimer?.invalidate(); reconnectTimer = nil
         stopDiscovery()
         reconnecting = preferredPeer != nil
@@ -695,7 +717,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     }
     func startHost() {
         guard role == .host else { return }
-        stop(); enabled = true; status = "Waiting for iPad"
+        stop(); enabled = true; status = "Waiting for connection"
         do {
             let listener = try NWListener(using: DAWRemoteChannel.parameters())
             listener.service = NWListener.Service(name: name, type: "_\(DAWRemoteWire.service)._tcp")
@@ -903,6 +925,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         channel.onClose = { [weak self, weak channel] in
             guard let self, let channel, self.channel === channel else { return }
             self.releaseVinhetas()
+            self.cancelBlockFeedback()
             self.failPendingNotices(.disconnected)
             let wasConnected = self.connected
             let resume = self.role == .client && self.enabled && (self.reconnecting || (wasConnected && self.remoteState != nil))
@@ -936,6 +959,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             return
         }
         guard role == .client, connected, DAWRemoteAccessRules.allows(command, mode: accessMode), let data = try? DAWRemoteWire.command(command) else { return }
+        if command.action != .remotePanel && command.action != .requestImage { cancelBlockFeedback() }
         if command.action == .remotePanel { requestedPanel = Int(command.value) }
         channel?.send(data)
     }
@@ -1031,7 +1055,8 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             if state.sequence > receivedStateSequence {
                 receivedStateSequence = state.sequence
                 setImageProject(state.project)
-                var comparable = state
+                let displayed = receiveBlockFeedback(state)
+                var comparable = displayed
                 comparable.sequence = remoteState?.sequence ?? state.sequence
                 // The iPad timer advances locally. An unchanged timer revision
                 // must not publish the entire workspace for each network tick.
@@ -1039,7 +1064,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                     timer.remainingSeconds = current.remainingSeconds
                     if timer == current { comparable.timer = timer }
                 }
-                if DAWRemoteSnapshotComparison.differs(comparable, from: remoteState) { remoteState = state }
+                if DAWRemoteSnapshotComparison.differs(comparable, from: remoteState) { remoteState = displayed }
             }
             if reconnecting {
                 reconnecting = false; reconnectTimer?.invalidate(); reconnectTimer = nil
@@ -1083,7 +1108,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                 failPendingNotices(.disconnected)
                 reconnecting = false; reconnectTimer?.invalidate(); reconnectTimer = nil
                 resumeAccess = nil; pendingAccess = nil
-                remoteState = nil; setImageProject(nil)
+                cancelBlockFeedback(); remoteState = nil; setImageProject(nil)
             }
         }
     }

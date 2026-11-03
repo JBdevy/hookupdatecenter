@@ -135,7 +135,7 @@ void Engine::configureRegionSetlist(RegionSetlist state) {
     syncRegion();
 }
 std::optional<ID> Engine::automaticRegionQueueTarget(bool ignoreBlockBoundary) const {
-    if (!project_.regionSetlist || !project_.regionSetlist->autoAdvance || !transport_.regionId) return {};
+    if (!project_.regionSetlist || (!ignoreBlockBoundary && !project_.regionSetlist->autoAdvance) || !transport_.regionId) return {};
     const auto* song = currentSong(); if (!song) return {};
     const auto& state = *project_.regionSetlist;
     const auto* active = region(transport_.regionId);
@@ -166,6 +166,17 @@ std::optional<ID> Engine::automaticRegionQueueTarget(bool ignoreBlockBoundary) c
             if (block.songId == song->id && block.playlistId == state.selectedId && block.beforeRegionId == target) return {};
     }
     return target;
+}
+std::optional<ID> Engine::nextBlockPreparationTarget() const {
+    if (!project_.regionSetlist || !project_.regionSetlist->autoUntilBlockEnd) return {};
+    const auto& state = *project_.regionSetlist;
+    const auto* song = currentSong();
+    const auto target = automaticRegionQueueTarget(true);
+    if (!song || !target || !state.blocks) return {};
+    for (const auto& block : *state.blocks)
+        if (block.songId == song->id && block.playlistId == state.selectedId && block.beforeRegionId == target)
+            return target;
+    return {};
 }
 void Engine::refreshAutomaticRegionQueue() {
     const auto occurrence = transport_.queuedPlaylistEntryId ? transport_.queuedPlaylistEntryId : transport_.queuedRegionId;
@@ -800,9 +811,14 @@ void Engine::pasteItems(const ID& songID, std::vector<Track> tracks, bool moving
             if (target->role.id == "generatedClick" && (!clip.audioFile || clip.audioFile->path.rfind("Videos/", 0) != 0)) throw std::invalid_argument("Invalid destination track");
             if (!identifiers.insert(clip.id).second) throw std::invalid_argument("Duplicate pasted item");
             if (moving) {
-                auto item = std::find_if(target->clips.begin(), target->clips.end(), [&](const auto& value) { return value.id == clip.id; });
-                if (item == target->clips.end()) throw std::invalid_argument("An item to move no longer exists");
-                target->clips.erase(item);
+                auto origin = std::find_if(song->tracks.begin(), song->tracks.end(), [&](const auto& track) {
+                    return std::any_of(track.clips.begin(), track.clips.end(), [&](const auto& value) { return value.id == clip.id; });
+                });
+                if (origin == song->tracks.end()) throw std::invalid_argument("An item to move no longer exists");
+                auto item = std::find_if(origin->clips.begin(), origin->clips.end(), [&](const auto& value) { return value.id == clip.id; });
+                if ((origin->role.id == "timecode" || origin->role.id == "generatedClick") &&
+                    (!item->audioFile || item->audioFile->path.rfind("Videos/", 0) != 0)) throw std::invalid_argument("Invalid source track");
+                origin->clips.erase(item);
             }
         }
     }
@@ -1705,16 +1721,19 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
                 return;
             }
         }
+        // Preparing the next block is independent of AUTO. A manually queued
+        // block must leave its next heading ready too, without starting it.
+        if (!ignoring && !queued && !finishCurrent_) if (auto prepared = nextBlockPreparationTarget()) {
+            transport_.playing = false; transport_.paused = false; playStart_.reset();
+            execute({CommandKind::subStop});
+            execute({CommandKind::selectRegion, *prepared});
+            return;
+        }
         // STOP applies only without a valid incoming queue. Both manual and
         // automatic queues own the transition; prepare-only is handled below.
         if (!ignoring && !queued && project_.regionSetlist && project_.regionSetlist->stopAtRegionEnd.value_or(false)) {
-            // STOP must retain the prepared destination at an automatic block
-            // boundary, just like the normal Auto completion path below.
-            const auto prepared = project_.regionSetlist->autoUntilBlockEnd
-                ? automaticRegionQueueTarget(true) : std::nullopt;
             transport_.position = active->endTime; transport_.playing = false; transport_.paused = false;
             execute({CommandKind::subStop});
-            if (prepared) execute({CommandKind::selectRegion, *prepared});
             return;
         }
         if (finishCurrent_) { transport_.position = active->endTime; transport_.playing = false; transport_.queuedRegionId.reset(); transport_.queuedPlaylistEntryId.reset(); execute({CommandKind::subStop}); return; }
@@ -1744,10 +1763,8 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
             clearIgnoreNext(); execute({CommandKind::subStop}); return;
         }
         if (project_.regionSetlist && project_.regionSetlist->autoAdvance) {
-            const auto prepared = project_.regionSetlist->autoUntilBlockEnd ? automaticRegionQueueTarget(true) : std::nullopt;
             transport_.position = active->endTime; transport_.playing = false; transport_.paused = false;
             execute({CommandKind::subStop});
-            if (prepared) execute({CommandKind::selectRegion, *prepared});
             return;
         }
         break;

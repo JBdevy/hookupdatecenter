@@ -507,7 +507,7 @@ struct MappingTransferRequest: Identifiable {
             if flags.contains(.command) && [12, 13, 1].contains(event.keyCode) { return true }
             if !event.isARepeat {
                 let prefix = (flags.contains(.control) ? "⌃" : "") + (flags.contains(.option) ? "⌥" : "") + (flags.contains(.shift) ? "⇧" : "") + (flags.contains(.command) ? "⌘" : "")
-                let special: [UInt16: String] = [49:"Space", 48:"Tab", 123:"←", 124:"→", 125:"↓", 126:"↑", 51:"Delete", 122:"F1", 120:"F2"]
+                let special: [UInt16: String] = [49:"Space", 48:"Tab", 123:"←", 124:"→", 125:"↓", 126:"↑", 51:"Delete", 122:"F1", 120:"F2", 103:"F11"]
                 candidate = ControlInput(kind: "keyboard", label: prefix + (special[event.keyCode] ?? event.charactersIgnoringModifiers?.uppercased() ?? "Key \(event.keyCode)"), key: event.keyCode, modifiers: flags.rawValue)
                 error = ""
             }

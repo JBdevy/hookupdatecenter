@@ -143,6 +143,7 @@ enum AppStartupPresentation {
         #endif
         #if os(macOS)
         show.toggleVideoWindow = { VideoPlayback.shared.toggle() }
+        show.toggleWorkspaceFullscreen = { ProjectWindowAnchor.toggleFullscreen() }
         show.toggleTeleprompterWindow = { [weak show] in
             if let show { TeleprompterWindow.shared.toggle(show: show) }
         }

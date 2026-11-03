@@ -55,6 +55,7 @@
 "DEMO · SEM ÁUDIO" = "DEMO · SEM ÁUDIO";
 "Autorização pendente ao parar" = "Autorização pendente ao parar";
 "Salvar projeto" = "Salvar projeto";
+"Toggle fullscreen" = "Alternar tela cheia";
 "Abrir grid" = "Abrir grid";
 "REPRODUZINDO" = "REPRODUZINDO";
 "PARADO" = "PARADO";
@@ -986,10 +987,10 @@
 "Sub Play cursor color" = "Cor do cursor Sub Play";
 
 // Local-network Remote
-"Open Remote on the iPad and choose this computer." = "Abra Remote no iPad e escolha este computador.";
+"Open Remote on your device and choose this computer." = "Abra o Remote no seu dispositivo e escolha este computador.";
 "Audio continues on the computer. Both devices must be on the same local network." = "O áudio continua no computador. Os dois dispositivos precisam estar na mesma rede local.";
 "Disable Remote" = "Desativar Remote";
-"Waiting for iPad" = "Aguardando iPad";
+"Waiting for connection" = "Aguardando conexão";
 "Connected" = "Conectado";
 "Searching for computers…" = "Buscando computadores…";
 "Connecting…" = "Conectando…";
@@ -2251,3 +2252,44 @@
 "Automatic composition creation requires Resolume Arena 7.22 or later" = "A criação automática exige Resolume Arena 7.22 ou mais recente";
 
 "Select a MIDI output on CatLive. For grandMA2 onPC, create a CatLive Integration port in loopMIDI." = "Selecione uma saída MIDI no CatLive. Para grandMA2 onPC, crie a porta CatLive Integration no loopMIDI.";
+
+/* Timeline appearance and grandMA2 Integration */
+"Invert colors of waveform items" = "Inverter cores dos itens com waveform";
+"Inverted" = "Invertido";
+"Select songs and create the grandMA2 macros on the Integration computer. Timecode: 30 FPS." = "Selecione as músicas e crie os macros grandMA2 no computador do Integration. Timecode: 30 FPS.";
+"Advanced configuration" = "Configuração avançada";
+"First sequence" = "Sequence inicial";
+"Page" = "Página";
+"First executor" = "Executor inicial";
+"First timecode" = "Timecode inicial";
+"MTC Slot" = "MTC Slot";
+"Cues" = "Cues";
+"MTC start" = "Início MTC";
+"In grandMA2, import the “Import all” macro from the generated folder and run it once." = "No grandMA2, importe o macro “Importar tudo” da pasta gerada e execute uma vez.";
+"Save map to project" = "Salvar mapa no projeto";
+"Create grandMA2 macros" = "Criar macros grandMA2";
+"Lighting map saved. Save the CatLive project to keep these changes." = "Mapa atualizado. Salve o projeto CatLive para guardar estas alterações.";
+"Stop playback before creating files" = "Pare a reprodução antes de criar os arquivos";
+"Creating grandMA2 macros on CatLive Integration…" = "Criando macros grandMA2 no CatLive Integration…";
+"Macros saved on the Integration computer:" = "Macros salvos no computador do Integration:";
+"Select at least one song for grandMA2" = "Selecione pelo menos uma música para o grandMA2";
+"Update CatLive Integration to create grandMA2 macros." = "Atualize o CatLive Integration para criar macros grandMA2.";
+"Integration did not confirm saving the files" = "O Integration não confirmou o salvamento dos arquivos";
+"Sequence, page, executor and timecode must be 1–9999; MTC slot must be 1–8." = "Sequence, página, executor e timecode devem estar entre 1 e 9999; MTC Slot deve estar entre 1 e 8.";
+"The song exceeds its reserved MTC space. Review the lighting map before extending it." = "A música excede o espaço MTC reservado. Revise o mapa de iluminação antes de estendê-la.";
+"Starting numbers leave insufficient space for all songs." = "A numeração inicial não deixa espaço suficiente para todas as músicas.";
+"The lighting map exceeds the 24-hour MTC limit." = "O mapa de iluminação excede o limite de 24 horas do MTC.";
+"Clear selection" = "Limpar seleção";
+"File creation is still running" = "A criação dos arquivos ainda está em andamento";
+"File creation already running" = "A criação dos arquivos já está em andamento";
+"Invalid grandMA2 numbering" = "Numeração inválida no mapa grandMA2";
+"Invalid grandMA2 timecode position" = "Posição de timecode grandMA2 inválida";
+"Could not save grandMA2 files" = "Não foi possível salvar os arquivos grandMA2";
+"Invalid grandMA2 region ID" = "Identificador de região grandMA2 inválido";
+"Duplicate grandMA2 destinations" = "Destinos grandMA2 duplicados";
+"grandMA2 destination exceeds 9999" = "O destino grandMA2 excede 9999";
+"Invalid grandMA2 region duration" = "Duração de região grandMA2 inválida";
+"Invalid grandMA2 cues" = "Cues grandMA2 inválidos";
+"grandMA2 cue outside its song" = "Cue grandMA2 fora da sua música";
+"Select fewer songs for this grandMA2 export" = "Selecione menos músicas para esta exportação grandMA2";
+"grandMA2 destination already exists" = "A pasta de destino grandMA2 já existe";

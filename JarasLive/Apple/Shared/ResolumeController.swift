@@ -158,6 +158,11 @@ private final class ResolumeOSC {
         await disconnectTask?.value
         return try await integration.create(project: project)
     }
+    func createRemoteGrandMA2(map: GrandMA2Map) async throws -> String {
+        guard let integration else { throw NSError(domain: "CatLive Integration", code: 1, userInfo: [NSLocalizedDescriptionKey: "Connect CatLive Integration first"]) }
+        await disconnectTask?.value
+        return try await integration.createGrandMA2(map: map)
+    }
 }
 
 struct ResolumeSettingsView: View {

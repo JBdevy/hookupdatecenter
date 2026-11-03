@@ -1,5 +1,7 @@
 #pragma once
 #include "FloatingControlTests.h"
+#include "ProjectBackups.h"
+#include "MediaImportTests.h"
 namespace catlive::saveAsyncTests {
 using floatingControlTests::require;
 inline void finish(Session &session) {
@@ -9,6 +11,104 @@ inline void finish(Session &session) {
     require(!session.isSaving(), "Asynchronous project save did not finish");
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Project backups retain ten encrypted snapshots and preserve other documents", [&] {
+        const auto root=directory.getNonexistentChildFile("project-backups", "");
+        const auto target=root.getChildFile(String::fromUTF8("Canção.jl"));
+        auto project=floatingControlTests::fixture();
+        const auto other=root.getChildFile("backups/Other - 03-11-2026 - 12-00.bkjl");
+        other.getParentDirectory().createDirectory();require(other.replaceWithText("unrelated"),"Could not write unrelated backup");
+        for (int version=1;version<=13;++version) {
+            project.name="Save "+std::to_string(version);
+            ProjectCodec::saveWithBackup(target,ProjectCodec::encode(project));
+            const auto backups=projectBackups::files(target);
+            require(backups.size()==size_t(std::min(version,10)),"Save omitted a backup or exceeded retention");
+            MemoryBlock snapshot,document;
+            require(backups.back().loadFileAsData(snapshot)&&target.loadFileAsData(document)&&snapshot==document,
+                    "Backup is not the exact encrypted document that was saved");
+            require(!JSON::parse(target.loadFileAsString()).isObject(),"Backup document is unencrypted");
+        }
+        const auto backups=projectBackups::files(target);
+        for(size_t i=0;i<backups.size();++i)
+            require(ProjectCodec::decode(ProjectCodec::read(backups[i])).name=="Save "+std::to_string(i+4),
+                    "Retention removed a recent snapshot or reordered same-minute saves");
+        require(other.loadFileAsString()=="unrelated","Saving pruned another document's backup");
+        require(projectBackups::belongsTo(root.getChildFile(String::fromUTF8("Canção - 001.bkjl")),target)&&
+                projectBackups::belongsTo(root.getChildFile(String::fromUTF8("Canção--00001793700000000000.bkjl")),target),
+                "Legacy Mac backup names were not recognized");
+    });
+    test("Project backups roll back failed saves and preserve the previous document", [&] {
+        const auto root=directory.getNonexistentChildFile("project-backup-failure", "");
+        const auto target=root.getChildFile("Show.jl");
+        auto project=floatingControlTests::fixture();
+        ProjectCodec::saveWithBackup(target,ProjectCodec::encode(project));
+        MemoryBlock original;require(target.loadFileAsData(original),"Could not read saved fixture");
+        const auto previous=projectBackups::files(target);
+        HANDLE locked=CreateFileW(target.getFullPathName().toWideCharPointer(),GENERIC_READ,FILE_SHARE_READ,
+                                  nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        require(locked!=INVALID_HANDLE_VALUE,"Could not lock destination fixture");
+        bool failed=false;project.name="Failed replacement";
+        try {ProjectCodec::saveWithBackup(target,ProjectCodec::encode(project));}catch(const std::exception &){failed=true;}
+        CloseHandle(locked);
+        MemoryBlock remaining;target.loadFileAsData(remaining);
+        require(failed&&remaining==original&&projectBackups::files(target)==previous,
+                "Failed replacement changed the document or left a false successful backup");
+        const auto blockedRoot=directory.getNonexistentChildFile("project-backup-blocked", "");
+        const auto blocked=blockedRoot.getChildFile("Show.jl");
+        ProjectCodec::write(blocked,ProjectCodec::encode(project));
+        const auto blocker=blockedRoot.getChildFile("backups");require(blocker.replaceWithText("keep"),"Could not block backup folder");
+        MemoryBlock before;blocked.loadFileAsData(before);failed=false;project.name="Not saved";
+        try {ProjectCodec::saveWithBackup(blocked,ProjectCodec::encode(project));}catch(const std::exception &){failed=true;}
+        remaining.reset();blocked.loadFileAsData(remaining);
+        require(failed&&remaining==before&&blocker.loadFileAsString()=="keep","A failed backup still overwrote the project");
+    });
+    test("Project backups are cleared by Advanced cleanup and restart on the next Save", [&] {
+        const auto root=directory.getNonexistentChildFile("project-backup-cleanup", "");
+        const auto target=root.getChildFile("Show.jl");
+        auto project=floatingControlTests::fixture();
+        const auto discarded=mediaImportTests::source(root.getChildFile("Stems"),"discarded.wav",4800);
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Discarded";clip.duration=.1;
+        clip.audioFile=jaras::AudioFile{"Stems/discarded.wav",{}};
+        project.songs[0].tracks[0].clips={clip};
+        ProjectCodec::saveWithBackup(target,ProjectCodec::encode(project));
+        project.songs[0].tracks[0].clips.clear();
+        ProjectCodec::saveWithBackup(target,ProjectCodec::encode(project));
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
+        session.load(target);
+        bool completed=false;String error;
+        session.cleanTimelineMedia([&](String failure){error=failure;completed=true;});
+        const auto deadline=Time::getMillisecondCounterHiRes()+20000;
+        while(session.busy&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        require(completed&&error.isEmpty()&&projectBackups::files(target).empty()&&!discarded.exists(),
+                "Advanced cleanup left backups or their discarded media behind");
+        session.save(target);
+        const auto backups=projectBackups::files(target);
+        require(backups.size()==1&&ProjectCodec::decode(ProjectCodec::read(backups.front())).songs[0].tracks[0].clips.empty(),
+                "The next Save did not start clean backup history after Advanced cleanup");
+    });
+    test("Project backups reopen with independent media and save without overwriting history", [&] {
+        const auto root=directory.getNonexistentChildFile("project-backup-restore", "");
+        const auto target=root.getChildFile("Show.jl");
+        auto project=floatingControlTests::fixture();
+        const auto media=mediaImportTests::source(root.getChildFile("Stems"),"take.wav",4800);
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Take";clip.duration=.1;clip.audioFile=jaras::AudioFile{"Stems/take.wav",{}};
+        project.songs[0].tracks[0].clips={clip};
+        ProjectCodec::saveWithBackup(target,ProjectCodec::encode(project));
+        const auto backup=projectBackups::files(target).back();
+        MemoryBlock original;target.loadFileAsData(original);
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);
+        String error;bool completed=false,missing=false;
+        session.loadAsync(backup,{}, {},[&](String failure){error=failure;completed=true;},[&](StringArray){missing=true;});
+        const auto deadline=Time::getMillisecondCounterHiRes()+20000;
+        while(session.busy&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        require(!missing&&completed&&error.isEmpty()&&session.document.hasFileExtension("jl")&&
+                    session.mediaDirectory!=root&&session.mediaDirectory.getParentDirectory()==root.getParentDirectory(),
+                "Opening a backup did not create a separate recovered project");
+        require(session.mediaDirectory.getChildFile("Stems/take.wav").hasIdenticalContentTo(media),"Recovered media was missing or changed");
+        session.save(session.document);
+        MemoryBlock after;target.loadFileAsData(after);
+        require(original==after&&backup.existsAsFile()&&projectBackups::files(session.document).size()==1,
+                "Saving the recovery overwrote the original document or backup history");
+    });
     test("Async Save preserves edits made during persistence and coalesces repeated Save", [&] {
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));
@@ -42,6 +142,10 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(error.isEmpty() && completions==4 && !session.dirty && session.revision==beforeSecondRevision &&
                     fullRefreshes==beforeRefreshes && ProjectCodec::decode(ProjectCodec::read(target)).name=="Edited while saving",
                 "The next Save did not persist the edit, clear the indicator or avoid a workspace rebuild");
+        const auto backups=projectBackups::files(target);
+        require(backups.size()==3&&ProjectCodec::decode(ProjectCodec::read(backups[1])).name=="Snapshot being saved"&&
+                    ProjectCodec::decode(ProjectCodec::read(backups[2])).name=="Edited while saving",
+                "Async Save backups lost snapshot isolation or duplicated coalesced saves");
         session.tick={}; session.changed={};
     });
     test("Async Save As allows transport and mixer while keeping media edits locked", [&] {

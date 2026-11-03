@@ -2,6 +2,7 @@
 #include "Localization.h"
 #include "ModalSheet.h"
 #include "ProjectMediaRecovery.h"
+#include "ProjectBackups.h"
 namespace catlive {
 class MissingMediaPanel final : public Component {
   public:
@@ -73,7 +74,7 @@ class MissingMediaPanel final : public Component {
             [safe = SafePointer<MissingMediaPanel>(this)](const FileChooser &fc) {
                 if (!safe || fc.getResult() == File()) return;
                 safe->busy = true; safe->refresh();
-                const auto folder = fc.getResult(), directory = safe->document.getParentDirectory();
+                const auto folder = fc.getResult(), directory = projectBackups::mediaDirectory(safe->document);
                 const auto missing = safe->paths; const auto token = safe->cancelled;
                 Thread::launch([safe, folder, directory, missing, token] {
                     projectMediaRecovery::Result result;

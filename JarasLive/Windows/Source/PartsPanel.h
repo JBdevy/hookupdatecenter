@@ -64,12 +64,17 @@ class PartsPanel final : public Component, private Timer {
         current.setVisible(!secondaryTab);
         queued.setVisible(secondaryTab);
         refresh();
-    }
-    void refresh() {
-        current.refresh();
-        queued.refresh();
-        cancel.setEnabled(session.transport().queuedSectionMarkerId.has_value());
         repaint();
+    }
+    void refresh(bool visibleBankOnly = false) {
+        if (!visibleBankOnly || current.isVisible()) current.refresh();
+        if (!visibleBankOnly || queued.isVisible()) queued.refresh();
+        cancel.setEnabled(session.transport().queuedSectionMarkerId.has_value());
+        const bool playing = session.presentationTransport().playing;
+        if (!lastPlaying || *lastPlaying != playing || lastEnglish != localization::english) {
+            lastPlaying = playing; lastEnglish = localization::english;
+            repaint(currentTab.getBounds().getUnion(queuedTab.getBounds()));
+        }
     }
     var diagnostics() const {
         auto result = object();
@@ -101,6 +106,7 @@ class PartsPanel final : public Component, private Timer {
             auto result = object();
             put(result, "region", text(region));
             put(result, "count", buttons.size());
+            put(result, "visualUpdates", (int64)visualUpdates);
             Array<var> ids;
             for (const auto &marker : markers)
                 ids.add(text(marker.id));
@@ -148,40 +154,44 @@ class PartsPanel final : public Component, private Timer {
                                                     : byID(panel.session.focusedRegion ? panel.session.focusedRegion : state.regionId));
             if (!secondary && !part)
                 part = at(state.editPosition);
-            std::vector<jaras::TimelineMarker> next;
-            if (part) {
-                jaras::TimelineMarker start;
-                start.id = part->id;
-                start.name = "INÍCIO";
-                start.position = part->startTime;
-                next.push_back(start);
-                if (song->markers)
-                    for (const auto &marker : *song->markers)
-                        if (marker.section.value_or(false) && !marker.tempoBPM &&
-                            marker.position >= part->startTime && marker.position <= part->endTime)
-                            next.push_back(marker);
-                std::sort(next.begin() + 1, next.end(), [](const auto &a, const auto &b) {
-                    return a.position == b.position ? a.id < b.id : a.position < b.position;
-                });
-            }
-            bool changed = next.size() != markers.size();
-            if (!changed)
-                for (size_t i = 0; i < next.size(); ++i)
-                    if (next[i].id != markers[i].id || next[i].name != markers[i].name ||
-                        next[i].position != markers[i].position) {
-                        changed = true;
-                        break;
-                    }
-            region = part ? part->id : ID{};
-            name = part ? text(part->name) : String::fromUTF8("—");
-            markers = std::move(next);
-            if (changed) {
-                buttons.clear();
-                for (const auto &marker : markers) {
-                    auto *button = buttons.add(new Pad(panel, marker.id));
-                    content.addAndMakeVisible(button);
+            const ID nextRegion = part ? part->id : ID{};
+            if (region != nextRegion || markerRevision != panel.session.revision) {
+                std::vector<jaras::TimelineMarker> next;
+                if (part) {
+                    jaras::TimelineMarker start;
+                    start.id = part->id;
+                    start.name = "INÍCIO";
+                    start.position = part->startTime;
+                    next.push_back(start);
+                    if (song->markers)
+                        for (const auto &marker : *song->markers)
+                            if (marker.section.value_or(false) && !marker.tempoBPM &&
+                                marker.position >= part->startTime && marker.position <= part->endTime)
+                                next.push_back(marker);
+                    std::sort(next.begin() + 1, next.end(), [](const auto &a, const auto &b) {
+                        return a.position == b.position ? a.id < b.id : a.position < b.position;
+                    });
                 }
-                layout();
+                bool changed = next.size() != markers.size();
+                if (!changed)
+                    for (size_t i = 0; i < next.size(); ++i)
+                        if (next[i].id != markers[i].id || next[i].name != markers[i].name ||
+                            next[i].position != markers[i].position) {
+                            changed = true;
+                            break;
+                        }
+                region = nextRegion;
+                markerRevision = panel.session.revision;
+                name = part ? text(part->name) : String::fromUTF8("—");
+                markers = std::move(next);
+                if (changed) {
+                    buttons.clear();
+                    for (const auto &marker : markers) {
+                        auto *button = buttons.add(new Pad(panel, marker.id));
+                        content.addAndMakeVisible(button);
+                    }
+                    layout();
+                }
             }
             const double position = secondary       ? state.subPlay.position
                                     : state.playing ? state.position
@@ -204,6 +214,10 @@ class PartsPanel final : public Component, private Timer {
                         active = (int)i;
             for (int i = 0; i < buttons.size(); ++i) {
                 auto &button = *buttons[i];
+                const auto previousLabel = button.label;
+                const bool previousStart = button.start, previousActive = button.active,
+                    previousQueued = button.queued, previousSelected = button.selected;
+                const double previousProgress = button.progress;
                 button.label = i == 0 ? localization::translate("Section start") : unicodeCase(text(markers[(size_t)i].name));
                 button.start = i == 0;
                 button.active = active == i;
@@ -222,9 +236,13 @@ class PartsPanel final : public Component, private Timer {
                     button.progress = running && button.active && !button.queued
                         ? jlimit(0., 1., (position - markers[(size_t)i].position) /
                             std::max(.001, end - markers[(size_t)i].position)) : 0;
-                button.repaint();
+                if (button.label != previousLabel || button.start != previousStart ||
+                    button.active != previousActive || button.queued != previousQueued ||
+                    button.selected != previousSelected || button.progress != previousProgress) {
+                    ++visualUpdates;
+                    button.repaint();
+                }
             }
-            repaint();
         }
 
       private:
@@ -301,6 +319,7 @@ class PartsPanel final : public Component, private Timer {
         OwnedArray<Pad> buttons;
         std::vector<jaras::TimelineMarker> markers;
         ID region;
+        uint64 markerRevision = ~uint64(0), visualUpdates = 0;
         String name;
         void layout() {
             const int width = std::max(1, view.getWidth() - 8);
@@ -312,6 +331,8 @@ class PartsPanel final : public Component, private Timer {
     Session &session;
     std::function<void(String)> error;
     bool secondaryTab = false;
+    std::optional<bool> lastPlaying;
+    bool lastEnglish = false;
     // Tab faces are painted by the panel so their two font sizes match the Mac.
     struct Tab final : public TextButton {
         void paintButton(Graphics &, bool, bool) override {}
@@ -336,8 +357,11 @@ class PartsPanel final : public Component, private Timer {
     } cancel;
     Bank current, queued;
     void timerCallback() override {
+        const auto state = session.presentationTransport();
+        const int hz = state.playing || state.subPlay.playing ? 60 : 8;
+        if (getTimerInterval() != 1000 / hz) startTimerHz(hz);
         if (isShowing())
-            refresh();
+            refresh(true);
     }
 };
 } // namespace catlive

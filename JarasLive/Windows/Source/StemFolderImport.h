@@ -33,7 +33,13 @@ public:
     Rules(const Rules&)=delete;
     var call(const String& name,Array<var> args) {
         StringArray values;for(const auto& value:args)values.add(JSON::toString(value,true));
-        return JSON::parse(evaluate("JSON.stringify("+name+"("+values.joinIntoString(",")+"))"));
+        // JUCE's JSON::parse accepts objects/arrays, not a top-level string.
+        // Wrap every result so canonical names survive the JS/native boundary.
+        var result;
+        const auto parsed=JSON::parse(evaluate("JSON.stringify(["+name+"("+values.joinIntoString(",")+")])"),result);
+        if(parsed.failed()||!result.isArray()||result.size()!=1)
+            throw std::runtime_error("Could not read import rule result: "+utf8(name));
+        return result[0];
     }
 };
 struct Source {File file;double duration=0;};

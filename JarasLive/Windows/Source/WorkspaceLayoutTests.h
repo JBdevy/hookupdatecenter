@@ -9,6 +9,66 @@
 #include "ExportPanel.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void fullscreenTransport(const File &directory) {
+        using floatingControlTests::require;
+        Session session; session.inspection=true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture())); session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("fullscreen-layout",".json"));
+        Component tabs; tabs.addAndMakeVisible(w);
+        DocumentWindow host("Fullscreen layout",theme::background,0);
+        host.setUsingNativeTitleBar(false); host.setTitleBarHeight(0);
+        host.setContentNonOwned(&tabs,false); host.setBounds(40,40,1440,850); host.setVisible(true); w.projectOpened(false);
+        const auto hwnd=static_cast<HWND>(host.getPeer()->getNativeHandle());
+        auto nativeRects=[&] {
+            std::map<HWND,RECT> result;
+            for(auto child=GetWindow(hwnd,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)) {
+                wchar_t name[64]{}; GetClassNameW(child,name,64);
+                if(std::wstring(name)!=L"CatLiveTransportButton") continue;
+                RECT rect{}; GetWindowRect(child,&rect); result.emplace(child,rect);
+            }
+            return result;
+        };
+        std::vector<Component*> transport{&w.masterVolume,&w.masterPan,&w.songDisplay,
+            &w.transportInfo,&w.transportTime,w.tempoControl.get(),w.tuner.get(),w.masterPeakReadout.get()};
+        for(auto id:{"masterMono","masterPatch","masterFX","masterMute","masterSolo",
+            "previousProjectTab","nextProjectTab","export","resolume","grandma2","advanced",
+            "play","pause","subplay","loop","record","metronome","tp1","tp2","notices",
+            "preview","video","remote","save","setlist"}) transport.push_back(w.controls[id]);
+        for(int width:{800,1000,1440,1920}) for(int tabInset:{0,24}) {
+            host.setSize(width,850); w.workspaceFullscreen=false;
+            w.setBounds(0,tabInset,tabs.getWidth(),tabs.getHeight()-tabInset); w.resized();
+            const auto normalPanel=w.transportBounds, normalGrid=w.workspaceBounds;
+            std::vector<juce::Rectangle<int>> normal;
+            for(auto *c:transport) normal.push_back(c->getBounds());
+            const auto beforeNative=nativeRects(); require(beforeNative.size()>=15,"Native controls missing");
+            const auto beforeMaster=w.createComponentSnapshot({4,normalPanel.getY()+4,268,80});
+            for(int repeat=0;repeat<3;++repeat) {
+                w.workspaceFullscreen=true; w.resized();
+                require(w.transportBounds.getY()==28 && w.workspaceBounds.getY()==normalGrid.getY()-32,
+                        "Fullscreen retained caption space above the grid/transport");
+                require(!w.windowCaption().isVisible(),"Fullscreen still shows workspace caption");
+                for(size_t i=0;i<transport.size();++i) {
+                    require(transport[i]->getBounds()==normal[i].translated(0,-32),"Transport component did not follow hidden caption");
+                    require(w.transportBounds.contains(transport[i]->getBounds()),"Transport overlaps toolbar/grid in fullscreen");
+                }
+                const auto afterNative=nativeRects();
+                const int pixelShift=roundToInt(32*host.getPeer()->getPlatformScaleFactor());
+                for(const auto &[child,rect]:beforeNative) {
+                    auto expected=rect; OffsetRect(&expected,0,-pixelShift);
+                    const auto found=afterNative.find(child);
+                    require(found!=afterNative.end() && EqualRect(&expected,&found->second),"Native hit area lagged behind fullscreen layout");
+                }
+                const auto afterMaster=w.createComponentSnapshot({4,w.transportBounds.getY()+4,268,80});
+                for(int y=0;y<beforeMaster.getHeight();++y) for(int x=0;x<beforeMaster.getWidth();++x)
+                    require(beforeMaster.getPixelAt(x,y)==afterMaster.getPixelAt(x,y),"Master drawing moved relative to its controls");
+                w.workspaceFullscreen=false; w.resized();
+                for(size_t i=0;i<transport.size();++i)
+                    require(transport[i]->getBounds()==normal[i],"Repeated fullscreen toggles accumulate transport offset");
+            }
+        }
+        host.clearContentComponent();
+    }
     static void transportHitBounds(const File &directory) {
         using floatingControlTests::require;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
@@ -946,6 +1006,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
     test("Native transport repairs externally displaced input bounds",[&]{WorkspaceLayoutTests::transportHitBounds(directory);});
+    test("Fullscreen transport keeps controls, Master drawing and native hit areas aligned",[&]{WorkspaceLayoutTests::fullscreenTransport(directory);});
     test("Toolbar timer and hints match item-knob style",[&]{WorkspaceLayoutTests::toolbarTimerAndHints(directory);});
     test("Advanced remains above workspace without blocking controls",[&]{WorkspaceLayoutTests::toolWindowOrdering(directory);});
     test("Empty track tail matches Mac and appending preserves vertical scroll",[&]{WorkspaceLayoutTests::trackTail(directory);});

@@ -111,6 +111,35 @@ struct PartsDividerTests {
 };
 template <typename Register>
 void addPartsPanelTests(const File &directory, Register &&test) {
+        test("Idle Parts does not repaint unchanged pads and still follows edits and playback", [] {
+            const auto require=[](bool value,const char* message) { if (!value) throw std::runtime_error(message); };
+            Session session; session.inspection=true; session.audio.prepareOffline(48000);
+            jaras::Project project; project.id=uuid(); project.name="Idle Parts";
+            jaras::Song song; song.id=uuid(); song.name="Idle sections"; song.duration=60;
+            song.parts={{uuid(),"Current",0,30},{uuid(),"Queued",30,60}};
+            song.markers=std::vector<jaras::TimelineMarker>{{uuid(),"Verse",8,0x54ff93},{uuid(),"Chorus",38,0x54ff93}};
+            for (auto& marker:*song.markers) marker.section=true;
+            project.songs={song}; session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+            session.core.execute({jaras::CommandKind::selectRegion,song.parts[0].id});
+            PartsPanel panel(session,[](String){}); panel.setSize(300,500); panel.refresh();
+            const auto updates=[&](const char* bank) { return (int64)get(get(panel.diagnostics(),bank),"visualUpdates"); };
+            const auto idle=updates("current"), queuedIdle=updates("queued");
+            for (int i=0;i<600;++i) panel.refresh();
+            require(updates("current")==idle && updates("queued")==queuedIdle,
+                    "Stopped Parts repeatedly invalidated unchanged pads");
+            session.core.execute({jaras::CommandKind::play}); session.core.advance(2); panel.refresh();
+            require(updates("current")>idle,"Playback did not update the active pad");
+            const auto playing=updates("current"); panel.refresh();
+            require(updates("current")==playing,"Unchanged playback position repainted pads");
+            session.core.advance(9); panel.refresh();
+            require(updates("current")>playing,"Crossing a section did not update Parts");
+            session.core.execute({jaras::CommandKind::stopAll}); panel.refresh();
+            const auto stopped=updates("current"); panel.refresh();
+            require(updates("current")==stopped,"Stopped progress did not settle");
+            session.edit([&](jaras::Project& p){p.songs[0].markers->at(0).name="New verse";});
+            panel.refresh();
+            require(updates("current")>stopped,"Marker rename did not refresh cached Parts");
+        });
         test("Parts sidebars resize independently, persist widths and retain their divider when Setlist is detached",[&] {
             PartsDividerTests::run(directory);
         });

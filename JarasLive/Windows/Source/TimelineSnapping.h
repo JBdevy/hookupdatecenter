@@ -91,7 +91,7 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
 inline double snapSelection(double time, const jaras::Song &song, double scale,
                             const jaras::TransportState &transport, bool free, const std::set<ID> *excludedItems = nullptr,
                             const std::vector<std::pair<ID,double>> *itemEdges = nullptr) {
-    return snap(time,song,scale,free,false,&transport,true,excludedItems,nullptr,nullptr,itemEdges,8.);
+    return snap(time,song,scale,free,true,&transport,true,excludedItems,nullptr,nullptr,itemEdges,8.);
 }
 inline double snapCursor(double time, const jaras::Song &song, double scale, bool free) {
     return snap(time,song,scale,free,true,nullptr,true);

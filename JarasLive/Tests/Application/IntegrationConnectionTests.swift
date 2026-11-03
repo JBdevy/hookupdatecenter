@@ -16,6 +16,36 @@ private final class IntegrationHTTPStub: URLProtocol {
     override func stopLoading() {}
 }
 final class IntegrationConnectionTests: XCTestCase {
+    func testGrandMA2PlanIsCreatedOnReceiverAndOldReceiverIsRejected() async throws {
+        var project = Project.empty(name: "Show")
+        project.songs[0].duration = 60
+        project.songs[0].parts = [Part(id: UUID(), name: "Song", startTime: 0, endTime: 60)]
+        let map = try GrandMA2Map.build(project: project, settings: GrandMA2Settings())
+        var settings = ResolumeSettings(); settings.integrationEnabled = true; settings.integrationHost = "192.168.1.20"
+        var supported = false, posted = false, operation = ""
+        IntegrationHTTPStub.handler = { request in
+            switch request.url!.path {
+            case "/v1/info": return (200, ["protocol": 1, "features": supported ? ["grandma2-create"] : []])
+            case "/v1/connect": return (200, ["protocol": 1, "token": String(repeating: "a", count: 64)])
+            case "/v1/grandma2/create":
+                let body = try self.body(request); operation = body["requestId"] as! String
+                XCTAssertNil(body["destination"])
+                let plan = body["plan"] as! [String: Any]
+                XCTAssertEqual((plan["regions"] as! [[String: Any]]).count, 1); posted = true
+                return (202, [:])
+            case "/v1/job": return (200, ["requestId": operation, "state": "done", "file": "receiver/grandMA2/Show"])
+            default: return (200, [:])
+            }
+        }
+        let http = session(); defer { http.invalidateAndCancel(); IntegrationHTTPStub.handler = nil }
+        let client = IntegrationConnection(settings: settings, name: project.name, session: http)
+        do { _ = try await client.createGrandMA2(map: map); XCTFail("Old receiver must not silently succeed") } catch {}
+        XCTAssertFalse(posted)
+        supported = true
+        let folder = try await client.createGrandMA2(map: map)
+        XCTAssertEqual(folder, "receiver/grandMA2/Show"); XCTAssertTrue(posted)
+        await client.disconnect()
+    }
     private func session() -> URLSession {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [IntegrationHTTPStub.self]
         return URLSession(configuration: config)

@@ -2,6 +2,17 @@ import XCTest
 @testable import JarasApplication
 
 final class DAWActionTests: XCTestCase {
+    func testFullscreenShortcutCanBeRemappedWithoutKeepingOldAlias() throws {
+        var bindings = DAWActionBindings()
+        let shortcut = ControlInput(kind: "keyboard", label: "", key: 103, modifiers: 1 << 20)
+        XCTAssertEqual(bindings.matching(shortcut), .toggleFullscreen)
+        XCTAssertNil(bindings.matching(ControlInput(kind: "keyboard", label: "", key: 103, modifiers: 1 << 17)))
+        let replacement = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
+        XCTAssertTrue(bindings.setInput(replacement, action: .toggleFullscreen, kind: "keyboard"))
+        XCTAssertNil(bindings.matching(shortcut))
+        XCTAssertEqual(bindings.matching(replacement), .toggleFullscreen)
+        XCTAssertFalse(DAWAction.toggleFullscreen.repeats)
+    }
     func testSaveProjectDefaultsAndRemappingPersist() throws {
         var bindings = DAWActionBindings(stored: [])
         let original = try XCTUnwrap(DAWAction.saveProject.defaultKeyboard)

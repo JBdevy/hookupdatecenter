@@ -1,6 +1,6 @@
 #import <AVFoundation/AVFoundation.h>
 NS_ASSUME_NONNULL_BEGIN
-#if TARGET_OS_OSX
+#if TARGET_OS_OSX || TARGET_OS_IOS
 /// File-backed source with the same lookahead pitch processing as Windows.
 /// Preparation reads/decodes on the control thread; playback reads bounded PCM
 /// pages replenished by a worker, never opening a file in the render callback.

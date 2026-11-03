@@ -31,7 +31,7 @@ struct Bridge::Impl {
     JSON job=JSON::object();
     JSON info() const {
         JSON ports=JSON::array(); for(auto& p:midiPorts()) ports.push_back({{"id",p.id},{"name",p.name}});
-        return {{"name","CatLive Integration"},{"version","1.26"},{"protocol",protocolVersion},{"midiOutputs",ports}};
+        return {{"name","CatLive Integration"},{"version","1.26"},{"protocol",protocolVersion},{"midiOutputs",ports},{"features",JSON::array({"resolume-create","grandma2-create"})}};
     }
     JSON status() const {
         std::lock_guard lock(mutex);
@@ -69,7 +69,7 @@ struct Bridge::Impl {
             const bool enableMTC=value.value("mtc",false);
             std::lock_guard lock(mutex);
             if(connected && elapsed(heartbeat)<leaseTimeout && (req.remote_addr!=peer || req.get_header_value("X-CatLive-Token")!=token)) {response(res,{{"error","Another CatLive is connected"}},409);return;}
-            if(job.value("state","")=="running") {response(res,{{"error","Composition creation is still running"}},409);return;}
+            if(job.value("state","")=="running") {response(res,{{"error","File creation is still running"}},409);return;}
             { std::lock_guard midiLock(midiMutex); midi.close(); if(enableMTC) midi.open(value.value("midiOutput",std::string())); }
             token=secureToken(); lastRequest.clear();job=JSON::object();peer=req.remote_addr; clientName=name; heartbeat=Clock::now();
             state={}; ++generation; connected=true; resolume=value.value("resolume",false); mtc=enableMTC; oscPort=osc; webPort=web;
@@ -94,32 +94,40 @@ struct Bridge::Impl {
             if(!authorizedLocked(req,res)) return;
             response(res,job);
         });
-        server->Post("/v1/resolume/create",[this](const auto& req,auto& res) {
-            auto value=JSON::parse(req.body); auto plan=validatePlan(value.at("plan"));
+        auto registerCreate=[this](const std::string& path,bool grandma) {
+        server->Post(path,[this,grandma](const auto& req,auto& res) {
+            auto value=JSON::parse(req.body); auto plan=grandma?validateGrandMA2Plan(value.at("plan")):validatePlan(value.at("plan"));
             auto request=value.at("requestId").template get<std::string>();
             if(request.empty()||request.size()>128) throw std::runtime_error("Invalid operation ID");
             std::lock_guard lock(mutex);
             if(!authorizedLocked(req,res)) return;
             if(request==lastRequest) {response(res,job,202);return;}
-            if(job.value("state","")=="running") {response(res,{{"error","Composition creation already running"}},409);return;}
-            if(state.playing && state.fresh(Clock::now())) {response(res,{{"error","Stop playback before creating the composition"}},409);return;}
+            if(job.value("state","")=="running") {response(res,{{"error","File creation already running"}},409);return;}
+            if(state.playing && state.fresh(Clock::now())) {response(res,{{"error","Stop playback before creating files"}},409);return;}
             if(jobWorker.joinable()) jobWorker.join();
-            std::filesystem::create_directories(directory/"Resolume");
+            auto parent=directory/(grandma?"grandMA2":"Resolume");
+            std::filesystem::create_directories(parent);
             std::string stem=plan.at("name"); for(char& c:stem) if((unsigned char)c<32||std::string("/\\:*?\"<>|").find(c)!=std::string::npos)c='_';
             if(stem.size()>100) {size_t end=100;while(end>0 && (static_cast<unsigned char>(stem[end])&0xc0)==0x80)--end;stem.resize(end);}
             if(stem.empty())stem="CatLive";
-            auto destination=directory/"Resolume"/std::filesystem::u8path(stem+"-"+secureToken().substr(0,12)+".avc");
+            auto destination=parent/std::filesystem::u8path(stem+"-"+secureToken().substr(0,12)+(grandma?"":".avc"));
             lastRequest=request;cancelJob=false;
-            job={{"requestId",request},{"state","running"},{"message","Creating composition"},{"file",destination.u8string()}};
+            job={{"requestId",request},{"state","running"},{"message",grandma?"Creating grandMA2 macros":"Creating composition"},{"file",destination.u8string()}};
             int web=webPort;
-            jobWorker=std::thread([this,plan,destination,web] {
+            jobWorker=std::thread([this,plan,destination,web,grandma] {
                 std::string error;
-                try {createComposition(plan,destination,web,cancelJob,[this](std::string text){std::lock_guard lock(mutex);job["message"]=text;});}
+                try {
+                    if(grandma)createGrandMA2(plan,destination,cancelJob);
+                    else createComposition(plan,destination,web,cancelJob,[this](std::string text){std::lock_guard lock(mutex);job["message"]=text;});
+                }
                 catch(const std::exception& e) {error=e.what();}
-                std::lock_guard lock(mutex);job["state"]=error.empty()?"done":"failed";job["message"]=error.empty()?"Composition saved on this computer":error;
+                std::lock_guard lock(mutex);job["state"]=error.empty()?"done":"failed";job["message"]=error.empty()?"Files saved on this computer":error;
             });
             response(res,job,202);
         });
+        };
+        registerCreate("/v1/resolume/create",false);
+        registerCreate("/v1/grandma2/create",true);
     }
     void timecodeLoop() {
         TimecodeClock clock;

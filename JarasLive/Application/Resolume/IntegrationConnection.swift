@@ -72,8 +72,20 @@ public actor IntegrationConnection {
                     "columns": cues.sorted { $0.column < $1.column }.map { ["number": $0.column, "name": $0.name] as [String: Any] }]
         }
         guard !decks.isEmpty else { throw Failure(text: "Create a Resolume map with song regions first (maximum 1000 decks).") }
+        return try await createFiles(path: "resolume/create", plan: ["name": LightingExportName.clean(project.name, fallback: "Projeto CatLive"), "decks": decks])
+    }
+    public func createGrandMA2(map: GrandMA2Map) async throws -> String {
+        guard map.plan.regions.contains(where: \.selected) else { throw Failure(text: "Select at least one song for grandMA2") }
+        let info = try await request("info", authorized: false)
+        guard (info["features"] as? [String])?.contains("grandma2-create") == true else {
+            throw Failure(text: "Update CatLive Integration to create grandMA2 macros.")
+        }
+        let plan = try JSONSerialization.jsonObject(with: JSONEncoder().encode(map.plan)) as! [String: Any]
+        return try await createFiles(path: "grandma2/create", plan: plan)
+    }
+    private func createFiles(path: String, plan: [String: Any]) async throws -> String {
         let requestID = UUID().uuidString
-        _ = try await request("resolume/create", body: ["requestId": requestID, "plan": ["name": LightingExportName.clean(project.name, fallback: "Projeto CatLive"), "decks": decks]])
+        _ = try await request(path, body: ["requestId": requestID, "plan": plan])
         let deadline = Date().addingTimeInterval(600)
         while Date() < deadline {
             try Task.checkCancellation()
@@ -83,6 +95,6 @@ public actor IntegrationConnection {
             if job["state"] as? String == "failed" { throw Failure(text: job["message"] as? String ?? "Composition creation failed") }
             try await Task.sleep(nanoseconds: 300_000_000)
         }
-        throw Failure(text: "Integration did not confirm saving the composition")
+        throw Failure(text: "Integration did not confirm saving the files")
     }
 }

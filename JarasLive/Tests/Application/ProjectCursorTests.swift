@@ -645,6 +645,8 @@ final class ProjectCursorTests: XCTestCase {
         let child = Part(id: UUID(), name: "Child", startTime: 80, endTime: 90, parentRegionID: special.id)
         project.songs[0].parts = [special, child, first]
         project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Child", position: 80, color: 0x54ff93, unifiedRegionID: special.id, sourceRegionID: child.id),
+                                    TimelineMarker(id: UUID(), name: "Tempo", position: 40, color: 0x999999, tempoBPM: 120),
+                                    TimelineMarker(id: UUID(), name: "Tempo after last marker", position: 200, color: 0x999999, tempoBPM: 130),
                                     TimelineMarker(id: UUID(), name: "Same point", position: 50, color: 0x54ff93),
                                     TimelineMarker(id: UUID(), name: "Last", position: 140, color: 0x54ff93)]
         project.songs[0].duration = 400

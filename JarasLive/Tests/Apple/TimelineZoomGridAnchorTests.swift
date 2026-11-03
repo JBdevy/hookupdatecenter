@@ -1,6 +1,15 @@
 // Draw the actual native grid/ruler paths through a fractional zoom sequence.
 // The cursor anchor must remain stationary and neighboring lines monotonic.
 _ = NSApplication.shared
+for direction in [-1.0, 1.0] {
+    let start = 1.0, end = exp(direction * 0.1)
+    let transition = TimelineWheelZoomTransition(from: start, to: end, began: 0)
+    let travel = (0...6).map { log(transition.value(at: Double($0) / 60)) / (direction * 0.1) }
+    precondition(travel[0] > 0 && travel[0] <= 0.2, "Wheel zoom must react without jumping most of the distance in one frame")
+    precondition(zip(travel, travel.dropFirst()).allSatisfy { $1 >= $0 && $1 - $0 <= 0.2 },
+                 "Steady zoom must progress evenly across adjacent 60-Hz frames")
+    precondition(transition.value(at: 1) == end, "Delayed frames must finish zoom without replaying a long tail")
+}
 private let grid = TimelineNativeGridView(frame: CGRect(x: 0, y: 0, width: 900, height: 300))
 private let ruler = TimelineNativeRulerView(frame: CGRect(x: 0, y: 0, width: 900, height: 80))
 func vertices(_ path: CGPath) -> [CGPoint] {

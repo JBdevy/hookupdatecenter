@@ -695,6 +695,7 @@ public struct ShowTimelinePresentationState: Equatable {
         if action.needsTrack && track == nil { message = "Track unavailable"; return }
         switch action {
         case .saveProject: Task { await save() }
+        case .toggleFullscreen: toggleWorkspaceFullscreen()
         case .selectTrack:
             if let track {
                 setMixerTrackSelection([track.id], anchor: track.id)
@@ -770,6 +771,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var canExecute: () -> Bool = { true }
     public var onStop: () -> Void = {}
     public var toggleVideoWindow: () -> Void = {}
+    public var toggleWorkspaceFullscreen: () -> Void = {}
     public var toggleTeleprompterWindow: () -> Void = {}
     public var navigateProjectTab: (Int) -> Void = { _ in }
     public var toggleTracksPanel: () -> Void = {}
@@ -982,6 +984,12 @@ public struct ShowTimelinePresentationState: Equatable {
     public func setResolume(_ settings: ResolumeSettings) {
         do { try settings.validate(); editProject { $0.resolume = settings } }
         catch { message = error.localizedDescription }
+    }
+    public func setGrandMA2(_ map: GrandMA2Map, connection: ResolumeSettings) {
+        do {
+            try connection.validate(); try map.plan.settings.validate()
+            editProject { $0.windowsLighting = map.persisted; $0.resolume = connection }
+        } catch { message = error.localizedDescription }
     }
     public func setReductionDraft(_ draft: PortableProjectJSON) {
         guard canControl(), !finishing, snapshot.project.reductionDraft != draft else { return }
@@ -1278,10 +1286,11 @@ public struct ShowTimelinePresentationState: Equatable {
         itemClipboard = copied; programChangeClipboard = nil; programChangePasteReady = false
         return true
     }
-    @discardableResult public func pasteItems() -> Set<UUID> {
+    @discardableResult public func pasteItems(selectedTracks: Set<UUID>? = nil) -> Set<UUID> {
         if programChangeClipboard != nil { pasteProgramChange(); return [] }
         guard canControl(), !finishing, let clipboard = itemClipboard, clipboard.song == current?.id else { return [] }
-        return pasteItems(clipboard, at: snapshot.transport.editPosition ?? snapshot.transport.position)
+        return pasteItems(clipboard, at: snapshot.transport.editPosition ?? snapshot.transport.position,
+                          selectedTracks: selectedTracks ?? mixerTrackSelection)
     }
     @discardableResult public func duplicateItems(_ ids: Set<UUID>) -> Set<UUID> {
         guard canControl(), !finishing, let song = current?.id,
@@ -1290,10 +1299,10 @@ public struct ShowTimelinePresentationState: Equatable {
         if pendingFXEdit { commitFX() }
         return pasteItems(clipboard, at: end)
     }
-    private func pasteItems(_ clipboard: GridItemClipboard, at position: Double) -> Set<UUID> {
+    private func pasteItems(_ clipboard: GridItemClipboard, at position: Double, selectedTracks: Set<UUID> = []) -> Set<UUID> {
         guard !clipboard.moving || !timelineMovementLocked else { return [] }
         do {
-            let entries = try clipboard.items(in: snapshot.project, at: position)
+            let entries = try clipboard.items(in: snapshot.project, at: position, selectedTracks: selectedTracks)
             var project = snapshot.project
             try project.pasteItems(entries, song: clipboard.song, moving: clipboard.moving)
             if project != snapshot.project {

@@ -16,6 +16,9 @@ fonts = Path('Apple/Shared/Theme.swift').read_text()
 fonts = fonts[fonts.index('private enum CatLiveTypeface {'):fonts.index('\n#endif', fonts.index('private enum CatLiveTypeface {'))]
 Path(sys.argv[1]).with_name('Fonts.swift').write_text('import SwiftUI\nimport AppKit\nimport CoreText\n' + fonts)
 parts = ['import AppKit\nimport SwiftUI\n']
+wheel = Path('Apple/Shared/TimelineWheelInput.swift').read_text()
+start = wheel.index('private struct TimelineWheelZoomTransition')
+parts.append(wheel[start:wheel.index('\nfinal class TimelineWheelView', start)])
 for begin in ['private struct TimelineNativeGridBand {', 'private struct TimelineNativeRuler:']:
     start = source.index(begin)
     parts.append(source[start:source.index('\n#endif', start)])

@@ -19,20 +19,31 @@ public struct GridItemClipboard: Equatable, Sendable {
         guard !entries.isEmpty else { return nil }
         self.project = project.id; self.song = song; self.moving = moving; self.entries = entries
     }
-    public func items(in project: Project, at position: Double) throws -> [Entry] {
+    public func items(in project: Project, at position: Double, selectedTracks: Set<UUID> = []) throws -> [Entry] {
         guard project.id == self.project, position.isFinite, position >= 0,
               let source = project.songs.first(where: { $0.id == song }) else { throw ProjectError.invalid("The copied items belong to another project") }
         var values = entries
+        // Resolve the destination in timeline order, never Set iteration order or
+        // the last track clicked. Keep multi-track selections arranged together.
+        let destination = source.tracks.firstIndex { selectedTracks.contains($0.id) }
+        let firstSource = source.tracks.firstIndex { track in entries.contains { $0.track == track.id } }
         for index in values.indices {
-            guard let track = source.tracks.first(where: { $0.id == values[index].track }), track.kind != .timecode else {
+            guard let sourceIndex = source.tracks.firstIndex(where: { $0.id == values[index].track }),
+                  source.tracks[sourceIndex].kind != .timecode else {
                 throw ProjectError.invalid("The destination track no longer exists")
             }
+            let track = source.tracks[sourceIndex]
             guard track.kind != .click || values[index].clip.isProjectionMedia else { throw ProjectError.invalid("Invalid destination track") }
             if moving {
                 guard let clip = track.clips.first(where: { $0.id == values[index].clip.id }) else { throw ProjectError.invalid("An item to move no longer exists") }
                 values[index].clip = clip
             }
             guard track.kind != .click || values[index].clip.isProjectionMedia else { throw ProjectError.invalid("Invalid destination track") }
+            if let destination, let firstSource {
+                let target = destination + sourceIndex - firstSource
+                guard source.tracks.indices.contains(target) else { throw ProjectError.invalid("Invalid destination track") }
+                values[index].track = source.tracks[target].id
+            }
         }
         let start = values.map { $0.clip.startTime }.min()!
         for index in values.indices {
@@ -53,8 +64,11 @@ public extension Project {
                   candidate.songs[index].tracks[track].kind != .timecode,
                   candidate.songs[index].tracks[track].kind != .click || entry.clip.isProjectionMedia else { throw ProjectError.invalid("Invalid destination track") }
             if moving {
-                guard let item = candidate.songs[index].tracks[track].clips.firstIndex(where: { $0.id == entry.clip.id }) else { throw ProjectError.invalid("An item to move no longer exists") }
-                candidate.songs[index].tracks[track].clips.remove(at: item)
+                guard let origin = candidate.songs[index].tracks.firstIndex(where: { $0.clips.contains { $0.id == entry.clip.id } }),
+                      let item = candidate.songs[index].tracks[origin].clips.firstIndex(where: { $0.id == entry.clip.id }) else { throw ProjectError.invalid("An item to move no longer exists") }
+                guard candidate.songs[index].tracks[origin].kind != .timecode,
+                      candidate.songs[index].tracks[origin].kind != .click || candidate.songs[index].tracks[origin].clips[item].isProjectionMedia else { throw ProjectError.invalid("Invalid destination track") }
+                candidate.songs[index].tracks[origin].clips.remove(at: item)
             }
         }
         for entry in entries {

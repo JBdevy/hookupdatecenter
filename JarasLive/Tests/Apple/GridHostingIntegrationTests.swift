@@ -595,6 +595,19 @@ precondition(planeScroll.contentView.documentRect.width == 600 && planeScroll.co
 precondition(planeDocument.frame.width == previousCapacity && planeDocument.frame.height == 420,
              "zoom below viewport size retains capacity and structural row height")
 NotificationCenter.default.removeObserver(planeFrameObserver)
+// Fractional wheel steps must retain the exact cursor anchor in the mounted
+// AppKit clip view, rather than rounding and correcting it at gesture end.
+for step in 0..<40 {
+    let width = CGFloat(6000) + CGFloat(step) * 0.137
+    planeScroll.zoomAnchor = (0.65, 400, width)
+    planeZoom.value = width / 3000
+    planeHost.needsLayout = true
+    RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+    planeRoot.layoutSubtreeIfNeeded()
+    let expected = 0.65 * width - 400
+    precondition(abs(planeScroll.contentView.bounds.minX - expected) < 0.0001,
+                 "Fractional zoom rounded the mounted cursor anchor: \(planeScroll.contentView.bounds.minX - expected)")
+}
 planeWindow.close()
 print("RETAINED_DOCUMENT_CAPACITY_NO_ZOOM_FRAME_NOTIFICATIONS_AND_LOGICAL_MOMENTUM_BOUNDS_OK")
 print("RETAINED_COORDINATE_PLANE_LOCALIZED_SCALE_LOGICAL_EXTENT_FIXED_CONTROLS_FAR_RIGHT_HEADER_AND_PIXELS_OK")

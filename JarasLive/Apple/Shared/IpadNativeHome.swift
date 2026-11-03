@@ -468,6 +468,85 @@ private final class NativeProjectPickerSelection {
     }
 }
 
+/// Keep the import intent alive while its confirmation closes. SwiftUI's
+/// alert(item:) clears the binding before its button action on some iPadOS
+/// versions, and presenting Files during that dismissal can lose the sheet.
+private struct NativePackageImportConfirmation: UIViewControllerRepresentable {
+    let prompt: PortableProjectImportPrompt?
+    let confirmed: (PortableProjectImportPrompt) -> Void
+    let cancelled: () -> Void
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.update(prompt: prompt, confirmed: confirmed, cancelled: cancelled)
+    }
+
+    final class Controller: UIViewController {
+        private var prompt: PortableProjectImportPrompt?
+        private var activePrompt: PortableProjectImportPrompt?
+        private var alert: UIAlertController?
+        private var finishing = false
+        private var waitingForDismissal = false
+        private var confirmed: (PortableProjectImportPrompt) -> Void = { _ in }
+        private var cancelled: () -> Void = {}
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            presentIfReady()
+        }
+
+        func update(prompt: PortableProjectImportPrompt?, confirmed: @escaping (PortableProjectImportPrompt) -> Void,
+                    cancelled: @escaping () -> Void) {
+            self.prompt = prompt; self.confirmed = confirmed; self.cancelled = cancelled
+            if let alert, activePrompt != prompt {
+                self.alert = nil; activePrompt = nil; finishing = true
+                alert.dismiss(animated: true) { [weak self] in
+                    self?.finishing = false
+                    self?.presentIfReady()
+                }
+            } else { presentIfReady() }
+        }
+
+        private func presentIfReady() {
+            guard let prompt, alert == nil, !finishing, !waitingForDismissal,
+                  let root = viewIfLoaded?.window?.rootViewController else { return }
+            // A destination prompt may arrive as Files finishes closing. Wait
+            // for that actual transition, rather than guessing a delay.
+            if let presented = root.presentedViewController {
+                guard presented.isBeingDismissed, let transition = presented.transitionCoordinator else { return }
+                waitingForDismissal = true
+                let scheduled = transition.animate(alongsideTransition: nil) { [weak self] _ in
+                    self?.waitingForDismissal = false
+                    self?.presentIfReady()
+                }
+                if !scheduled { waitingForDismissal = false }
+                return
+            }
+            let alert = UIAlertController(title: JarasLocalization.string(prompt.title),
+                                          message: JarasLocalization.string(prompt.message), preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: JarasLocalization.string(prompt.action), style: .default) { [weak self, weak alert] _ in
+                if let alert { self?.finish(alert, prompt: prompt, accepted: true) }
+            })
+            alert.addAction(UIAlertAction(title: JarasLocalization.string("Cancel"), style: .cancel) { [weak self, weak alert] _ in
+                if let alert { self?.finish(alert, prompt: prompt, accepted: false) }
+            })
+            self.alert = alert; activePrompt = prompt
+            root.present(alert, animated: true)
+        }
+
+        private func finish(_ alert: UIAlertController, prompt: PortableProjectImportPrompt, accepted: Bool) {
+            guard self.alert === alert, !finishing else { return }
+            self.alert = nil; activePrompt = nil; finishing = true
+            alert.dismiss(animated: true) { [weak self] in
+                guard let self else { return }
+                finishing = false
+                guard self.prompt == prompt else { presentIfReady(); return }
+                if accepted { confirmed(prompt) } else { cancelled() }
+            }
+        }
+    }
+}
+
 struct NativeProjectPresentation: ViewModifier {
     @ObservedObject var documents: ProjectDocuments
     @StateObject private var pickerHandoff = NativeProjectPickerHandoff()
@@ -489,12 +568,9 @@ struct NativeProjectPresentation: ViewModifier {
                     .interactiveDismissDisabled()
                     .onAppear { pickerHandoff.begin(kind) }
             }
-            .alert(item: $documents.nativePackagePrompt) { prompt in
-                Alert(title: Text(LocalizedStringKey(prompt.title)),
-                      message: Text(LocalizedStringKey(prompt.message)),
-                      primaryButton: .default(Text(LocalizedStringKey(prompt.action))) { documents.continueNativePackageImport(prompt) },
-                      secondaryButton: .cancel(Text("Cancel")) { documents.cancelNativePackageImport() })
-            }
+            .background(NativePackageImportConfirmation(prompt: documents.nativePackagePrompt,
+                confirmed: documents.continueNativePackageImport, cancelled: documents.cancelNativePackageImport)
+                .frame(width: 0, height: 0))
             .alert("Import", isPresented: Binding(get: { !documents.audioImportError.isEmpty }, set: { if !$0 { documents.audioImportError = "" } })) {
                 Button("OK") { documents.audioImportError = "" }
             } message: { Text(verbatim: documents.audioImportError) }

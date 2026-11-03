@@ -55,6 +55,7 @@
 "DEMO · SEM ÁUDIO" = "DEMO · NO AUDIO";
 "Autorização pendente ao parar" = "Authorization pending after playback";
 "Salvar projeto" = "Save project";
+"Toggle fullscreen" = "Toggle fullscreen";
 "Abrir grid" = "Open grid";
 "REPRODUZINDO" = "PLAYING";
 "PARADO" = "STOPPED";
@@ -986,10 +987,10 @@
 "Sub Play cursor color" = "Sub Play cursor color";
 
 // Local-network Remote
-"Open Remote on the iPad and choose this computer." = "Open Remote on the iPad and choose this computer.";
+"Open Remote on your device and choose this computer." = "Open Remote on your device and choose this computer.";
 "Audio continues on the computer. Both devices must be on the same local network." = "Audio continues on the computer. Both devices must be on the same local network.";
 "Disable Remote" = "Disable Remote";
-"Waiting for iPad" = "Waiting for iPad";
+"Waiting for connection" = "Waiting for connection";
 "Connected" = "Connected";
 "Searching for computers…" = "Searching for computers…";
 "Connecting…" = "Connecting…";
@@ -2171,3 +2172,44 @@
 "Default text layout" = "Default";
 
 "Pin while transport is stopped" = "Pin while transport is stopped";
+
+/* Timeline appearance and grandMA2 Integration */
+"Invert colors of waveform items" = "Invert colors of waveform items";
+"Inverted" = "Inverted";
+"Select songs and create the grandMA2 macros on the Integration computer. Timecode: 30 FPS." = "Select songs and create the grandMA2 macros on the Integration computer. Timecode: 30 FPS.";
+"Advanced configuration" = "Advanced configuration";
+"First sequence" = "First sequence";
+"Page" = "Page";
+"First executor" = "First executor";
+"First timecode" = "First timecode";
+"MTC Slot" = "MTC Slot";
+"Cues" = "Cues";
+"MTC start" = "MTC start";
+"In grandMA2, import the “Import all” macro from the generated folder and run it once." = "In grandMA2, import the “Import all” macro from the generated folder and run it once.";
+"Save map to project" = "Save map to project";
+"Create grandMA2 macros" = "Create grandMA2 macros";
+"Lighting map saved. Save the CatLive project to keep these changes." = "Lighting map saved. Save the CatLive project to keep these changes.";
+"Stop playback before creating files" = "Stop playback before creating files";
+"Creating grandMA2 macros on CatLive Integration…" = "Creating grandMA2 macros on CatLive Integration…";
+"Macros saved on the Integration computer:" = "Macros saved on the Integration computer:";
+"Select at least one song for grandMA2" = "Select at least one song for grandMA2";
+"Update CatLive Integration to create grandMA2 macros." = "Update CatLive Integration to create grandMA2 macros.";
+"Integration did not confirm saving the files" = "Integration did not confirm saving the files";
+"Sequence, page, executor and timecode must be 1–9999; MTC slot must be 1–8." = "Sequence, page, executor and timecode must be 1–9999; MTC slot must be 1–8.";
+"The song exceeds its reserved MTC space. Review the lighting map before extending it." = "The song exceeds its reserved MTC space. Review the lighting map before extending it.";
+"Starting numbers leave insufficient space for all songs." = "Starting numbers leave insufficient space for all songs.";
+"The lighting map exceeds the 24-hour MTC limit." = "The lighting map exceeds the 24-hour MTC limit.";
+"Clear selection" = "Clear selection";
+"File creation is still running" = "File creation is still running";
+"File creation already running" = "File creation already running";
+"Invalid grandMA2 numbering" = "Invalid grandMA2 numbering";
+"Invalid grandMA2 timecode position" = "Invalid grandMA2 timecode position";
+"Could not save grandMA2 files" = "Could not save grandMA2 files";
+"Invalid grandMA2 region ID" = "Invalid grandMA2 region ID";
+"Duplicate grandMA2 destinations" = "Duplicate grandMA2 destinations";
+"grandMA2 destination exceeds 9999" = "grandMA2 destination exceeds 9999";
+"Invalid grandMA2 region duration" = "Invalid grandMA2 region duration";
+"Invalid grandMA2 cues" = "Invalid grandMA2 cues";
+"grandMA2 cue outside its song" = "grandMA2 cue outside its song";
+"Select fewer songs for this grandMA2 export" = "Select fewer songs for this grandMA2 export";
+"grandMA2 destination already exists" = "grandMA2 destination already exists";

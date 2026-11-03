@@ -95,6 +95,8 @@ struct TimelineWaveformItem {
     let gray: Float
     var sourcePath: String? = nil
     var mediaSource: TimelineMediaURLCache.Source? = nil
+    var tint: SIMD4<Float>? = nil
+    var ink: SIMD4<Float> { tint ?? SIMD4(repeating: gray).withAlpha(1) }
 }
 
 final class TimelineWaveformVertexOwner {
@@ -397,7 +399,7 @@ enum TimelineMetalWaveformFrameBuilder {
                         strokes.append(MetalWaveformStroke(block: unitBand, channel: 0,
                             scale: SIMD2(Float((last - first) * scale), max(0.25, (maximum - minimum) * abs(Float(amplitude)) / 2)),
                             translation: SIMD2(Float(first * scale - viewport.minX), Float(middle) + (minimum + maximum) * Float(amplitude) / 2),
-                            clip: channelRect.offsetBy(dx: -viewport.minX, dy: -viewport.minY), color: SIMD4(repeating: item.gray).withAlpha(1), itemRect: localItem,
+                            clip: channelRect.offsetBy(dx: -viewport.minX, dy: -viewport.minY), color: item.ink, itemRect: localItem,
                             firstSeamX: firstSeam, repeatSpacing: seamSpacing, lineWidth: 0.5, fadeCenter: Float(middle)))
                     }
                     continue
@@ -451,7 +453,7 @@ enum TimelineMetalWaveformFrameBuilder {
                             let localClip = channelRect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
                             strokes.append(MetalWaveformStroke(block: unitLine, channel: 0,
                                 scale: SIMD2(Float(localClip.width), 1), translation: SIMD2(Float(localClip.minX), Float(middle)),
-                                clip: localClip, color: SIMD4(repeating: item.gray).withAlpha(0.5), itemRect: localItem,
+                                clip: localClip, color: item.ink.withAlpha(0.5), itemRect: localItem,
                                 firstSeamX: firstSeam, repeatSpacing: seamSpacing, lineWidth: 0.5))
                             for sourceBlock in blocks where sourceChannel < sourceBlock.channels.count {
                                 let block = sourceBlock.step > 1 && !sourceBlock.isPeakEnvelope ? sourceBlock.rasterEnvelope : sourceBlock
@@ -460,7 +462,7 @@ enum TimelineMetalWaveformFrameBuilder {
                                 guard right >= localClip.minX - 2, x <= localClip.maxX + 2 else { continue }
                                 strokes.append(MetalWaveformStroke(block: block, channel: sourceChannel,
                                     scale: SIMD2(Float(sourceScale / header.rate), Float(amplitude)), translation: SIMD2(Float(x), Float(middle)),
-                                    clip: localClip, color: SIMD4(repeating: item.gray).withAlpha(1), itemRect: localItem,
+                                    clip: localClip, color: item.ink, itemRect: localItem,
                                     firstSeamX: firstSeam, repeatSpacing: seamSpacing, lineWidth: block.isPeakEnvelope ? 2 : contourWidth))
                             }
                         }

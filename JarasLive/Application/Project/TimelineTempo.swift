@@ -244,7 +244,7 @@ public extension Song {
     func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool, cursor: Double? = nil) -> Double {
         guard canDragMarker(marker), value.isFinite else { return marker.position }
         var target = max(0, value)
-        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, cursor: cursor, excludingMarker: marker.id) }
+        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, cursor: cursor, excludingMarker: marker.id, includeHiddenDivisions: true) }
         if !free, let cursor, cursor.isFinite, cursor >= 0, pixelsPerSecond.isFinite, pixelsPerSecond > 0,
            abs(cursor - target) * pixelsPerSecond <= 12 + 1e-9 { target = cursor }
         var intervals: [(Double, Double)] = []

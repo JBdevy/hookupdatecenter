@@ -87,7 +87,7 @@ class RemotePanel final : public Component, private Timer {
             g.drawFittedText(text, 20, y, getWidth() - 40, height, Justification::topLeft,
                              height > 28 ? 3 : 1);
         };
-        label("Abra o Remote no iPad e escolha este computador.", 14, 40);
+        label("Abra o Remote no seu dispositivo e escolha este computador.", 14, 40);
         label(host.status(), 58, 20, 12, host.enabled() ? theme::green : theme::secondary);
         label(host.peerNames(), 80, 18, 12, theme::secondary);
         label(

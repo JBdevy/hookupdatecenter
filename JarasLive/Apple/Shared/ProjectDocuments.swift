@@ -1832,6 +1832,12 @@ extension NSHostingView: ProjectFrameSizedHosting {
     }
 }
 final class ProjectWindowAnchor: NSView {
+    private static weak var editorWindow: NSWindow?
+    static func toggleFullscreen() {
+        guard let window = editorWindow, window.isVisible, window.attachedSheet == nil else { return }
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.toggleFullScreen(nil)
+    }
     static let editorFrameSize = NSSize(width: 1440, height: 791)
     static func configureChrome(of window: NSWindow) {
         // The interface already stays below the native titlebar. Extending its
@@ -1925,6 +1931,8 @@ final class ProjectWindowAnchor: NSView {
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); update() }
     func update() {
         guard let window else { return }
+        if editor { Self.editorWindow = window }
+        else if Self.editorWindow === window { Self.editorWindow = nil }
         if let documents, configuredWindow !== window || configuredDocuments !== documents {
             ProjectCloseGuard.shared.attach(window: window, documents: documents)
             configuredDocuments = documents

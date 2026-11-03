@@ -44,6 +44,7 @@ class ProjectTabCloseButton final : public QuietButton {
 class ProjectTabsHost final : public Component, private Timer {
   public:
     Workspace *current = nullptr;
+    bool fullscreen = false;
     std::function<std::vector<String>()> titles;
     std::function<size_t()> selected;
     std::function<void(size_t)> choose, closeTab;
@@ -56,6 +57,7 @@ class ProjectTabsHost final : public Component, private Timer {
     }
     void show(Workspace *workspace) {
         detach(); current = workspace;
+        current->workspaceFullscreen = fullscreen;
         addAndMakeVisible(current); addAndMakeVisible(current->windowCaption());
         rebuild(); resized();
     }
@@ -70,8 +72,10 @@ class ProjectTabsHost final : public Component, private Timer {
         if (!current) return;
         const int height = current->isProjectOpen() && buttons.size()>1 ? 24 : 0;
         current->setBounds(0, height, getWidth(), getHeight() - height);
-        current->windowCaption().setBounds(0, 0, getWidth(), 32);
-        viewport.setBounds(0, 32, getWidth(), height);
+        const int title = current->workspaceFullscreen ? 0 : 32;
+        current->windowCaption().setBounds(0, 0, getWidth(), title);
+        current->windowCaption().setVisible(!current->workspaceFullscreen);
+        viewport.setBounds(0, title, getWidth(), height);
         viewport.setVisible(height > 0); viewport.toFront(false);
         strip.setSize(getWidth(), 24);
         const float cell = buttons.empty() ? 0.f : float(getWidth()-12+3)/float(buttons.size());
@@ -704,6 +708,24 @@ class CatLiveApplication final : public JUCEApplication {
             return false;
         };
         workspace.openInNewProjectTab = [this](File file) { openProjectTab(file); };
+        workspace.toggleWorkspaceFullscreen = [this] {
+            if (!window) return;
+            const bool fullscreen = !window->workArea.isFullscreen();
+            for (auto *tab : tabWorkspaces) tab->workspaceFullscreen = fullscreen;
+            if (tabHost) tabHost->fullscreen = fullscreen;
+            // Native resizing dispatches layout synchronously. Publish the new
+            // caption state first so the first frame uses the final coordinates.
+            if (!window->workArea.setFullscreen(fullscreen)) {
+                for (auto *tab : tabWorkspaces) tab->workspaceFullscreen = !fullscreen;
+                if (tabHost) tabHost->fullscreen = !fullscreen;
+                return;
+            }
+            if (tabHost) {
+                tabHost->resized();
+                if (tabHost->current) { tabHost->current->resized(); tabHost->current->grabKeyboardFocus(); }
+            }
+            window->toFront(true);
+        };
         workspace.openRemoteProjectInNewTab = [this](File file, ID request) { openProjectTab(file, request); };
         workspace.navigateProjectTab = [this](int direction) {
             if (tabWorkspaces.size() < 2 || selectedTab >= tabSessions.size() || tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) return;

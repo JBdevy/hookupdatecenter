@@ -2,6 +2,18 @@ import XCTest
 @testable import JarasApplication
 
 final class TimelineSnapTests: XCTestCase {
+    func testItemsAndMarkersKeepHiddenDivisionsWhenZoomedOut() {
+        var song = Project.empty(name: "Hidden drag grid").songs[0]
+        song.bpm = 120; song.duration = 1000; song.parts = []; song.markers = []
+        let marker = TimelineMarker(id: UUID(), name: "Cue", position: 70, color: 0xffffff)
+        song.markers = [marker]
+        for scale in [0.01, 0.05, 0.3, 1, 10, 100] {
+            XCTAssertEqual(TimelineTempo.snap(103.52, song: song, pixelsPerSecond: scale,
+                includeHiddenDivisions: true, maximumDistancePixels: 8), 103.5, accuracy: 1e-9)
+            XCTAssertEqual(song.markerDragPosition(marker, to: 103.52, pixelsPerSecond: scale, free: false), 103.5, accuracy: 1e-9)
+            XCTAssertEqual(song.markerDragPosition(marker, to: 103.52, pixelsPerSecond: scale, free: true), 103.52)
+        }
+    }
     func testDistantGridSnapsToSecondaryLinesWithoutZooming() {
         var song = Project.empty(name: "Secondary grid").songs[0]
         song.bpm = 120; song.duration = 10000; song.parts = []; song.markers = []
