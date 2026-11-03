@@ -141,7 +141,9 @@ struct Bridge::Impl {
             {std::lock_guard lock(mutex);current=state;enabled=mtc;leased=connected;gen=generation;}
             bool fresh=current.fresh(now)&&leased,active=enabled&&fresh&&current.playing;
             double position=current.at(now);
-            const bool seek=delayed||gen!=lastGeneration||current.jump!=lastJump||std::abs(position-expected)>0.15;
+            // Scheduler delays only need a resync while the clock is running.
+            // An idle worker waking late must not emit fresh timecode after Stop.
+            const bool seek=(active&&delayed)||gen!=lastGeneration||current.jump!=lastJump||std::abs(position-expected)>0.15;
             if(enabled && fresh && (active||seek||activeBefore)) {
                 const int frames=int(std::llround(position*30))%2592000;
                 int frame=frames%30,sec=frames/30%60,min=frames/1800%60,hour=frames/108000%24;
