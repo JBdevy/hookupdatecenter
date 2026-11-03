@@ -775,7 +775,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
                 // a softer finish. Start at the visible scale, with no jump.
                 lastZoomInput = ProcessInfo.processInfo.systemUptime
                 zoomFinish = TimelineZoomFinish(from: zoom, to: target, began: lastZoomInput,
-                                               duration: 0.360, immediateFraction: 0)
+                                               duration: 0.420, immediateFraction: 0)
             }
         }
         if event.phase.contains(.began), event.momentumPhase.isEmpty, zoomRunning {

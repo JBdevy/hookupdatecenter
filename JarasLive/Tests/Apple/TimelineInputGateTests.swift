@@ -408,7 +408,7 @@ for precise in [false, true] {
             precondition(abs(log(zoomValues.last! / target)) > 0.0001,
                          "the trackpad finish continues beyond the former 180 ms release")
         }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.16))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.24))
         precondition(abs(zoomValues.last! - target) < 1e-12, "the release reaches the exact requested scale promptly")
         requireMonotonicZoom(zoomValues, increasing: sign > 0)
         let complete = zoomValues.count
