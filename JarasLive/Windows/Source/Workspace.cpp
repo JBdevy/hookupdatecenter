@@ -1942,7 +1942,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         const auto now = Time::getMillisecondCounterHiRes();
         // A finite ease-out reaches one exact transform. An exponential tail
         // kept moving thin grid lines by fractions of a pixel after the wheel stopped.
-        const double progress = jlimit(0., 1., (now - lastGestureInput) / 130.);
+        const double duration = gestureMode == 1 ? 420. : 130.;
+        const double progress = jlimit(0., 1., (now - lastGestureInput) / duration);
         const bool settled = progress >= 1.;
         const double eased = 1. - std::pow(1. - progress, 3.);
         const double next = settled ? gestureTarget : gestureOrigin + (gestureTarget - gestureOrigin) * eased;
