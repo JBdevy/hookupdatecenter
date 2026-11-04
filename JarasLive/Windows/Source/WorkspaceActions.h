@@ -170,7 +170,10 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     } else if (action == "splitItems") {
         auto selection = selectedClips;
         if (selection.empty() && !selectedClip.empty()) selection.insert(selectedClip);
-        session.splitClips(selection, session.transport().editPosition);
+        const auto rightItems = session.splitClips(selection, session.transport().editPosition);
+        if (!rightItems.empty()) {
+            selectedClips = rightItems; selectedClip = *rightItems.begin(); updateState();
+        }
     } else if (action == "normalizeItems" || action == "reRenderItems" || action == "unifyAudioItems") {
         auto anchor = selectedClip;
         if (!selectedClips.empty() && !selectedClips.count(anchor)) anchor = *selectedClips.begin();

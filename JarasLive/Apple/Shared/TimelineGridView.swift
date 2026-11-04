@@ -887,6 +887,9 @@ private struct TimelineGridContent: View, Equatable {
             else if request.action == .unifyAudioItems { glueItems(selectedClips) }
         }
         .onChange(of: show.splitItemsRequest) { request in if request > 0 { splitSelectedItems(selectedClips) } }
+        .onReceive(show.splitItemSelection) { ids in
+            selectedClips = ids; selectedClip = ids.first
+        }
         .onChange(of: show.addTrackRequest) { request in if request > 0 { addingTrack = true } }
         .onChange(of: show.timelineMovementLocked) { locked in
             guard locked else { return }
@@ -1582,7 +1585,7 @@ private struct TimelineGridContent: View, Equatable {
     }
     private func splitSelectedItems(_ ids: Set<UUID>) {
         let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
-        let eligible = show.current?.tracks.filter { $0.kind != .timecode }.flatMap(\.clips).filter { ids.contains($0.id) && position > $0.startTime && position < $0.startTime + $0.duration } ?? []
+        let eligible = show.current?.tracks.filter { $0.kind != .timecode }.flatMap(\.clips).filter { (ids.isEmpty || ids.contains($0.id)) && position > $0.startTime && position < $0.startTime + $0.duration } ?? []
         guard !eligible.isEmpty else { return }
         #if os(macOS)
         show.splitItems(Set(eligible.map(\.id)), at: position)

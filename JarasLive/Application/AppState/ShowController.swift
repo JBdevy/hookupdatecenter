@@ -670,6 +670,8 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     @Published public private(set) var setlistNavigationRequest: SetlistNavigationRequest?
     @Published public private(set) var splitItemsRequest: UInt64 = 0
+    /// Emitted only after a split commits; views select the newly created right halves.
+    public let splitItemSelection = PassthroughSubject<Set<UUID>, Never>()
     @Published public private(set) var normalizeItemsRequest: UInt64 = 0
     public struct ItemProcessingRequest: Equatable {
         public let id: UUID
@@ -1216,7 +1218,21 @@ public struct ShowTimelinePresentationState: Equatable {
         guard !timelineMovementLocked else { return }
         editProject { $0.resizeItem(id, start: start, end: end) }
     }
-    public func splitItems(_ ids: Set<UUID>, at position: Double) { editProject { $0.splitItems(ids, at: position) } }
+    @discardableResult public func splitItems(_ ids: Set<UUID>, at position: Double) -> Set<UUID> {
+        guard canControl(), !finishing, position.isFinite, let song = current else { return [] }
+        let activeItems = Set(song.tracks.flatMap(\.clips).map(\.id))
+        // An empty selection cuts everything under the cursor in the active song.
+        let targets = ids.isEmpty ? activeItems : ids.intersection(activeItems)
+        var project = snapshot.project
+        let rightItems = project.splitItems(targets, at: position)
+        guard !rightItems.isEmpty else { return [] }
+        do {
+            tick(); try executor.applyProjectEdit(project)
+            snapshot = try executor.snapshot(); markChanged(); onProjectEdited()
+            splitItemSelection.send(rightItems)
+            return rightItems
+        } catch { message = error.localizedDescription; return [] }
+    }
     @discardableResult public func normalizeItems(_ gains: [UUID: Double], project: UUID) -> Bool {
         guard canControl(), !finishing, snapshot.project.id == project, !gains.isEmpty else { return false }
         var edits: [(song: Int, track: Int, item: Int, id: UUID, old: Double, gain: Double)] = []
@@ -2778,6 +2794,37 @@ public struct ShowTimelinePresentationState: Equatable {
             for index in snapshot.project.songs.indices where snapshot.project.songs[index].id == song.id { snapshot.project.songs[index] = song }
             audioRouting(edits); recordEdit(); projectRevision &+= 1; hasUnsavedChanges = true
         } catch { message = error.localizedDescription }
+    }
+    public func toggleMatrixPatch(source: UUID?, destination: MatrixPatchDestination) {
+        guard canControl(), !finishing else { return }
+        switch destination {
+        case .output(let patch):
+            guard patch.firstChannel >= 0, source != nil || patch.firstChannel > 0 else { return }
+            if let source, current?.tracks.contains(where: { $0.id == source && ($0.kind == .standard || $0.kind == .click) }) != true { return }
+            let previous = source.flatMap { id in current?.tracks.first { $0.id == id }?.outputPatches } ?? snapshot.project.masterOutputPatches
+            let next = previous.contains(patch) ? previous.filter { $0 != patch } : previous.filter { $0 != .none } + [patch]
+            setOutputPatches(track: source, patches: next)
+        case .track(let destination):
+            guard let source, var song = current else { return }
+            let before = song
+            do {
+                try song.toggleMatrixConnection(source: source, destination: destination)
+                var next = snapshot.project
+                guard let index = next.songs.firstIndex(where: { $0.id == song.id }) else { return }
+                next.songs[index] = song
+                try executor.applyProjectEdit(next)
+                snapshot.project = next
+                var routes: [UUID: TrackRouting] = [:]
+                for (old, track) in zip(before.tracks, song.tracks) where old.routing != track.routing {
+                    routes[track.id] = track.routing ?? TrackRouting()
+                }
+                if !routes.isEmpty { audioRouting(routes) }
+                for (old, track) in zip(before.tracks, song.tracks) where old.outputPatches != track.outputPatches {
+                    audioPatches(track.id, track.outputPatches)
+                }
+                recordEdit(); projectRevision &+= 1; hasUnsavedChanges = true
+            } catch { message = error.localizedDescription }
+        }
     }
     public func setOutputPatches(track: UUID?, patches: [OutputPatch]) {
         guard canControl(), !finishing else { return }

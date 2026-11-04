@@ -165,6 +165,7 @@ jobs:
           bash scripts/test-remote-midi-actions.sh
           bash scripts/test-ipad-setlist-blocks.sh
           bash scripts/test-empty-track-mixer-selection.sh
+          bash scripts/test-matrix-patch-canvas.sh
           bash scripts/test-plugin-catalog.sh
           bash scripts/test-daw-remote.sh
           bash scripts/test-show-mode.sh
@@ -438,7 +439,7 @@ jobs:
           path: dist
       - uses: actions/download-artifact@v4
         with:
-          pattern: CatLive-Integration-1.26-*-Installer
+          pattern: CatLive-Integration-1.27-*-Installer
           path: dist
           merge-multiple: true
       - name: Verify release installers and checksums
@@ -451,8 +452,8 @@ jobs:
           test -s "Catlive-$VERSION.exe"
           sha256sum --check "Catlive-$VERSION.pkg.sha256"
           sha256sum --check "Catlive-$VERSION.exe.sha256"
-          test -s CatLive-Integration-1.26-Mac.pkg
-          test -s CatLive-Integration-1.26-Windows.exe
+          test -s CatLive-Integration-1.27-Mac.pkg
+          test -s CatLive-Integration-1.27-Windows.exe
       - name: Publish both desktop installers together
         uses: softprops/action-gh-release@v2
         with:
@@ -465,7 +466,7 @@ jobs:
           fail_on_unmatched_files: true
           body: |
             CatLive ${{ inputs.version }} para macOS universal e Windows 10/11 x64.
-            CatLive Integration possui instaladores separados, gratuitos e sem login/licença: CatLive-Integration-1.26-Mac.pkg e CatLive-Integration-1.26-Windows.exe.
+            CatLive Integration possui instaladores separados, gratuitos e sem login/licença: CatLive-Integration-1.27-Mac.pkg e CatLive-Integration-1.27-Windows.exe.
             Projeto .jl compartilhado entre as plataformas, com preservação do mapa grandMA2 ao salvar no Mac.
             Publicação condicionada aos testes nativos e à troca de documentos Windows → Mac → Windows e Mac → Windows.
             Instalador macOS assinado e notarizado. Instalador Windows sem assinatura Authenticode nesta configuração.
@@ -488,7 +489,7 @@ jobs:
             const { owner, repo } = context.repo;
             const tag = `catlive-v${version}`;
             const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`, `CatLive-Integration-1.26-Mac.pkg`, `CatLive-Integration-1.26-Windows.exe`]);
+            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`, `CatLive-Integration-1.27-Mac.pkg`, `CatLive-Integration-1.27-Windows.exe`]);
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id: release.id });
             for (const name of installers) {
               const matches = assets.filter(asset => asset.name === name);

@@ -412,8 +412,9 @@ public extension Project {
             }
         }
     }
-    mutating func splitItems(_ ids: Set<UUID>, at position: Double) {
-        guard position.isFinite else { return }
+    @discardableResult mutating func splitItems(_ ids: Set<UUID>, at position: Double) -> Set<UUID> {
+        guard position.isFinite else { return [] }
+        var rightItems = Set<UUID>()
         for song in songs.indices {
             var tempoPrograms = AudioTempoPrograms(song: songs[song])
             for track in songs[song].tracks.indices where songs[song].tracks[track].kind != .timecode {
@@ -427,6 +428,7 @@ public extension Project {
                     var left = clip, right = clip
                     left.duration = position - clip.startTime
                     right.id = UUID(); right.startTime = position; right.duration = clip.duration - left.duration
+                    rightItems.insert(right.id)
                     if clickTrack && clip.audioFile == nil {
                         left.regionOwnerID = clickOwners[clip.id]; right.regionOwnerID = clickOwners[clip.id]
                         return [left, right]
@@ -457,6 +459,7 @@ public extension Project {
                 }
             }
         }
+        return rightItems
     }
     mutating func deleteItems(_ ids: Set<UUID>) {
         for song in songs.indices {

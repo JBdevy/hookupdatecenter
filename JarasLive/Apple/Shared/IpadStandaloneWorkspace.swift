@@ -348,7 +348,7 @@ import Combine
             IpadCompactModal(preferredSize: CGSize(width: 620, height: 520)) {
                 VStack(spacing: 0) {
                     IpadModalHeader(title: "Metronome", close: { metronomeOpen = false })
-                    ScrollView { MetronomeEditor() }
+                    ScrollView { MetronomeEditor().environment(\.workspaceEditorDismiss, { metronomeOpen = false }) }
                 }
             }
         } else if let id = regionActions {
@@ -1340,8 +1340,13 @@ struct IpadDialogButtonStyle: ButtonStyle {
             if only == nil || only == .metronome {
             Button { metronome.enabled.toggle() } label: { Image(systemName: "metronome") }
                 .buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : JarasTheme.panel, active: metronome.enabled, fontSize: 12, width: controlWidth ?? 30, height: 28))
+                .overlay {
+                    if let configureMetronome {
+                        IpadTapHoldTouchSurface(tap: { metronome.enabled.toggle() }, hold: configureMetronome)
+                    }
+                }
                 .accessibilityLabel("Metronome").accessibilityValue(metronome.enabled ? "On" : "Off")
-                .contextMenu { Button("Settings") { configureMetronome?() } }
+                .accessibilityAction(named: Text("Settings")) { configureMetronome?() }
             }
         }
     }

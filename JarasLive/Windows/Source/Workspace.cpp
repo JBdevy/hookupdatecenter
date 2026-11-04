@@ -1,3 +1,4 @@
+#include "MatrixPatchPanel.h"
 #include "ConfirmationPanel.h"
 #include "AudioPreparationOverlay.h"
 #include "StemFolderImportPanel.h"
@@ -4159,6 +4160,13 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         resized();
         repaint();
     }).setTooltip("Hoz-Mixer");
+    button("matrixPatch", "Matrix Patch", [this] {
+        const auto* display = Desktop::getInstance().getDisplays().getDisplayForRect(getScreenBounds());
+        const auto area = display ? display->userArea : juce::Rectangle<int>(0, 0, 1024, 768);
+        openFloating("Matrix Patch", std::make_unique<MatrixPatchPanel>(session),
+                     std::min(1000, std::max(480, area.getWidth() - 24)),
+                     std::min(650, std::max(360, area.getHeight() - 64)));
+    }).setTooltip("Matrix Patch");
     static_cast<QuietButton *>(controls["railMixer"])->context = [this](Point<int> point) { mixerMenu(point); };
     button("railParts", "Parts", [this] { toggleLeftParts(); }).setTooltip("Parts");
     static_cast<QuietButton *>(controls["railParts"])->context = [this](Point<int> point) { leftPartsMenu(point); };
@@ -4224,10 +4232,10 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         openSettings();
     }).setTooltip(String::fromUTF8("Configurações"));
     button("railHelp", "?", [this] { showShortcuts(); }).setTooltip(localization::translate("Atalhos"));
-    for (auto id : {"menu", "mixer", "railMixer", "railKeyboard", "railParts", "railVinhetas", "settings",
+    for (auto id : {"menu", "mixer", "railMixer", "matrixPatch", "railKeyboard", "railParts", "railVinhetas", "settings",
                     "loop", "pause"})
         controls[id]->getProperties().set("icon", id);
-    for (auto id : {"menu", "mixer", "railMixer", "railKeyboard", "railParts", "railVinhetas", "settings",
+    for (auto id : {"menu", "mixer", "railMixer", "matrixPatch", "railKeyboard", "railParts", "railVinhetas", "settings",
                     "railTeleprompt", "railTeleprompt2"})
         controls[id]->getProperties().set("plain", true);
     for (auto id : {"play", "pause", "subplay", "loop", "record", "metronome", "video", "tp1", "tp2",
@@ -4239,7 +4247,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["menu"]->setTooltip({});
     std::vector<std::pair<Component*,String>> toolbarHintTargets;
     for(const auto &entry:std::initializer_list<std::pair<const char*,const char*>>{
-            {"mixer","Track-Mixer"},{"railMixer","Hoz-Mixer"},{"railParts","Parts"},
+            {"mixer","Track-Mixer"},{"railMixer","Hoz-Mixer"},{"matrixPatch","Matrix Patch"},{"railParts","Parts"},
             {"railNotice","Recados"},{"railKeyboard","Keyboard"},{"railVinhetas","Pads"},{"railClock","Cronômetro"},{"settings","Configurações"}}) {
         auto *control=controls[entry.first];control->setTooltip({});
         const auto label=String::fromUTF8(entry.second);control->setTitle(localization::translate(label));
@@ -4884,11 +4892,11 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     }
     const bool patchPanel = dynamic_cast<PatchPanel *>(panel.get()) != nullptr;
     const bool resizablePanel = effectsPanel || dynamic_cast<Projection *>(panel.get()) ||
-        name=="Mixer" || name=="Parts" || name=="Vinhetas";
+        name=="Mixer" || name=="Parts" || name=="Vinhetas" || name=="Matrix Patch";
     auto window = std::make_unique<PanelWindow>(localization::translate(name == "Mixer" ? "Hoz-Mixer" : name), patchPanel, resizablePanel);
     auto *settings = dynamic_cast<SettingsPanel *>(panel.get());
     const bool preferencesPanel = settings || dynamic_cast<AdvancedPanel *>(panel.get());
-    window->escapeCloses = preferencesPanel || name == "Editor de texto" || name == "Patch" || name == "Timecode";
+    window->escapeCloses = preferencesPanel || name == "Editor de texto" || name == "Patch" || name == "Timecode" || name == "Matrix Patch";
     window->globalKey = [safe = SafePointer<Workspace>(this),
                          settings = SafePointer<SettingsPanel>(settings)](const KeyPress &key) {
         if (settings && settings->keyPressed(key)) return true;
@@ -4900,7 +4908,7 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     if (auto *effects = dynamic_cast<EffectsPanel *>(panel.get())) {
         effects->globalKey = window->globalKey; effects->globalKeyState = window->globalKeyState;
         window->shortcuts = std::make_unique<FloatingShortcuts>(*window, window->globalKey, window->globalKeyState);
-    } else if (preferencesPanel || name == "Parts" || name == "Patch" || name == "Timecode") {
+    } else if (preferencesPanel || name == "Parts" || name == "Patch" || name == "Timecode" || name == "Matrix Patch") {
         window->shortcuts = std::make_unique<FloatingShortcuts>(*window, window->globalKey, window->globalKeyState);
     }
     // Projection windows participate in normal window ordering so settings,
@@ -4913,7 +4921,9 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     window->setContentOwned(panel.release(), true);
     const auto contentBorder = window->getContentComponentBorder();
     if (resizablePanel) {
-        window->setResizeLimits(effectsPanel ? EffectsPanel::minimumContentWidth + contentBorder.getLeftAndRight() : preferencesPanel ? width : name.startsWith("Piano Roll") ? 760 : 360,
+        if (name == "Matrix Patch") {
+            window->setResizeLimits(640 + contentBorder.getLeftAndRight(), 420 + contentBorder.getTopAndBottom(), 32768, 32768);
+        } else window->setResizeLimits(effectsPanel ? EffectsPanel::minimumContentWidth + contentBorder.getLeftAndRight() : preferencesPanel ? width : name.startsWith("Piano Roll") ? 760 : 360,
                                 effectsPanel ? EffectsPanel::minimumContentHeight + contentBorder.getTopAndBottom() : preferencesPanel ? height + 32 : name.startsWith("Piano Roll") ? 440 : name == "Mixer" ? 305 : 240, 3840, 2160);
         window->centreAroundComponent(this, effectsPanel ? width + contentBorder.getLeftAndRight() : width,
                                       effectsPanel ? height + contentBorder.getTopAndBottom() : height + (patchPanel ? 0 : 32));
@@ -4949,6 +4959,7 @@ void Workspace::openFloating(const String &name, std::unique_ptr<Component> pane
     window->setVisible(true);
     window->toFront(true);
     floatingWindows[name] = std::move(window);
+    if (name == "Matrix Patch") controls["matrixPatch"]->setColour(TextButton::textColourOffId, theme::green);
 }
 void Workspace::syncNativeTransport() {
     if (!nativeTransport) return;
@@ -5295,7 +5306,7 @@ void Workspace::resized() {
     controls["railTeleprompt"]->setVisible(false);
     controls["railTeleprompt2"]->setVisible(false);
     int toolX = 4;
-    for (auto id : {"menu", "mixer", "railMixer", "railParts", "railNotice", "railClock", "railKeyboard", "railVinhetas"}) {
+    for (auto id : {"menu", "mixer", "railMixer", "matrixPatch", "railParts", "railNotice", "railClock", "railKeyboard", "railVinhetas"}) {
         controls[id]->setBounds(toolX, title + 2, 26, 24);
         toolX += 32;
     }
@@ -7837,6 +7848,12 @@ bool Workspace::selectAllGridItems() {
     timeline->invalidate(); repaint(); return true;
 }
 void Workspace::refreshMixerIndicator() {
+    if (auto* matrixButton = controls["matrixPatch"]) {
+        const auto matrix = floatingWindows.find("Matrix Patch");
+        const auto matrixColor = matrix != floatingWindows.end() && matrix->second->isVisible() ? theme::green : Colours::white;
+        if (matrixButton->findColour(TextButton::textColourOffId) != matrixColor) matrixButton->setColour(TextButton::textColourOffId, matrixColor);
+    }
+
     const auto window = floatingWindows.find("Mixer");
     const bool visible = mixerDetached
         ? window != floatingWindows.end() && window->second->isVisible()

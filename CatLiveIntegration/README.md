@@ -1,6 +1,6 @@
-# CatLive Integration 1.26
+# CatLive Integration 1.27
 
-Aplicativo receptor para Windows 10/11 (x64) e macOS 12 ou posterior (Intel e Apple Silicon). Recebe o transporte do CatLive 1.26 por rede local e envia OSC para o Resolume Arena e MIDI Time Code de 30 FPS para o grandMA2. Não abre dispositivos de áudio. Instalação independente, gratuita, sem conta, licença ou ativação.
+Aplicativo receptor para Windows 10/11 (x64) e macOS 12 ou posterior (Intel e Apple Silicon). Recebe o transporte do CatLive 1.27 por rede local e envia OSC para o Resolume Arena e MIDI Time Code de 30 FPS para o grandMA2. Não abre dispositivos de áudio. Instalação independente, gratuita, sem conta, licença ou ativação.
 
 ## Usar em dois computadores
 

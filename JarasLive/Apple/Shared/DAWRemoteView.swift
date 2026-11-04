@@ -436,7 +436,8 @@ struct DAWRemoteClientView: View {
                 cachedTimelineRegions = (song?.parts ?? []).map(region)
                 cachedMarkers = (song?.markers ?? []).filter { !$0.isTempo }.map {
                     .init(id: $0.id, name: song?.markerLabel($0) ?? $0.name, position: $0.position,
-                        color: $0.color, section: $0.isSection, unifiedRegionID: $0.unifiedRegionID, sourceRegionID: $0.sourceRegionID)
+                        color: $0.color, section: $0.isSection, loopSection: $0.isLoopSection,
+                        unifiedRegionID: $0.unifiedRegionID, sourceRegionID: $0.sourceRegionID)
                 }
                 cachedBlocks = show.listedBlocks.map {
                     .init(id: $0.id, name: $0.name, color: $0.color, beforeRegion: $0.beforeRegionId, symbol: presentationKey.blockSymbols)
@@ -1433,6 +1434,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             if nativeInputEnabled { addTrack?() }
         }
         .onReceive(localShow?.$splitItemsRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in beginNativeSplit() }
+        .onReceive(localShow?.splitItemSelection.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { ids in
+            if local { trackScrolling.itemSelection.replace(ids); trackScrolling.selectionScope = .grid }
+        }
         .onReceive(localShow?.$normalizeItemsRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in
             if nativeInputEnabled, !trackScrolling.itemSelection.items.isEmpty { nativeNormalization = true }
         }
@@ -1632,8 +1636,9 @@ private struct RemoteSidebarRail<Content: View>: View {
     private func beginNativeSplit() {
         guard nativeInputEnabled, let show = localShow, let song = show.current else { return }
         let time = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
-        let ids = Set(song.tracks.flatMap(\.clips).filter {
-            trackScrolling.itemSelection.items.contains($0.id) && $0.startTime < time && $0.startTime + $0.duration > time
+        let selection = trackScrolling.itemSelection.items
+        let ids = Set(song.tracks.filter { $0.kind != .timecode }.flatMap(\.clips).filter {
+            (selection.isEmpty || selection.contains($0.id)) && $0.startTime < time && $0.startTime + $0.duration > time
         }.map(\.id))
         if !ids.isEmpty { splittingItems = (state.project, song.id, ids, time) }
     }
@@ -2324,7 +2329,8 @@ private struct RemoteSidebarRail<Content: View>: View {
         let markers: [TimelineMarker] = (state.markers ?? []).filter { marker in
             marker.section == true && region.map { marker.position >= $0.start && marker.position <= $0.end } == true
         }.sorted { $0.position == $1.position ? $0.id.uuidString < $1.id.uuidString : $0.position < $1.position }
-            .map { TimelineMarker(id: $0.id, name: $0.name.uppercased(), position: $0.position, color: $0.color, section: true) }
+            .map { TimelineMarker(id: $0.id, name: $0.name.uppercased(), position: $0.position, color: $0.color,
+                                  section: true, loopSection: $0.loopSection) }
         let end = secondary ? region?.end ?? 0 : playback?.currentEnd ?? region?.end ?? 0
         return SmoothSeekBankView(title: secondary ? (state.subPlaying ? "Sub Play" : "Queued") : "Playing / Selected",
             name: region?.name ?? "—", markers: markers, end: end,
@@ -3582,7 +3588,7 @@ private struct RemoteNativeTimeline: View {
     private func visibleMarkers(song: Song?) -> [TimelineMarker] {
         let markers = song?.markers ?? (state.markers ?? []).map {
             TimelineMarker(id: $0.id, name: $0.name, position: $0.position, color: $0.color,
-                unifiedRegionID: $0.unifiedRegionID, sourceRegionID: $0.sourceRegionID, section: $0.section)
+                unifiedRegionID: $0.unifiedRegionID, sourceRegionID: $0.sourceRegionID, section: $0.section, loopSection: $0.loopSection)
         }
         return markers.filter { !$0.isTempo && $0.position >= start && $0.position <= end }.sorted { $0.position < $1.position }
     }

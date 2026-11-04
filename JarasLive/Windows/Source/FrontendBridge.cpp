@@ -636,7 +636,11 @@ void FrontendBridge::receive(const String &json) {
             reply(id);publishSnapshot();return;
         }
         else if(action=="removeItems") {requireEditable();session.removeClips(itemIDs());selectedItems.clear();}
-        else if(action=="splitItems") {requireEditable();session.splitClips(itemIDs(),std::max(0.,finiteNumber(payload,"seconds")));}
+        else if(action=="splitItems") {
+            requireEditable();
+            const auto rightItems=session.splitClips(itemIDs(),std::max(0.,finiteNumber(payload,"seconds")));
+            if(!rightItems.empty())selectedItems=rightItems;
+        }
         else if(action=="moveItems") {
             requireEditable();const auto items=itemIDs();const auto delta=finiteNumber(payload,"delta");
             if(session.project().timelineMovementLocked.value_or(false))throw std::runtime_error("Unlock item movement first.");

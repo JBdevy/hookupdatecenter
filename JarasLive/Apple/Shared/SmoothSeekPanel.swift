@@ -339,15 +339,10 @@ struct SmoothSeekBankView: View {
         let isStart = marker.id == regionID
         let active = showsPosition && position < end && displayMarkers.last(where: { $0.position <= position })?.id == marker.id
         let selected = queued || (self.queued == nil && active)
+        let foreground = Color(hex: TrackNameContrast.foreground(marker.color, opacity: 1, background: 0))
         return Button { select(marker.id) } label: {
             ZStack(alignment: .bottomLeading) {
-                #if os(iOS)
-                RemoteSurface.fill(selected ? JarasTheme.green.opacity(0.35) : isStart ? Color.blue.opacity(0.4) : JarasTheme.display)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(RemoteSurface.edge, lineWidth: 0.5).allowsHitTesting(false))
-                #else
-                RoundedRectangle(cornerRadius: 5).fill(selected ? JarasTheme.green.opacity(0.35) : isStart ? Color.blue.opacity(0.4) : JarasTheme.display)
-                #endif
+                RoundedRectangle(cornerRadius: 5).fill(Color(hex: marker.color))
                 if queued, let trigger {
                     SectionCountdownBar(position: playbackPosition, trigger: trigger,
                         startedAt: queueStartedAt, running: playbackRunning, liveSample: livePlayback)
@@ -365,8 +360,21 @@ struct SmoothSeekBankView: View {
                         if isStart { Text("Section start") }
                         else { Text(verbatim: marker.name.uppercased()) }
                     }.font(.jarasSystem(size: isStart ? 16 : 12, weight: isStart ? .heavy : .semibold)).lineLimit(nil).multilineTextAlignment(.center).minimumScaleFactor(0.35)
-                }.foregroundStyle(Color.white).padding(.horizontal, 3).frame(maxWidth: .infinity, maxHeight: .infinity)
-                RoundedRectangle(cornerRadius: 5).stroke(selected ? JarasTheme.green : isStart ? Color.blue : JarasTheme.line, lineWidth: selected || isStart ? 1.5 : 0.5)
+                }.foregroundStyle(foreground).padding(.horizontal, 5).frame(maxWidth: .infinity, maxHeight: .infinity)
+                if marker.isLoopSection {
+                    RoundedRectangle(cornerRadius: 5).strokeBorder(
+                        LinearGradient(colors: [Color(hex: 0xff5050), Color(hex: 0x51ef93), Color(hex: 0x409cff)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 2)
+                        .allowsHitTesting(false)
+                    if selected {
+                        RoundedRectangle(cornerRadius: 3).strokeBorder(JarasTheme.green, lineWidth: 1.5)
+                            .padding(3).allowsHitTesting(false)
+                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 5).strokeBorder(selected ? JarasTheme.green : JarasTheme.line,
+                                                                                lineWidth: selected ? 1.5 : 0.5)
+                        .allowsHitTesting(false)
+                }
             }.contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(isStart ? JarasLocalization.string("Section start") : marker.name.uppercased()).accessibilityValue(queued ? "Queued" : active ? "Playing" : "")
         #if os(macOS)

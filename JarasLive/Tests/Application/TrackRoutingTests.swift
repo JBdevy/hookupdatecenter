@@ -482,3 +482,79 @@ final class TrackRoutingTests: XCTestCase {
         controller.undo(); XCTAssertEqual(controller.snapshot.project, p)
     }
 }
+
+extension TrackRoutingTests {
+    @MainActor func testMatrixRemovesReceiveAndSendTogetherAndUndoRestoresBoth() throws {
+        var project = Project.empty(name: "Matrix")
+        var a = Track(id: UUID(), name: "A", role: .other)
+        var b = Track(id: UUID(), name: "B", role: .other)
+        a.routing = TrackRouting(transmitters: [b.id, b.id])
+        b.routing = TrackRouting(receives: [a.id])
+        project.songs[0].tracks = [a, b]
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        var updates: [UUID: TrackRouting] = [:]
+        show.audioRouting = { updates = $0 }
+        show.toggleMatrixPatch(source: a.id, destination: .track(b.id))
+        XCTAssertFalse(show.current!.matrixConnection(source: a.id, destination: b.id))
+        XCTAssertEqual(updates.count, 2)
+        XCTAssertEqual(executor.fullEdits, 1)
+        show.undo()
+        XCTAssertEqual(show.current?.tracks, [a, b])
+        show.redo()
+        XCTAssertFalse(show.current!.matrixConnection(source: a.id, destination: b.id))
+    }
+    @MainActor func testMatrixKeepsGroupMembershipAndHardwareWhenDisconnectingParent() throws {
+        var project = Project.empty(name: "Matrix group")
+        let group = Track(id: UUID(), name: "Group", role: .other)
+        var member = Track(id: UUID(), name: "Member", role: .other)
+        member.parentTrackID = group.id
+        let hardware = OutputPatch(firstChannel: 3, channelCount: 2)
+        member.outputs = [.masterGroup, hardware]
+        member.routing = TrackRouting(transmitters: [group.id])
+        project.songs[0].tracks = [group, member]
+        let show = try ShowController(executor: RoutingExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.toggleMatrixPatch(source: member.id, destination: .track(group.id))
+        XCTAssertEqual(show.current?.tracks[1].parentTrackID, group.id)
+        XCTAssertEqual(show.current?.tracks[1].outputPatches, [hardware])
+        XCTAssertFalse(show.current!.matrixConnection(source: member.id, destination: group.id))
+        show.toggleMatrixPatch(source: member.id, destination: .track(group.id))
+        XCTAssertTrue(show.current!.matrixConnection(source: member.id, destination: group.id))
+        XCTAssertEqual(show.current?.tracks[1].outputPatches, [hardware, .masterGroup])
+    }
+    @MainActor func testMatrixRejectsFeedbackWithoutChangingProjectOrAudio() throws {
+        var project = Project.empty(name: "Matrix feedback")
+        var a = Track(id: UUID(), name: "A", role: .other)
+        let b = Track(id: UUID(), name: "B", role: .other)
+        a.routing = TrackRouting(transmitters: [b.id])
+        project.songs[0].tracks = [a, b]
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        var updates = 0
+        show.audioRouting = { _ in updates += 1 }
+        show.toggleMatrixPatch(source: b.id, destination: .track(a.id))
+        XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertEqual(updates, 0); XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertFalse(show.message.isEmpty)
+        show.toggleMatrixPatch(source: a.id, destination: .track(a.id))
+        XCTAssertEqual(show.snapshot.project, project)
+    }
+    @MainActor func testMatrixHardwareRoutesPreserveOthersAndCanDisableLastMasterOutput() throws {
+        var project = Project.empty(name: "Matrix hardware")
+        let a = Track(id: UUID(), name: "A", role: .other)
+        project.songs[0].tracks = [a]
+        let show = try ShowController(executor: RoutingExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let original = a.outputPatches
+        let hardware = OutputPatch(firstChannel: 7, channelCount: 2)
+        show.toggleMatrixPatch(source: a.id, destination: .output(hardware))
+        XCTAssertEqual(show.current?.tracks[0].outputPatches, original + [hardware])
+        show.toggleMatrixPatch(source: a.id, destination: .output(hardware))
+        XCTAssertEqual(show.current?.tracks[0].outputPatches, original)
+        for patch in show.snapshot.project.masterOutputPatches {
+            show.toggleMatrixPatch(source: nil, destination: .output(patch))
+        }
+        XCTAssertEqual(show.snapshot.project.masterOutputPatches, [])
+        let data = try JSONEncoder().encode(show.snapshot.project)
+        XCTAssertEqual(try JSONDecoder().decode(Project.self, from: data).masterOutputPatches, [])
+    }
+}

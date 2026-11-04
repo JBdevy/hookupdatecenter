@@ -627,6 +627,13 @@ struct MainView: View {
                     } else { showDetachedMixer() }
                 }
             }
+            Button { toolWindows.openMatrixPatch(show: show) } label: {
+                Image(systemName: "square.grid.3x3")
+                    .font(.jarasSystem(size: 16, weight: .semibold))
+                    .frame(width: 26, height: 24).contentShape(Rectangle())
+            }
+            .foregroundStyle(toolWindows.matrixPatchOpen ? JarasTheme.green : JarasTheme.text)
+            .accessibilityLabel("Matrix Patch").desktopIconTooltip("Matrix Patch")
             Button {
                 if detachedParts.isDetached {
                     if detachedParts.isVisible { detachedParts.hide() }

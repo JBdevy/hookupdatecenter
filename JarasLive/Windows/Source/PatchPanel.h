@@ -4,7 +4,7 @@
 #include "ModalSheet.h"
 #include "Appearance.h"
 namespace catlive {
-class PatchPanel final : public Component {
+class PatchPanel final : public Component, private Timer {
   public:
     PatchPanel(Session &s, ID target, std::function<void(String)> report, std::set<ID> selection = {})
         : session(s), id(std::move(target)), error(std::move(report)), targets(std::move(selection)) {
@@ -20,6 +20,8 @@ class PatchPanel final : public Component {
         close.getProperties().set("flat",true);
         close.setColour(TextButton::buttonColourId,Colour(0xff484848));
         build();
+        watchedRouting = routingStamp(); watchedRevision = session.revision;
+        startTimerHz(5);
     }
     void paint(Graphics &g) override {
         g.setColour(Colour(0xff1f1f1f)); g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(.5f),18);
@@ -45,6 +47,34 @@ class PatchPanel final : public Component {
 
   private:
     Session &session;
+    uint64 watchedRevision = 0;
+    String watchedRouting;
+    String routingStamp() const {
+        String result;
+        const auto append = [&](const std::vector<jaras::OutputPatch>& outputs) {
+            for (const auto& patch : outputs) result += String(patch.firstChannel) + ":" + String(patch.channelCount) + ";";
+        };
+        if (id.empty()) append(masterPatches());
+        else if (const auto* song = session.song()) for (const auto& track : song->tracks)
+            if (track.id == id || targets.count(track.id)) {
+                result += text(track.id) + "="; append(track.outputPatches());
+                if (track.routing) {
+                    result += "R"; for (const auto& route : track.routing->receives) result += route ? text(*route) : "-";
+                    result += "S"; for (const auto& route : track.routing->transmitters) result += route ? text(*route) : "-";
+                }
+            }
+        return result;
+    }
+    void timerCallback() override {
+        if (!isShowing() || watchedRevision == session.revision) return;
+        // Do not destroy a menu or a text field while the user is editing it.
+        auto* focused = Component::getCurrentlyFocusedComponent();
+        if (Component::getCurrentlyModalComponent() != nullptr ||
+            (focused && isParentOf(focused) && dynamic_cast<TextEditor*>(focused))) return;
+        watchedRevision = session.revision;
+        const auto next = routingStamp();
+        if (next != watchedRouting) { watchedRouting = next; build(); }
+    }
     ID id;
     std::function<void(String)> error;
     Viewport viewport;

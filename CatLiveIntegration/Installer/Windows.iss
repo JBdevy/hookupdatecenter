@@ -4,14 +4,14 @@
 [Setup]
 AppId={{AD4C4654-AEDD-40BD-B04E-244F87B13A57}
 AppName=CatLive Integration
-AppVersion=1.26
+AppVersion=1.27
 AppPublisher=Hook Developer
 DefaultDirName={localappdata}\Programs\CatLive Integration
 DefaultGroupName=CatLive Integration
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir={#BuildDir}\installer
-OutputBaseFilename=CatLive-Integration-1.26-Windows
+OutputBaseFilename=CatLive-Integration-1.27-Windows
 SetupIconFile=..\..\JarasLive\Installer\Assets\CatLive.ico
 UninstallDisplayIcon={app}\CatLiveIntegration.exe
 ArchitecturesAllowed=x64compatible

@@ -80,6 +80,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         }
         if (name == "railMixer")
             p.applyTransform(AffineTransform::rotation(MathConstants<float>::halfPi, 12, 12));
+    } else if (name == "matrixPatch") {
+        for (int row = 0; row < 3; ++row) for (int col = 0; col < 3; ++col)
+            p.addRoundedRectangle(3.f + col * 7, 3.f + row * 7, 4, 4, 1);
     } else if (name == "undo" || name == "redo") {
         p.startNewSubPath(5, 9);
         p.lineTo(14, 9);

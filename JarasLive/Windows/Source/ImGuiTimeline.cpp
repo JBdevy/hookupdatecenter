@@ -597,7 +597,7 @@ void ImGuiTimeline::render(const J& snapshot,const J& telemetry,const Command& c
         if(ImGui::MenuItem("Paste at edit cursor","Ctrl+V",false,canPaste))clipboardCommand("pasteItems");
         if(cutPending&&ImGui::MenuItem("Cancel cut","Esc"))clipboardCommand("cancelItemCut");
         ImGui::Separator();
-        if(ImGui::MenuItem("Split at edit cursor","S",false,editable&&!selected.empty()))s.emit(command,"splitItems",{{"itemIDs",ids(selected)},{"seconds",s.editPreview.value_or(edit)}});
+        if(ImGui::MenuItem("Split at edit cursor","S",false,editable))s.emit(command,"splitItems",{{"itemIDs",ids(selected)},{"seconds",s.editPreview.value_or(edit)}});
         if(ImGui::MenuItem("Delete items","Delete",false,editable&&!selected.empty()))s.emit(command,"removeItems",{{"itemIDs",ids(selected)}});
         if(ImGui::MenuItem("Select all items","Ctrl+A")){std::set<std::string> all;for(const auto& row:s.rows)for(const auto& clip:row.clips)all.insert(clip.id);s.select(command,all,s.tracksFor(all));}
         ImGui::Separator();if(ImGui::MenuItem("Follow playback",nullptr,s.follow)){s.follow=!s.follow;s.followPaused=false;}ImGui::EndPopup();
@@ -611,7 +611,7 @@ void ImGuiTimeline::render(const J& snapshot,const J& telemetry,const Command& c
         if(cutPending&&ImGui::IsKeyPressed(ImGuiKey_Escape,false))clipboardCommand("cancelItemCut");
         if((io.KeyCtrl||io.KeySuper)&&ImGui::IsKeyPressed(ImGuiKey_A,false)){std::set<std::string> all;for(const auto& row:s.rows)for(const auto& clip:row.clips)all.insert(clip.id);s.select(command,all,s.tracksFor(all));}
         if(editable&&!selected.empty()&&ImGui::IsKeyPressed(ImGuiKey_Delete,false))s.emit(command,"removeItems",{{"itemIDs",ids(selected)}});
-        if(editable&&!selected.empty()&&!io.KeyCtrl&&!io.KeySuper&&ImGui::IsKeyPressed(ImGuiKey_S,false))s.emit(command,"splitItems",{{"itemIDs",ids(selected)},{"seconds",s.editPreview.value_or(edit)}});
+        if(editable&&!io.KeyCtrl&&!io.KeySuper&&ImGui::IsKeyPressed(ImGuiKey_S,false))s.emit(command,"splitItems",{{"itemIDs",ids(selected)},{"seconds",s.editPreview.value_or(edit)}});
     }
     if(s.waves.size()>256)for(auto it=s.waves.begin();it!=s.waves.end();) {
         if(it->second.request==0&&now()-it->second.lastUse>2)it=s.waves.erase(it);else ++it;

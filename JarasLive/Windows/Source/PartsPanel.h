@@ -162,6 +162,7 @@ class PartsPanel final : public Component, private Timer {
                     start.id = part->id;
                     start.name = "INÍCIO";
                     start.position = part->startTime;
+                    start.color = 0x409cff;
                     next.push_back(start);
                     if (song->markers)
                         for (const auto &marker : *song->markers)
@@ -215,10 +216,14 @@ class PartsPanel final : public Component, private Timer {
             for (int i = 0; i < buttons.size(); ++i) {
                 auto &button = *buttons[i];
                 const auto previousLabel = button.label;
+                const auto previousColour = button.colour;
+                const bool previousLoop = button.loop;
                 const bool previousStart = button.start, previousActive = button.active,
                     previousQueued = button.queued, previousSelected = button.selected;
                 const double previousProgress = button.progress;
                 button.label = i == 0 ? localization::translate("Section start") : unicodeCase(text(markers[(size_t)i].name));
+                button.colour = Colour(0xff000000 | markers[(size_t)i].color);
+                button.loop = markers[(size_t)i].loopSection.value_or(false);
                 button.start = i == 0;
                 button.active = active == i;
                 button.queued = state.queuedSectionMarkerId == markers[(size_t)i].id;
@@ -236,7 +241,8 @@ class PartsPanel final : public Component, private Timer {
                     button.progress = running && button.active && !button.queued
                         ? jlimit(0., 1., (position - markers[(size_t)i].position) /
                             std::max(.001, end - markers[(size_t)i].position)) : 0;
-                if (button.label != previousLabel || button.start != previousStart ||
+                if (button.label != previousLabel || button.colour != previousColour || button.loop != previousLoop ||
+                    button.start != previousStart ||
                     button.active != previousActive || button.queued != previousQueued ||
                     button.selected != previousSelected || button.progress != previousProgress) {
                     ++visualUpdates;
@@ -269,13 +275,12 @@ class PartsPanel final : public Component, private Timer {
             }
             void mouseUp(const MouseEvent& event) override { if(!event.mods.isPopupMenu()) Button::mouseUp(event); }
             String label;
-            bool start = false, active = false, queued = false, selected = false;
+            Colour colour;
+            bool start = false, active = false, queued = false, selected = false, loop = false;
             double progress = 0;
             void paintButton(Graphics &g, bool over, bool down) override {
                 auto bounds = getLocalBounds().toFloat().reduced(.8f);
-                g.setColour(selected ? theme::green.withAlpha(.35f)
-                            : start  ? Colour(0xff007aff).withAlpha(.4f)
-                                     : theme::display);
+                g.setColour(colour);
                 g.fillRoundedRectangle(bounds, 5);
                 if (over || down) {
                     g.setColour(Colours::white.withAlpha(down ? .12f : .06f));
@@ -288,12 +293,24 @@ class PartsPanel final : public Component, private Timer {
                     g.setColour(queued ? theme::yellow : theme::green);
                     g.fillRect(0.f, (float)getHeight() - 5, (float)(getWidth() * progress), 5.f);
                 }
-                g.setColour(selected ? theme::green : start ? Colour(0xff007aff) : theme::line);
-                g.drawRoundedRectangle(bounds, 5, selected || start ? 1.5f : .5f);
-                g.setColour(Colours::white);
+                if (loop) {
+                    ColourGradient border(Colour(0xffff5050), bounds.getTopLeft(),
+                                          Colour(0xff409cff), bounds.getBottomRight(), false);
+                    border.addColour(.5, Colour(0xff51ef93));
+                    g.setGradientFill(border);
+                    g.drawRoundedRectangle(bounds, 5, 2);
+                    if (selected) {
+                        g.setColour(theme::green);
+                        g.drawRoundedRectangle(bounds.reduced(3), 3, 1.5f);
+                    }
+                } else {
+                    g.setColour(selected ? theme::green : theme::line);
+                    g.drawRoundedRectangle(bounds, 5, selected ? 1.5f : .5f);
+                }
+                g.setColour(theme::surfaceText(colour));
                 g.setFont(start ? theme::semiboldFont(16) : theme::semiboldFont(12));
                 g.drawFittedText((queued ? String::fromUTF8("↰ ") : String()) + label,
-                                 getLocalBounds().reduced(3, 0), Justification::centred, 2, .35f);
+                                 getLocalBounds().reduced(5, 0), Justification::centred, 2, .35f);
             }
 
           private:

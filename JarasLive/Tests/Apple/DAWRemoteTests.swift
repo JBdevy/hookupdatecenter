@@ -925,11 +925,12 @@ var markerKinds = fixture
 markerKinds.markers = [
     .init(id: UUID(), name: "Normal", position: 1, color: 0x123456),
     .init(id: UUID(), name: "TRECHO", position: 2, color: 0xabcdef, section: true),
+    .init(id: UUID(), name: "LOOP", position: 2.5, color: 0xff5050, section: true, loopSection: true),
     .init(id: UUID(), name: "0st Música unificada", position: 3, color: 0xffcc00,
           unifiedRegionID: UUID(), sourceRegionID: UUID())
 ]
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(markerKinds)) {
-    require(decoded.markers == markerKinds.markers, "normal, section and unified marker styles survive Remote transport")
+    require(decoded.markers == markerKinds.markers, "normal, section, loop and unified marker styles survive Remote transport")
 } else { fatalError("Missing marker style state") }
 print("REMOTE_MAC_MARKER_STYLES_OK")
 

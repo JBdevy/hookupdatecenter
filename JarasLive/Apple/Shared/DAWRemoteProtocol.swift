@@ -223,6 +223,7 @@ struct DAWRemoteState: Codable, Equatable {
     struct Marker: Codable, Identifiable, Equatable {
         var id: UUID; var name: String; var position: Double; var color: UInt32
         var section: Bool? = nil
+        var loopSection: Bool? = nil
         var unifiedRegionID: UUID? = nil
         var sourceRegionID: UUID? = nil
     }

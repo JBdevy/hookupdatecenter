@@ -1530,7 +1530,10 @@ int runTests(const File &directory) {
         project.savedCursor=jaras::SavedProjectCursor{song.id,0};session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
         const auto* graph=session.audio.preparationDiagnostics.getDynamicObject();
         session.command(jaras::CommandKind::play);
-        session.splitClips(ids,.5);
+        const auto rightItems=session.splitClips(ids,.5);
+        expect(rightItems.size()==2,"Split did not return both right halves for selection");
+        for(const auto &track:session.song()->tracks)for(const auto &clip:track.clips)if(rightItems.count(clip.id))
+            expect(clip.startTime==.5&&ids.count(clip.id)==0,"Split selection contains a left half or an original item");
         expect(session.song()->tracks[0].clips.size()==2&&session.song()->tracks[1].clips.size()==2&&session.song()->tracks[2].clips.size()==1,"Split did not apply to exactly the selected items");
         expect(!session.preparingLiveAudio()&&session.audio.preparationDiagnostics.getDynamicObject()==graph,"Split rebuilt the full audio graph");
         AudioBuffer<float> output(2,480);

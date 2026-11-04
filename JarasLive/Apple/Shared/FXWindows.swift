@@ -204,9 +204,36 @@ struct FXInsertEditor: View {
 import AppKit
 import Combine
 
-@MainActor private func makeWorkspacePanel(title: String, size: NSSize, minimum: NSSize) -> NSPanel {
-    let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
-                        styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+@MainActor private final class MatrixPatchWindow: NSPanel {
+    private var consumedTitlebarClick = false
+    override var canBecomeMain: Bool { true }
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseUp && consumedTitlebarClick {
+            consumedTitlebarClick = false
+            return
+        }
+        if event.type == .leftMouseDown, event.clickCount == 2,
+           !styleMask.contains(.fullScreen), event.locationInWindow.y >= contentLayoutRect.maxY {
+            let onWindowButton = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].contains { type in
+                guard let button = standardWindowButton(type) else { return false }
+                return button.convert(button.bounds, to: nil).contains(event.locationInWindow)
+            }
+            if !onWindowButton {
+                consumedTitlebarClick = true
+                performZoom(nil)
+                return
+            }
+        }
+        super.sendEvent(event)
+    }
+}
+
+@MainActor private func makeWorkspacePanel(title: String, size: NSSize, minimum: NSSize, matrixPatch: Bool = false) -> NSPanel {
+    let rect = NSRect(origin: .zero, size: size)
+    let style: NSWindow.StyleMask = [.titled, .closable, .resizable]
+    let panel = matrixPatch
+        ? MatrixPatchWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+        : NSPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
     panel.title = title
     panel.appearance = NSAppearance(named: .darkAqua)
     panel.contentMinSize = minimum
@@ -371,8 +398,9 @@ private struct WorkspaceToolContent<Content: View>: View {
 /// The workspace owns these panels, just as it owns its detached mixer.
 /// Refocusing a tool keeps its hosting view, selection and unfinished text edits.
 @MainActor final class WorkspaceToolWindows: NSObject, ObservableObject, NSWindowDelegate {
-    private enum Tool: String { case advanced, settings, textItem }
+    private enum Tool: String { case advanced, settings, textItem, matrixPatch }
     @Published private(set) var settingsOpen = false
+    @Published private(set) var matrixPatchOpen = false
     private var windows: [Tool: NSPanel] = [:]
     private var settingsSelection: WorkspaceSettingsSelection?
     private let advancedPresentation = WorkspaceToolPresentation()
@@ -407,6 +435,13 @@ private struct WorkspaceToolContent<Content: View>: View {
                 close: { [weak panel] in panel?.close() }, presentation: advancedPresentation)
         }
     }
+    func openMatrixPatch(show: ShowController) {
+        bind(show)
+        present(.matrixPatch, title: "Matrix Patch", size: NSSize(width: 1000, height: 650)) { _ in
+            MatrixPatchView(show: show)
+        }
+        matrixPatchOpen = true
+    }
     func openSettings(auth: AuthService, show: ShowController, backend: any BackendClient,
                       section: SettingsView.Section? = nil) {
         bind(show)
@@ -429,8 +464,10 @@ private struct WorkspaceToolContent<Content: View>: View {
             panel.makeKeyAndOrderFront(nil)
             return
         }
-        let panel = makeWorkspacePanel(title: JarasLocalization.string(title), size: size, minimum: size)
-        panel.styleMask.remove(.resizable)
+        let expandable = tool == .matrixPatch
+        let panel = makeWorkspacePanel(title: JarasLocalization.string(title), size: size, minimum: size, matrixPatch: expandable)
+        if expandable { panel.collectionBehavior.insert(.fullScreenPrimary) }
+        else { panel.styleMask.remove(.resizable) }
         panel.identifier = NSUserInterfaceItemIdentifier("catlive.tool." + tool.rawValue)
         if tool == .textItem {
             // Keep the draft visible while the user focuses the projection.
@@ -451,7 +488,9 @@ private struct WorkspaceToolContent<Content: View>: View {
         if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
         panel.contentView = host
         let available = panel.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size ?? size
-        panel.contentMinSize = .zero
+        panel.contentMinSize = expandable
+            ? NSSize(width: min(640, available.width), height: min(420, max(240, available.height - 32)))
+            : .zero
         panel.setContentSize(NSSize(width: min(size.width, available.width), height: min(size.height, max(240, available.height - 32))))
         InterfaceScaling.shared.register(panel)
         panel.center()
@@ -459,11 +498,16 @@ private struct WorkspaceToolContent<Content: View>: View {
         attachWorkspacePanel(panel)
         panel.makeKeyAndOrderFront(nil)
     }
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        if window === windows[.matrixPatch] { return window.screen?.visibleFrame ?? newFrame }
+        return newFrame
+    }
     func windowWillClose(_ notification: Notification) {
         guard let panel = notification.object as? NSPanel,
               let tool = windows.first(where: { $0.value === panel })?.key else { return }
         panel.parent?.removeChildWindow(panel)
         if tool == .settings { settingsOpen = false; ControlMappings.shared.editing = nil }
+        if tool == .matrixPatch { matrixPatchOpen = false }
         if !discardingWindows && tool != .textItem {
             // Keep the hosting tree and native window; hide it from layout,
             // hit testing and accessibility until the next presentation.
@@ -479,6 +523,7 @@ private struct WorkspaceToolContent<Content: View>: View {
         windows.removeAll()
         discardingWindows = false
         settingsOpen = false
+        matrixPatchOpen = false
         settingsSelection = nil
     }
 }

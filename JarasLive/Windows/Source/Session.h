@@ -158,7 +158,7 @@ class Session final : private Timer {
     void setMeter(int beats, int unit);
     void removeClip(ID);
     void removeClips(const std::set<ID> &);
-    void splitClips(const std::set<ID> &, double);
+    std::set<ID> splitClips(const std::set<ID> &, double);
     void addMarker(String, double, bool section = false);
     void addRegion(String, double, double);
     void reorderTrack(ID, ID);

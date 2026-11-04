@@ -113,6 +113,7 @@ class Presentation final {
                     put(v, "position", marker.position);
                     put(v, "color", (int)marker.color);
                     put(v, "section", marker.section.value_or(false));
+                    put(v, "loopSection", marker.section.value_or(false) && marker.loopSection.value_or(false) && !marker.tempoBPM);
                     markers.add(v);
                 }
         }

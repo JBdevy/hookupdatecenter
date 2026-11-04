@@ -1777,5 +1777,10 @@
   "Could not create the recovered project folder.": "Não foi possível criar a pasta do projeto recuperado.",
   "Could not copy media for the recovered project.": "Não foi possível copiar as mídias do projeto recuperado.",
   "Could not restore the project backup.": "Não foi possível restaurar o backup do projeto.",
-  "Toggle fullscreen": "Alternar tela cheia"
+  "Toggle fullscreen": "Alternar tela cheia",
+  "Matrix Patch": "Matrix Patch",
+  "Search tracks": "Buscar pistas",
+  "Sources": "Origens",
+  "Destinations →": "Destinos →",
+  "Click a cell to connect or disconnect": "Clique em uma célula para conectar ou desconectar"
 }

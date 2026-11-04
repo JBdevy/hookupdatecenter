@@ -77,7 +77,7 @@ private final class DesktopIconTooltipView: NSView {
     }
     func hide() { DesktopIconTooltipWindow.shared.hide(owner: self) }
 }
-@MainActor private final class DesktopIconTooltipWindow {
+@MainActor final class DesktopIconTooltipWindow {
     static let shared = DesktopIconTooltipWindow()
     private weak var owner: NSView?
     private let bubble = DesktopIconTooltipBubble()

@@ -9,6 +9,36 @@
 #include "ExportPanel.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void splitSelection(const File &directory) {
+        using floatingControlTests::require;
+        for (int selectedCount : {0, 1, 2}) {
+            Session session; session.inspection=true; session.audio.prepareOffline(48000);
+            auto project=floatingControlTests::fixture();
+            auto &song=project.songs.front(); song.tracks.clear(); song.parts.clear(); song.markers.reset(); song.duration=20;
+            std::set<ID> originals;
+            for(int i=0;i<2;++i) {
+                jaras::Track track; track.id=uuid(); track.name="Track";
+                jaras::AudioClip item; item.id=uuid(); item.name="Item"; item.startTime=0; item.duration=10;
+                originals.insert(item.id); track.clips={item}; song.tracks.push_back(track);
+            }
+            project.savedCursor=jaras::SavedProjectCursor{song.id,5};
+            session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+            Auth auth; Lighting lighting(session);
+            Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("split-selection",".json"));
+            w.projectOpened(false); session.command(jaras::CommandKind::editSeek,{},5);
+            w.selectedClips.clear(); w.selectedClip.clear();
+            for(int i=0;i<selectedCount;++i)w.selectedClips.insert(session.song()->tracks[(size_t)i].clips[0].id);
+            if(!w.selectedClips.empty())w.selectedClip=*w.selectedClips.begin();
+            w.performAction("splitItems",1,-1);
+            require(w.selectedClips.size()==(size_t)(selectedCount==0?2:selectedCount),"Split did not select all new right halves");
+            require(w.selectedClips.count(w.selectedClip)!=0,"Split anchor did not follow the right selection");
+            for(const auto &track:session.song()->tracks)for(const auto &item:track.clips)if(w.selectedClips.count(item.id))
+                require(item.startTime==5 && item.duration==5 && !originals.count(item.id),"Split retained a left half in the selection");
+            const auto selected=w.selectedClips;
+            w.performAction("splitItems",1,-1);
+            require(w.selectedClips==selected,"S at an existing edge changed selection");
+        }
+    }
     static void fullscreenTransport(const File &directory) {
         using floatingControlTests::require;
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
@@ -995,6 +1025,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
         require(std::abs(notes.front().getTimeStamp())<.001&&std::abs(notes.back().getTimeStamp()-1.5)<.001,"MIDI trim or rate changed");
         file.deleteFile();
     });
+    test("Split selects right halves for single multiple and empty selections",[&]{WorkspaceLayoutTests::splitSelection(directory);});
     test("Workspace divider margins match Mac without shrinking track controls",[&]{WorkspaceLayoutTests::dividerMargins(directory);});
     test("Track icon column extends the mixer without moving group or child controls; hiding and removal restore width",[&]{WorkspaceLayoutTests::trackIconWidth(directory);});
     test("Deleting another recent project during playback preserves the current dirty project and audio clock",[&]{WorkspaceLayoutTests::deleteRecentWhilePlaying(directory);});

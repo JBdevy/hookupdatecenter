@@ -2536,18 +2536,21 @@ void Session::applyItemHistory(const ItemHistory &state, bool recordHistory, con
     dirty = true;
     notify();
 }
-void Session::splitClips(const std::set<ID> &ids, double at) {
-    if (jaras::projectSync::readOnly() || busy || !song() || !std::isfinite(at)) return;
+std::set<ID> Session::splitClips(const std::set<ID> &ids, double at) {
+    if (jaras::projectSync::readOnly() || busy || !song() || !std::isfinite(at)) return {};
     if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de cortar itens.");
     auto edited = *song();
     std::map<ID, ID> sources;
     clipEditing::splitSelected(edited, ids, at, &sources);
-    if (sources.empty()) return;
+    if (sources.empty()) return {};
     ItemHistory next;
     for (const auto &track : edited.tracks)
         if (std::any_of(track.clips.begin(), track.clips.end(), [&](const auto &clip) { return sources.count(clip.id); }))
             next.tracks.emplace(track.id, track.clips);
     applyItemHistory(next, true, sources);
+    std::set<ID> rightItems;
+    for (const auto &source : sources) rightItems.insert(source.first);
+    return rightItems;
 }
 void Session::removeClip(ID id) { removeClips({id}); }
 void Session::removeClips(const std::set<ID> &ids) {
