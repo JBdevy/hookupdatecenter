@@ -21,18 +21,17 @@ import Foundation
         UserDefaults.standard.set(scenario != "disabled", forKey: "jaras.startup.sound")
         defer { UserDefaults.standard.removeObject(forKey: "jaras.startup.sound") }
         ControlledStartupSound.startsSuccessfully = scenario != "failed"
-        let began = ProcessInfo.processInfo.systemUptime
         var activated = false
         let opening = Task { @MainActor in
             try await AppStartupPresentation.waitForSound()
             activated = true
         }
-        try await Task.sleep(nanoseconds: 40_000_000)
         if scenario == "disabled" || scenario == "failed" {
             try await opening.value
             precondition(activated, "Disabled or failed audio must not delay project activation")
             precondition(ControlledStartupSound.plays == (scenario == "disabled" ? 0 : 1))
         } else {
+            try await AppStartupTestClock.until("Sound playback must start waiting") { !AppStartupTestClock.sleeps.isEmpty }
             precondition(!activated, "A document must not rebuild the graph while the introduction is playing")
             precondition(ControlledStartupSound.plays == 1)
             // The main actor can run here while project activation is waiting.
@@ -43,19 +42,25 @@ import Foundation
                 precondition(!activated && ControlledStartupSound.instance?.isPlaying == true,
                              "Cancelling one opening must not cut off the introduction")
             } else if scenario == "timeout" {
+                // The real coordinator must keep waiting before its deadline,
+                // then release the graph at that deadline regardless of CI load.
+                AppStartupTestClock.now += 1.049
+                let previousWaits = AppStartupTestClock.sleeps.count
+                try await AppStartupTestClock.until("Sound must still wait before its deadline") { AppStartupTestClock.sleeps.count > previousWaits }
+                precondition(!activated)
+                AppStartupTestClock.now += 0.002
+                try await AppStartupTestClock.until("A lost output route must release activation") { activated }
                 try await opening.value
-                let elapsed = ProcessInfo.processInfo.systemUptime - began
-                precondition(elapsed >= 1.05 && elapsed < 2,
-                             "A lost output route must not leave startup waiting indefinitely")
+                precondition(ControlledStartupSound.instance?.isPlaying == false)
             } else {
                 ControlledStartupSound.instance?.isPlaying = false
                 try await opening.value
                 precondition(activated)
             }
             ControlledStartupSound.instance?.isPlaying = false
-            let laterOpening = ProcessInfo.processInfo.systemUptime
+            AppStartupTestClock.reset()
             try await AppStartupPresentation.waitForSound()
-            precondition(ProcessInfo.processInfo.systemUptime - laterOpening < 0.1)
+            precondition(AppStartupTestClock.sleeps.isEmpty, "Later openings add no wait")
             precondition(ControlledStartupSound.plays == 1, "Later openings must not replay the introduction")
         }
         print("STARTUP_SOUND_GRAPH_ACTIVATION_\(scenario.uppercased())_OK")

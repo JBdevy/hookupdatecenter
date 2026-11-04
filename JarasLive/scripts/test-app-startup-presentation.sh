@@ -8,9 +8,10 @@ from pathlib import Path
 import sys
 source = Path('Apple/Shared/AppContainer.swift').read_text()
 helper = source[source.index('enum AppStartupPresentation'):source.index('@MainActor final class AppContainer')]
+helper = helper.replace('ProcessInfo.processInfo.systemUptime', 'AppStartupTestClock.now').replace('Task.sleep(nanoseconds:', 'AppStartupTestClock.sleep(nanoseconds:')
 Path(sys.argv[1]).write_text('import Foundation\nimport AppKit\n' + helper)
 PY
-swiftc -swift-version 5 -parse-as-library "$test_dir/StartupPresentation.swift" Tests/Apple/AppStartupPresentationTests.swift -o "$test_dir/test"
+swiftc -swift-version 5 -parse-as-library "$test_dir/StartupPresentation.swift" Tests/Apple/AppStartupTestClock.swift Tests/Apple/AppStartupPresentationTests.swift -o "$test_dir/test"
 "$test_dir/test"
 
 # Control playback completion without requiring an output device in CI.
@@ -21,10 +22,11 @@ from pathlib import Path
 import sys
 source = Path('Apple/Shared/AppContainer.swift').read_text()
 helper = source[source.index('enum AppStartupPresentation'):source.index('@MainActor final class AppContainer')]
+helper = helper.replace('ProcessInfo.processInfo.systemUptime', 'AppStartupTestClock.now').replace('Task.sleep(nanoseconds:', 'AppStartupTestClock.sleep(nanoseconds:')
 Path(sys.argv[1]).write_text('import Foundation\n' + helper.replace('NSSound', 'ControlledStartupSound'))
 PY
 touch "$test_dir/StartupSound.wav"
-swiftc -swift-version 5 -parse-as-library "$test_dir/StartupSound.swift" Tests/Apple/AppStartupSoundTests.swift -o "$test_dir/sound-test"
+swiftc -swift-version 5 -parse-as-library "$test_dir/StartupSound.swift" Tests/Apple/AppStartupTestClock.swift Tests/Apple/AppStartupSoundTests.swift -o "$test_dir/sound-test"
 for scenario in completion cancelled disabled failed timeout; do
     "$test_dir/sound-test" "$scenario"
 done
