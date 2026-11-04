@@ -158,6 +158,7 @@ final class MobileSyncCapture: @unchecked Sendable {
         // edge. Bound that to half a millisecond; never accept a shifted block
         // or accumulated timing error between files.
         if drift > Int(ceil(rate * 0.0005)) {
+            print("MOBILE_QUEUE_DRIVER \(driver.diagnostics())")
             print("MOBILE_QUEUE_EDGES \(label) frames=\(captured[0].count) edges=\(edges)")
             for channel in captured.indices {
                 let data = captured[channel].withUnsafeBytes { Data($0) }
@@ -179,6 +180,12 @@ final class MobileSyncCapture: @unchecked Sendable {
         capture.beginNextRun()
         try command("selectRegion", parts[1].id); try command("play"); try update()
         try command("queueRegion", parts[2].id); try update()
+        if repeatIndex == 1 {
+            // Let the physical callback lead the UI's next transport sample.
+            // The outgoing mixed-rate branches must stay connected until the
+            // prepared incoming head is promoted, even after their PCM ends.
+            Thread.sleep(forTimeInterval: 0.10)
+        }
         try render(seconds: 1.75)
         let afterQueue = try snapshot()
         precondition(afterQueue.transport.position >= parts[2].startTime, "Queue did not change region")
