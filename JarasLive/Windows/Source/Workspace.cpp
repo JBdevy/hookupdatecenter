@@ -7700,6 +7700,7 @@ void Workspace::pasteGridItems(bool duplicate) {
         session.programChangeClipboard.reset(); session.programChangePasteReady = false;
         if (itemClipboard->project != session.project().id || itemClipboard->song != session.song()->id ||
             gridMediaClipboard::sharedDirectory != session.mediaDirectory) {
+            const SafePointer<Workspace> destinationWorkspace(this);
             perform([&] {
                 auto plan = itemClipboard->copyPlan(*session.song(), session.transport().editPosition,
                     selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks);
@@ -7711,7 +7712,7 @@ void Workspace::pasteGridItems(bool duplicate) {
                 const auto projectID = session.project().id, songID = session.song()->id;
                 const auto source = gridMediaClipboard::sharedDirectory, destination = session.mediaDirectory;
                 session.busy = true; updateState();
-                Thread::launch([safe = SafePointer<Workspace>(this), entries = std::move(plan.entries), newTracks = std::move(plan.newTracks), source, destination, projectID, songID]() mutable {
+                Thread::launch([safe = destinationWorkspace, entries = std::move(plan.entries), newTracks = std::move(plan.newTracks), source, destination, projectID, songID]() mutable {
                     gridMediaClipboard::Transfer transfer;
                     String error;
                     try { transfer = gridMediaClipboard::stage(std::move(entries), source, destination); }

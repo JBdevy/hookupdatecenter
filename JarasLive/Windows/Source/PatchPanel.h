@@ -319,7 +319,8 @@ class PatchPanel final : public Component {
             inputPatches.push_back(*t->inputPatch); selected = int(inputPatches.size());
         }
         label(localization::translate("Entrada"), 0, 44, 62);
-        choice(66, 44, 234, inputs, selected, [this, inputPatches](int n) {
+        const SafePointer<PatchPanel> inputPanel(this);
+        choice(66, 44, 234, inputs, selected, [this, inputPatches, inputPanel](int n) {
             const auto input = inputPatches[(size_t)jlimit(0,(int)inputPatches.size()-1,n-1)];
             try {
                 session.editTrackSettings([&](jaras::Project &project) {
@@ -327,7 +328,7 @@ class PatchPanel final : public Component {
                         if (track.id == id) assignInput(song,track,input);
                 }, true);
             } catch (const std::exception &e) { if (error) error(String::fromUTF8(e.what())); }
-            MessageManager::callAsync([safe=SafePointer<PatchPanel>(this)] { if (safe) safe->build(); });
+            MessageManager::callAsync([inputPanel] { if (inputPanel) inputPanel->build(); });
         });
         label(localization::translate("Entrada MIDI"), 0, 80, 194);
         label(localization::translate("Canal MIDI"), 208, 80, 92);

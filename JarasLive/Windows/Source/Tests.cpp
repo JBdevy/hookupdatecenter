@@ -5,6 +5,7 @@
 #include "ItemLayout.h"
 #include "TextItemPanel.h"
 #include "native_video_decoder.h"
+#include <array>
 #include <charconv>
 #include "SplitPlaybackTests.h"
 #include "MixerFeedbackTests.h"
@@ -2026,7 +2027,9 @@ int runTests(const File &directory) {
         jaras::Song song; song.duration=120; song.bpm=120;
         song.beatsPerBar=4; song.beatUnit=4;
         song.timeSettings=jaras::ProjectTimeSettings{};
-        for (const auto [scale, interval] : {std::pair{2.,8.}, {4.,4.}, {8.,2.}, {16.,2.}}) {
+        const std::array<std::pair<double, double>, 4> cases{{{2.,8.}, {4.,4.}, {8.,2.}, {16.,2.}}};
+        for (const auto &sample : cases) {
+            const double scale = sample.first, interval = sample.second;
             const auto ticks=timelineGrid::ticks(song,0,16,scale);
             expect(ticks.size()==(size_t)(16/interval)+1,"Wrong visible whole-bar count");
             for(size_t i=0;i<ticks.size();++i)
