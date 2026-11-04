@@ -76,7 +76,7 @@ final class MobileSyncCapture: @unchecked Sendable {
     let sourceRates = [44100.0, 48000.0, 96000.0]
     for sourceRate in sourceRates {
         let format = AVAudioFormat(standardFormatWithSampleRate: sourceRate, channels: 2)!
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sourceRate * 2))!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sourceRate * 3))!
         buffer.frameLength = buffer.frameCapacity
         for i in 0..<Int(buffer.frameLength) {
             let phase = (Double(i) / sourceRate).truncatingRemainder(dividingBy: 0.1)
@@ -93,19 +93,33 @@ final class MobileSyncCapture: @unchecked Sendable {
     defer { driver.stop(); audio.prepareForClosing() }
     var project = Project.empty(name: "Mobile queue sync")
     project.songs[0].duration = 12
-    let parts = (0..<3).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0 * 4), endTime: Double($0 * 4) + 1.2) }
+    let parts = (0..<3).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0 * 4), endTime: Double($0 * 4) + 2.0) }
     project.songs[0].parts = parts
     project.songs[0].tracks = sourceRates.enumerated().map { index, sourceRate in
         var track = Track(id: UUID(), name: "\(sourceRate) Hz", role: .other)
         track.outputs = [OutputPatch(firstChannel: index * 2 + 1, channelCount: 2)]
-        track.clips = parts.map { AudioClip(id: UUID(), name: "Stem", startTime: $0.startTime, duration: 1.2,
+        track.clips = parts.map { AudioClip(id: UUID(), name: "Stem", startTime: $0.startTime, duration: 2.0,
             audioFile: AudioFile(path: "\(Int(sourceRate)).wav")) }
         return track
     }
     let core = JarasCoreBridge(); try core.load(projectData: JSONEncoder().encode(project))
+    var lastAdvance = ProcessInfo.processInfo.systemUptime
+    @discardableResult func advanceClock(advancing: Bool = true) -> Double {
+        let now = ProcessInfo.processInfo.systemUptime
+        if advancing { core.advance(max(0, now - lastAdvance)) }
+        lastAdvance = now
+        return now
+    }
     func snapshot() throws -> ShowSnapshot { try JSONDecoder().decode(ShowSnapshot.self, from: core.snapshot()) }
-    func update() throws { try audio.update(snapshot(), revision: 1) }
+    func update(advancing: Bool = true) throws {
+        // Match the application's continuous transport clock. Resetting the
+        // epoch for every render() call loses preparation/control-thread time,
+        // which falsely looks like a backward seek on a busy CI worker.
+        let sampledAt = advanceClock(advancing: advancing)
+        try audio.update(snapshot(), revision: 1, sampledAt: sampledAt)
+    }
     func command(_ name: String, _ target: UUID? = nil, _ value: Double = 0) throws {
+        advanceClock()
         try core.execute(command: name, target: target?.uuidString, value: value)
     }
     func sources(head: Int) -> [ObjectIdentifier: Double] {
@@ -125,14 +139,10 @@ final class MobileSyncCapture: @unchecked Sendable {
     capture.start()
     defer { capture.stop() }
     func render(seconds: Double, advancing: Bool = true) throws {
-        var previous = ProcessInfo.processInfo.systemUptime
-        let end = previous + seconds
+        let end = ProcessInfo.processInfo.systemUptime + seconds
         while ProcessInfo.processInfo.systemUptime < end {
             Thread.sleep(forTimeInterval: 0.02)
-            let now = ProcessInfo.processInfo.systemUptime
-            if advancing { core.advance(now - previous) }
-            previous = now
-            try update()
+            try update(advancing: advancing)
         }
     }
     func check(_ label: String) {
@@ -186,7 +196,7 @@ final class MobileSyncCapture: @unchecked Sendable {
             // prepared incoming head is promoted, even after their PCM ends.
             Thread.sleep(forTimeInterval: 0.10)
         }
-        try render(seconds: 1.75)
+        try render(seconds: 2.55)
         let afterQueue = try snapshot()
         precondition(afterQueue.transport.position >= parts[2].startTime, "Queue did not change region")
         check("immediate other song and queue \(repeatIndex)")
