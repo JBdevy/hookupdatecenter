@@ -2192,7 +2192,9 @@ int runTests(const File &directory) {
         for(float y:{60.f,110.f}) for(bool free:{false,true}) {
             Point<float> at{46,y};int mods=ModifierKeys::leftButtonModifier|(free?ModifierKeys::shiftModifier:0);
             canvas->mouseDown(event(at,at,mods,false));canvas->mouseUp(event(at,at,free?ModifierKeys::shiftModifier:0,false));
-            expect(std::abs(session.transport().editPosition-(free?2.3:2.5))<1e-6,"Ruler and empty grid both seek; Shift is free");
+            // At the default 20 px/s, beats are only 10 px apart: the visible
+            // grid contains whole bars, so 2.3 s snaps to the bar at 2 s.
+            expect(std::abs(session.transport().editPosition-(free?2.3:2.0))<1e-6,"Ruler and empty grid both snap to visible bars; Shift is free");
         }
         const double cursor=session.transport().editPosition;
         const double offset=num(get(workspace.diagnostics(),"timeline"),"horizontal");
