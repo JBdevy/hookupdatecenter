@@ -110,17 +110,17 @@ let initial = ready(0, 512 / rate, rate)
 let gate = DispatchSemaphore(value: 0)
 worker.suspend()
 owner.beginFrame()
-let pinned = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 1024 / rate, scale: rate, key: "progressive")
+let pinned = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 1024 / rate, scale: rate, key: .named("progressive"))
 owner.endFrame()
 precondition(pinned.count == 1 && pinned[0] === initial.blocks[0])
 worker.async { gate.wait() }
 owner.beginFrame()
-_ = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 2048 / rate, scale: rate, key: "progressive")
+_ = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 2048 / rate, scale: rate, key: .named("progressive"))
 owner.endFrame()
 worker.resume()
 _ = ready(512 / rate, 1024 / rate, rate)
 owner.beginFrame()
-let expanding = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 2048 / rate, scale: rate, key: "progressive")
+let expanding = owner.blocks(cache: cache, url: url, header: header, start: 0, end: 2048 / rate, scale: rate, key: .named("progressive"))
 owner.endFrame()
 gate.signal()
 precondition(expanding.count == 2 && expanding[0] === initial.blocks[0] && expanding[1].start == 512,
@@ -249,11 +249,11 @@ print("METAL_SCENE_TEMPO_FRAGMENTS_AND_OFFSCREEN_CULLING_OK")
 _ = ready(0, 4, 20) // Prepare the full-source zoom-out pyramid before exercising cached zoom.
 let expandingOwner = TimelineWaveformVertexOwner()
 expandingOwner.beginFrame()
-_ = expandingOwner.blocks(cache: cache, url: url, header: header, start: 0, end: 512 / rate, scale: rate, key: "warm-zoom")
+_ = expandingOwner.blocks(cache: cache, url: url, header: header, start: 0, end: 512 / rate, scale: rate, key: .named("warm-zoom"))
 expandingOwner.endFrame()
 worker.suspend()
 expandingOwner.beginFrame()
-let completeOverview = expandingOwner.blocks(cache: cache, url: url, header: header, start: 0, end: 4, scale: 20, key: "warm-zoom")
+let completeOverview = expandingOwner.blocks(cache: cache, url: url, header: header, start: 0, end: 4, scale: 20, key: .named("warm-zoom"))
 expandingOwner.endFrame()
 worker.resume()
 precondition(completeOverview.first?.start == 0 && completeOverview.last?.end == header.frames &&
@@ -361,7 +361,7 @@ print("METAL_PRELOADED_DETAIL_RETAINS_ENVELOPE_UNTIL_COMPLETE_THEN_DRAWS_ALIGNED
 // Detail levels 3 and 6 have nonnested 512/768-frame block boundaries. A
 // partially ready replacement must never overlap the retained complete curve.
 let transitionOwner = TimelineWaveformVertexOwner()
-func transition(_ first: Double, _ last: Double, step: Int, key: String = "detail-transition") -> [TimelineAudioWaveform.VertexBlock] {
+func transition(_ first: Double, _ last: Double, step: Int, key: TimelineWaveformVertexOwner.Key = .named("detail-transition")) -> [TimelineAudioWaveform.VertexBlock] {
     transitionOwner.beginFrame()
     let blocks = transitionOwner.blocks(cache: detailCache, url: url, header: detailHeader,
         start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: key)
@@ -420,7 +420,7 @@ let coldPan = transition(panFirst, panLast, step: 6)
 precondition(!coldPan.isEmpty && coldPan.allSatisfy { $0.step == 6 && !$0.isPeakEnvelope } &&
     zip(coldPan, coldPan.dropFirst()).allSatisfy { $0.end == $1.start },
     "a pan into adjacent cold blocks must retain fine detail instead of flashing a prepared envelope")
-let coldDuplicate = transition(panFirst + 20_000, panLast + 20_000, step: 6, key: "new-fragment")
+let coldDuplicate = transition(panFirst + 20_000, panLast + 20_000, step: 6, key: .named("new-fragment"))
 precondition(coldDuplicate.allSatisfy { !$0.isPeakEnvelope },
     "new loop/fragment presentation keys must not undo the source's established fine detail")
 detailWorker.resume()
@@ -488,7 +488,7 @@ let reserveOwner = TimelineWaveformVertexOwner()
 func reserveView(_ first: Double, _ last: Double, step: Int = 8) -> [TimelineAudioWaveform.VertexBlock] {
     reserveOwner.beginFrame()
     let blocks = reserveOwner.blocks(cache: reserveCache, url: url, header: reserveHeader,
-        start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: "reserve")
+        start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: .named("reserve"))
     reserveOwner.endFrame()
     return blocks
 }
@@ -577,7 +577,7 @@ let coarseOwner = TimelineWaveformVertexOwner()
 func coarseView(first: Double = 512, last: Double = 100_000, step: Int = 256) -> [TimelineAudioWaveform.VertexBlock] {
     coarseOwner.beginFrame()
     let result = coarseOwner.blocks(cache: coarseCache, url: url, header: coarseHeader,
-        start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: "coarse")
+        start: first / rate, end: last / rate, scale: rate / Double(step * 2), key: .named("coarse"))
     coarseOwner.endFrame()
     return result
 }

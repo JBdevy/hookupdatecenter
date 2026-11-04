@@ -18,12 +18,12 @@ let first = bitmap()
 func green(_ image: NSBitmapImageRep, _ x: Int, _ y: Int) -> CGFloat {
     image.colorAt(x: x, y: y)!.usingColorSpace(.sRGB)!.greenComponent
 }
-precondition(green(first, 80, 105) > 0.8 && green(first, 79, 105) < 0.1 && green(first, 81, 105) < 0.1,
+precondition(green(first, 80, 152) > 0.8 && green(first, 79, 152) < 0.1 && green(first, 81, 152) < 0.1,
              "Retina ruler ticks remain one physical pixel")
-precondition(green(first, 400, 104) > 0.8 && green(first, 400, 110) < 0.1,
+precondition(green(first, 400, 155) > 0.8 && green(first, 400, 150) < 0.1,
              "secondary ticks retain their shorter height")
 precondition((86..<120).contains { x in (104..<130).contains { green(first, x, $0) > 0.5 } },
-             "cached label image draws alongside its tick")
+             "cached label image draws above the bottom-aligned ticks")
 let label = view.layer!.sublayers!.last!
 let image = label.contents as! CGImage
 for i in 0..<100 {
@@ -36,5 +36,5 @@ precondition(view.layer!.sublayers!.allSatisfy { $0.animationKeys()?.isEmpty != 
 view.update(content(ticks: []))
 precondition(view.layer!.sublayers!.count == 2, "stale labels are removed")
 let empty = bitmap()
-precondition(green(empty, 80, 105) < 0.1 && green(empty, 400, 104) < 0.1, "stale ticks disappear")
+precondition(green(empty, 80, 152) < 0.1 && green(empty, 400, 155) < 0.1, "stale ticks disappear")
 print("NATIVE_RULER_RETINA_TICKS_LABEL_CACHE_LAYER_REUSE_LARGE_COORDINATES_AND_CLEAR_OK")

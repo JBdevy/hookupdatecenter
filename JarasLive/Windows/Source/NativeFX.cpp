@@ -486,11 +486,11 @@ void NativeFX::applyAutomation(const AutomationProgram &program, double time) {
             effect->pluginID == curve.plugin)
             effect->plugin->automate(curve.parameter, curve.value(time));
 }
-void NativeFX::processIdleEditors(int samples,double seconds,bool playing) {
-    native::vst3::Transport transport;transport.seconds=seconds;transport.quarterNotes=seconds*2;transport.playing=playing;
+void NativeFX::processIdleEditors(int samples,double seconds,bool playing,const jaras::PluginTempoMap *tempoMap) {
+    const auto transport = tempoMap ? tempoMap->at(seconds,playing) : jaras::PluginTempoMap{}.at(seconds,playing);
     for(auto &effect:effects)if(effect->plugin)effect->plugin->processEditorSilence(samples,transport);
 }
-void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds) {
+void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds,const jaras::PluginTempoMap *tempoMap) {
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {
         if (e->kind == "CatLive Trigger")
@@ -499,7 +499,7 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
             e->gate.process(buffer.getWritePointer(0), buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr, samples, e->sampleRate);
         if(e->stem) { e->stem->process(buffer.getWritePointer(0),buffer.getWritePointer(1),unsigned(samples),std::isfinite(stemSeconds)?stemSeconds:seconds,playing); }
         if(e->plugin&&!e->bypassed) {
-            native::vst3::Transport transport;transport.seconds=seconds;transport.quarterNotes=seconds*2;transport.playing=playing;
+            const auto transport = tempoMap ? tempoMap->at(seconds,playing) : jaras::PluginTempoMap{}.at(seconds,playing);
             int count=0;
             if(midi)for(const auto metadata:*midi)if(metadata.numBytes<=3&&count<(int)e->midi.size()){
                 auto &event=e->midi[(size_t)count++];event.offset=metadata.samplePosition;event.status=metadata.data[0];

@@ -8,7 +8,7 @@ mkdir -p "$plugin/Contents/MacOS"
 cat > "$plugin/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.jaras.test.gain</string><key>CFBundleExecutable</key><string>GainFixture</string><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>
 PLIST
-clang++ -std=c++17 -fPIC -bundle -DCATLIVE_CAPTURE_STATE_DIAGNOSTICS -ICore/ThirdParty/VST3 Tests/Apple/VST3/GainFixture.cpp Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp -framework CoreFoundation -o "$plugin/Contents/MacOS/GainFixture"
+clang++ -std=c++17 -fPIC -bundle -DCATLIVE_CAPTURE_STATE_DIAGNOSTICS -DCATLIVE_MIDI_STATE_DIAGNOSTICS -ICore/ThirdParty/VST3 Tests/Apple/VST3/GainFixture.cpp Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp -framework CoreFoundation -o "$plugin/Contents/MacOS/GainFixture"
 bash scripts/compile-vst3.sh "$build_dir"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir/effects.o"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasStemSeparator.mm -o "$build_dir/stemseparator.o"

@@ -892,6 +892,41 @@ struct TimecodePlaybackSpan {
     private var masterSolo = false
     private var lastPosition: [Int: Double] = [:]
     private var headAudioClock: [Int: (position: Double, host: UInt64)] = [:]
+    #if os(macOS)
+    private var pluginTempoRevision: UInt64?
+    private var pluginTempoSong: UUID?
+    private var pluginBaseTempo: Double?
+    private var pluginBaseMeter: (Int, Int) = (4, 4)
+    private var pluginTempoSections: [TimelineTempoSection] = []
+    private func updateExternalTransports(song: Song, transport: TransportState, revision: UInt64) {
+        if pluginTempoRevision != revision || pluginTempoSong != song.id || pluginBaseTempo != song.bpm ||
+            pluginBaseMeter.0 != song.meterBeats || pluginBaseMeter.1 != song.meterUnit {
+            pluginTempoSections = song.tempoSections(until: max(1, song.duration))
+            pluginTempoRevision = revision; pluginTempoSong = song.id
+            pluginBaseTempo = song.bpm; pluginBaseMeter = (song.meterBeats, song.meterUnit)
+        }
+        let mainHead = transport.playing || !transport.subPlay.playing ? 0 : 1
+        func publish(_ chain: NativeEffectsChain, head: Int) {
+            guard !chain.externalNodes.isEmpty else { return }
+            chain.externalTimeline(pluginTempoSections)
+            let running = head == 2 ? headAudioClock[2] != nil : (head == 0 ? transport.playing : transport.subPlay.playing)
+            let position = running ? (head == 0 ? transport.position : transport.subPlay.position) : transport.editPosition ?? transport.position
+            let anchor = headAudioClock[head]
+            // Use the same audio epoch as scheduled stems/MIDI, never a UI-tick
+            // estimate. The callback advances it even when drawing is delayed.
+            let origin = realtime && running ? anchor?.position ?? position : position
+            let clock = realtime ? anchor.map { AVAudioTime.seconds(forHostTime: $0.host) } ?? AVAudioTime.seconds(forHostTime: mach_absolute_time()) : Double(engine.manualRenderingSampleTime) / hardwareFormat.sampleRate
+            chain.externalTimelineTransport(position: origin, clock: clock, playing: running,
+                loopStart: head == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0,
+                loopEnd: head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0)
+        }
+        publish(masterEffects, head: mainHead)
+        for bus in trackBuses.values { publish(bus.effects, head: mainHead) }
+        for (key, voice) in voices { if let effects = voice.effects { publish(effects, head: key.head) } }
+        for (key, voice) in midiTakeVoices { publish(voice.effects, head: key.head) }
+    }
+    #endif
+
     /// Position scheduled at the output, expressed at the UI sample epoch.
     /// The transport is ahead while players fill their processing latency.
     func presentationPosition(head: Int, sampledAt: Double) -> Double? {
@@ -2990,9 +3025,6 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
                     voice.reportedError = error
                     if let failure = voice.effects.externalError { onError(failure) }
                 }
-                let section = song.tempoSection(at: position)
-                voice.effects.externalTransport(position: position, tempo: section.bpm,
-                    beats: Int32(section.beats), unit: Int32(section.unit), playing: true)
                 if voice.planRevision != midiPlanRevision || voice.planSong != midiPlanSong {
                     voice.effects.setMIDISequence(plan.notes, instrumentsOnly: true, preserveHeld: preserveHeld)
                     voice.planRevision = midiPlanRevision; voice.planSong = midiPlanSong
@@ -3035,7 +3067,6 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
         for (key, voice) in midiTakeVoices where !active.contains(key) && voice.running {
             voice.effects.setMIDISequenceClock(head: 0, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0)
             voice.effects.silenceExternal(); voice.effects.resetTails()
-            voice.effects.externalTransport(position: 0, tempo: song.bpm, beats: Int32(song.meterBeats), unit: Int32(song.meterUnit), playing: false)
             JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
             voice.running = false
             cacheChanged = true
@@ -3443,6 +3474,20 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
     }
     func update(_ snapshot: ShowSnapshot, revision: UInt64, sampledAt: Double = ProcessInfo.processInfo.systemUptime) throws {
         guard directory != nil else { return }
+        #if os(macOS)
+        // A clocked empty tab has already allocated its hardware graph without
+        // any track branches. Replace that empty topology before its first
+        // tracks are attached; adding them live can silence the entire output.
+        // Existing tracks, monitored input, instruments and playing tabs keep
+        // their prepared graph and plugin instances.
+        if realtime, engine.isRunning, tracks.isEmpty, trackBuses.isEmpty,
+           !transportWasRunning, voices.isEmpty, padPlayers.isEmpty,
+           inputMonitors.isEmpty, recordingTaps.isEmpty, !instrumentRenderPending,
+           let song = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }),
+           song.tracks.contains(where: { $0.kind == .standard || $0.kind == .click || $0.clips.contains(where: \.isProjectionMedia) }) {
+            configureGraph(directory: directory)
+        }
+        #endif
         if !outputAllowed {
             latestPlayback = (snapshot, revision)
         let padDestination = snapshot.project.songs.first { $0.id == snapshot.transport.songId }?
@@ -3520,9 +3565,6 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             }
         }
         tempo = song.bpm
-        #if os(macOS)
-        for chain in [masterEffects] + trackBuses.values.map(\.effects) { chain.externalTransport(position: transport.position, tempo: song.bpm, beats: Int32(song.meterBeats), unit: Int32(song.meterUnit), playing: transport.playing) }
-        #endif
         if tempoChanged || markerTempoChanged {
             for (head, position) in previousSourcePositions { advanceContiguousVoices(head: head, position: position) }
         }
@@ -4272,6 +4314,9 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         }
         updateMIDISequenceClocks(transport)
         updateMIDITakes(transport, song: song, preserveHeld: tempoChanged || markerTempoChanged)
+        #if os(macOS)
+        updateExternalTransports(song: song, transport: transport, revision: revision)
+        #endif
         if !transport.playing && !transport.subPlay.playing {
             prepareIdleVoices(position: transport.editPosition ?? transport.position, revision: revision)
             for voice in retiredVoices { recycle(voice) }

@@ -336,12 +336,14 @@ void validate(const Project& p) {
             require(!t.heightScale || (finite(*t.heightScale) && *t.heightScale >= 0.1 && *t.heightScale <= 10), "Invalid track height");
             require(!t.midiChannel || (*t.midiChannel >= 1 && *t.midiChannel <= 16), "Invalid MIDI channel");
             require(!t.midiInput || (*t.midiInput >= 1 && *t.midiInput <= 6) || (t.role.id == "programChange" && *t.midiInput == -1), "Invalid MIDI input");
-            if (t.inputPatch) validatePatch(*t.inputPatch, false);
+            if (t.inputPatch) validatePatch(*t.inputPatch, false, false, true);
             if (t.stereoLinkPartner) {
                 const auto partner = std::find_if(s.tracks.begin(), s.tracks.end(), [&](const auto& other) { return other.id == *t.stereoLinkPartner; });
                 require(fixed.empty() && partner != s.tracks.end() && partner->id != t.id && partner->stereoLinkPartner == t.id && partner->stereoLinkLeft != t.stereoLinkLeft, "Invalid linked tracks");
                 require(std::none_of(s.tracks.begin(), s.tracks.end(), [&](const auto& child) { return child.parentTrackID == t.id; }), "Folder tracks cannot be linked");
-                require(t.inputPatch && partner->inputPatch && t.inputPatch->channelCount == 1 && partner->inputPatch->channelCount == 1 && partner->inputPatch->firstChannel == t.inputPatch->firstChannel + (t.stereoLinkLeft ? 1 : -1), "Linked tracks require consecutive mono inputs");
+                require(t.inputPatch && partner->inputPatch &&
+                    ((t.inputPatch->firstChannel == -1 && partner->inputPatch->firstChannel == -1) ||
+                     (t.inputPatch->channelCount == 1 && partner->inputPatch->channelCount == 1 && partner->inputPatch->firstChannel == t.inputPatch->firstChannel + (t.stereoLinkLeft ? 1 : -1))), "Linked tracks require consecutive mono inputs or None");
                 require(t.volume == partner->volume && t.pan == -partner->pan, "Linked track controls must match");
             }
             require(!t.recordingChannels || (*t.recordingChannels >= 0 && *t.recordingChannels <= 2), "Invalid recording channel mode");

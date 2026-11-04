@@ -535,6 +535,7 @@ void AudioEngine::refreshRegionPitch(const jaras::Song &song, const ID &region) 
 }
 void AudioEngine::refreshTiming(const jaras::Song &song) {
     auto timing = ClickProgram::tempo(song);
+    auto pluginTiming = jaras::pluginTempoMap(song);
     struct Edit { ClickProgram* target; std::vector<ClickProgram::Section> sections; };
     std::vector<Edit> clicks;
     for (const auto &track : song.tracks) if (track.role.id == "generatedClick") {
@@ -547,8 +548,9 @@ void AudioEngine::refreshTiming(const jaras::Song &song) {
     // Stable targets are resolved on control. Structural graph changes drain
     // this ordered stream before destroying targets. Old sections remain owned
     // by the ticket until control observes completion and collects them.
-    enqueuePreparedEdit([this, timing=std::move(timing), clicks=std::move(clicks)]() mutable noexcept {
+    enqueuePreparedEdit([this, timing=std::move(timing), clicks=std::move(clicks), pluginTiming=std::move(pluginTiming)]() mutable noexcept {
         metronome.sections.swap(timing);
+        pluginTempo.swap(pluginTiming);
         for (auto& edit : clicks) edit.target->sections.swap(edit.sections);
     });
 }
@@ -556,6 +558,7 @@ void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &aft
     const jaras::TempoEditMap map(before, after);
     jaras::TempoEditMap::PlaybackRates compiled(after);
     auto clickTiming = ClickProgram::tempo(after);
+    auto pluginTiming = jaras::pluginTempoMap(after);
     std::map<ID, std::vector<ClickProgram::Section>> clickSections;
     for (const auto &track : after.tracks) if (track.role.id == "generatedClick") {
         ClickProgram program; program.prepare(after, &track);
@@ -647,6 +650,7 @@ void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &aft
         }
         duration = after.duration;
         metronome.sections.swap(clickTiming);
+        pluginTempo.swap(pluginTiming);
         for (auto &bus : buses) if (bus->click) {
             const auto found = clickSections.find(bus->id);
             if (found != clickSections.end()) bus->click->sections.swap(found->second);
@@ -1080,6 +1084,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     unsupported.clear();
     duration = song.duration;
     metronome.prepare(song);
+    pluginTempo = jaras::pluginTempoMap(song);
     timecodeProgram = {};
     timecodeMIDI.prepare({}, song.duration, false);
     timecodeGain = 1;
@@ -1500,6 +1505,7 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
         // The click samples/output are user preferences; only its timeline is
         // project-owned. Preserve the configured metronome sound and routing.
         metronome.sections.swap(prepared.metronome.sections);
+        pluginTempo.swap(prepared.pluginTempo);
         masterOutputs.swap(prepared.masterOutputs);
         std::swap(duration,prepared.duration);
         std::swap(masterVolume,prepared.masterVolume);std::swap(masterPan,prepared.masterPan);
@@ -2120,7 +2126,7 @@ void AudioEngine::mixMIDIVoice(Voice &v, int head, double at, float *const *out,
         MIDIPlayback::appendExternal(v.midiSequence,messages,v.midiExpected[head],v.midiScopes[head],
                                      at,count,sr,{},false);
         v.processed[head].clear(0,count);
-        v.fx[head].process(v.processed[head],count,at,false,&messages.buffer(),(renderClock+dest)/sr);
+        v.fx[head].process(v.processed[head],count,at,false,&messages.buffer(),(renderClock+dest)/sr,&pluginTempo);
         if(latencyPlan)if(auto delay=latencyPlan->clips.find(v.clipID);delay!=latencyPlan->clips.end())
             delay->second[size_t(head)].reset();
         return;
@@ -2132,7 +2138,7 @@ void AudioEngine::mixMIDIVoice(Voice &v, int head, double at, float *const *out,
                                  at,count,sr,trackScope(current,head,v.bus),timelineRunning);
     const double automationAt=v.midiTiming->sourceAt(std::max(v.start,at));
     v.fx[head].applyAutomation(v.automation,automationAt);
-    v.fx[head].process(buffer,count,at,timelineRunning,&messages.buffer(),(renderClock+dest)/sr);
+    v.fx[head].process(buffer,count,at,timelineRunning,&messages.buffer(),(renderClock+dest)/sr,&pluginTempo);
     // A generator has no input samples to attenuate. Apply the take fader,
     // source-time automation, pan and fades to its generated audio exactly once.
     for(int n=0;n<count;++n) {
@@ -2255,13 +2261,13 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
             if(inputCount&&begin)std::memmove(data+begin,data,size_t(inputCount)*sizeof(float));
             std::fill_n(data,begin,0.f);std::fill(data+std::max(begin,end),data+count,0.f);
         }
-        if(!v.fxBypassed){v.fx[head].applyAutomation(v.automation,v.offset+std::max(0.,at-v.start)*v.speed);v.fx[head].process(v.processed[head],count,at,true,nullptr,(renderClock+dest)/sr);}
+        if(!v.fxBypassed){v.fx[head].applyAutomation(v.automation,v.offset+std::max(0.,at-v.start)*v.speed);v.fx[head].process(v.processed[head],count,at,true,nullptr,(renderClock+dest)/sr,&pluginTempo);}
         else if(auto bypass=latencyPlan->clipBypass.find(v.clipID);bypass!=latencyPlan->clipBypass.end())bypass->second[size_t(head)].process(v.processed[head].getWritePointer(0),v.processed[head].getWritePointer(1),count,int64_t(renderClock)+dest,true);
         auto found=latencyPlan->clips.find(v.clipID);
         if(found!=latencyPlan->clips.end())found->second[size_t(head)].process(v.processed[head].getWritePointer(0),v.processed[head].getWritePointer(1),count,int64_t(renderClock)+dest,true);
         for(int ch=0;ch<std::min(2,channels);ch++)if(out[ch])FloatVectorOperations::add(out[ch]+dest,v.processed[head].getReadPointer(ch),count);
     } else {
-        if(!v.fxBypassed){v.fx[head].applyAutomation(v.automation,v.offset+std::max(0.,at+begin/sr-v.start)*v.speed);v.fx[head].process(v.processed[head],end-begin,at+begin/sr);}
+        if(!v.fxBypassed){v.fx[head].applyAutomation(v.automation,v.offset+std::max(0.,at+begin/sr-v.start)*v.speed);v.fx[head].process(v.processed[head],end-begin,at+begin/sr,true,nullptr,std::numeric_limits<double>::quiet_NaN(),&pluginTempo);}
         for(int ch=0;ch<std::min(2,channels);ch++)if(out[ch])FloatVectorOperations::add(out[ch]+dest+begin,v.processed[head].getReadPointer(ch),end-begin);
     }
 }
@@ -2472,7 +2478,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         const int head=renderingHead[0]?0:renderingHead[1]?1:0;
         auto &buffer=voice->stemInput[0];for(int ch=0;ch<2;ch++)buffer.addFrom(ch,0,voice->stemInput[1],ch,0,samples);
         const auto clock=blockClock;
-        if(!voice->fxBypassed)voice->fx[0].process(buffer,samples,timelinePositions[size_t(head)][0],active,nullptr,blockClock/sr);
+        if(!voice->fxBypassed)voice->fx[0].process(buffer,samples,timelinePositions[size_t(head)][0],active,nullptr,blockClock/sr,&pluginTempo);
         else if(auto bypass=latencyPlan->clipBypass.find(voice->clipID);bypass!=latencyPlan->clipBypass.end())bypass->second[0].process(buffer.getWritePointer(0),buffer.getWritePointer(1),samples,clock,active);
         if(auto delay=latencyPlan->clips.find(voice->clipID);delay!=latencyPlan->clips.end())delay->second[0].process(buffer.getWritePointer(0),buffer.getWritePointer(1),samples,clock,active);
         for(int ch=0;ch<2;ch++)buses[voice->bus]->clips[head].addFrom(ch,0,buffer,ch,0,samples);
@@ -2481,7 +2487,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     // stopping or reaching the item boundary must still cut its audio/tails.
     for(auto &voice:voices)for(int head=0;head<2;++head)
         voice->fx[head].processIdleEditors(samples,head==0?current.position:current.subPosition,
-                                           head==0?current.playing:current.subPlaying);
+                                           head==0?current.playing:current.subPlaying,&pluginTempo);
     renderProfile.mark();
     for (int index : busOrder)
         if (buses[(size_t)index]->renderRouteAudible) {
@@ -2644,7 +2650,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             const bool moving=combined?active:renderingHead[head];
             fxInput=std::max(fxInput,buffer.getMagnitude(0,samples));
             bus.fx[combined?0:head].applyAutomation(bus.automation,automationTime(head,0,compensation?compensation->input:0));
-            bus.fx[combined?0:head].process(buffer,samples,timelinePositions[size_t(head)][0],moving,&bus.externalMIDI[head].buffer(),blockClock/sr);
+            bus.fx[combined?0:head].process(buffer,samples,timelinePositions[size_t(head)][0],moving,&bus.externalMIDI[head].buffer(),blockClock/sr,&pluginTempo);
             for(int ch=0;ch<2;ch++)buffer.addFrom(ch,0,bus.frozen[head],ch,0,samples);
             fxOutput=std::max(fxOutput,buffer.getMagnitude(0,samples));
             if(!perHeadAutomation)applyGain(buffer,head);
@@ -2733,7 +2739,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     masterFXInput.store(
         std::max(masterBuffer.getMagnitude(0, samples), masterFXInput.load() * .85f));
     masterFX.applyAutomation(masterAutomation,automationTime(0,0,latencyPlan?latencyPlan->masterInput:0));
-    masterFX.process(masterBuffer, samples,timelinePositions[0][0],active,allowInstrument?&liveMidi:nullptr,blockClock/sr);
+    masterFX.process(masterBuffer, samples,timelinePositions[renderingHead[0] || !renderingHead[1] ? 0 : 1][0],active,allowInstrument?&liveMidi:nullptr,blockClock/sr,&pluginTempo);
     masterFXOutput.store(
         std::max(masterBuffer.getMagnitude(0, samples), masterFXOutput.load() * .85f));
     float maxPeak = 0;

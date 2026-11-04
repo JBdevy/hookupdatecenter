@@ -3,7 +3,7 @@ import UIKit
 import UniformTypeIdentifiers
 
 enum JarasLocalization { static func string(_ key: String) -> String { key } }
-extension UTType { static let catLivePackage = UTType(exportedAs: "com.hookdeveloper.catlive.ziplive", conformingTo: .zip) }
+extension UTType { static let catLiveProject = UTType(exportedAs: "com.hookdeveloper.jaraslive.project", conformingTo: .data); static let catLivePackage = UTType(exportedAs: "com.hookdeveloper.catlive.ziplive", conformingTo: .zip) }
 enum PortableProjectImportPrompt: String, Identifiable {
     case file, destination
     var id: String { rawValue }
@@ -13,8 +13,14 @@ enum PortableProjectImportPrompt: String, Identifiable {
 }
 @MainActor final class ProjectDocuments: ObservableObject {
     enum NativePicker: String, Identifiable {
-        case package, packageDestination, stems, trackAudio, trackMedia, storage
+        case project, projectFolder, package, packageDestination, stems, trackAudio, trackMedia, storage
         var id: String { rawValue }
+    }
+    var nativePickerDirectory: URL? { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first }
+    @Published var openedName = ""
+    init() {
+        let file = nativePickerDirectory!.appendingPathComponent("Example.jl")
+        try! Data("{}".utf8).write(to: file)
     }
     @Published var nativePicker: NativePicker?
     @Published var nativePackagePrompt: PortableProjectImportPrompt?
@@ -34,6 +40,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     func cancelNativePicker(kind: NativePicker) { nativePicker = nil; cancellations += 1 }
     func receiveNativeFiles(_ urls: [URL], kind: NativePicker) {
         nativePicker = nil
+        if kind == .project { openedName = urls.first?.lastPathComponent ?? "" }
         if kind == .package { nativePackagePrompt = .destination }
     }
 }
@@ -46,8 +53,9 @@ enum PortableProjectImportPrompt: String, Identifiable {
         WindowGroup {
             VStack(spacing: 24) {
                 Button("Add .ziplive") { documents.nativePackagePrompt = .file }
-                Button("Browse recent projects") { documents.nativePackagePrompt = .file }
+                Button("Browse recent projects") { documents.nativePicker = .project }
                 Button("Choose import destination") { documents.nativePackagePrompt = .destination }
+                Text("Opened: \(documents.openedName)")
                 Text("Cancellations: \(documents.cancellations)")
             }.modifier(NativeProjectPresentation(documents: documents))
         }

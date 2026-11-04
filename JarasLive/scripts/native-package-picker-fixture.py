@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import hashlib,json,sys
+import hashlib,json,sys,plistlib
 p=Path(sys.argv[1]);p.mkdir(parents=True,exist_ok=True)
 root=Path(__file__).resolve().parent.parent
 home=(root/'Apple/Shared/IpadNativeHome.swift').read_text()
@@ -8,6 +8,8 @@ source=home[home.index('/// Hold security-scoped folder access'):home.rindex('#e
 fixture=(root/'Tests/Apple/NativePackagePickerFixture.swift').read_text()
 (p/'Fixture.swift').write_text(fixture.replace('// PRODUCTION_PICKER_PRESENTATION', source))
 (p/'tests.swift').write_text((root/'Tests/Apple/NativePackagePickerUITests.swift').read_text())
+info=plistlib.loads((root/'Apple/Info-iPad.plist').read_bytes())
+(p/'FixtureInfo.plist').write_bytes(plistlib.dumps({'UTExportedTypeDeclarations':info['UTExportedTypeDeclarations'],'UIFileSharingEnabled':True,'LSSupportsOpeningDocumentsInPlace':True}))
 objects={}
 def uid(s):return hashlib.sha1(s.encode()).hexdigest()[:24].upper()
 def add(s,v):i=uid(s);objects[i]=v;return i
@@ -21,7 +23,7 @@ for name,source,kind in [('Fixture','Fixture.swift','application'),('ControlsTes
  phase=add('src'+name,f'isa=PBXSourcesBuildPhase;files=({bf});buildActionMask=2147483647;runOnlyForDeploymentPostprocessing=0;')
  prod=add('prod'+name,f'isa=PBXFileReference;explicitFileType={"wrapper.application" if kind=="application" else "wrapper.cfbundle"};path={name}{".app" if kind=="application" else ".xctest"};sourceTree=BUILT_PRODUCTS_DIR;');products.append(prod)
  settings={'PRODUCT_NAME':'$(TARGET_NAME)','PRODUCT_BUNDLE_IDENTIFIER':'com.catlive.tests.'+name,'SDKROOT':'iphoneos','SWIFT_VERSION':'5.0','IPHONEOS_DEPLOYMENT_TARGET':'16.0','TARGETED_DEVICE_FAMILY':'2','GENERATE_INFOPLIST_FILE':'YES','CODE_SIGNING_ALLOWED':'NO','SWIFT_OPTIMIZATION_LEVEL':'-Onone'}
- if kind=='application':settings.update(INFOPLIST_KEY_UILaunchScreen_Generation='YES',INFOPLIST_KEY_UIApplicationSceneManifest_Generation='YES')
+ if kind=='application':settings.update(INFOPLIST_FILE=str(p/'FixtureInfo.plist'),INFOPLIST_KEY_UILaunchScreen_Generation='YES',INFOPLIST_KEY_UIApplicationSceneManifest_Generation='YES')
  else:settings.update(TEST_TARGET_NAME='Fixture')
  configs=[]
  for config in ['Debug','Release']:

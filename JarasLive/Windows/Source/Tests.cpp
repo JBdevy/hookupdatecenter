@@ -34,7 +34,6 @@
 #include "RemoteProjectOpeningTests.h"
 #include "LicenseProof.h"
 #include "TimelineGrid.h"
-#include "DottedGridPaint.h"
 #include "TimelineBulkEditing.h"
 #include "WaveformRenderer.h"
 #include "RegionEditing.h"
@@ -2003,30 +2002,6 @@ int runTests(const File &directory) {
         }
         expect(sameBlend(pixels.getPixelAt(48,8),base.overlaidWith(secondary)),"Unselected secondary grid colour must remain unchanged");
     });
-    test("Dotted grid retains ruler phase, colour and thin width across partial paints", [&] {
-        for (const float density : {1.f, 1.5f, 2.f}) {
-            DottedGridPaint pattern;
-            auto render = [&](float top, Colour colour) {
-                Image image(Image::ARGB, roundToInt(32*density), roundToInt(80*density), true, SoftwareImageType());
-                Graphics g(image); g.addTransform(AffineTransform::scale(density));
-                pattern.draw(g, colour, 12, top, 80, 1/density, 3);
-                return image;
-            };
-            const auto full=render(3,Colours::green), partial=render(19,Colours::green);
-            for (int y=roundToInt(21*density); y<roundToInt(78*density); ++y)
-                for(int x=0;x<full.getWidth();++x)
-                    expect(full.getPixelAt(x,y)==partial.getPixelAt(x,y),"Partial track repaint must not restart the dotted pattern");
-            const auto changed=render(3,Colours::red);
-            bool dot=false, gap=false;
-            for (int y=roundToInt(4*density); y<roundToInt(78*density); ++y) {
-                const auto c=changed.getPixelAt(roundToInt(12*density),y);
-                dot |= c.getAlpha()>40; gap |= c.getAlpha()==0;
-                if(c.getAlpha()>40)expect(c.getRed()>c.getGreen(),"Grid colour changes must invalidate the cached tile");
-                expect(changed.getPixelAt(roundToInt(12*density)+2,y).getAlpha()==0,"Vertical dots must remain one physical pixel wide");
-            }
-            expect(dot&&gap,"Every scale must retain visible dots and empty gaps");
-        }
-    });
     test("Timeline grid follows tempo markers, meter and visible subdivisions", [&] {
         jaras::Song song; song.duration = 60; song.bpm = 120;
         jaras::TimelineMarker marker; marker.id = "tempo"; marker.position = 5.25;
@@ -2046,6 +2021,26 @@ int runTests(const File &directory) {
         }
         expect(timelineGrid::label(5.25) == "00:00:05.250", "Fractional ruler label");
         expect(timelineGrid::ticks(song, 0, 10, 0).empty(), "Invalid zoom rejected");
+    });
+    test("Grid and ruler show four two one bars before beats and finer divisions", [&] {
+        jaras::Song song; song.duration=120; song.bpm=120;
+        song.beatsPerBar=4; song.beatUnit=4;
+        song.timeSettings=jaras::ProjectTimeSettings{};
+        for (const auto [scale, interval] : {std::pair{2.,8.}, {4.,4.}, {8.,2.}, {16.,2.}}) {
+            const auto ticks=timelineGrid::ticks(song,0,16,scale);
+            expect(ticks.size()==(size_t)(16/interval)+1,"Wrong visible whole-bar count");
+            for(size_t i=0;i<ticks.size();++i)
+                expect(ticks[i].primary && ticks[i].time==i*interval,"Distant grid inserted an intermediate line");
+        }
+        for (const int beats : {3,4,7}) for (const int unit : {4,8}) {
+            song.beatsPerBar=beats; song.beatUnit=unit;
+            const double beat=60./song.bpm*4/unit,bar=beat*beats;
+            const auto far=timelineGrid::ticks(song,0,bar,15.9/beat);
+            expect(std::all_of(far.begin(),far.end(),[](const auto &tick){return tick.primary;}),"Beats appeared before there was room for each one");
+            const auto near=timelineGrid::ticks(song,0,bar,16.1/beat);
+            expect(near.size()==(size_t)beats+1,"Each beat must enter together");
+            for(size_t i=0;i<near.size();++i)expect(near[i].time==i*beat,"Beat line shifted off its musical position");
+        }
     });
     test("Ruler zoom adds intermediate labels without replacing existing references", [&] {
         for (const int beats : {3,4,7}) for (const int divisions : {4,8,16}) {
@@ -2109,9 +2104,9 @@ int runTests(const File &directory) {
         auto checkPosition=[&](double actual,double wanted,const char *message){expect(std::abs(actual-wanted)<1e-7,message);};
         auto gridOnly=song;gridOnly.tracks.clear();
         for(double scale:{1.,20.,100.,1000.}) {
-            checkPosition(timelineGrid::snapCursor(2.21,gridOnly,scale,false),2.,"Cursor uses configured subdivisions at every zoom");
+            checkPosition(timelineGrid::snapCursor(2.21,gridOnly,scale,false),scale==1?3.13:2.,"Cursor uses visible grid or explicit region anchors");
             checkPosition(timelineGrid::snapCursor(2.21,song,scale,true),2.21,"Shift bypasses cursor grid");
-            checkPosition(timelineGrid::snapCursor(10.91,gridOnly,scale,false),11.25,"Cursor restarts snap phase at tempo change");
+            checkPosition(timelineGrid::snapCursor(10.91,gridOnly,scale,false),scale==1?10.25:11.25,"Cursor restarts visible grid phase at tempo change");
             for(double target:{3.13,7.17,9.23}) {
                 if(scale==1)continue;
                 checkPosition(timelineGrid::snapSelection(target+.001,song,scale,transport,false),target,"Items snap to region start/end and marker");

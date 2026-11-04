@@ -6,8 +6,13 @@ enum ResourceMemoryScope { case application, device }
 @MainActor private final class ResourceUsage: ObservableObject {
     @Published private(set) var cpu: Double?
     @Published private(set) var ram: Double?
+    @Published private(set) var totalRam: Double?
     let memoryScope: ResourceMemoryScope
-    init(memoryScope: ResourceMemoryScope) { self.memoryScope = memoryScope }
+    let showsTotalMemory: Bool
+    init(memoryScope: ResourceMemoryScope, showsTotalMemory: Bool) {
+        self.memoryScope = memoryScope
+        self.showsTotalMemory = showsTotalMemory
+    }
     private var previous: (wall: Double, cpu: Double)?
     func sample() {
         var usage = rusage()
@@ -20,9 +25,10 @@ enum ResourceMemoryScope { case application, device }
             }
             previous = (now, total)
         } else { cpu = nil }
-        if memoryScope == .device {
-            ram = Self.deviceMemoryPercent()
-            return
+        if memoryScope == .device || showsTotalMemory {
+            let deviceRam = Self.deviceMemoryPercent()
+            if showsTotalMemory { totalRam = deviceRam }
+            if memoryScope == .device { ram = deviceRam; return }
         }
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
@@ -64,13 +70,16 @@ enum ResourceMemoryScope { case application, device }
 }
 struct ResourceUsageView: View {
     @StateObject private var usage: ResourceUsage
-    init(memoryScope: ResourceMemoryScope = .application) {
-        _usage = StateObject(wrappedValue: ResourceUsage(memoryScope: memoryScope))
+    init(memoryScope: ResourceMemoryScope = .application, showsTotalMemory: Bool = false) {
+        _usage = StateObject(wrappedValue: ResourceUsage(memoryScope: memoryScope, showsTotalMemory: showsTotalMemory))
     }
     var body: some View {
         HStack(spacing: 14) {
             indicator("CPU", value: usage.cpu)
             indicator("RAM", value: usage.ram).jarasHelp(usage.memoryScope == .device ? "Device RAM in use" : "RAM used by CatLive")
+            if usage.showsTotalMemory {
+                indicator("T-Ram", value: usage.totalRam).jarasHelp("Device RAM in use")
+            }
         }.monospacedDigit().foregroundStyle(JarasTheme.secondary)
             .task { await usage.run() }
     }

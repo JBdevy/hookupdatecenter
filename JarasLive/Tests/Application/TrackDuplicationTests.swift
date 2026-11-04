@@ -229,4 +229,51 @@ final class TrackDuplicationTests: XCTestCase {
         XCTAssertEqual(show.snapshot.project, original); XCTAssertEqual(executor.edits, 0)
         XCTAssertFalse(show.message.isEmpty)
     }
+
+    @MainActor func testCopyPasteTracksUsesCapturedPluginsAndInsertsEachBelowItsOriginal() throws {
+        var project = fixture()
+        let first = project.songs[0].tracks[0]
+        let middle = Track(id: UUID(), name: "Unselected", role: .other)
+        var last = Track(id: UUID(), name: "Second selection", role: .other)
+        last.pan = 0.3; last.outputs = [.master]
+        project.songs[0].tracks += [middle, last]
+        let show = try ShowController(executor: TrackCopyExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        var captures = 0
+        show.prepareForFXChange = { track, clip, _ in
+            captures += 1
+            _ = try show.storeCapturedPluginState(track, clip: clip, identifier: first.fx!.externalPlugins![0].id,
+                componentState: "AP8AAQ==", controllerState: "AAAAAA==")
+        }
+        XCTAssertTrue(show.copyTracks([last.id, first.id]))
+        XCTAssertEqual(captures, 2); XCTAssertEqual(show.current?.tracks.count, 3, "Copy does not duplicate yet")
+        show.setRecordingStage(first.id, postFader: true)
+        show.setMixerTrackSelection([middle.id], anchor: middle.id)
+        let before = show.snapshot.project, transport = show.snapshot.transport
+        let copied = show.pasteTracks()
+        let rows = try XCTUnwrap(show.current).tracks
+        XCTAssertEqual(rows.map(\.name), [first.name, first.name, middle.name, last.name, last.name])
+        XCTAssertEqual(copied, Set([rows[1].id, rows[4].id]))
+        XCTAssertEqual(rows[0].recordingPostFader, true); XCTAssertEqual(rows[1].recordingPostFader, first.recordingPostFader)
+        XCTAssertEqual(rows[1].volume, first.volume)
+        XCTAssertEqual(rows[1].fx?.externalPlugins?[0].componentState, "AP8AAQ==")
+        XCTAssertNotEqual(rows[1].fx?.externalPlugins?[0].id, first.fx?.externalPlugins?[0].id)
+        XCTAssertEqual(rows[1].clips.count, first.clips.count)
+        XCTAssertNotEqual(rows[1].clips[0].id, first.clips[0].id)
+        XCTAssertEqual(rows[4].pan, last.pan); XCTAssertEqual(rows[4].outputs, last.outputs)
+        XCTAssertEqual(show.snapshot.transport, transport); XCTAssertEqual(captures, 2, "Paste uses the state at Copy")
+        show.undo(); XCTAssertEqual(show.snapshot.project, before)
+        show.redo(); XCTAssertEqual(show.current?.tracks, rows)
+        XCTAssertEqual(show.pasteTracks().count, 2, "Repeated paste creates fresh independent tracks")
+        XCTAssertTrue(show.copyItems([rows[1].clips[0].id])); XCTAssertFalse(show.hasTrackClipboard)
+    }
+
+    @MainActor func testPasteTracksRejectsDeletedSourceWithoutPartialCopies() throws {
+        let project = fixture()
+        let show = try ShowController(executor: TrackCopyExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertTrue(show.copyTracks([project.songs[0].tracks[0].id]))
+        show.deleteTracks([project.songs[0].tracks[0].id])
+        let before = show.snapshot.project
+        XCTAssertTrue(show.pasteTracks().isEmpty)
+        XCTAssertEqual(show.snapshot.project, before); XCTAssertNotNil(show.modalNotice)
+    }
 }

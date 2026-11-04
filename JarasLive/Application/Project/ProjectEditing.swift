@@ -120,11 +120,17 @@ public extension Project {
 
     /// A track copy owns its editable state while reusing immutable media files.
     /// Folders include their descendants; linked stereo channels stay a pair.
-    @discardableResult mutating func duplicateTracks(_ ids: Set<UUID>, song songID: UUID) throws -> Set<UUID> {
+    @discardableResult mutating func duplicateTracks(_ ids: Set<UUID>, song songID: UUID, copiedSong: Song? = nil) throws -> Set<UUID> {
         guard let index = songs.firstIndex(where: { $0.id == songID }) else { return [] }
-        let source = songs[index], selected = source.trackDuplicationTargets(ids)
+        let destination = songs[index], source = copiedSong ?? destination
+        guard source.id == songID else { return [] }
+        let selected = source.trackDuplicationTargets(ids)
         guard !selected.isEmpty else { return [] }
+        guard selected.isSubset(of: Set(destination.tracks.map(\.id))) else {
+            throw ProjectError.invalid("The copied tracks no longer exist.")
+        }
         let hierarchy = TrackHierarchy(source.tracks)
+        let destinationHierarchy = TrackHierarchy(destination.tracks)
         let roots = source.tracks.filter { selected.contains($0.id) && Set(hierarchy.ancestors(of: $0.id)).isDisjoint(with: selected) }
         let rootIDs = Set(roots.map(\.id))
         let mapping = Dictionary(uniqueKeysWithValues: source.tracks.filter { selected.contains($0.id) }.map { ($0.id, UUID()) })
@@ -186,17 +192,21 @@ public extension Project {
                source.tracks.first(where: { $0.id == partner })?.parentTrackID == root.parentTrackID {
                 block.formUnion(hierarchy.descendants(of: partner).union([partner])); handled.insert(partner)
             }
-            let positions = source.tracks.indices.filter { block.contains(source.tracks[$0].id) }
-            if let last = positions.last { insertions[last, default: []] += positions.compactMap { copies[source.tracks[$0].id] } }
+            let copiedBlock = source.tracks.filter { block.contains($0.id) }.compactMap { copies[$0.id] }
+            // The source may have moved since Copy. Anchor to its current row,
+            // while retaining the captured item, plugin and control values.
+            block.formUnion(destinationHierarchy.descendants(of: root.id))
+            let positions = destination.tracks.indices.filter { block.contains(destination.tracks[$0].id) }
+            if let last = positions.last { insertions[last, default: []] += copiedBlock }
         }
         var candidate = self
-        candidate.songs[index].tracks = source.tracks.enumerated().flatMap { [$0.element] + (insertions[$0.offset] ?? []) }
+        candidate.songs[index].tracks = destination.tracks.enumerated().flatMap { [$0.element] + (insertions[$0.offset] ?? []) }
         // Explicit region pitch selections and multi-loop mixer rules are part
         // of the track's sound. Nil pitch lists already include all tracks.
         for part in candidate.songs[index].parts.indices {
-            if let tracks = source.parts[part].pitchTrackIDs { candidate.songs[index].parts[part].pitchTrackIDs = tracks + tracks.compactMap { mapping[$0] } }
-            if let groups = source.parts[part].pitchGroupIDs { candidate.songs[index].parts[part].pitchGroupIDs = groups + groups.compactMap { mapping[$0] } }
-            if var loops = source.parts[part].multiLoops {
+            if let tracks = destination.parts[part].pitchTrackIDs { candidate.songs[index].parts[part].pitchTrackIDs = tracks + tracks.compactMap { mapping[$0] } }
+            if let groups = destination.parts[part].pitchGroupIDs { candidate.songs[index].parts[part].pitchGroupIDs = groups + groups.compactMap { mapping[$0] } }
+            if var loops = destination.parts[part].multiLoops {
                 for loop in loops.indices {
                     loops[loop].tracks += loops[loop].tracks.compactMap { original -> MultiLoopTrack? in
                         guard let id = mapping[original.id] else { return nil }

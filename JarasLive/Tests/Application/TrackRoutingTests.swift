@@ -29,6 +29,18 @@ import XCTest
     func applyProjectEdit(_ p: Project) throws { try p.validate(); project = p; fullEdits += 1 }
 }
 final class TrackRoutingTests: XCTestCase {
+    @MainActor func testDisableRecordingInputAndRestoreLinkedPair() throws {
+        var project = Project.empty(name: "No hardware input")
+        let tracks = (0..<2).map { Track(id: UUID(), name: "Input \($0)", role: .keys) }
+        project.songs[0].tracks = tracks
+        project.songs[0].linkTracks(Set(tracks.map(\.id)), firstInput: 1, color: 0x44aa55)
+        let show = try ShowController(executor: RoutingExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.setRecordingInput(tracks[1].id, input: .none)
+        XCTAssertEqual(show.current?.tracks.map(\.inputPatch), [OutputPatch.none, OutputPatch.none])
+        show.setRecordingInput(tracks[1].id, input: OutputPatch(firstChannel: 4, channelCount: 1))
+        XCTAssertEqual(show.current?.tracks.map(\.inputPatch), [OutputPatch(firstChannel: 3, channelCount: 1), OutputPatch(firstChannel: 4, channelCount: 1)])
+        try show.snapshot.project.validate()
+    }
     @MainActor func testMultipleTrackDropPreservesOrderTreesRoutingAndSingleUndo() throws {
         var project = Project.empty(name: "Multi drag")
         var tracks = (0..<7).map { Track(id: UUID(), name: "Track \($0)", role: .other) }

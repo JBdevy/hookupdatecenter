@@ -402,6 +402,11 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         blockTimer?.invalidate(); blockTimer = nil
         let now = ProcessInfo.processInfo.systemUptime
         let displayed = blockFeedback.receive(state, now: now)
+        scheduleBlockFeedback(now: now)
+        return displayed
+    }
+    private func scheduleBlockFeedback(now: Double) {
+        blockTimer?.invalidate(); blockTimer = nil
         if let deadline = blockFeedback.deadline {
             let timer = Timer(timeInterval: max(0.001, deadline - now), repeats: false) { [weak self] _ in
                 guard let self, self.connected, self.enabled, !self.clientSuspended,
@@ -410,7 +415,6 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             }
             blockTimer = timer; RunLoop.main.add(timer, forMode: .common)
         }
-        return displayed
     }
     @Published private(set) var accessMode: DAWRemoteAccess?
     @Published private(set) var directorRequiresPIN = false
@@ -960,6 +964,12 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         }
         guard role == .client, connected, DAWRemoteAccessRules.allows(command, mode: accessMode), let data = try? DAWRemoteWire.command(command) else { return }
         if command.action != .remotePanel && command.action != .requestImage { cancelBlockFeedback() }
+        if command.action == .stop, let state = remoteState {
+            let now = ProcessInfo.processInfo.systemUptime
+            if let prepared = blockFeedback.stop(state, now: now) {
+                remoteState = prepared; scheduleBlockFeedback(now: now)
+            }
+        }
         if command.action == .remotePanel { requestedPanel = Int(command.value) }
         channel?.send(data)
     }

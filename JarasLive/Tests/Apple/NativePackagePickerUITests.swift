@@ -8,14 +8,25 @@ final class NativePackagePickerUITests: XCTestCase {
         for (index, entry) in ["Add .ziplive", "Browse recent projects", "Add .ziplive"].enumerated() {
             app.buttons[entry].tap()
             let confirmation = app.alerts["Choose a CatLive project"]
-            XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
-            confirmation.buttons["Choose file"].tap()
+            if entry == "Add .ziplive" {
+                XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+                confirmation.buttons["Choose file"].tap()
+            } else { XCTAssertFalse(confirmation.exists) }
             let cancel = app.navigationBars.buttons["Cancel"].firstMatch
             XCTAssertTrue(cancel.waitForExistence(timeout: 30), app.debugDescription)
             XCTAssertFalse(confirmation.exists)
             cancel.tap()
             XCTAssertTrue(app.staticTexts["Cancellations: \(index + 1)"].waitForExistence(timeout: 5))
         }
+    }
+
+    func testRecentBrowserAllowsSelectingJLDocument() {
+        let app = XCUIApplication(); app.launch()
+        app.buttons["Browse recent projects"].tap()
+        let file = app.cells.matching(NSPredicate(format: "label BEGINSWITH %@", "Example.jl")).firstMatch
+        XCTAssertTrue(file.waitForExistence(timeout: 30), app.debugDescription)
+        file.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        XCTAssertTrue(app.staticTexts["Opened: Example.jl"].waitForExistence(timeout: 10), app.debugDescription)
     }
 
     func testDestinationConfirmationOpensFolderPickerAndCancelAllowsRetry() {

@@ -199,6 +199,20 @@ final class NativeEffectsChain {
     var externalError: Error?
     private var failedExternalPlugins: [String: (ExternalPlugin, Error)] = [:]
     private var instrumentMIDIInput = false
+    private var externalTempoSections: [TimelineTempoSection]?
+    private var externalTempoPoints: [[String: Any]] = []
+    func externalTimeline(_ sections: [TimelineTempoSection]) {
+        guard externalTempoSections != sections else { return }
+        externalTempoSections = sections
+        externalTempoPoints = sections.map { ["seconds": $0.start, "bpm": $0.bpm, "beats": $0.beats, "unit": $0.unit] }
+        for node in externalNodes.values { JarasVST3.setTempoMap(node, points: externalTempoPoints) }
+    }
+    func externalTimelineTransport(position: Double, clock: Double, playing: Bool, loopStart: Double, loopEnd: Double) {
+        for node in externalNodes.values {
+            JarasVST3.transportClock(node, position: position, clock: clock, playing: playing, loopStart: loopStart, loopEnd: loopEnd)
+        }
+    }
+
     func enableInstrumentMIDI(_ enabled: Bool) {
         instrumentMIDIInput = enabled
         for node in externalNodes.values { JarasVST3.instrumentMIDIInput(node, enabled: enabled) }
@@ -207,13 +221,15 @@ final class NativeEffectsChain {
         guard let node = externalNodes[identifier], JarasVST3.isPluginLoaded(node, identifier: identifier) else { return nil }
         return node
     }
-    /// The processor already owns this state. A Save only updates the cached
+    /// The processor already owns this state. A capture only updates the cached
     /// description, so a later native-parameter edit cannot restore an old preset.
     func rememberCapturedPluginState(_ plugin: ExternalPlugin, source: AVAudioUnitEffect) {
         guard externalNodes[plugin.id] === source,
               let index = settings?.externalPlugins?.firstIndex(where: { $0.id == plugin.id }) else { return }
         settings?.externalPlugins?[index].componentState = plugin.componentState
         settings?.externalPlugins?[index].controllerState = plugin.controllerState
+        JarasVST3.rememberCapturedState(source, identifier: plugin.id,
+            component: plugin.componentState, controller: plugin.controllerState)
     }
     func prepareExternal(_ plugin: ExternalPlugin) throws -> AVAudioUnitEffect {
         let node: AVAudioUnitEffect
@@ -235,6 +251,7 @@ final class NativeEffectsChain {
         let data = try JSONEncoder().encode([plugin])
         try JarasVST3.configure(node, plugins: JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? [])
         JarasVST3.instrumentMIDIInput(node, enabled: instrumentMIDIInput)
+        if externalTempoSections != nil { JarasVST3.setTempoMap(node, points: externalTempoPoints) }
         JarasVST3.setSequence(node, notes: !midiSequenceInstrumentsOnly || plugin.category.contains("Instrument") ? midiSequenceNotes : [])
         return node
     }

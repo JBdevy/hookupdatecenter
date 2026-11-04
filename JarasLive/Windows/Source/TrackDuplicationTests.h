@@ -97,6 +97,32 @@ template <typename Test> inline void run(Test &&test) {
         copied=ProjectCodec::decode(result.document).songs[0];
         expect(result.trackIDs.size()==2&&copied.tracks[3].parentTrackID==folder.id&&copied.tracks[4].parentTrackID==folder.id,"Selected child failed to clone its linked partner in original folder");
     });
+    test("Track clipboard inserts each captured copy below its original and preserves plugin state", [] {
+        auto p = fixture(); auto &song = p.songs[0];
+        song.tracks.push_back(track("Last"));
+        const auto firstID = song.tracks[0].id, lastID = song.tracks[2].id;
+        const auto captured = ProjectCodec::encode(p);
+        song.tracks[0].volume = .2;
+        const auto current = ProjectCodec::encode(p);
+        const auto result = trackEditing::duplicateDocument(current, song.id, {firstID,lastID}, uuid, &captured);
+        const auto decoded = ProjectCodec::decode(result.document);
+        const auto &rows = decoded.songs[0].tracks;
+        expect(rows.size()==5 && result.trackIDs.size()==2, "Clipboard did not copy every selected track");
+        expect(rows[0].id==firstID && rows[1].id==result.trackIDMap.at(firstID)
+            && rows[2].id==song.tracks[1].id && rows[3].id==lastID
+            && rows[4].id==result.trackIDMap.at(lastID), "Copies are not directly below their original rows");
+        expect(rows[0].volume==.2 && rows[1].volume==.72, "Paste ignored the captured track state");
+        const auto fx = get(findTrack(result.document,rows[1].id),"fx");
+        const auto plugin = list(get(fx,"externalPlugins"))[0];
+        expect(str(plugin,"id")!="kontakt" && str(plugin,"componentState")=="bGlicmFyeS1zdGF0ZQ==", "Clipboard lost independent plugin state");
+        const auto again = trackEditing::duplicateDocument(result.document,song.id,{firstID,lastID},uuid,&captured);
+        expect(again.trackIDMap.at(firstID)!=rows[1].id && ProjectCodec::decode(again.document).songs[0].tracks.size()==7, "Repeated Paste reused copied identities");
+        song.tracks.erase(song.tracks.begin());
+        bool rejected = false;
+        try { trackEditing::duplicateDocument(ProjectCodec::encode(p),song.id,{firstID,lastID},uuid,&captured); }
+        catch (const std::exception &) { rejected = true; }
+        expect(rejected, "Deleted source caused a partial Paste");
+    });
     test("Track duplication excludes unique tracks and fails atomically on ID collision", [] {
         auto p=fixture(); auto &song=p.songs[0]; song.tracks.clear();song.parts.clear();song.markers.reset();
         std::set<ID> selected;

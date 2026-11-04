@@ -68,7 +68,6 @@
 #include "RemotePresentation.h"
 #include "DesktopLayout.h"
 #include "TimelineGrid.h"
-#include "DottedGridPaint.h"
 #include "TimelineMarqueeIndex.h"
 #include "WindowControlButton.h"
 #include "WaveformRenderer.h"
@@ -1349,7 +1348,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             const int titleX = indent + 24;
             const bool textTrack=jaras::isTeleprompterRole(t->role)||t->role.id=="chords";
             const int titleY = expanded ? (textTrack?3:47) : std::max(0, (body - 21) / 2);
-            const int titleRight = textTrack&&special ? special->getX()-4 : expanded ? bodyWidth()-4 : (jaras::fixedTrackName(t->role).empty()?record.getX()-4:special?special->getX()-4:bodyWidth()-4);
+            const int titleRight = textTrack&&special ? special->getX()-4 : expanded ? bodyWidth()-4 : (jaras::fixedTrackName(t->role).empty()?fx.getX()-4:special?special->getX()-4:bodyWidth()-4);
             const auto scannedPC=t->role.id=="programChange"?w.session.scannedProgramChangePacket(id):uint64(0);
             const int scanWidth=scannedPC?88:0;
             g.drawText(number + text(t->name), titleX, titleY,
@@ -1411,14 +1410,15 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         peak->setVisible(expanded&&meterReadout);
         peak->setBounds(groupIndent()+21, 31,43,12);
         record.setVisible(standard);
-        for(auto *b:{&fx,&env,&output})b->setVisible(standard&&expanded);
+        fx.setVisible(standard);
+        for(auto *b:{&env,&output})b->setVisible(standard&&expanded);
         const bool audioButtons=standard||(t&&(t->role.id=="timecode"||t->role.id=="generatedClick"||t->role.id=="programChange"));
         mute.setVisible(audioButtons);solo.setVisible(audioButtons);
         if(solo.isVisible())place(solo,22);if(mute.isVisible())place(mute,22);
         if(special){special->setVisible(!standard);special->setBounds(std::max(22,x-(t&&t->role.id=="timecode"?116:t&&t->role.id=="generatedClick"?100:t&&t->role.id=="programChange"?159:108)),y,t&&t->role.id=="timecode"?116:t&&t->role.id=="generatedClick"?100:t&&t->role.id=="programChange"?159:108,textTrack?48:h);}
         pan.setVisible(expanded&&standard&&t->role.id!="vinhetas");
         if (pan.isVisible()) place(pan, 42);
-        if(standard){env.setVisible(expanded&&t->role.id!="vinhetas");place(record,22);if(expanded){place(fx,22);if(env.isVisible())place(env,28);place(output,34);}}
+        if(standard){env.setVisible(expanded&&t->role.id!="vinhetas");place(record,22);place(fx,22);if(expanded){if(env.isVisible())place(env,28);place(output,34);}}
         // Preserve the folder anchor even in deeply nested, narrow sidebars.
         // Keep the controls separate, matching the Mac layout's minimum origin.
         if(expanded && isFolder() && output.getX()<groupIndent()+51) {
@@ -2244,11 +2244,12 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             for (const auto &tick : grid) {
                 const float x = lineX(tick.time);
                 g.setColour(theme::green.withAlpha(.65f));
-                g.fillRect(x, (float)t.regionHeight()+32, pixel, tick.primary ? 5.f : 3.f);
+                const float tickHeight=tick.primary?5.f:3.f;
+                g.fillRect(x, (float)headerHeight()-pixel-tickHeight, pixel, tickHeight);
                 if (tick.label.isNotEmpty()) {
                     g.setFont(theme::mediumFont(8.5f));
                     g.setColour(Colour(0xff54ff93));
-                    g.drawText(tick.label, juce::Rectangle<float>(x + 3, (float)t.regionHeight()+32, 124, 16),
+                    g.drawText(tick.label, juce::Rectangle<float>(x + 3, (float)t.regionHeight()+32, 124, 10),
                                Justification::centredLeft);
                 }
             }
@@ -2260,8 +2261,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 const auto primary = t.w.appearance.colour("jaras.timeline.primaryGrid", 0x535250);
                 const auto secondary = t.w.appearance.colour("jaras.timeline.secondaryGrid", 0x333235).withAlpha(.85f);
                 for (const auto &tick : grid) {
-                    auto &pattern=tick.primary?primaryGridPattern:secondaryGridPattern;
-                    pattern.draw(g,tick.primary?primary:secondary,lineX(tick.time),top,bottom,pixel,(float)headerHeight());
+                    g.setColour(tick.primary?primary:secondary);
+                    g.fillRect(lineX(tick.time),top,.5f*pixel,bottom-top);
                 }
             };
             drawGrid((float)headerHeight(), (float)getHeight());
@@ -3195,7 +3196,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
 
       private:
         Timeline &t;
-        DottedGridPaint primaryGridPattern, secondaryGridPattern;
         String itemValueTooltip;
         struct ClipIntervalEntry { double start=0,end=0;size_t index=0; };
         struct TrackClipIndex { ID track;std::vector<ClipIntervalEntry> entries;std::vector<double> maximumEnds; };
@@ -3237,20 +3237,20 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         double markerEditPosition(const MouseEvent &e) const {
             const double at=std::max(0.,originalStart+(e.position.x-startPosition.x)/t.w.pixelsPerSecond);
             const auto *song=t.w.session.song();
-            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),true,&t.w.session.transport(),false,nullptr,nullptr,&dragMarker):at;
+            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),false,nullptr,nullptr,&dragMarker):at;
         }
         std::pair<double,double> regionEditBounds(const MouseEvent &e) const {
             const double delta=(e.position.x-startPosition.x)/t.w.pixelsPerSecond;
             if(!regionEdge) {
                 double start=std::max(0.,originalStart+delta);
                 if(const auto *song=t.w.session.song())start=timelineGrid::snap(start,*song,t.w.pixelsPerSecond,
-                    t.w.freeTimelinePosition(e.mods),true,&t.w.session.transport(),true,nullptr,&dragRegion);
+                    t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),true,nullptr,&dragRegion);
                 if(regionRepulsion)start=regionRepulsion->resolve(start);
                 return {start,start+clipLength};
             }
             double boundary=(regionEdge<0?originalStart:originalStart+clipLength)+delta;
             if(const auto *song=t.w.session.song())boundary=timelineGrid::snap(boundary,*song,t.w.pixelsPerSecond,
-                t.w.freeTimelinePosition(e.mods),true,&t.w.session.transport(),true,nullptr,&dragRegion);
+                t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),true,nullptr,&dragRegion);
             return {regionEdge<0?std::max(0.,std::min(originalStart+clipLength-.01,boundary)):originalStart,
                     regionEdge>0?std::max(originalStart+.01,boundary):originalStart+clipLength};
         }
@@ -5898,6 +5898,7 @@ bool Workspace::keyStateChanged(bool) {
     return false;
 }
 bool Workspace::keyPressed(const KeyPress &key) {
+    if (!layoutActive) return false;
     if(audioPreparationOverlay)return true;
     if (session.inspection && logger)
         logger->logMessage("QA key=" + String(key.getKeyCode()) +
@@ -6590,28 +6591,29 @@ void Workspace::chooseOpen() {
     };
     launch();
 }
-void Workspace::chooseSave(bool saveAs, std::function<void()> saved) {
-    auto finish = [safe = SafePointer<Workspace>(this), saved](String error) {
+void Workspace::chooseSave(bool saveAs, std::function<void()> saved, std::function<void()> cancelled) {
+    auto finish = [safe = SafePointer<Workspace>(this), saved, cancelled](String error) {
         if (!safe) return;
-        if (error.isNotEmpty()) { safe->showError(error); return; }
+        if (error.isNotEmpty()) { if (cancelled) cancelled(); safe->showError(error); return; }
         RecentProjects::remember(safe->session.document);
         if (saved) {
             // Close/export callbacks need the latest edit, not just the first
             // snapshot when the user kept editing during a regular Save.
-            if (safe->session.dirty) safe->chooseSave(false, saved);
+            if (safe->session.dirty) safe->chooseSave(false, saved, cancelled);
             else saved();
         }
     };
     if (!saveAs && session.document != File()) {
-        perform([&] { session.saveAsync(session.document, finish); });
+        try { session.saveAsync(session.document, finish); }
+        catch (const std::exception &error) { finish(String::fromUTF8(error.what())); }
         return;
     }
     if (session.isSaving()) {
         if (saveAs) {
-            session.waitForSave([safe = SafePointer<Workspace>(this), project = session.project().id, saved](String error) {
-                if (!safe || safe->session.project().id != project) return;
-                if (error.isNotEmpty()) { safe->showError(error); return; }
-                safe->chooseSave(true, saved);
+            session.waitForSave([safe = SafePointer<Workspace>(this), project = session.project().id, saved, cancelled](String error) {
+                if (!safe || safe->session.project().id != project) { if (cancelled) cancelled(); return; }
+                if (error.isNotEmpty()) { if (cancelled) cancelled(); safe->showError(error); return; }
+                safe->chooseSave(true, saved, cancelled);
             });
         } else session.waitForSave(finish);
         return;
@@ -6625,9 +6627,10 @@ void Workspace::chooseSave(bool saveAs, std::function<void()> saved) {
     chooser->launchAsync(
         FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
             FileBrowserComponent::warnAboutOverwriting,
-        [safe = Component::SafePointer<Workspace>(this), finish](const FileChooser &fc) {
-            if (!safe || fc.getResult() == File()) return;
-            safe->perform([&] { safe->session.saveAsync(fc.getResult(), finish); });
+        [safe = Component::SafePointer<Workspace>(this), finish, cancelled](const FileChooser &fc) {
+            if (!safe || fc.getResult() == File()) { if (cancelled) cancelled(); return; }
+            try { safe->session.saveAsync(fc.getResult(), finish); }
+            catch (const std::exception &error) { finish(String::fromUTF8(error.what())); }
         });
 }
 void Workspace::chooseImport(bool adding, bool inNewTab) {
@@ -7630,21 +7633,115 @@ void Workspace::pasteProgramMarker() {
     }
 }
 void Workspace::copyGridItems(bool moving) {
+    if (selectionAreas.activeScope() == "tracks") {
+        if (moving || !session.song() || session.busy) return;
+        const auto targets = selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks;
+        perform([&] {
+            const auto captured = session.snapshot();
+            bool eligible = false;
+            for (const auto &song : list(get(captured, "songs"))) if (utf8(str(song, "id")) == session.song()->id)
+                for (const auto &track : list(get(song, "tracks")))
+                    if (targets.count(utf8(str(track, "id"))) && trackEditing::duplication::standard(track)) eligible = true;
+            if (!eligible) return;
+            if (!gridMediaClipboard::claimItems(getPeer() ? static_cast<HWND>(getPeer()->getNativeHandle()) : nullptr))
+                throw std::runtime_error("Could not access the clipboard. Try copying again.");
+            trackClipboard = CopiedTracks{captured, session.song()->id, targets, GetClipboardSequenceNumber()};
+            itemClipboard.reset(); gridMediaClipboard::sharedItems.reset();
+            session.programChangeClipboard.reset(); session.programChangePasteReady = false;
+            timeline->invalidate();
+        });
+        return;
+    }
     if(session.selectedProgramMarker()) {
-        if(!moving && session.copyProgramChange()){itemClipboard.reset();itemClipboardSequence=GetClipboardSequenceNumber();}
+        if(!moving && session.copyProgramChange()){
+            gridMediaClipboard::sharedItems.reset();
+            gridMediaClipboard::claimItems(getPeer() ? static_cast<HWND>(getPeer()->getNativeHandle()) : nullptr);
+            itemClipboard.reset();itemClipboardSequence=GetClipboardSequenceNumber();
+        }
         return;
     }
     if (!session.song() || session.busy || (moving && timelineGrid::movementLocked(session.project()))) return;
     const auto selection = selectedClips.empty() ? std::set<ID>{selectedClip} : selectedClips;
     if (auto copied = GridItemClipboard::copy(session.project(), session.song()->id, selection, moving)) {
+        if (!gridMediaClipboard::claimItems(getPeer() ? static_cast<HWND>(getPeer()->getNativeHandle()) : nullptr)) {
+            session.message = localization::translate("Could not access the clipboard. Try copying again."); updateState(); return;
+        }
         session.programChangeClipboard.reset();session.programChangePasteReady=false;
         itemClipboard = std::move(copied);
         itemClipboardSequence = GetClipboardSequenceNumber();
+        gridMediaClipboard::sharedItems = moving ? std::nullopt : itemClipboard;
+        gridMediaClipboard::sharedSequence = itemClipboardSequence;
+        gridMediaClipboard::sharedDirectory = session.mediaDirectory;
         timeline->invalidate();
     }
 }
 void Workspace::pasteGridItems(bool duplicate) {
     if (!session.song() || session.busy) return;
+    const bool pastedTracks = !duplicate && trackClipboard && trackClipboard->sequence == GetClipboardSequenceNumber();
+    if (pastedTracks || (duplicate && selectionAreas.activeScope() == "tracks")) {
+        if (pastedTracks && (trackClipboard->song != session.song()->id ||
+            utf8(str(trackClipboard->document, "id")) != session.project().id)) return;
+        perform([&] {
+            const auto targets = pastedTracks ? trackClipboard->targets : selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks;
+            const auto copies = session.duplicateTracks(targets, pastedTracks ? &trackClipboard->document : nullptr);
+            if (!copies.empty()) {
+                selectedTracks = std::set<ID>(copies.begin(), copies.end()); selectedTrack = copies.front();
+                selectedClips.clear(); selectedClip.clear();
+                rebuild(); updateState();
+            }
+        });
+        return;
+    }
+    const bool sharedCopy = !duplicate && gridMediaClipboard::ownsItems(gridMediaClipboard::sharedItems.has_value(),
+        gridMediaClipboard::sharedSequence, GetClipboardSequenceNumber());
+    if (sharedCopy) {
+        itemClipboard = gridMediaClipboard::sharedItems;
+        itemClipboardSequence = gridMediaClipboard::sharedSequence;
+        session.programChangeClipboard.reset(); session.programChangePasteReady = false;
+        if (itemClipboard->project != session.project().id || itemClipboard->song != session.song()->id ||
+            gridMediaClipboard::sharedDirectory != session.mediaDirectory) {
+            perform([&] {
+                auto plan = itemClipboard->copyPlan(*session.song(), session.transport().editPosition,
+                    selectedTracks.empty() ? std::set<ID>{selectedTrack} : selectedTracks);
+                auto prepared = session.project();
+                for (auto &song : prepared.songs) if (song.id == session.song()->id)
+                    song.tracks.insert(song.tracks.end(), plan.newTracks.begin(), plan.newTracks.end());
+                auto validation = session.core; validation.applyProjectEdit(std::move(prepared));
+                validation.pasteItems(session.song()->id, plan.entries, false);
+                const auto projectID = session.project().id, songID = session.song()->id;
+                const auto source = gridMediaClipboard::sharedDirectory, destination = session.mediaDirectory;
+                session.busy = true; updateState();
+                Thread::launch([safe = SafePointer<Workspace>(this), entries = std::move(plan.entries), newTracks = std::move(plan.newTracks), source, destination, projectID, songID]() mutable {
+                    gridMediaClipboard::Transfer transfer;
+                    String error;
+                    try { transfer = gridMediaClipboard::stage(std::move(entries), source, destination); }
+                    catch (const std::exception &e) { error = String::fromUTF8(e.what()); }
+                    MessageManager::callAsync([safe, transfer = std::move(transfer), newTracks = std::move(newTracks), error, destination, projectID, songID]() mutable {
+                        if (!safe) { transfer.discard(); return; }
+                        safe->session.busy = false;
+                        try {
+                            if (error.isNotEmpty()) throw std::runtime_error(utf8(error));
+                            if (safe->session.project().id != projectID || !safe->session.song() ||
+                                safe->session.song()->id != songID || safe->session.mediaDirectory != destination)
+                                throw std::runtime_error("The destination project is no longer active.");
+                            safe->session.edit([&](auto &project) {
+                                for (auto &song : project.songs) if (song.id == songID)
+                                    song.tracks.insert(song.tracks.end(), newTracks.begin(), newTracks.end());
+                                auto edit = safe->session.core; edit.applyProjectEdit(project);
+                                edit.pasteItems(songID, transfer.tracks, false); project = edit.project();
+                            });
+                            safe->selectedClips.clear();
+                            for (const auto &track : transfer.tracks) for (const auto &clip : track.clips) safe->selectedClips.insert(clip.id);
+                            safe->selectedClip = safe->selectedClips.empty() ? ID{} : *safe->selectedClips.begin();
+                            safe->session.message.clear();
+                        } catch (const std::exception &e) { transfer.discard(); safe->session.message = localization::translate(String::fromUTF8(e.what())); }
+                        safe->timeline->invalidate(); safe->updateState(); safe->repaint();
+                    });
+                });
+            });
+            return;
+        }
+    }
     if(!duplicate && session.programChangeClipboard) {perform([&]{pasteProgramMarker();});return;}
     if (!duplicate && !gridMediaClipboard::ownsItems(itemClipboard.has_value(), itemClipboardSequence,
                                                     GetClipboardSequenceNumber())) {
@@ -7854,42 +7951,57 @@ void Workspace::openTimer(bool settings) {
     showPanel(String::fromUTF8("Cronômetro"),
               std::make_unique<StageTimerSettings>(stage), 380, 348);
 }
-void Workspace::requestClose(std::function<void()> done, bool application) {
-    if(jaras::projectSync::readOnly()) return;
+void Workspace::requestClose(std::function<void()> done, bool application, std::optional<bool> saveAll,
+                             std::function<void()> cancelled) {
+    if(jaras::projectSync::readOnly()) { if (cancelled) cancelled(); return; }
     if (session.isSaving()) {
-        session.waitForSave([safe = SafePointer<Workspace>(this), done, application](String error) {
+        session.waitForSave([safe = SafePointer<Workspace>(this), done, application, saveAll, cancelled](String error) {
             if (!safe) return;
-            if (error.isNotEmpty()) safe->showError(error);
-            else safe->requestClose(done, application);
+            if (error.isNotEmpty()) { if (cancelled) cancelled(); safe->showError(error); }
+            else safe->requestClose(done, application, saveAll, cancelled);
         });
         return;
     }
     if (isCurrentlyBlockedByAnotherModalComponent()) {
+        if (cancelled) cancelled();
         ModalComponentManager::getInstance()->bringModalComponentsToFront();
         return;
     }
     if (session.busy) {
+        if (cancelled) cancelled();
         showError(String::fromUTF8("Aguarde a importação terminar antes de fechar."));
         return;
     }
     if (session.transport().playing || session.transport().subPlay.playing) {
+        if (saveAll.has_value()) {
+            // The application-wide decision already approved closing all tabs.
+            session.command(jaras::CommandKind::stopAll);
+            requestClose(done, application, saveAll, cancelled);
+            return;
+        }
         CloseProjectSheet::open(*this,
-                [safe = Component::SafePointer<Workspace>(this), done, application](int action) {
+                [safe = Component::SafePointer<Workspace>(this), done, application, cancelled](int action) {
                     if (safe && action == 2) {
                         safe->session.command(jaras::CommandKind::stopAll);
-                        safe->requestClose(done, application);
-                    }
+                        safe->requestClose(done, application, {}, cancelled);
+                    } else if (cancelled) cancelled();
                 }, true, application);
         return;
     }
     if (session.dirty) {
+        if (saveAll.has_value()) {
+            if (*saveAll) chooseSave(false, done, cancelled);
+            else done();
+            return;
+        }
         CloseProjectSheet::open(*this,
-                [safe = Component::SafePointer<Workspace>(this), done](int action) {
+                [safe = Component::SafePointer<Workspace>(this), done, cancelled](int action) {
                     if (!safe)
                         return;
                     if (action == 2)
                         done();
-                    if (action == 1) safe->chooseSave(false, done);
+                    if (action == 1) safe->chooseSave(false, done, cancelled);
+                    if (action == 0 && cancelled) cancelled();
                 });
         return;
     }

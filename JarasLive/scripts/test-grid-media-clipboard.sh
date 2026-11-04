@@ -9,7 +9,7 @@ import sys
 source = Path('Apple/Shared/ProjectDocuments.swift').read_text()
 start = source.index('@MainActor final class GridMediaClipboard')
 helper = source[start:source.index('\n#endif', start)]
-Path(sys.argv[1]).write_text('import AppKit\nimport UniformTypeIdentifiers\nimport AVFoundation\n' + helper + '\n' + Path('Tests/Apple/GridMediaClipboardTests.swift').read_text())
+Path(sys.argv[1]).write_text('import AppKit\nimport UniformTypeIdentifiers\nimport AVFoundation\nstruct GridItemClipboard {}\n' + helper + '\n' + Path('Tests/Apple/GridMediaClipboardTests.swift').read_text())
 PY
 swiftc -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -25,7 +25,7 @@ inline void remapArray(var &owner, const Identifier &key, const IDs &ids) {
     put(owner, key, values);
 }
 inline bool standard(const var &track) {
-    static const std::set<ID> special{"generatedClick", "timecode", "video", "teleprompt", "teleprompt2", "chords", "vinhetas"};
+    static const std::set<ID> special{"generatedClick", "timecode", "video", "teleprompt", "teleprompt2", "chords", "vinhetas", "programChange"};
     return !special.count(utf8(str(track, "role")));
 }
 inline ID identityKey(const ID &value) {
@@ -153,13 +153,21 @@ inline void appendMapped(var &owner, const char *key, const IDs &ids) {
 // One document edit, with independent object identities and unchanged media and
 // plugin payloads. The caller commits document + model atomically in one Undo.
 inline TrackDuplicationResult duplicateDocument(const var &document, const ID &songID,
-    const std::set<ID> &selectedIDs, const std::function<ID()> &makeID = uuid) {
+    const std::set<ID> &selectedIDs, const std::function<ID()> &makeID = uuid, const var *copiedDocument = nullptr) {
     using namespace duplication;
     TrackDuplicationResult result{document.clone(), {}, {}};
     var song;
     for (const auto &candidate : list(get(result.document, "songs"))) if (id(candidate) == songID) { song = candidate; break; }
     if (!song.isObject()) return result;
-    const auto tracks = list(get(song, "tracks"));
+    const auto destinationTracks = list(get(song, "tracks"));
+    var sourceSong = song;
+    if (copiedDocument) {
+        sourceSong = var();
+        for (const auto &candidate : list(get(*copiedDocument, "songs")))
+            if (id(candidate) == songID) { sourceSong = candidate; break; }
+        if (!sourceSong.isObject() || id(*copiedDocument) != id(document)) return result;
+    }
+    const auto tracks = list(get(sourceSong, "tracks"));
     std::map<ID, int> positions; IDs parents; std::set<ID> eligible, selected;
     for (int i = 0; i < tracks.size(); ++i) {
         const auto identity = id(tracks[i]); positions[identity] = i;
@@ -182,6 +190,9 @@ inline TrackDuplicationResult duplicateDocument(const var &document, const ID &s
         if (before == selected) break;
     }
     FreshIDs fresh(document, makeID);
+    for (const auto &identity : selected)
+        if (std::none_of(destinationTracks.begin(), destinationTracks.end(), [&](const var &track) { return id(track) == identity; }))
+            throw std::invalid_argument("The copied tracks no longer exist.");
     for (const auto &track : tracks) if (selected.count(id(track))) result.trackIDMap[id(track)] = fresh.next();
     const auto &mapping = result.trackIDMap;
     std::set<std::pair<ID, ID>> connections;
@@ -228,6 +239,16 @@ inline TrackDuplicationResult duplicateDocument(const var &document, const ID &s
     std::set<ID> roots;
     for (const auto &identity : selected)
         if (std::none_of(selected.begin(), selected.end(), [&](const ID &other) { return descendant(identity, other); })) roots.insert(identity);
+    IDs destinationParents;
+    for (const auto &track : destinationTracks)
+        if (get(track, "parentTrackID").isString()) destinationParents[id(track)] = utf8(str(track, "parentTrackID"));
+    const auto destinationDescendant = [&](const ID &child, const ID &ancestor) {
+        auto current = child; std::set<ID> visited;
+        while (destinationParents.count(current) && visited.insert(current).second) {
+            current = destinationParents.at(current); if (current == ancestor) return true;
+        }
+        return false;
+    };
     std::map<int, std::vector<ID>> insertions; std::set<ID> handled;
     for (const auto &root : tracks) {
         const auto rootID = id(root); if (!roots.count(rootID) || handled.count(rootID)) continue;
@@ -238,14 +259,19 @@ inline TrackDuplicationResult duplicateDocument(const var &document, const ID &s
         for (int i = 0; i < tracks.size(); ++i) {
             const auto identity = id(tracks[i]);
             if (std::any_of(blockRoots.begin(), blockRoots.end(), [&](const ID &r) { return identity == r || descendant(identity, r); })) {
-                last = i; if (copies.count(identity)) block.push_back(identity);
+                if (copies.count(identity)) block.push_back(identity);
             }
+        }
+        for (int i = 0; i < destinationTracks.size(); ++i) {
+            const auto identity = id(destinationTracks[i]);
+            if (std::find(block.begin(), block.end(), identity) != block.end() ||
+                std::any_of(blockRoots.begin(), blockRoots.end(), [&](const ID &r) { return identity == r || destinationDescendant(identity, r); })) last = i;
         }
         auto &insertion = insertions[last]; insertion.insert(insertion.end(), block.begin(), block.end());
     }
     Array<var> output;
-    for (int i = 0; i < tracks.size(); ++i) {
-        output.add(tracks[i]);
+    for (int i = 0; i < destinationTracks.size(); ++i) {
+        output.add(destinationTracks[i]);
         for (const auto &originalID : insertions[i]) { result.trackIDs.push_back(mapping.at(originalID)); output.add(copies.at(originalID)); }
     }
     put(song, "tracks", output);

@@ -52,9 +52,12 @@ inline std::vector<Tick> ticks(const jaras::Song &song, double start, double end
         const double stride = std::pow(2., std::max(0., std::ceil(std::log2(16 / std::max(.001, bar * scale)))));
         const double first = std::max(0., std::floor(std::floor((densityStart - section.start) / bar) / stride) * stride);
         const double last = std::max(first, std::ceil((std::min(section.end, densityEnd) - section.start) / bar));
-        const bool distant = bar * scale < 64;
-        const double base = bar / section.beats * section.unit / (divisions == 0 ? 4 : divisions);
-        const double minor = distant ? bar * stride / 2 : base * std::pow(2., std::max(0., std::ceil(std::log2(16 / std::max(.001, base * scale)))));
+        const double beat = bar / section.beats;
+        // Whole-bar groups (4 -> 2 -> 1) precede beats and finer divisions.
+        // Keep the ruler, body and snapping on these same divisions.
+        const bool showBeats = beat * scale >= 16;
+        const double base = std::min(beat, beat * section.unit / (divisions == 0 ? 4 : divisions));
+        const double minor = visibleGridStep(bar,section.beats,section.unit,divisions==0?4:divisions,scale);
         if (!std::isfinite(base) || base<=0 || !std::isfinite(minor) || minor <= 0) continue;
         double boundaryClearance=std::numeric_limits<double>::infinity();
         if(sectionIndex>0) {
@@ -82,8 +85,7 @@ inline std::vector<Tick> ticks(const jaras::Song &song, double start, double end
             const double clearance=i==0?boundaryClearance:
                 std::min((double)hierarchyStep((uint64_t)i)*bar,boundaryEnd-time);
             append(time, true, clearance);
-            if (distant) append(time + minor, false, 0);
-            else for (int sub = 1; sub * minor < std::min(bar, section.end - time) - 1e-9; ++sub) {
+            if (showBeats) for (int sub = 1; sub * minor < std::min(bar, section.end - time) - 1e-9; ++sub) {
                 const double offset=sub*minor;
                 const auto index=(uint64_t)std::max<int64>(1,(int64)std::llround(offset/base));
                 append(time+offset,false,std::min({(double)hierarchyStep(index)*base,bar-offset,boundaryEnd-time-offset}));

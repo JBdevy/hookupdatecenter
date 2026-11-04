@@ -235,7 +235,7 @@ private struct TrackMixerButtonsContainer<Content: View>: View {
         } else if standard {
             let expanded = height >= 64
             let controlHeight: CGFloat = expanded ? 24 : 21
-            let widths: [CGFloat] = [expanded ? 34 : 0, expanded && !vinhetas ? 28 : 0, expanded && showsFader ? 22 : 0, 22, expanded && !vinhetas ? 42 : 0, 22, 22]
+            let widths: [CGFloat] = [expanded ? 34 : 0, expanded && !vinhetas ? 28 : 0, !expanded || showsFader ? 22 : 0, 22, expanded && !vinhetas ? 42 : 0, 22, 22]
             let visibleCount = widths.filter { $0 > 0 }.count
             let width = widths.reduce(0, +) + CGFloat(max(0, visibleCount - 1)) * 3
             let frames = widths.indices.map { index in
@@ -274,7 +274,8 @@ struct TrackMixerContinuousLayout: Layout {
         }
     }
 }
-/// Patch, Env, FX and pan stay mounted but occupy no space in a collapsed strip.
+/// Patch, Env and pan stay mounted but occupy no space in a collapsed strip.
+/// FX remains immediately before REC at every track height.
 @available(macOS 13, *)
 struct TrackMixerButtonsLayout: Layout {
     let showsFader: Bool
@@ -288,14 +289,14 @@ struct TrackMixerButtonsLayout: Layout {
     func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let expanded = (proposal.height ?? 24) >= 24
-        let visible = subviews.indices.filter { !(!expanded && ($0 < 3 || $0 == 4)) && !($0 == 2 && expanded && !showsFader) && !(vinhetas && ($0 == 1 || $0 == 4)) }
+        let visible = subviews.indices.filter { !(!expanded && ($0 < 2 || $0 == 4)) && !($0 == 2 && expanded && !showsFader) && !(vinhetas && ($0 == 1 || $0 == 4)) }
         return CGSize(width: visible.reduce(CGFloat(0)) { $0 + Self.controlWidths[$1] } + CGFloat(max(0, visible.count - 1)) * 3, height: expanded ? 24 : 21)
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let expanded = bounds.height >= 24
         var x = bounds.minX
         for i in subviews.indices {
-            let hidden = (!expanded && (i < 3 || i == 4)) || (i == 2 && expanded && !showsFader) || (vinhetas && (i == 1 || i == 4))
+            let hidden = (!expanded && (i < 2 || i == 4)) || (i == 2 && expanded && !showsFader) || (vinhetas && (i == 1 || i == 4))
             let width = Self.controlWidths[i]
             subviews[i].place(at: CGPoint(x: hidden ? bounds.maxX + 1024 : x, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(width: width, height: bounds.height))
             if !hidden { x += width + 3 }
@@ -1256,8 +1257,8 @@ struct PatchEditor: View {
                     Text(audio.deviceName).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                     if let track, let settings = show.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == track }), settings.kind == .standard && settings.role.rawValue != "vinhetas" {
                         let input = settings.inputPatch ?? TrackRecording.shared.defaultInputPatch
-                        let choices = OutputPatch.choices(channels: TrackRecording.shared.inputChannels, includeMaster: false).filter { choice in
-                            guard let link = settings.stereoLink else { return true }
+                        let choices = OutputPatch.choices(channels: TrackRecording.shared.inputChannels, includeMaster: false, includeNone: true).filter { choice in
+                            guard let link = settings.stereoLink, choice != .none else { return true }
                             return choice.channelCount == 1 && (link.left ? choice.firstChannel < TrackRecording.shared.inputChannels : choice.firstChannel > 1)
                         }
                         Picker("Input", selection: Binding(get: { input }, set: { applyInput($0) })) {
@@ -3951,7 +3952,7 @@ private struct BatchPatchEditor: View {
     private var tracks: [Track] { show.snapshot.project.songs.flatMap(\.tracks).filter { targets.contains($0.id) } }
     private var outputOnly: Bool { tracks.contains { $0.role.rawValue == "vinhetas" } }
     private var inputs: [OutputPatch] {
-        OutputPatch.choices(channels: TrackRecording.shared.inputChannels, includeMaster: false)
+        OutputPatch.choices(channels: TrackRecording.shared.inputChannels, includeMaster: false, includeNone: true)
             .filter { choice in tracks.allSatisfy { track in
                 guard let link = track.stereoLink, choice != .none else { return true }
                 return choice.channelCount == 1 && (link.left ? choice.firstChannel < TrackRecording.shared.inputChannels : choice.firstChannel > 1)

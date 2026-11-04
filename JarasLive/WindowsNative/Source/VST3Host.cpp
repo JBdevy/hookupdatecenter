@@ -1,4 +1,5 @@
 #include "VST3Host.h"
+#include "../../Core/Audio/VST3ParameterRestore.hpp"
 #include <windows.h>
 #include "pluginterfaces/base/ipluginbase.h"
 #include "pluginterfaces/base/ibstream.h"
@@ -205,7 +206,11 @@ std::shared_ptr<Module> loadModule(const std::filesystem::path &path) {
     });
     slot->owner=loaded;slot->loaded=true;return loaded;
 }
-struct Param { ParamID id=0; std::atomic<double> pending{0}; std::atomic<bool> dirty{false}; };
+struct Param {
+    ParamID id=0;
+    bool resyncFromController=false;
+    std::atomic<double> pending{0}; std::atomic<bool> dirty{false};
+};
 struct ParameterPoint {int32 offset=0,next=-1;double value=0;};
 struct ParameterPointPool {
     std::unique_ptr<ParameterPoint[]> points;
@@ -366,8 +371,14 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         }
         for(int b=0;b<component->getBusCount(kEvent,kInput);++b)component->activateBus(kEvent,kInput,b,b==0);
         for(auto &channel:midiParameters)std::fill(std::begin(channel),std::end(channel),kNoParamId);
+        std::unordered_set<ParamID> midiParameterIDs;
         if(auto mapping=query<IMidiMapping>(controller)){
-            for(int c=0;c<16;++c)for(int cc=0;cc<130;++cc)mapping->getMidiControllerAssignment(0,c,cc,midiParameters[c][cc]);
+            for(int c=0;c<16;++c)for(int cc=0;cc<130;++cc){
+                ParamID id=kNoParamId;
+                if(mapping->getMidiControllerAssignment(0,c,cc,id)==kResultOk && id!=kNoParamId){
+                    midiParameters[c][cc]=id;midiParameterIDs.insert(id);
+                }
+            }
             mapping->release();
         }
         const int inCount=component->getBusCount(kAudio,kInput),outCount=component->getBusCount(kAudio,kOutput);
@@ -406,9 +417,12 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
             params=std::make_unique<Param[]>(paramCount);changes.prepare(paramCount);
             for(int i=0;i<paramCount;++i){
                 ParameterInfo p{};controller->getParameterInfo(i,p);params[i].id=p.id;
-                params[i].pending=controller->getParamNormalized(p.id);params[i].dirty=true;
+                params[i].pending=controller->getParamNormalized(p.id);
+                params[i].resyncFromController=jaras::restoreControllerParameter(p,true,midiParameterIDs);
+                if(params[i].resyncFromController&&!state.controller.empty()){
+                    params[i].dirty=true;parametersChanged=true;
+                }
             }
-            parametersChanged=paramCount>0;
         }
         ProcessSetup setup{kRealtime,kSample32,maxFrames,rate};
         if(processor->setupProcessing(setup)!=kResultOk)throw std::runtime_error("VST3 audio setup failed.");
@@ -481,9 +495,10 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         }
         ProcessContext context{};
         context.sampleRate=rate;context.projectTimeSamples=int64(std::llround(transport.seconds*rate));
+        context.barPositionMusic=transport.barStartQuarterNotes;
         context.projectTimeMusic=transport.quarterNotes;context.tempo=transport.tempo;
         context.timeSigNumerator=transport.numerator;context.timeSigDenominator=transport.denominator;
-        context.state=ProcessContext::kTempoValid|ProcessContext::kTimeSigValid|ProcessContext::kProjectTimeMusicValid|(transport.playing?ProcessContext::kPlaying:0);
+        context.state=ProcessContext::kBarPositionValid|ProcessContext::kTempoValid|ProcessContext::kTimeSigValid|ProcessContext::kProjectTimeMusicValid|(transport.playing?ProcessContext::kPlaying:0);
         ProcessData data{};data.processMode=kRealtime;data.symbolicSampleSize=kSample32;data.numSamples=count;
         data.numInputs=int(inputs.size());data.numOutputs=int(outputs.size());data.inputs=inputs.data();data.outputs=outputs.data();
         data.inputParameterChanges=&changes;data.inputEvents=&events;data.processContext=&context;
@@ -537,7 +552,11 @@ bool Processor::consumeEdited()noexcept {
     const auto flags=impl->restartFlags.exchange(0);
     if(flags&kLatencyChanged)impl->latencySamples=impl->processor->getLatencySamples();
     if(flags&kParamValuesChanged)if(impl->controller)for(int i=0;i<impl->paramCount;++i)
-        impl->performEdit(impl->params[i].id,impl->controller->getParamNormalized(impl->params[i].id));
+        // MIDI proxy and program getters are not the current instrument state.
+        // A controller refresh (including editor teardown) must not turn them
+        // into CC7=0, CC10=0 or a spurious program change.
+        if(impl->params[i].resyncFromController)
+            impl->performEdit(impl->params[i].id,impl->controller->getParamNormalized(impl->params[i].id));
     return impl->edited.exchange(false);
 }
 unsigned Processor::latency()const noexcept{return impl->latencySamples.load();}

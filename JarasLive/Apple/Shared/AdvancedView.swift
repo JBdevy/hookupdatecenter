@@ -246,7 +246,6 @@ private struct AdvancedTimelineSettings: View {
                     Text(verbatim: "none").tag(false)
                 }.labelsHidden()
             }
-            #if os(macOS)
             HStack {
                 Text("Invert colors of waveform items")
                 Spacer()
@@ -255,7 +254,6 @@ private struct AdvancedTimelineSettings: View {
                     Text("Inverted").tag(true)
                 }.labelsHidden()
             }
-            #endif
             SetlistTextColorRow(title: "Timeline background", key: "jaras.timeline.background", defaultColor: TimelineAppearanceDefaults.background, showsReset: true)
             SetlistTextColorRow(title: "Primary grid color", key: "jaras.timeline.primaryGrid", defaultColor: TimelineAppearanceDefaults.primaryGrid, showsReset: true)
             SetlistTextColorRow(title: "Secondary grid color", key: "jaras.timeline.secondaryGrid", defaultColor: TimelineAppearanceDefaults.secondaryGrid, showsReset: true)

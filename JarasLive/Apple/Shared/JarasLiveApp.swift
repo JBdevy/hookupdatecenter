@@ -259,6 +259,8 @@ struct RootView: View {
 /// that host, preserving timeline/mixer views and their local presentation state.
 @MainActor private struct DesktopWorkspaceView: NSViewRepresentable {
     let container: AppContainer
+    @ObservedObject private var documents: ProjectDocuments
+    init(container: AppContainer) { self.container = container; documents = container.documents }
     @Environment(\.locale) private var locale
     @Environment(\.displayScale) private var displayScale
     private var environmentKey: String { locale.identifier + "|" + String(describing: displayScale) }
@@ -276,9 +278,15 @@ struct RootView: View {
     }
     func makeNSView(context: Context) -> Deck { Deck() }
     func updateNSView(_ deck: Deck, context: Context) {
-        guard container.documents.ready else { return }
+        // A new tab mounts before its asynchronous document load finishes.
+        // Observe that completion here: the container reference itself never
+        // changes, so SwiftUI can otherwise retain the previous tab's host.
+        guard documents.ready else {
+            for view in deck.subviews { view.isHidden = true }
+            return
+        }
         let host: NSHostingView<AnyView>
-        if container.desktopWorkspaceIdentity == container.documents.opened,
+        if container.desktopWorkspaceIdentity == documents.opened,
            let cached = container.desktopWorkspaceHost { host = cached }
         else {
             container.desktopWorkspaceHost?.removeFromSuperview()
@@ -288,7 +296,7 @@ struct RootView: View {
             host.setContentHuggingPriority(.defaultLow, for: .horizontal)
             host.setContentHuggingPriority(.defaultLow, for: .vertical)
             container.desktopWorkspaceHost = host
-            container.desktopWorkspaceIdentity = container.documents.opened
+            container.desktopWorkspaceIdentity = documents.opened
             container.desktopWorkspaceEnvironment = environmentKey
         }
         if container.desktopWorkspaceEnvironment != environmentKey {
@@ -592,7 +600,8 @@ private struct ClosingLogoView: View {
         return button
     }
     private func prepare() {
-        let content = Content(frame: NSRect(x: 0, y: 0, width: 260, height: 244))
+        let titleHeight: CGFloat = 44
+        let content = Content(frame: NSRect(x: 0, y: 0, width: 280, height: 268))
         content.wantsLayer = true
         let glass = NSVisualEffectView(frame: content.bounds)
         glass.material = .hudWindow; glass.blendingMode = .behindWindow; glass.state = .active
@@ -602,18 +611,19 @@ private struct ClosingLogoView: View {
         content.addSubview(tint)
         content.layer?.cornerRadius = 25; content.layer?.masksToBounds = true
         content.layer?.borderWidth = 1; content.layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
-        let logo = NSImageView(frame: NSRect(x: 98, y: 24, width: 64, height: 64))
+        let logo = NSImageView(frame: NSRect(x: (content.bounds.width-64)/2, y: 24, width: 64, height: 64))
         logo.image = NSApp.applicationIconImage; logo.imageScaling = .scaleProportionallyUpOrDown
         logo.setAccessibilityLabel("CatLive")
         content.addSubview(logo)
-        let title = NSTextField(labelWithString: messageText)
+        let title = NSTextField(wrappingLabelWithString: messageText)
         title.font = .systemFont(ofSize: 14, weight: .bold); title.textColor = NSColor(white: 0.87, alpha: 1)
-        title.alignment = .center; title.frame = NSRect(x: 16, y: 98, width: 228, height: 24)
+        title.alignment = .center; title.frame = NSRect(x: 16, y: 98, width: content.bounds.width-32, height: titleHeight)
         content.addSubview(title)
         for (index, button) in buttons.enumerated() {
-            button.frame = NSRect(x: 16, y: 132 + index * 34, width: 228, height: 28)
+            button.frame = NSRect(x: 16, y: 152 + index * 34, width: Int(content.bounds.width)-32, height: 28)
             content.addSubview(button)
         }
+        panel.setContentSize(content.bounds.size)
         panel.contentView = content
         panel.title = messageText
         panel.setAccessibilityLabel(messageText)
@@ -649,6 +659,7 @@ private struct ClosingLogoView: View {
 
     var attached: Bool { documents != nil }
     var needsConfirmation: Bool {
+        DesktopProjectTabs.shared.needsSaveOnClose ||
         documents?.show.hasUnsavedChanges == true || documents?.show.saving == true ||
         documents?.busy == true || TrackRecording.shared.recording || TrackRecording.shared.busy
     }
@@ -745,8 +756,9 @@ private struct ClosingLogoView: View {
             return
         }
         let alert = ProjectSaveAlert()
-        alert.messageText = localized("Do you want to save this project?")
-        alert.addButton(withTitle: localized("Save")).keyEquivalent = "\r"
+        let multipleProjects = DesktopProjectTabs.shared.projects.count > 1
+        alert.messageText = localized(multipleProjects ? "Do you want to save all projects?" : "Do you want to save this project?")
+        alert.addButton(withTitle: localized(multipleProjects ? "Save all" : "Save")).keyEquivalent = "\r"
         alert.addButton(withTitle: localized("Close without saving"))
         alert.addButton(withTitle: localized("Cancel")).keyEquivalent = "\u{1b}"
         let answer: (NSApplication.ModalResponse) -> Void = { [weak self] response in
@@ -766,9 +778,7 @@ private struct ClosingLogoView: View {
     private func finishClosing(documents: ProjectDocuments, save: Bool, completion: @escaping (Bool) -> Void) {
         Task { @MainActor in
             do {
-                guard try await DesktopProjectTabs.shared.confirmAndSaveBackgroundProjects(excluding: documents) else {
-                    pending = false; completion(false); return
-                }
+                try await DesktopProjectTabs.shared.prepareBackgroundProjectsForClosing(excluding: documents, save: save)
                 closingLogo.begin()
                 // Let the transparent logo paint before releasing playback resources.
                 await Task.yield()

@@ -375,7 +375,7 @@ private final class CaptureWriter: @unchecked Sendable {
                 (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false))
         }.map(\.id)))
         let desired = inputChannels > 0 && (AudioDeviceSettings.shared.usesSystemLoopback || AVCaptureDevice.authorizationStatus(for: .audio) == .authorized) ? tracks.filter {
-            armed.contains($0.id) && $0.role.rawValue != "vinhetas" && $0.recordingMode != .midi && $0.kind == .standard
+            armed.contains($0.id) && $0.role.rawValue != "vinhetas" && $0.recordingMode != .midi && $0.kind == .standard && $0.inputPatch != OutputPatch.none
         }.map { MonitorConfig(track: $0.id, patch: $0.inputPatch ?? defaultInputPatch, channels: $0.recordingChannels ?? 2) } : []
         guard desired != monitorConfig || desired.contains(where: { !playback.hasInputMonitor($0.track) }) else { return }
         for config in monitorConfig { playback.setInputMonitor(config.track, source: nil) }
@@ -579,7 +579,7 @@ private final class CaptureWriter: @unchecked Sendable {
         let wanted = armState.armed
         if let show {
             microphoneTracks = wanted.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter {
-                !$0.recordsOutput && $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false &&
+                !$0.recordsOutput && $0.inputPatch != OutputPatch.none && $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false &&
                     !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
             }.map(\.id)))
         }

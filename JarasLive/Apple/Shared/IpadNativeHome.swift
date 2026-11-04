@@ -6,6 +6,7 @@ import AVFoundation
 import Combine
 
 extension UTType {
+    static let catLiveProject = UTType(exportedAs: "com.hookdeveloper.jaraslive.project", conformingTo: .data)
     static let catLivePackage = UTType(exportedAs: "com.hookdeveloper.catlive.ziplive", conformingTo: .zip)
 }
 
@@ -251,6 +252,12 @@ extension UTType {
                 }
                 .modifier(NativeTrialSession(show: container.show, purchases: purchases) { showingPurchase = true })
                 .disabled(tabs.transitioning)
+                // Native controls commit their visual state in the same frame.
+                // Keep Remote transitions and the playback/display clocks separate.
+                .transaction { transaction in
+                    transaction.animation = nil
+                    transaction.disablesAnimations = true
+                }
 
             } else if starting {
                 StartupView(progress: nil, stage: "Iniciando…")
@@ -389,16 +396,21 @@ private struct NativeTrialSession: ViewModifier {
 /// Hold security-scoped folder access through scan, ordering and media copy.
 private struct NativeProjectPicker: UIViewControllerRepresentable {
     let kind: ProjectDocuments.NativePicker
+    var directory: URL? = nil
     let picked: ([URL]) -> Void
     let cancelled: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination) ? [.folder] : kind == .trackAudio ? [.mp3, .wav, .aiff] : kind == .trackMedia ? [.image, .movie] : [.catLivePackage, .zip]
+        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.mp3, .wav, .aiff] : kind == .trackMedia ? [.image, .movie] : kind == .project ? [.catLiveProject, .catLivePackage, .zip] : [.catLivePackage, .zip]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: kind == .trackAudio || kind == .trackMedia)
+        picker.directoryURL = directory
         picker.allowsMultipleSelection = kind == .stems
         if kind == .stems { picker.title = JarasLocalization.string("Choose the folder containing your song folders") }
         if kind == .storage { picker.title = JarasLocalization.string("Choose an external folder for CatLive projects") }
-        if kind == .package { picker.title = JarasLocalization.string("Choose a CatLive project") }
+        if kind == .package || kind == .project { picker.title = JarasLocalization.string("Choose a CatLive project") }
+        if kind == .projectFolder {
+            picker.title = JarasLocalization.string("Choose the folder containing the selected project and its media.")
+        }
         if kind == .packageDestination { picker.title = JarasLocalization.string("Choose a folder for the imported project") }
         picker.delegate = context.coordinator
         return picker
@@ -553,7 +565,7 @@ struct NativeProjectPresentation: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(item: $documents.nativePicker, onDismiss: pickerDismissed) { kind in
-                NativeProjectPicker(kind: kind, picked: { urls in
+                NativeProjectPicker(kind: kind, directory: documents.nativePickerDirectory, picked: { urls in
                     let result = pickerHandoff.selected(urls, kind: kind)
                     documents.nativePicker = nil
                     deliver(result)

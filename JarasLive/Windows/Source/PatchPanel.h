@@ -66,6 +66,14 @@ class PatchPanel final : public Component {
                     return &t;
         return nullptr;
     }
+    static void assignInput(jaras::Song &song, jaras::Track &track, jaras::OutputPatch input) {
+        if (!track.stereoLinkPartner) { track.inputPatch = input; return; }
+        const bool none = input.firstChannel == -1;
+        const int first = jlimit(1, 1023, input.firstChannel - (track.stereoLinkLeft ? 0 : 1));
+        track.inputPatch = none ? jaras::OutputPatch{-1,2} : jaras::OutputPatch{first + (track.stereoLinkLeft ? 0 : 1),1};
+        for (auto &other : song.tracks) if (other.id == *track.stereoLinkPartner)
+            other.inputPatch = none ? jaras::OutputPatch{-1,2} : jaras::OutputPatch{first + (track.stereoLinkLeft ? 1 : 0),1};
+    }
     void edit(std::function<void(jaras::Track &)> action, bool routing = true) {
         try {
             session.editTrackSettings([&](jaras::Project &p) {
@@ -235,7 +243,7 @@ class PatchPanel final : public Component {
             b->setBounds(category*100,74,98,26);b->setToggleState(batchCategory==category,dontSendNotification);
             b->onClick=[safe=SafePointer<PatchPanel>(this),category]{if(!safe)return;safe->batchCategory=category;safe->batchChoice=1;MessageManager::callAsync([safe]{if(safe)safe->build();});};
         }
-        StringArray names{"Nenhum"};std::vector<jaras::OutputPatch> patches{{-1,2}};
+        StringArray names{localization::translate("None")};std::vector<jaras::OutputPatch> patches{{-1,2}};
         auto *device=session.audio.devices.getCurrentAudioDevice();
         if(batchCategory==1){names.addArray({"MIDI 1","MIDI 2","MIDI 3","MIDI 4","MIDI 5","MIDI 6"});}
         else{
@@ -252,7 +260,7 @@ class PatchPanel final : public Component {
                 if(batchCategory!=2&&t.role.id=="vinhetas")continue;
                 if(batchCategory==1){if(batchChoice==1)t.midiInput.reset();else t.midiInput=batchChoice-1;}
                 else {const auto patch=patches[(size_t)jlimit(0,(int)patches.size()-1,batchChoice-1)];
-                    if(batchCategory==0)t.inputPatch=patch;
+                    if(batchCategory==0){if(!t.stereoLinkPartner || t.stereoLinkLeft || !targets.count(*t.stereoLinkPartner))assignInput(song,t,patch);}
                     else{t.outputs=std::vector<jaras::OutputPatch>{patch};t.patch.reset();t.secondaryPatch.reset();}
                 }
             }}, batchCategory!=1);}catch(const std::exception &e){if(error)error(String::fromUTF8(e.what()));}
@@ -289,8 +297,8 @@ class PatchPanel final : public Component {
         label(device ? device->getName() : String::fromUTF8("Áudio não iniciado"), 0, 8, 300);
         const bool outputOnly=t->role.id=="vinhetas" || t->role.id=="generatedClick";
         if(!outputOnly) {
-        StringArray inputs{"Nenhum"};
-        std::vector<jaras::OutputPatch> inputPatches{{-1, 1}};
+        StringArray inputs{localization::translate("None")};
+        std::vector<jaras::OutputPatch> inputPatches{{-1, 2}};
         const auto inputNames = device ? device->getInputChannelNames() : StringArray();
         for (int i = 0; i < inputNames.size(); ++i) {
             inputs.add(String(i + 1) + String::fromUTF8(" — ") + inputNames[i]);
@@ -312,9 +320,14 @@ class PatchPanel final : public Component {
         }
         label(localization::translate("Entrada"), 0, 44, 62);
         choice(66, 44, 234, inputs, selected, [this, inputPatches](int n) {
-            edit([&](auto &t) {
-                t.inputPatch = inputPatches[(size_t)jlimit(0,(int)inputPatches.size()-1,n-1)];
-            });
+            const auto input = inputPatches[(size_t)jlimit(0,(int)inputPatches.size()-1,n-1)];
+            try {
+                session.editTrackSettings([&](jaras::Project &project) {
+                    for (auto &song : project.songs) for (auto &track : song.tracks)
+                        if (track.id == id) assignInput(song,track,input);
+                }, true);
+            } catch (const std::exception &e) { if (error) error(String::fromUTF8(e.what())); }
+            MessageManager::callAsync([safe=SafePointer<PatchPanel>(this)] { if (safe) safe->build(); });
         });
         label(localization::translate("Entrada MIDI"), 0, 80, 194);
         label(localization::translate("Canal MIDI"), 208, 80, 92);

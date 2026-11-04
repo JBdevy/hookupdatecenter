@@ -1,4 +1,5 @@
 #include "ConfirmationPanel.h"
+#include "CloseProjectSheet.h"
 #include "Workspace.h"
 #include "RemoteProtocol.h"
 #include "RemoteHost.h"
@@ -406,9 +407,13 @@ class CatLiveApplication final : public JUCEApplication {
             if (splash) splash->toFront(false);
             return;
         }
+        if (closingProjects) {
+            ModalComponentManager::getInstance()->bringModalComponentsToFront();
+            return;
+        }
         if (window)
             if (auto *w = (tabHost ? tabHost->current : nullptr)) {
-                requestTabClosing(0);
+                requestAllProjectsClosing(*w);
                 return;
             }
         quit();
@@ -737,8 +742,8 @@ class CatLiveApplication final : public JUCEApplication {
             return tabWorkspaces.size() > 1 && (direction < 0 ? selectedTab > 0 : selectedTab + 1 < tabWorkspaces.size());
         };
     }
-    void selectProjectTab(size_t index) {
-        if (!window || index >= tabWorkspaces.size()) return;
+    void selectProjectTab(size_t index, bool forClosing = false) {
+        if (!window || index >= tabWorkspaces.size() || (closingProjects && !forClosing)) return;
         if (selectedTab < tabSessions.size() && (tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording())) return;
         if (auto *old = (tabHost ? tabHost->current : nullptr)) { old->deactivateProjectTab(); old->setVisible(false); }
         selectedTab = index;
@@ -750,6 +755,10 @@ class CatLiveApplication final : public JUCEApplication {
     }
     void openProjectTab(const File &file, ID remoteRequest = {}) {
         const auto host = firstWorkspace->projectRemoteHost();
+        if (closingProjects) {
+            host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, "Finish closing the current operation first.");
+            return;
+        }
         if (!file.existsAsFile()) {
             host->projectOpening.update(remoteRequest, remote::ProjectOpening::State::failed, {}, "This project is no longer available in the PC's recent projects.");
             return;
@@ -805,7 +814,7 @@ class CatLiveApplication final : public JUCEApplication {
         }
     }
     void closeProjectTab(size_t index) {
-        if (closing || index>=tabWorkspaces.size() || tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) return;
+        if (closing || closingProjects || index>=tabWorkspaces.size() || tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording()) return;
         selectProjectTab(index);
         auto *workspace=tabWorkspaces[index];
         workspace->requestClose([this,workspace] {
@@ -836,11 +845,38 @@ class CatLiveApplication final : public JUCEApplication {
             });
         },false);
     }
-    void requestTabClosing(size_t index) {
-        if (index >= tabWorkspaces.size()) { beginClosing(); return; }
-        selectProjectTab(index);
-        tabWorkspaces[index]->requestClose([this, index] { requestTabClosing(index + 1); });
+    void requestAllProjectsClosing(Workspace &workspace) {
+        if (workspace.isCurrentlyBlockedByAnotherModalComponent()) {
+            ModalComponentManager::getInstance()->bringModalComponentsToFront();
+            return;
+        }
+        if (std::any_of(tabSessions.begin(), tabSessions.end(), [](auto *tab) { return tab->busy; })) {
+            workspace.showError(localization::translate("Finish the current operation before closing."));
+            return;
+        }
+        closingProjects = true;
+        closingInitialTab = selectedTab;
+        const bool multiple = tabSessions.size() > 1;
+        const bool needsSave = std::any_of(tabSessions.begin(), tabSessions.end(), [](auto *tab) {
+            return tab->dirty || tab->isSaving() || tab->audio.isRecording();
+        });
+        if (!multiple || !needsSave) { requestTabClosing(0); return; }
+        CloseProjectSheet::open(workspace, [this](int action) {
+            if (action != 1 && action != 2) { closingProjects = false; return; }
+            requestTabClosing(0, action == 1);
+        }, false, true, true);
     }
+    void requestTabClosing(size_t position, std::optional<bool> saveAll = {}) {
+        if (position >= tabWorkspaces.size()) { beginClosing(); return; }
+        // Finish the foreground recorder first; selecting another tab is
+        // intentionally blocked while that recorder is still running.
+        const auto index = position == 0 ? closingInitialTab : position <= closingInitialTab ? position - 1 : position;
+        selectProjectTab(index, true);
+        tabWorkspaces[index]->requestClose([this, position, saveAll] { requestTabClosing(position + 1, saveAll); },
+                                          true, saveAll, [this] { closingProjects = false; });
+    }
+    bool closingProjects = false;
+    size_t closingInitialTab = 0;
     bool closing = false;
     std::vector<Component::SafePointer<Component>> hiddenWindows;
     int testResult = 0;

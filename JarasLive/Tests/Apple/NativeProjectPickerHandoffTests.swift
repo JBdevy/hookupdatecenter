@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 @MainActor enum ProjectDocuments {
-    enum NativePicker: CaseIterable { case storage, stems, package, packageDestination, trackAudio, trackMedia }
+    enum NativePicker: CaseIterable { case storage, stems, project, projectFolder, package, packageDestination, trackAudio, trackMedia }
 }
 @MainActor private final class NativeProjectPickerSelection {
     let urls: [URL]
@@ -47,6 +47,6 @@ import Combine
             deliver(flow.selected([url], kind: kind))
             precondition(resumed && !cancelled, "Chosen folder did not resume \(operation)")
         }
-        print("NATIVE_PICKER_HANDOFF_OK: selection/dismissal in either order, retained creation intent, six picker types, cancellation, retries and exactly-once delivery")
+        print("NATIVE_PICKER_HANDOFF_OK: selection/dismissal in either order, retained creation intent, eight picker types, cancellation, retries and exactly-once delivery")
     }
 }

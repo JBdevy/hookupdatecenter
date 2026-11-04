@@ -31,7 +31,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
     @Published var projectTabIndex = 0
 
     #if os(iOS)
-    enum NativePicker: String, Identifiable { case package, packageDestination, stems, trackAudio, trackMedia, storage; var id: String { rawValue } }
+    enum NativePicker: String, Identifiable { case project, projectFolder, package, packageDestination, stems, trackAudio, trackMedia, storage; var id: String { rawValue } }
     @Published var nativePicker: NativePicker?
     @Published var nativePackagePrompt: PortableProjectImportPrompt?
     @Published private(set) var nativeStorageDirectory: URL?
@@ -39,6 +39,52 @@ enum PortableProjectImportPrompt: String, Identifiable {
     private var afterNativeStorage: (() -> Void)?
     private var nativePackageScope: URL?
     private var nativePendingPackage: URL?
+    private var nativePendingProject: URL?
+    private var nativeProjectScope: URL?
+    var nativePickerDirectory: URL? { nativePendingProject?.deletingLastPathComponent() }
+    private func cancelNativeProjectOpen() {
+        nativePendingProject = nil
+        nativeProjectScope?.stopAccessingSecurityScopedResource(); nativeProjectScope = nil
+    }
+    private func receiveNativeProject(_ url: URL) {
+        if ["ziplive", "zip"].contains(url.pathExtension.lowercased()) { importPortablePackage(url); return }
+        guard ["jl", "bkjl"].contains(url.pathExtension.lowercased()) else {
+            error = "Choose a .jl, .bkjl or .ziplive project."; return
+        }
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        cancelNativeProjectOpen()
+        let container = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        if NativeStemFolderBrowser.contains(url, in: container) ||
+            nativeStorageScopes.contains(where: { NativeStemFolderBrowser.contains(url, in: $0) }) {
+            open(url); return
+        }
+        // Files grants access to the selected document only. A project also
+        // needs its sibling media and permission to save backups in that folder.
+        nativePendingProject = url
+        if url.startAccessingSecurityScopedResource() { nativeProjectScope = url }
+        nativePicker = .projectFolder
+    }
+    private func receiveNativeProjectFolder(_ root: URL) {
+        guard let project = nativePendingProject else { return }
+        defer { cancelNativeProjectOpen() }
+        guard NativeStemFolderBrowser.contains(project, in: root) else {
+            error = "Choose the folder containing the selected project and its media."; return
+        }
+        guard root.startAccessingSecurityScopedResource() else {
+            error = "Could not access the selected folder."; return
+        }
+        do {
+            let bookmark = try root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            var bookmarks = UserDefaults.standard.array(forKey: "jaras.nativeImportedProjectBookmarks") as? [Data] ?? []
+            bookmarks.removeAll { (try? Self.resolveNativeImportBookmark($0).standardizedFileURL) == root.standardizedFileURL }
+            bookmarks.append(bookmark)
+            UserDefaults.standard.set(bookmarks, forKey: "jaras.nativeImportedProjectBookmarks")
+            if nativeStorageScopes.contains(where: { $0.standardizedFileURL == root.standardizedFileURL }) {
+                root.stopAccessingSecurityScopedResource()
+            } else { nativeStorageScopes.append(root) }
+            open(project)
+        } catch { root.stopAccessingSecurityScopedResource(); self.error = error.localizedDescription }
+    }
     func continueNativePackageImport(_ prompt: PortableProjectImportPrompt) {
         guard nativePackagePrompt == prompt else { return }
         nativePackagePrompt = nil
@@ -166,6 +212,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         nativePicker = .trackMedia
     }
     func cancelNativePicker(kind: NativePicker? = nil) {
+        if kind == .project || kind == .projectFolder { cancelNativeProjectOpen() }
         if kind == .package || kind == .packageDestination { cancelNativePackageImport() }
         if kind == .storage || nativePicker == .storage {
             afterNativeStorage = nil
@@ -180,6 +227,8 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     func receiveNativeFiles(_ urls: [URL], kind: NativePicker) {
         nativePicker = nil
+        if kind == .project { if let url = urls.first { receiveNativeProject(url) }; return }
+        if kind == .projectFolder { if let url = urls.first { receiveNativeProjectFolder(url) } else { cancelNativeProjectOpen() }; return }
         if kind == .storage { if let root = urls.first { receiveNativeStorage(root) }; return }
         if kind == .packageDestination { if let root = urls.first { receiveNativePackageDestination(root) }; return }
         if kind == .trackAudio || kind == .trackMedia {
@@ -441,6 +490,36 @@ enum PortableProjectImportPrompt: String, Identifiable {
         return message
     }
     #if os(macOS)
+    func pasteGridItems(selectedTracks: Set<UUID>, completion: @escaping (Set<UUID>) -> Void) {
+        let board = GridMediaClipboard.shared
+        guard board.source() == .items, let payload = board.items else { return }
+        if board.session == show.projectSessionID {
+            completion(show.pasteItems(selectedTracks: selectedTracks)); return
+        }
+        guard !payload.moving, ready, !busy, show.canControl(), let song = show.current else { return }
+        let session = show.projectSessionID
+        let position = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
+        do {
+            let plan = try payload.copyPlan(in: song, at: position, selectedTracks: selectedTracks)
+            let entries = plan.entries
+            var validation = show.snapshot.project
+            try validation.pasteItems(entries, song: song.id, moving: false, addingTracks: plan.newTracks)
+            let source = board.directory, destination = currentURL?.deletingLastPathComponent() ?? projectAudio.mediaDirectory
+            busy = true; status = "Copying media…"
+            Task {
+                defer { busy = false; status = "" }
+                do {
+                    let transfer = try await Task.detached(priority: .userInitiated) {
+                        try GridItemMediaTransfer.stage(entries, from: source, to: destination)
+                    }.value
+                    do {
+                        guard show.projectSessionID == session else { throw CancellationError() }
+                        completion(try show.pasteTransferredItems(transfer.entries, song: song.id, addingTracks: plan.newTracks))
+                    } catch { transfer.discard(); throw error }
+                } catch { show.modalNotice = error.localizedDescription }
+            }
+        } catch { show.modalNotice = error.localizedDescription }
+    }
     func pasteMedia(_ urls: [URL], track: UUID?) {
         guard show.canControl(), ready, !busy, !urls.isEmpty,
               let song = show.current, pendingAudioDrop == nil else { return }
@@ -1011,7 +1090,10 @@ enum PortableProjectImportPrompt: String, Identifiable {
         let response = withExtendedLifetime(validator) { panel.runModal() }
         if response == .OK, let url = panel.url { open(url) }
         #else
-        browsePortablePackage()
+        guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy,
+              nativePicker == nil, nativePackagePrompt == nil else { return }
+        cancelNativeProjectOpen(); cancelNativePackageImport()
+        nativePicker = .project
         #endif
     }
     func browsePortablePackage() {
@@ -1993,22 +2075,34 @@ private final class ProjectSourcePanelValidator: NSObject, NSOpenSavePanelDelega
 #endif
 
 #if os(macOS)
-/// Own only a token; actual copied items remain in ShowController. A new Finder
-/// copy replaces this token so a stale internal selection cannot win Cmd+V.
+/// A process-wide snapshot lets other project tabs paste the same selection.
+/// A new Finder copy replaces the token so stale internal items cannot win Cmd+V.
 @MainActor final class GridMediaClipboard {
     static let shared = GridMediaClipboard()
-    enum Source: Equatable { case items, files([URL]), none }
+    enum Source: Equatable { case items, tracks, files([URL]), none }
     private let pasteboard: NSPasteboard
     private let itemType = NSPasteboard.PasteboardType("com.catlive.grid-items")
     private var token: String?
+    private var tracksCopied = false
+    var items: GridItemClipboard?
+    var directory: URL?
+    var session: UUID?
     init(pasteboard: NSPasteboard = .general) { self.pasteboard = pasteboard }
     func didCopyItems() {
+        tracksCopied = false
+        claimClipboard()
+    }
+    func didCopyTracks(session: UUID) {
+        tracksCopied = true; items = nil; directory = nil; self.session = session
+        claimClipboard()
+    }
+    private func claimClipboard() {
         let value = UUID().uuidString
         pasteboard.clearContents()
         token = pasteboard.setString(value, forType: itemType) ? value : nil
     }
     func source() -> Source {
-        if let token, pasteboard.string(forType: itemType) == token { return .items }
+        if let token, pasteboard.string(forType: itemType) == token { return tracksCopied ? .tracks : .items }
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
         return urls.isEmpty ? .none : .files(urls)
     }

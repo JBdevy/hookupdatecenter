@@ -20,13 +20,14 @@ class CloseProjectSheet final : public Component {
       private: bool primary;
     };
   public:
-    CloseProjectSheet(bool playback = false, bool application = true) : playback(playback) {
-        heading = playback ? (application ? "Encerrar o CatLive?" : "Fechar aba?") : "Deseja salvar este projeto?";
+    CloseProjectSheet(bool playback = false, bool application = true, bool allProjects = false) : playback(playback), allProjects(allProjects) {
+        heading = playback ? (application ? "Encerrar o CatLive?" : "Fechar aba?") : allProjects ? "Do you want to save all projects?" : "Deseja salvar este projeto?";
         message = application ? localization::translate(String::fromUTF8("A reprodução está em andamento. Deseja realmente encerrar o CatLive?"))
                               : String::fromUTF8("A reprodução está em andamento. Deseja realmente fechar esta aba?");
         setName(localization::translate(heading)); setWantsKeyboardFocus(true);
         setFocusContainerType(FocusContainerType::focusContainer);
         for (auto *button : {&save, &discard, &cancel}) addAndMakeVisible(button);
+        if (allProjects) save.setButtonText(localization::translate("Save all"));
         if (playback) {
             save.setButtonText(localization::translate("Cancelar"));
             discard.setButtonText(application ? localization::translate("Encerrar CatLive") : localization::translate("Fechar aba"));
@@ -44,7 +45,7 @@ class CloseProjectSheet final : public Component {
     }
     juce::Rectangle<int> contentFrame() const { return frame; }
     void resized() override {
-        frame = juce::Rectangle<int>(playback ? confirmationStyle::width : confirmationStyle::iconWidth,playback ? 180 : 234).withCentre(getLocalBounds().getCentre());
+        frame = juce::Rectangle<int>(playback ? confirmationStyle::width : confirmationStyle::iconWidth,playback ? 180 : allProjects ? 254 : 234).withCentre(getLocalBounds().getCentre());
         const int x=frame.getX()+confirmationStyle::margin,width=frame.getWidth()-2*confirmationStyle::margin;
         const int bottom=frame.getBottom()-confirmationStyle::margin;
         if (playback) {
@@ -68,18 +69,18 @@ class CloseProjectSheet final : public Component {
             g.drawFittedText(localization::translate(message),x,frame.getY()+46,width,42,Justification::topLeft,3,1.f);
         } else {
             g.drawImageWithin(icon,frame.getCentreX()-24,frame.getY()+16,48,48,RectanglePlacement::centred);
-            g.drawText(localization::translate(heading),x,frame.getY()+74,width,24,Justification::centred);
+            g.drawFittedText(localization::translate(heading),x,frame.getY()+74,width,allProjects ? 44 : 24,Justification::centred,allProjects ? 2 : 1,1.f);
         }
     }
-    static void open(Component &parent, std::function<void(int)> answer, bool playback = false, bool application = true) {
-        auto *sheet = new CloseProjectSheet(playback, application);
+    static void open(Component &parent, std::function<void(int)> answer, bool playback = false, bool application = true, bool allProjects = false) {
+        auto *sheet = new CloseProjectSheet(playback, application, allProjects);
         parent.addAndMakeVisible(sheet); sheet->setBounds(parent.getLocalBounds()); sheet->toFront(true);
         sheet->enterModalState(true, ModalCallbackFunction::create([safe=SafePointer<Component>(&parent), answer=std::move(answer)](int result) {
             if (safe) { safe->grabKeyboardFocus(); answer(result); }
         }), true);
     }
   private:
-    bool playback = false;
+    bool playback = false, allProjects = false;
     String heading, message;
     Action save{"Salvar", true}, discard{"Fechar sem salvar", false}, cancel{"Cancelar", false};
     Image icon = ImageCache::getFromMemory(BinaryData::icon2561x_png, BinaryData::icon2561x_pngSize);

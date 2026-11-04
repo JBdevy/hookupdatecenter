@@ -28,6 +28,16 @@
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.hookdeveloper.jaraslive.project</string>
+            <key>UTTypeDescription</key>
+            <string>CatLive project</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.data</string></array>
+            <key>UTTypeTagSpecification</key>
+            <dict><key>public.filename-extension</key><array><string>jl</string><string>bkjl</string></array></dict>
+        </dict>
 		<dict>
 			<key>UTTypeIdentifier</key>
 			<string>com.hookdeveloper.catlive.ziplive</string>

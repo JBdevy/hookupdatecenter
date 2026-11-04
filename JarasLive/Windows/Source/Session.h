@@ -83,7 +83,7 @@ class Session final : private Timer {
     void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false);
     void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
     void resizeItem(const ID &, double start, double end);
-    std::vector<ID> duplicateTracks(const std::set<ID> &);
+    std::vector<ID> duplicateTracks(const std::set<ID> &, const var *copiedDocument = nullptr);
     void editTrackHierarchy(const ID &, const std::function<void(jaras::Song &)> &);
     void undo();
     void redo();

@@ -27,6 +27,7 @@ struct IpadItemHeader: UIViewRepresentable {
 }
 
 final class IpadItemHeaderControl: UIControl {
+    static let itemBackgroundColor = UIColor(white: 0.19, alpha: 1)
     var clip = AudioClip(id: UUID(), name: "", startTime: 0, duration: 0) {
         didSet { if oldValue.id != clip.id { cancelTracking(with: nil) } }
     }
@@ -55,7 +56,7 @@ final class IpadItemHeaderControl: UIControl {
             fxBypassed: clip.fxBypassed == true)
     }
     override init(frame: CGRect) {
-        super.init(frame: frame); isOpaque = true; backgroundColor = UIColor(white: 0.19, alpha: 1)
+        super.init(frame: frame); isOpaque = true; backgroundColor = Self.itemBackgroundColor
         isMultipleTouchEnabled = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

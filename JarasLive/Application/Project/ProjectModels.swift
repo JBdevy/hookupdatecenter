@@ -645,8 +645,9 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                           !song.tracks.contains(where: { $0.parentTrackID == track.id }),
                           track.volume == other.volume, track.pan == -other.pan,
                           let input = track.inputPatch, let otherInput = other.inputPatch,
-                          input.channelCount == 1, otherInput.channelCount == 1,
-                          otherInput.firstChannel == input.firstChannel + (link.left ? 1 : -1) else { throw ProjectError.invalid("Invalid linked tracks") }
+                          (input == .none && otherInput == .none) ||
+                            (input.channelCount == 1 && otherInput.channelCount == 1 &&
+                             otherInput.firstChannel == input.firstChannel + (link.left ? 1 : -1)) else { throw ProjectError.invalid("Invalid linked tracks") }
                 }
                 if track.kind == .programChange {
                     guard track.clips.isEmpty, track.audioFile == nil, track.fx == nil, track.parentTrackID == nil,
@@ -676,7 +677,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 }
                 guard track.midiChannel == nil || (1...16).contains(track.midiChannel!) else { throw ProjectError.invalid("Invalid MIDI channel") }
                 guard track.midiInput == nil || (1...6).contains(track.midiInput!) || (track.kind == .programChange && track.midiInput == -1) else { throw ProjectError.invalid("Invalid MIDI input") }
-                try track.inputPatch?.validate(allowMaster: false)
+                try track.inputPatch?.validate(allowMaster: false, allowNone: true)
                 guard track.recordingChannels == nil || TrackRecordingMode(rawValue: track.recordingChannels!) != nil else { throw ProjectError.invalid("Invalid recording channel mode") }
                 guard track.recordingFormat == nil || ["wav", "wav32", "mp3"].contains(track.recordingFormat!) else { throw ProjectError.invalid("Invalid recording format") }
                 try track.patch?.validate(allowMaster: true, allowGroup: track.parentTrackID != nil, allowNone: true)

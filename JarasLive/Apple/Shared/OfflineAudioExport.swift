@@ -699,6 +699,7 @@ final class OfflineAudioExport {
         var tempoEvents: [(Int64, () -> Void)] = []
         #if os(macOS)
         for (effects, origin) in transportClocks {
+            effects.externalTimeline(tempoSections)
             for node in effects.externalNodes.values {
                 let delay = max(0, maximumLatency - node.latency - node.outputPresentationLatency)
                 let initialPosition = origin - Double(preroll) / format.sampleRate - delay

@@ -818,6 +818,8 @@ private struct JarasSavePulse: ViewModifier {
         content
             .opacity(active ? (bright ? 1 : 0.48) : 1)
             .animation(active ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .none, value: bright)
+            // Keep this status indicator alive when Native disables control transitions.
+            .transaction { $0.disablesAnimations = false }
             .onAppear { bright = !active }
             .onChange(of: active) { bright = !$0 }
         #endif

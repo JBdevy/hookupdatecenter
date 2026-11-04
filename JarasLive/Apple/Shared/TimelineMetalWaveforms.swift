@@ -88,19 +88,48 @@ final class TimelineMediaURLCache {
 /// Audio coordinates remain independent of zoom. Only the small transform and
 /// clipping records change during a gesture; source vertices stay on the GPU.
 struct TimelineWaveformItem {
-    let clip: AudioClip
-    let fragments: [AudioClip]
-    let url: URL
-    let rect: CGRect
-    let gray: Float
-    var sourcePath: String? = nil
-    var mediaSource: TimelineMediaURLCache.Source? = nil
-    var tint: SIMD4<Float>? = nil
+    /// A zoom changes a rectangle, not the audio item's large value payload.
+    /// Share that immutable payload across projected frames instead of copying
+    /// dozens of clip fields/strings/arrays for every visible item each time.
+    private final class Content {
+        let clip: AudioClip
+        let fragments: [AudioClip]
+        let url: URL
+        let sourcePath: String?
+        let mediaSource: TimelineMediaURLCache.Source?
+        init(clip: AudioClip, fragments: [AudioClip], url: URL,
+             sourcePath: String?, mediaSource: TimelineMediaURLCache.Source?) {
+            self.clip = clip; self.fragments = fragments; self.url = url
+            self.sourcePath = sourcePath; self.mediaSource = mediaSource
+        }
+    }
+    private let content: Content
+    var clip: AudioClip { content.clip }
+    var fragments: [AudioClip] { content.fragments }
+    var url: URL { content.url }
+    var sourcePath: String? { content.sourcePath }
+    var mediaSource: TimelineMediaURLCache.Source? { content.mediaSource }
+    var rect: CGRect
+    var gray: Float
+    var tint: SIMD4<Float>?
     var ink: SIMD4<Float> { tint ?? SIMD4(repeating: gray).withAlpha(1) }
+    init(clip: AudioClip, fragments: [AudioClip], url: URL, rect: CGRect, gray: Float,
+         sourcePath: String? = nil, mediaSource: TimelineMediaURLCache.Source? = nil, tint: SIMD4<Float>? = nil) {
+        content = Content(clip: clip, fragments: fragments, url: url, sourcePath: sourcePath, mediaSource: mediaSource)
+        self.rect = rect; self.gray = gray; self.tint = tint
+    }
 }
 
 final class TimelineWaveformVertexOwner {
+    /// No UUID/Double formatting or heap strings on each clip's zoom frame.
+    enum Key: Hashable {
+        case fragment(UUID, Int, Double, Double, Double)
+        case period(UUID, Int)
+        case subpixel(UUID, Int)
+        case named(String)
+    }
     private struct Pinned {
+        var generation: UInt64 = 0
         var blocks: [TimelineAudioWaveform.VertexBlock]
         let source: String
         let step: Int
@@ -112,16 +141,19 @@ final class TimelineWaveformVertexOwner {
         var visibleFirst: Double?
         var visibleLast: Double?
     }
-    private var pinned: [String: Pinned] = [:]
-    private var used = Set<String>()
+    private var pinned: [Key: Pinned] = [:]
+    private var generation: UInt64 = 0
     private var detailedSources = Set<String>()
     private var usedDetailSources = Set<String>()
     func beginFrame() {
-        used.removeAll(keepingCapacity: true)
+        generation &+= 1
         usedDetailSources.removeAll(keepingCapacity: true)
     }
     func endFrame() {
-        pinned = pinned.filter { used.contains($0.key) }
+        // Retire only stale owners. Filtering copied the entire dictionary
+        // (and every retained block array) on every frame, even without changes.
+        let expired = pinned.compactMap { $0.value.generation == generation ? nil : $0.key }
+        for key in expired { pinned.removeValue(forKey: key) }
         detailedSources.formIntersection(usedDetailSources)
     }
 
@@ -201,8 +233,8 @@ final class TimelineWaveformVertexOwner {
     }
 
     func blocks(cache: TimelineAudioWaveform, url: URL, header: TimelineAudioWaveform.Header,
-                start: Double, end: Double, scale: Double, key: String) -> [TimelineAudioWaveform.VertexBlock] {
-        used.insert(key)
+                start: Double, end: Double, scale: Double, key: Key) -> [TimelineAudioWaveform.VertexBlock] {
+        pinned[key]?.generation = generation
         let source = header.cachePrefix ?? "\(url.path):\(header.frames):\(header.rate)"
         let step = TimelineAudioWaveform.step(rate: header.rate, pixelsPerSecond: scale)
         let fine = step < TimelineAudioWaveform.peakFramesPerInterval
@@ -230,7 +262,7 @@ final class TimelineWaveformVertexOwner {
         }
         let requested = cache.vertexDrawing(url, header: header, start: start, end: end, pixelsPerSecond: scale)
         if requested.complete && Self.covers(requested.blocks, first: first, last: last) {
-            var entry = previous.flatMap { $0.step == step ? $0 : nil } ?? Pinned(blocks: [], source: source, step: step)
+            var entry = previous.flatMap { $0.step == step ? $0 : nil } ?? Pinned(generation: generation, blocks: [], source: source, step: step)
             entry.blocks = fine ? Self.merge(entry.blocks, requested.blocks) : requested.blocks
             if fine {
                 detailedSources.insert(source)
@@ -245,7 +277,7 @@ final class TimelineWaveformVertexOwner {
         if !fine || !detailedSources.contains(source) {
             let overview = cache.cachedCoarserVertices(header, url: url, start: start, end: end, requestedStep: step)
             if !overview.isEmpty {
-                pinned[key] = Pinned(blocks: overview, source: source, step: overview[0].step)
+                pinned[key] = Pinned(generation: generation, blocks: overview, source: source, step: overview[0].step)
                 return overview
             }
         }
@@ -283,7 +315,7 @@ final class TimelineWaveformVertexOwner {
         // progressively. No prepared envelope is reintroduced after fine detail.
         if fine && !requested.blocks.isEmpty {
             detailedSources.insert(source)
-            pinned[key] = Pinned(blocks: requested.blocks, source: source, step: step)
+            pinned[key] = Pinned(generation: generation, blocks: requested.blocks, source: source, step: step)
         }
         return requested.blocks
     }
@@ -339,10 +371,13 @@ enum TimelineMetalWaveformFrameBuilder {
             let baseAmplitude = WaveformAmplitude.fullScale(channelHeight: channelHeight) * WaveformAmplitude.gain(item: item.clip.gain, normalization: item.clip.normalizationGain, inverted: item.clip.phaseInverted == true)
             let localItem = rect.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
             for (fragmentIndex, fragment) in item.fragments.enumerated() {
-                var visibleSeams = ClipRepetitionBoundaries(clip: fragment,
-                    visible: max(item.clip.startTime, (viewport.minX - 4) / scale)...max(item.clip.startTime, (viewport.maxX + 4) / scale), minimumSpacing: 10 / scale,
-                    itemRange: item.clip.startTime...(item.clip.startTime + item.clip.duration)).makeIterator()
-                let firstSeam = visibleSeams.next().map { CGFloat($0 * scale - viewport.minX) }
+                var firstSeam: CGFloat?
+                if fragment.loopLength != nil {
+                    var visibleSeams = ClipRepetitionBoundaries(clip: fragment,
+                        visible: max(item.clip.startTime, (viewport.minX - 4) / scale)...max(item.clip.startTime, (viewport.maxX + 4) / scale), minimumSpacing: 10 / scale,
+                        itemRange: item.clip.startTime...(item.clip.startTime + item.clip.duration)).makeIterator()
+                    firstSeam = visibleSeams.next().map { CGFloat($0 * scale - viewport.minX) }
+                }
                 let seamSpacing = fragment.loopLength.map { CGFloat(max(1, ceil(10 / ($0 / fragment.audioRate * scale))) * $0 / fragment.audioRate * scale) }
                 let rate = fragment.audioRate
                 guard rate.isFinite, rate > 0 else { continue }
@@ -365,7 +400,7 @@ enum TimelineMetalWaveformFrameBuilder {
                     // repetition that is rendered only as a continuous band.
                     let summaryScale = min(128 / length, header.rate / Double(TimelineAudioWaveform.peakFramesPerInterval * 2))
                     let blocks = owner.blocks(cache: cache, url: item.url, header: header, start: start, end: end,
-                        scale: summaryScale, key: "\(item.clip.id):\(fragmentIndex):subpixel")
+                        scale: summaryScale, key: .subpixel(item.clip.id, fragmentIndex))
                     for channel in 0..<channels {
                         let amplitude = baseAmplitude * WaveformAmplitude.panGain(item.clip.pan, channel: channel, channels: channels)
                         let sourceChannel = mode == 1 ? 0 : mode == 2 ? min(1, header.channels - 1) : mode == 3 && header.channels > 1 ? header.channels : mode == 4 && header.channels > 1 && channel < 2 ? 1 - channel : channel
@@ -413,7 +448,7 @@ enum TimelineMetalWaveformFrameBuilder {
                     let start = max(0, fragment.loopStart ?? 0)
                     let end = min(Double(header.frames) / header.rate, (fragment.loopStart ?? 0) + length)
                     loopBlocks = end > start ? owner.blocks(cache: cache, url: item.url, header: header,
-                        start: start, end: end, scale: rasterScale, key: "\(item.clip.id):\(fragmentIndex):period") : []
+                        start: start, end: end, scale: rasterScale, key: .period(item.clip.id, fragmentIndex)) : []
                 } else { loopBlocks = nil }
                 var position = first
                 while position < last {
@@ -440,7 +475,7 @@ enum TimelineMetalWaveformFrameBuilder {
                         let blocks: [TimelineAudioWaveform.VertexBlock]
                         if let loopBlocks { blocks = loopBlocks }
                         else {
-                            let key = "\(item.clip.id):\(fragmentIndex):\(fragment.startTime):\(fragment.sourceOffset):\(repetition)"
+                            let key = TimelineWaveformVertexOwner.Key.fragment(item.clip.id, fragmentIndex, fragment.startTime, fragment.sourceOffset, repetition)
                             blocks = owner.blocks(cache: cache, url: item.url, header: header, start: max(0, source), end: sourceEnd, scale: rasterScale, key: key)
                         }
                         for channel in 0..<channels {

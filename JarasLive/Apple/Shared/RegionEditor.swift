@@ -718,6 +718,10 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
         withExtendedLifetime(actions) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
     }
 
+    // Retained native commands read the live zoom on mouse-down, then keep
+    // that origin for the whole gesture even if a preview reprojects the grid.
+    var projectedPixelsPerSecond: CGFloat = 1
+    private(set) var gesturePixelsPerSecond: CGFloat = 1
     var normalCursor = false { didSet { if normalCursor != oldValue { window?.invalidateCursorRects(for: self) } } }
     private var moveCursor: NSCursor { normalCursor ? .arrow : .resizeLeftRight }
     private var nativeInputBounds: CGRect?
@@ -807,6 +811,7 @@ final class MarkerEditClickView: RightClickTargetView, NativeTimelineInputObserv
         // display during preview must never change the gesture's origin.
         startX = event.locationInWindow.x
         startY = event.locationInWindow.y
+        gesturePixelsPerSecond = projectedPixelsPerSecond
         activeDrag = drag; activeSeek = seek; didDrag = false
     }
     override func mouseDragged(with event: NSEvent) {

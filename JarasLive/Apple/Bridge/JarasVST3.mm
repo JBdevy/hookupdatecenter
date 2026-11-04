@@ -1,6 +1,8 @@
 #import "JarasVST3.h"
 #if TARGET_OS_OSX
 #include "CatMIDISequenceBridge.h"
+#include "../../Core/Transport/PluginTransportClock.hpp"
+#include "../../Core/Audio/VST3ParameterRestore.hpp"
 #include "pluginterfaces/base/ipluginbase.h"
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/base/ustring.h"
@@ -315,7 +317,16 @@ public:
         if(controller){Stream stream;if(component->getState(&stream)==kResultOk){stream.position=0;controller->setComponentState(&stream);}restore(@"controllerState",[&](Stream &stream){if(controller->setState(&stream)!=kResultOk && [spec[@"strictImportState"] boolValue])throw std::runtime_error("VST3 rejected the imported controller state.");});}
         for(int bus=0;bus<component->getBusCount(kEvent,kInput);bus++)component->activateBus(kEvent,kInput,bus,bus==0);
         for(auto &channel:midiParameters)std::fill(std::begin(channel),std::end(channel),kNoParamId);
-        if(auto mapping=query<IMidiMapping>(controller)){for(int channel=0;channel<16;channel++)for(int cc=0;cc<130;cc++)mapping->getMidiControllerAssignment(0,channel,cc,midiParameters[channel][cc]);mapping->release();}
+        std::unordered_set<ParamID> midiParameterIDs;
+        if(auto mapping=query<IMidiMapping>(controller)){
+            for(int channel=0;channel<16;channel++)for(int cc=0;cc<130;cc++){
+                ParamID id=kNoParamId;
+                if(mapping->getMidiControllerAssignment(0,channel,cc,id)==kResultOk && id!=kNoParamId){
+                    midiParameters[channel][cc]=id;midiParameterIDs.insert(id);
+                }
+            }
+            mapping->release();
+        }
         int inCount=component->getBusCount(kAudio,kInput),outCount=component->getBusCount(kAudio,kOutput);
         if(inCount<0||inCount>64||outCount<1||outCount>64)throw std::runtime_error("Unsupported VST3 audio bus layout.");
         std::vector<SpeakerArrangement> in(inCount),out(outCount),nativeIn(inCount),nativeOut(outCount);
@@ -338,7 +349,17 @@ public:
         inputs.resize(inCount);outputs.resize(outCount);
         storage.reserve((inCount+outCount)*2);pointers.resize(inCount+outCount);
         for(int dir=0;dir<2;dir++){auto &buses=dir?outputs:inputs;for(int i=0;i<(int)buses.size();i++){BusInfo info{};component->getBusInfo(kAudio,dir?kOutput:kInput,i,info);if(info.channelCount<0||info.channelCount>64||(dir&&i==mainOut&&info.channelCount<1))throw std::runtime_error("Unsupported VST3 bus width.");auto &p=pointers[(dir?inCount:0)+i];p.resize(info.channelCount);for(int c=0;c<info.channelCount;c++){storage.emplace_back(frames,0);p[c]=storage.back().data();}buses[i].numChannels=info.channelCount;buses[i].channelBuffers32=p.data();component->activateBus(kAudio,dir?kOutput:kInput,i,i==(dir?mainOut:mainIn));}}
-        if(controller){paramCount=std::min(65536,std::max(0,controller->getParameterCount()));params=std::make_unique<Param[]>(paramCount);changes.capacity=paramCount;changes.queues=std::make_unique<Queue[]>(paramCount);for(int i=0;i<paramCount;i++){ParameterInfo info{};controller->getParameterInfo(i,info);params[i].id=info.id;params[i].pending=controller->getParamNormalized(info.id);params[i].dirty=true;}hasChanges=paramCount>0;}
+        if(controller){
+            paramCount=std::min(65536,std::max(0,controller->getParameterCount()));
+            params=std::make_unique<Param[]>(paramCount);changes.capacity=paramCount;changes.queues=std::make_unique<Queue[]>(paramCount);
+            for(int i=0;i<paramCount;i++){
+                ParameterInfo info{};controller->getParameterInfo(i,info);params[i].id=info.id;
+                params[i].pending=controller->getParamNormalized(info.id);
+                if(jaras::restoreControllerParameter(info,[spec[@"controllerState"] length]>0,midiParameterIDs)){
+                    params[i].dirty=true;hasChanges=true;
+                }
+            }
+        }
         ProcessSetup setup{processMode,kSample32,frames,rate};if(processor->setupProcessing(setup)!=kResultOk)throw std::runtime_error("VST3 audio setup failed.");
         if(component->setActive(true)!=kResultOk)throw std::runtime_error("Could not activate this VST3 processor.");active=true;
         if(processor->setProcessing(true)!=kResultOk)throw std::runtime_error("Could not start this VST3 processor.");processing=true;
@@ -356,7 +377,7 @@ public:
         if(write-read>=midi.size()){panic=true;return;}
         midi[write%midi.size()]={status,data1,data2};midiWrite.store(write+1,std::memory_order_release);
     }
-    void process(AudioBufferList *buffer,unsigned count,double position,double tempo,int beats,int unit,bool playing,const CatMIDIEvent* sequence,unsigned sequenceCount){
+    void process(AudioBufferList *buffer,unsigned count,const jaras::PluginTransport& transport,const CatMIDIEvent* sequence,unsigned sequenceCount){
         if(bypass.load()||count>frames)return;
         auto &midi=midiPerformance->midi;auto &midiRead=midiPerformance->read;auto &midiWrite=midiPerformance->write;auto &panic=midiPerformance->panic;auto &held=midiPerformance->held;
         const bool resuming=resumeMIDI;
@@ -432,7 +453,10 @@ public:
             return a.type==Event::kNoteOffEvent&&b.type==Event::kNoteOnEvent;
         });
         if(resuming)for(int index=0;index<events.count;++index)events.events[index].flags&=~Event::kUserReserved1;
-        ProcessContext context{};context.sampleRate=rate;context.projectTimeSamples=llround(position*rate);context.tempo=tempo;context.timeSigNumerator=beats;context.timeSigDenominator=unit;context.projectTimeMusic=position*tempo/60.;context.state=ProcessContext::kTempoValid|ProcessContext::kTimeSigValid|ProcessContext::kProjectTimeMusicValid|(playing?ProcessContext::kPlaying:0);
+        ProcessContext context{};context.sampleRate=rate;context.projectTimeSamples=llround(transport.seconds*rate);
+        context.tempo=transport.tempo;context.timeSigNumerator=transport.numerator;context.timeSigDenominator=transport.denominator;
+        context.projectTimeMusic=transport.quarterNotes;context.barPositionMusic=transport.barStartQuarterNotes;
+        context.state=ProcessContext::kBarPositionValid|ProcessContext::kTempoValid|ProcessContext::kTimeSigValid|ProcessContext::kProjectTimeMusicValid|(transport.playing?ProcessContext::kPlaying:0);
         ProcessData data;data.processMode=processMode;data.numSamples=count;data.numInputs=(int)inputs.size();data.numOutputs=(int)outputs.size();data.inputs=inputs.data();data.outputs=outputs.data();data.inputParameterChanges=&changes;data.inputEvents=&events;data.processContext=&context;
         if(processor->process(data)==kResultOk){auto &bus=outputs[mainOut];for(int c=0;c<(int)std::min(2u,buffer->mNumberBuffers);c++)if(buffer->mBuffers[c].mData){auto dest=(float *)buffer->mBuffers[c].mData;auto source=bus.channelBuffers32[std::min(c,bus.numChannels-1)];if(bus.silenceFlags&(1ull<<std::min(c,bus.numChannels-1))){if(!instrument)memset(dest,0,count*sizeof(float));}else for(unsigned f=0;f<count;f++){const float generated=std::isfinite(source[f])?source[f]:0;dest[f]=(instrument?dest[f]:0)+generated;}}}
         sampleTime+=count;
@@ -464,17 +488,19 @@ struct Chain {std::vector<std::shared_ptr<Instance>> instances;};
 struct Kernel {
     CatMIDISequence sequence;
     std::atomic<bool> instrumentMIDIInput{false};
-    std::atomic<double> position{0},tempo{120};std::atomic<int> beats{4},unit{4};std::atomic<bool> playing{false};
-    std::atomic<uint64_t> clockGeneration{0}; uint64_t seenClock=0; int64 clockFrames=0; std::atomic<double> sampleRate{48000};
+    jaras::PluginTransportClock transportClock;
+    std::atomic<double> sampleRate{48000};
+    std::atomic<jaras::PluginTempoMap*> publishedTempo{nullptr};
+    std::unique_ptr<jaras::PluginTempoMap> tempoMap;
+    std::vector<std::unique_ptr<jaras::PluginTempoMap>> retiredTempos;
     std::atomic<Chain *> published{nullptr}; std::atomic<unsigned> readers{0}; std::unique_ptr<Chain> current;std::vector<std::unique_ptr<Chain>> retired;
     void process(AudioBufferList *b,unsigned n,const AudioTimeStamp* timestamp){
         sequence.render(catMIDIClock(timestamp,sampleRate.load()),sampleRate.load(),n);
         if(!published.load())return;
-        readers.fetch_add(1);auto chain=published.load();auto generation=clockGeneration.load(std::memory_order_acquire);
-        if(generation!=seenClock){clockFrames=0;seenClock=generation;}
-        double time=position.load()+clockFrames/sampleRate.load();
-        if(chain)for(auto &i:chain->instances)i->process(b,n,time,tempo.load(),beats.load(),unit.load(),playing.load(),sequence.events.data(),sequence.count);
-        clockFrames+=n;readers.fetch_sub(1);
+        readers.fetch_add(1);auto chain=published.load();
+        const auto transport=transportClock.render(catMIDIClock(timestamp,sampleRate.load()),sampleRate.load(),n,publishedTempo.load());
+        if(chain)for(auto &i:chain->instances)i->process(b,n,transport,sequence.events.data(),sequence.count);
+        readers.fetch_sub(1);
     }
     double latency(){
         // CoreAudio can query latency concurrently with insert removal. Use
@@ -671,10 +697,31 @@ static void replaceNativeEditors(std::shared_ptr<Instance> previous,std::shared_
 + (void)sendMIDI:(AVAudioUnitEffect *)node status:(unsigned char)status data1:(unsigned char)data1 data2:(unsigned char)data2 {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)if(!i->instrument||k.instrumentMIDIInput.load()||(status&0xf0)!=0x90||data2==0)i->enqueue(status,data1,data2);}
 + (void)instrumentMIDIInput:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.instrumentMIDIInput.store(enabled);}
 + (void)silence:(AVAudioUnitEffect *)node {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;if(k.current)for(auto &i:k.current->instances)i->midiPerformance->panic=true;}
-+ (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing {auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;k.position=position;k.tempo=tempo;k.beats=beats;k.unit=unit;k.playing=playing;k.clockGeneration.fetch_add(1,std::memory_order_release);}
++ (void)transport:(AVAudioUnitEffect *)node position:(double)position tempo:(double)tempo beats:(int)beats unit:(int)unit playing:(BOOL)playing {
+    auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;
+    k.transportClock.publish(position,NAN,playing,0,0,tempo,beats,unit);
+}
++ (void)transportClock:(AVAudioUnitEffect *)node position:(double)position clock:(double)clock playing:(BOOL)playing loopStart:(double)start loopEnd:(double)end {
+    ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.transportClock.publish(position,clock,playing,start,end);
+}
++ (void)setTempoMap:(AVAudioUnitEffect *)node points:(NSArray<NSDictionary *> *)points {
+    auto &k=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel;
+    std::vector<jaras::PluginTempoMap::Point> values;values.reserve(points.count);
+    for(NSDictionary *p in points)values.push_back({[p[@"seconds"] doubleValue],[p[@"bpm"] doubleValue],[p[@"beats"] intValue],[p[@"unit"] intValue]});
+    auto next=std::make_unique<jaras::PluginTempoMap>(std::move(values));
+    auto old=std::move(k.tempoMap);k.tempoMap=std::move(next);k.publishedTempo.store(k.tempoMap.get());
+    if(old)k.retiredTempos.push_back(std::move(old));
+    if(k.readers.load()==0)k.retiredTempos.clear();
+}
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(void))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->edited=[action copy];}
 + (BOOL)isPluginLoaded:(AVAudioUnitEffect *)node identifier:(NSString *)id {return ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id)!=nullptr;}
 + (NSDictionary *)state:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);return i?i->state():nil;}
++ (void)rememberCapturedState:(AVAudioUnitEffect *)node identifier:(NSString *)id component:(NSString *)component controller:(NSString *)controller {
+    auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);
+    // Called on the control thread only after the owner persists this live
+    // snapshot. Do not call setState, reread transient state, or touch DSP.
+    if(i){i->appliedComponent=component;i->appliedController=controller;}
+}
 + (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(unsigned int,double,BOOL))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->parameterEdited=[action copy];}
 + (NSArray<NSDictionary *> *)parameters:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);NSMutableArray *result=[NSMutableArray array];if(i&&i->controller)for(int n=0;n<i->paramCount;n++){ParameterInfo p{};i->controller->getParameterInfo(n,p);if(p.flags&ParameterInfo::kIsReadOnly)continue;[result addObject:@{@"id":@(p.id),@"name":text(p.title),@"value":@(i->controller->getParamNormalized(p.id))}];}return result;}
 + (void)setParameter:(AVAudioUnitEffect *)node identifier:(NSString *)id parameter:(unsigned int)param value:(double)value {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i&&i->controller){value=std::clamp(value,0.,1.);i->controller->setParamNormalized(param,value);i->queueParameter(param,value);}}

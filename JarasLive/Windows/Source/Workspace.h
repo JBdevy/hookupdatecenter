@@ -76,7 +76,8 @@ class Workspace final : public Component,
     void mouseDown(const MouseEvent &) override;
     void mouseDoubleClick(const MouseEvent &) override;
     void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &) override;
-    void requestClose(std::function<void()>, bool application = true);
+    void requestClose(std::function<void()>, bool application = true,
+                      std::optional<bool> saveAll = {}, std::function<void()> cancelled = {});
     Component &windowCaption();
     bool isProjectOpen() const { return projectReady; }
     void resetProjectTab();
@@ -106,7 +107,7 @@ class Workspace final : public Component,
     std::function<bool(int)> canNavigateProjectTab;
     void chooseOpen();
     void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false, bool allowMissing = false, ID remoteRequest = {});
-    void chooseSave(bool saveAs = false, std::function<void()> saved = {});
+    void chooseSave(bool saveAs = false, std::function<void()> saved = {}, std::function<void()> cancelled = {});
     void chooseImport(bool adding = true, bool inNewTab = false);
     void chooseExport();
     void chooseSoundFont();
@@ -279,6 +280,8 @@ class Workspace final : public Component,
     ID recordVisualSelection;
     std::optional<GridItemClipboard> itemClipboard;
     std::optional<DWORD> itemClipboardSequence;
+    struct CopiedTracks { var document; ID song; std::set<ID> targets; DWORD sequence; };
+    std::optional<CopiedTracks> trackClipboard;
     uint64 builtRevision = ~uint64(0);
     ID builtSong;
     std::vector<ID> builtTracks;

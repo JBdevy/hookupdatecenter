@@ -91,12 +91,12 @@ public enum TimelineTempo {
     }
     public static func gridStep(bar: Double, beats: Int, pixelsPerSecond: Double, divisions: Int? = nil, unit: Int = 4) -> Double {
         if divisions == 0 { return 0 }
-        let width = bar * pixelsPerSecond
-        if width >= minimumGridSpacing * 4 {
-            let step = bar / Double(beats) * Double(unit) / Double(divisions ?? unit)
+        let beat = bar / Double(beats)
+        if beat * pixelsPerSecond >= minimumGridSpacing {
+            let step = min(beat, beat * Double(unit) / Double(divisions ?? unit))
             return step * pow(2, max(0, ceil(log2(minimumGridSpacing / max(0.001, step * pixelsPerSecond)))))
         }
-        return bar * Double(barStride(bar: bar, pixelsPerSecond: pixelsPerSecond)) / 2
+        return bar * Double(barStride(bar: bar, pixelsPerSecond: pixelsPerSecond))
     }
     public static func snap(_ time: Double, bar: Double, beats: Int, pixelsPerSecond: Double, divisions: Int? = nil, unit: Int = 4) -> Double {
         let step = gridStep(bar: bar, beats: beats, pixelsPerSecond: pixelsPerSecond, divisions: divisions, unit: unit)
@@ -244,7 +244,7 @@ public extension Song {
     func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool, cursor: Double? = nil) -> Double {
         guard canDragMarker(marker), value.isFinite else { return marker.position }
         var target = max(0, value)
-        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, cursor: cursor, excludingMarker: marker.id, includeHiddenDivisions: true) }
+        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, cursor: cursor, excludingMarker: marker.id) }
         if !free, let cursor, cursor.isFinite, cursor >= 0, pixelsPerSecond.isFinite, pixelsPerSecond > 0,
            abs(cursor - target) * pixelsPerSecond <= 12 + 1e-9 { target = cursor }
         var intervals: [(Double, Double)] = []
@@ -406,7 +406,7 @@ public extension TimelineTempo {
     static func snap(_ time: Double, song: Song, pixelsPerSecond: Double, regionEnds: Bool = true,
                      cursor: Double? = nil, enabled: Bool = true,
                      otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil,
-                     includeHiddenDivisions: Bool = false, includeItemEdges: Bool = false, excludingItems: Set<UUID> = [],
+                     includeItemEdges: Bool = false, excludingItems: Set<UUID> = [],
                      maximumDistancePixels: Double? = nil) -> Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
         let position = max(0, time)
@@ -428,13 +428,10 @@ public extension TimelineTempo {
         }
         if let strong { return strong }
         let section = song.tempoSection(at: position)
-        // Cursor precision follows the configured musical division, independently
-        // of the drawing density. This computes one candidate, not hidden grid lines.
+        // Use the same musical spacing as the visible ruler and grid.
         let divisions = song.projectTime.divisions
-        let step = includeHiddenDivisions
-            ? (divisions > 0 ? section.barSeconds / Double(section.beats) * Double(section.unit) / Double(divisions) : 0)
-            : gridStep(bar: section.barSeconds, beats: section.beats, pixelsPerSecond: pixelsPerSecond,
-                       divisions: divisions, unit: section.unit)
+        let step = gridStep(bar: section.barSeconds, beats: section.beats, pixelsPerSecond: pixelsPerSecond,
+                            divisions: divisions, unit: section.unit)
         var nearest: Double = 0
         var distance = position
         func consider(_ anchor: Double) {
@@ -805,11 +802,15 @@ public enum TimelineTimeRuler {
             let strideBars = TimelineTempo.barStride(bar: bar, pixelsPerSecond: scale)
             let first = max(0, Int(floor((densityStart - section.start) / bar)) / strideBars * strideBars)
             let last = max(first, Int(ceil((min(section.end, densityEnd) - section.start) / bar)))
-            let distant = bar * scale < TimelineTempo.minimumGridSpacing * 4
-            let base = bar / Double(section.beats) * Double(section.unit) / Double(divisions == 0 ? 4 : divisions)
-            let minor = distant ? bar * Double(strideBars) / 2 :
-                TimelineTempo.gridStep(bar: bar, beats: section.beats, pixelsPerSecond: scale,
-                                       divisions: divisions == 0 ? 4 : divisions, unit: section.unit)
+            let beat = bar / Double(section.beats)
+            // Show whole-bar groups first (4 -> 2 -> 1), without inserting
+            // half-stride lines between them. Beats appear together only once
+            // each has room, including in odd meters. Finer configured divisions
+            // follow at closer zoom. Snapping uses this same spacing.
+            let showBeats = beat * scale >= TimelineTempo.minimumGridSpacing
+            let base = min(beat, beat * Double(section.unit) / Double(divisions == 0 ? 4 : divisions))
+            let minor = TimelineTempo.gridStep(bar: bar, beats: section.beats, pixelsPerSecond: scale,
+                                               divisions: divisions == 0 ? 4 : divisions, unit: section.unit)
             guard base > 0, base.isFinite, minor > 0, minor.isFinite else { continue }
             let boundaryClearance: Double
             if indexOfSection == 0 { boundaryClearance = .infinity }
@@ -836,9 +837,7 @@ public enum TimelineTimeRuler {
                 let barClearance = index == 0 ? boundaryClearance :
                     min(Double(hierarchyStep(index)) * bar, boundaryEnd - time)
                 append(time, primary: true, clearance: barClearance)
-                if distant {
-                    append(time + minor, primary: false, clearance: 0)
-                } else {
+                if showBeats {
                     for offset in stride(from: minor, to: min(bar, section.end - time) - 1e-9, by: minor) {
                         let subdivision = max(1, Int((offset / base).rounded()))
                         let clearance = min(Double(hierarchyStep(subdivision)) * base,

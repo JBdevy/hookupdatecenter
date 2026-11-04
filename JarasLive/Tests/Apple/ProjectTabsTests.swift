@@ -24,10 +24,15 @@ struct TestSnapshot { var project = TestProject() }
 @MainActor final class ShowController {
     var snapshot = TestSnapshot()
     var isPlaying = false, hasUnsavedChanges = false, saving = false
-    var saves = 0, stops = 0, pendingRevocation = false
+    var saves = 0, stops = 0, pendingRevocation = false, failSave = false
     var navigateProjectTab: (Int) -> Void = { _ in }
     func send(_ command: TestCommand) { isPlaying = false; stops += 1 }
-    func saveForClosing() async throws { saves += 1; hasUnsavedChanges = false }
+    func saveForClosing() async throws {
+        guard hasUnsavedChanges else { return }
+        saves += 1
+        if failSave { throw ProjectError.invalid("Save failed") }
+        hasUnsavedChanges = false
+    }
     func finishCurrentSong(_ pending: Bool) { pendingRevocation = pending }
 }
 @MainActor final class StemAudioPlayback {
@@ -186,12 +191,18 @@ enum ProjectTabNavigation {
         precondition(first.documents.canChangeProject() && !second.documents.canChangeProject(), "Only the active document may replace its project")
         tabs.setPendingRevocation(true)
         precondition(first.show.pendingRevocation && second.show.pendingRevocation)
-        TestAlert.response = .alertThirdButtonReturn
-        let cancelled = try await tabs.confirmAndSaveBackgroundProjects(excluding: first.documents)
-        precondition(!cancelled && second.show.saves == 0 && second.show.isPlaying)
-        TestAlert.response = .alertFirstButtonReturn
-        let saved = try await tabs.confirmAndSaveBackgroundProjects(excluding: first.documents)
-        precondition(saved && second.show.saves == 1 && first.show.hasUnsavedChanges)
+        precondition(tabs.needsSaveOnClose)
+        try await tabs.prepareBackgroundProjectsForClosing(excluding: first.documents, save: false)
+        precondition(second.show.hasUnsavedChanges && second.show.saves == 0 && second.show.isPlaying)
+        second.show.failSave = true
+        do {
+            try await tabs.prepareBackgroundProjectsForClosing(excluding: first.documents, save: true)
+            preconditionFailure("A failed background save must prevent application close")
+        } catch {}
+        precondition(tabs.projects.count == 2 && second.show.hasUnsavedChanges && second.show.isPlaying && !second.projectAudio.closed)
+        second.show.failSave = false
+        try await tabs.prepareBackgroundProjectsForClosing(excluding: first.documents, save: true)
+        precondition(second.show.saves == 2 && !second.show.hasUnsavedChanges && first.show.hasUnsavedChanges)
         let failedRequest = UUID()
         tabs.open(URL(fileURLWithPath: "/fixtures/bad.jl"), remoteCommandID: failedRequest)
         precondition(ProjectDocuments.remoteResults.last?.0 == failedRequest && ProjectDocuments.remoteResults.last?.1 == "failed")

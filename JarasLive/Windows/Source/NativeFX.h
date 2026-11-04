@@ -35,8 +35,8 @@ public:
     void previewParameters(const String &key, const ParameterPreview &) noexcept;
     void prepare(const var& settings,double sampleRate,const NativeFX *previous=nullptr,bool offline=false,bool prewarm=true,
                  const Dispatcher &pluginDispatcher = {}, const File &mediaDirectory = {});
-    void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN());
-    void processIdleEditors(int samples, double seconds, bool playing);
+    void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN(),const jaras::PluginTempoMap *tempoMap=nullptr);
+    void processIdleEditors(int samples, double seconds, bool playing,const jaras::PluginTempoMap *tempoMap=nullptr);
     bool hasExternal() const;
     bool empty() const noexcept { return effects.empty(); }
     std::shared_ptr<analysis::Capture> eqAnalysis(const String &key) const;

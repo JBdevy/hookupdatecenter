@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import AppKit
 import Darwin
 
 final class CapturePCMResult: @unchecked Sendable {
@@ -35,6 +36,25 @@ try MainActor.assumeIsolated {
     defer { engine.stop() }
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 256)!
     for _ in 0..<8 { let status = try engine.renderOffline(256, to: buffer); precondition(status == .success) }
+    func assertMIDIState(_ node: AVAudioUnitEffect, volume: Float, pan: Float) {
+        let state = JarasVST3.state(node, identifier: plugin.id)!
+        let data = Data(base64Encoded: state["componentState"] as! String)!
+        func value(at offset: Int) -> Float {
+            var value: Float = 0
+            _ = withUnsafeMutableBytes(of: &value) { data.copyBytes(to: $0, from: offset..<offset+4) }
+            return value
+        }
+        precondition(abs(value(at: 12) - volume) < 0.000001, "Do not synthesize CC7=0 from a controller getter")
+        precondition(abs(value(at: 16) - pan) < 0.000001, "Do not synthesize CC10=0 from a controller getter")
+        precondition(data[20..<24].allSatisfy { $0 == 0 }, "Do not synthesize a program change on load or editor close")
+    }
+    assertMIDIState(node, volume: 0.8, pan: 0.5)
+    JarasVST3.sendMIDI(node, status: 0xB0, data1: 7, data2: 89)
+    JarasVST3.sendMIDI(node, status: 0xB0, data1: 10, data2: 67)
+    JarasVST3.sendMIDI(node, status: 0xB0, data1: 1, data2: 127) // Unmapped: must not write Gain.
+    let midiStatus = try engine.renderOffline(256, to: buffer); precondition(midiStatus == .success)
+    assertMIDIState(node, volume: 89.0/127, pan: 67.0/127)
+    precondition(abs(buffer.floatChannelData![0][0] - 0.074) < 0.000001)
     let originalNodes = engine.attachedNodes, originalStateWrites = writes()
     let pcm = CapturePCMResult(), started = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
     DispatchQueue.global(qos: .userInitiated).async {
@@ -78,5 +98,36 @@ try MainActor.assumeIsolated {
     precondition(reads() == savedReadCount && writes() == originalStateWrites,
                  "Later native FX changes must not read or reapply the captured VST3 preset")
     precondition(engine.attachedNodes == originalNodes && chain.externalNode(plugin.id) === node)
+    let prepared = try chain.prepareExternal(plugin)
+    precondition(prepared === node && reads() == savedReadCount && writes() == originalStateWrites,
+                 "Reusing a captured instrument must not reread transient state or restore a preset")
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    for _ in 0..<3 {
+        let editor = JarasVST3.editor(node, identifier: plugin.id)!
+        window.contentView = editor; window.orderFront(nil)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        let state = JarasVST3.state(node, identifier: plugin.id)!
+        plugin.componentState = state["componentState"] as? String
+        plugin.controllerState = state["controllerState"] as? String
+        chain.rememberCapturedPluginState(plugin, source: node)
+        editor.removeFromSuperview(); window.contentView = nil; window.orderOut(nil)
+        let status = try engine.renderOffline(256, to: buffer); precondition(status == .success)
+        assertMIDIState(node, volume: 89.0/127, pan: 67.0/127)
+        precondition(writes() == originalStateWrites, "Closing an editor must not restore its state")
+    }
+    // Reopening a saved project still restores real controls, without treating
+    // the MIDI proxy/program getters (all zero) as commands to the instrument.
+    settings.externalPlugins = [plugin]
+    let restored = JarasVST3.makeNode()
+    try JarasVST3.configure(restored, plugins: [["id": plugin.id, "classID": plugin.classID,
+        "path": path, "componentState": plugin.componentState!, "controllerState": plugin.controllerState!]])
+    engine.stop(); engine.disconnectNodeInput(engine.mainMixerNode); engine.attach(restored)
+    engine.connect(source, to: restored, format: format); engine.connect(restored, to: engine.mainMixerNode, format: format)
+    engine.prepare(); try engine.start()
+    for _ in 0..<8 { let status = try engine.renderOffline(256, to: buffer); precondition(status == .success) }
+    assertMIDIState(restored, volume: 89.0/127, pan: 67.0/127)
+    precondition(abs(buffer.floatChannelData![0][0] - 0.074) < 0.000001)
+    print("EDITOR_CLOSE_AND_PRESET_RESTORE_PRESERVE_VOLUME_PAN_AND_PROGRAM_OK")
     print("SAVE_CAPTURE_CONTINUES_PCM_NO_RESTORE_NO_REWIRE blocks=\(pcm.blocks) captureSeconds=\(captureDuration) error=\(pcm.maximumError)")
 }

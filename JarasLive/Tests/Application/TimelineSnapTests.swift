@@ -2,28 +2,28 @@ import XCTest
 @testable import JarasApplication
 
 final class TimelineSnapTests: XCTestCase {
-    func testItemsAndMarkersKeepHiddenDivisionsWhenZoomedOut() {
-        var song = Project.empty(name: "Hidden drag grid").songs[0]
-        song.bpm = 120; song.duration = 1000; song.parts = []; song.markers = []
+    func testItemsAndMarkersFollowFourTwoOneBarsThenVisibleSubdivisions() {
+        var song = Project.empty(name: "Visible drag grid").songs[0]
+        song.bpm = 120; song.duration = 1000; song.parts = []
+        var settings = ProjectTimeSettings(); settings.divisions = 8; song.timeSettings = settings
         let marker = TimelineMarker(id: UUID(), name: "Cue", position: 70, color: 0xffffff)
         song.markers = [marker]
-        for scale in [0.01, 0.05, 0.3, 1, 10, 100] {
-            XCTAssertEqual(TimelineTempo.snap(103.52, song: song, pixelsPerSecond: scale,
-                includeHiddenDivisions: true, maximumDistancePixels: 8), 103.5, accuracy: 1e-9)
-            XCTAssertEqual(song.markerDragPosition(marker, to: 103.52, pixelsPerSecond: scale, free: false), 103.5, accuracy: 1e-9)
-            XCTAssertEqual(song.markerDragPosition(marker, to: 103.52, pixelsPerSecond: scale, free: true), 103.52)
+        for (scale, target) in [(2.0, 8.0), (4, 12), (8, 10), (32, 10.5), (64, 10.75)] {
+            XCTAssertEqual(TimelineTempo.snap(10.74, song: song, pixelsPerSecond: scale,
+                maximumDistancePixels: 8), target, accuracy: 1e-9)
+            XCTAssertEqual(song.markerDragPosition(marker, to: 10.74, pixelsPerSecond: scale, free: false), target, accuracy: 1e-9)
+            XCTAssertEqual(song.markerDragPosition(marker, to: 10.74, pixelsPerSecond: scale, free: true), 10.74)
+            let lines = TimelineTimeRuler.ticks(in: song.tempoSections(until: 1000), from: 0, to: 20,
+                pixelsPerSecond: scale, divisions: 8)
+            XCTAssertTrue(lines.contains { abs($0.time - target) < 1e-9 }, "The snap target must be drawn")
         }
     }
-    func testDistantGridSnapsToSecondaryLinesWithoutZooming() {
-        var song = Project.empty(name: "Secondary grid").songs[0]
+    func testDistantGridDoesNotSnapToHiddenHalfStrideLines() {
+        var song = Project.empty(name: "Visible bars").songs[0]
         song.bpm = 120; song.duration = 10000; song.parts = []; song.markers = []
-        for scale in [0.05, 0.3, 1, 3, 10, 20] {
-            let major = 2 * Double(TimelineTempo.barStride(bar: 2, pixelsPerSecond: scale))
-            let secondary = major * 2.5
-            for offset in [-0.1, 0.1] {
-                XCTAssertEqual(TimelineTempo.snap(secondary + offset, song: song, pixelsPerSecond: scale), secondary, accuracy: 0.000001)
-            }
-        }
+        XCTAssertEqual(TimelineTempo.snap(11.9, song: song, pixelsPerSecond: 2), 8)
+        XCTAssertEqual(TimelineTempo.snap(12.1, song: song, pixelsPerSecond: 2), 16)
+        XCTAssertEqual(TimelineTempo.snap(12.1, song: song, pixelsPerSecond: 4), 12)
     }
     func testFreeCursorPositionIgnoresGridAndEveryMagneticAnchor() {
         for scale in [0.16, 1, 100, 10_000] {
@@ -47,20 +47,26 @@ final class TimelineSnapTests: XCTestCase {
             XCTAssertEqual(snapped / step, (snapped / step).rounded(), accuracy: 0.000001)
         }
     }
-    func testCursorUsesHiddenDivisionsAtEveryZoomAndTempo() {
-        var song = Project.empty(name: "Hidden subdivisions").songs[0]
-        song.bpm = 120; song.duration = 100; song.parts = []
+    func testCursorMatchesVisibleGridAcrossTempoAndZoomChanges() {
+        var song = Project.empty(name: "Visible subdivisions").songs[0]
+        song.bpm = 120; song.duration = 20000; song.parts = []
         var settings = ProjectTimeSettings(); settings.divisions = 8; song.timeSettings = settings
         song.markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 10.13, color: 0xffffff,
             tempoBPM: 150, tempoBeats: 3, tempoUnit: 8)]
         for scale in [0.05, 0.3, 1, 10, 100, 1000] {
-            XCTAssertEqual(TimelineTempo.snap(3.29, song: song, pixelsPerSecond: scale, includeHiddenDivisions: true), 3.25, accuracy: 1e-9)
-            XCTAssertEqual(TimelineTempo.snap(10.76, song: song, pixelsPerSecond: scale, includeHiddenDivisions: true), 10.73, accuracy: 1e-9)
-            XCTAssertEqual(TimelineTempo.snap(10.76, song: song, pixelsPerSecond: scale, enabled: false, includeHiddenDivisions: true), 10.76)
-            XCTAssertEqual(TimelineTempo.snap(10.14, song: song, pixelsPerSecond: scale, includeHiddenDivisions: true), 10.13, accuracy: 1e-9)
+            let ticks = TimelineTimeRuler.ticks(in: song.tempoSections(until: 20000), from: 0, to: 2000,
+                pixelsPerSecond: scale, divisions: 8)
+            for position in [3.29, 10.76, 300.78] {
+                let target = TimelineTempo.snap(position, song: song, pixelsPerSecond: scale)
+                let explicitAnchor = target == 0 || abs(target - 10.13) < 1e-8
+                XCTAssertTrue(explicitAnchor || ticks.contains { abs($0.time - target) < 1e-8 },
+                    "Snap \(target) must follow a visible tick or explicit tempo boundary at scale \(scale)")
+                XCTAssertEqual(TimelineTempo.snap(position, song: song, pixelsPerSecond: scale, enabled: false), position)
+            }
+            XCTAssertEqual(TimelineTempo.snap(10.14, song: song, pixelsPerSecond: scale), 10.13, accuracy: 1e-9)
         }
         settings.divisions = 0; song.timeSettings = settings
-        XCTAssertEqual(TimelineTempo.snap(3.29, song: song, pixelsPerSecond: 1, includeHiddenDivisions: true), 0,
+        XCTAssertEqual(TimelineTempo.snap(3.29, song: song, pixelsPerSecond: 1), 0,
             "Disabling grid divisions retains only explicit anchors")
     }
     private func snap(_ time: Double, starts: [Double] = [30.15], ends: [Double]? = nil,

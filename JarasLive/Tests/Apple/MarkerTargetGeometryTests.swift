@@ -131,7 +131,16 @@ private func verifyNativeLayout(_ source: [TimelineMarker], ends: [UUID: Double]
                             "native flag width must match the original raster-font constraints exactly")
                         if let target { actualTargets.append(target) }
                     }
-                    precondition(visited == source.map(\.id), "storage and overlap precedence must remain unchanged")
+                    let visitedSet = Set(visited)
+                    precondition(visited == source.filter { visitedSet.contains($0.id) }.map(\.id),
+                        "culling preserves original storage and overlap precedence")
+                    for marker in source {
+                        let left = marker.position * scale
+                        let right = left + (expectedDrawing[marker.id] ?? 0)
+                        if left <= viewport.maxX && right >= viewport.minX {
+                            precondition(visitedSet.contains(marker.id), "no visible flag or stem may be culled")
+                        }
+                    }
                     precondition(actualTargets.map(\.id) == expectedTargets.map(\.id),
                         "cached native targets preserve culling, dragged items and tied-marker order")
                     for (actual, expected) in zip(actualTargets, expectedTargets) {

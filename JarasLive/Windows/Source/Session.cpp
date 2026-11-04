@@ -1611,9 +1611,9 @@ void Session::moveMarker(const ID &id, double position) {
     if(undoHistory.size()>40) undoHistory.erase(undoHistory.begin());
     redoHistory.clear(); dirty=true; notify();
 }
-std::vector<ID> Session::duplicateTracks(const std::set<ID> &targets) {
+std::vector<ID> Session::duplicateTracks(const std::set<ID> &targets, const var *copiedDocument) {
     if (busy || !song() || targets.empty()) return {};
-    const auto result = trackEditing::duplicateDocument(snapshot(), song()->id, targets);
+    const auto result = trackEditing::duplicateDocument(snapshot(), song()->id, targets, uuid, copiedDocument);
     if (result.trackIDs.empty()) return {};
     edit([&](jaras::Project &p) { p = ProjectCodec::decode(result.document); });
     original = result.document;

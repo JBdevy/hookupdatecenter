@@ -36,17 +36,14 @@ import AVFoundation
         settings.externalPlugins?[index].componentState = state["componentState"] as? String
         settings.externalPlugins?[index].controllerState = state["controllerState"] as? String
         guard settings != before else { return }
-        if saving {
-            guard try show.storeCapturedPluginState(track, clip: clip, identifier: identifier,
-                componentState: settings.externalPlugins?[index].componentState,
-                controllerState: settings.externalPlugins?[index].controllerState),
-                let plugin = settings.externalPlugins?[index] else { return }
-            DesktopProjectTabs.shared.audio(for: show).rememberCapturedPluginState(track: track, clip: clip, plugin: plugin, source: node)
-            return
-        }
-        if let clip { show.previewClipFX(clip, settings: settings) }
-        else { show.previewFX(track, settings: settings) }
-        show.commitFX()
+        // A capture acknowledges the live processor, including when its editor
+        // closes. Reapplying this snapshot can recreate the instrument and send
+        // controller defaults back into it; only a real preset edit needs that.
+        guard try show.storeCapturedPluginState(track, clip: clip, identifier: identifier,
+            componentState: settings.externalPlugins?[index].componentState,
+            controllerState: settings.externalPlugins?[index].controllerState),
+            let plugin = settings.externalPlugins?[index] else { return }
+        DesktopProjectTabs.shared.audio(for: show).rememberCapturedPluginState(track: track, clip: clip, plugin: plugin, source: node)
     }
     static func captureAll(show: ShowController) {
         do { try captureAllForSaving(show: show) }

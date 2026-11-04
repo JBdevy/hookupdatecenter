@@ -28,9 +28,15 @@ inline std::vector<Section> sections(const jaras::Song &song, double end) {
     if (end > active.start) { active.end = end; result.push_back(active); }
     return result;
 }
+inline double visibleGridStep(double bar, int beats, int unit, int divisions, double scale) {
+    if (divisions <= 0 || bar <= 0 || beats <= 0 || scale <= 0) return 0;
+    const double beat=bar/beats;
+    const double base=beat*scale>=16 ? std::min(beat,beat*unit/divisions) : bar;
+    return base*std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,base*scale)))));
+}
 // Match TimelineTempo.snap: visible divisions plus region/marker/cursor anchors.
 inline double snap(double time, const jaras::Song &song, double scale, bool free,
-                   bool includeHiddenDivisions, const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr, const ID *excludedRegion = nullptr, const ID *excludedMarker = nullptr,
+                   const jaras::TransportState *transport = nullptr, bool includeItemEdges = false, const std::set<ID> *excludedItems = nullptr, const ID *excludedRegion = nullptr, const ID *excludedMarker = nullptr,
                    const std::vector<std::pair<ID,double>> *itemEdges = nullptr,
                    std::optional<double> maximumDistancePixels = {}) {
     if (!std::isfinite(time) || !std::isfinite(scale) || scale <= 0) return 0;
@@ -68,12 +74,7 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     for(const auto &section:map) if(section.start<=position && position<section.end) {active=section;break;}
     const double bar=60./active.bpm*active.beats*4/active.unit;
     const int divisions=song.timeSettings?song.timeSettings->divisions:4;
-    double step=0;
-    if(divisions>0 && bar>0) {
-        if(includeHiddenDivisions) step=bar/active.beats*active.unit/divisions;
-        else if(bar*scale>=64) {step=bar/active.beats*active.unit/divisions;step*=std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,step*scale)))));}
-        else step=bar*std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,bar*scale)))))/2;
-    }
+    const double step=visibleGridStep(bar,active.beats,active.unit,divisions,scale);
     double nearest=0,distance=position;
     auto consider=[&](double anchor) {if(!std::isfinite(anchor)||anchor<0)return;const auto d=std::abs(anchor-position);if(d<distance||(d==distance&&anchor<nearest)){nearest=anchor;distance=d;}};
     if(step>0)consider(std::min(active.end,active.start+std::round((position-active.start)/step)*step));
@@ -91,9 +92,9 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
 inline double snapSelection(double time, const jaras::Song &song, double scale,
                             const jaras::TransportState &transport, bool free, const std::set<ID> *excludedItems = nullptr,
                             const std::vector<std::pair<ID,double>> *itemEdges = nullptr) {
-    return snap(time,song,scale,free,true,&transport,true,excludedItems,nullptr,nullptr,itemEdges,8.);
+    return snap(time,song,scale,free,&transport,true,excludedItems,nullptr,nullptr,itemEdges,8.);
 }
 inline double snapCursor(double time, const jaras::Song &song, double scale, bool free) {
-    return snap(time,song,scale,free,true,nullptr,true);
+    return snap(time,song,scale,free,nullptr,true);
 }
 }

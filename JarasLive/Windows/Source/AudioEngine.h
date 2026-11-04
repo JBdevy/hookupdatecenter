@@ -1,4 +1,5 @@
 #pragma once
+#include "../../Core/Transport/SongPluginTempo.hpp"
 #include "SystemAudioDefaults.h"
 #include "NativeAudioDeviceHost.h"
 #include "../../Core/Audio/RealtimeCommandQueue.hpp"
@@ -497,6 +498,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     TimecodeMIDI timecodeMIDI;
     float timecodeGain = 1;
     ClickProgram metronome;
+    jaras::PluginTempoMap pluginTempo;
     var metronomeSettings;
     int metronomeMode = 0, metronomeOutput = 1, metronomeChannels = 2;
     float metronomeGainA = 1, metronomeGainB = 1;

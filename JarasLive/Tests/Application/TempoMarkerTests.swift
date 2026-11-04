@@ -173,9 +173,9 @@ final class TempoMarkerTests: XCTestCase {
         for scale in [1.0, 20, 100, 1000] {
             for edge in [4.19, 5.87] {
                 XCTAssertEqual(TimelineTempo.snap(edge + 0.001, song: song, pixelsPerSecond: scale,
-                    includeHiddenDivisions: true, includeItemEdges: true), edge, accuracy: 0.000001)
+                    includeItemEdges: true), edge, accuracy: 0.000001)
                 XCTAssertEqual(TimelineTempo.snap(edge + 0.001, song: song, pixelsPerSecond: scale,
-                    enabled: false, includeHiddenDivisions: true, includeItemEdges: true), edge + 0.001, accuracy: 0.000001)
+                    enabled: false, includeItemEdges: true), edge + 0.001, accuracy: 0.000001)
             }
         }
         XCTAssertEqual(TimelineTempo.snap(4.191, song: song, pixelsPerSecond: 100), 4, accuracy: 0.000001,
@@ -284,13 +284,38 @@ final class TempoMarkerTests: XCTestCase {
             }
         }
     }
-    func testDistantGridRetainsExtraHalfwayLinesAndInvalidScaleIsRejected() {
+    func testRulerAndGridShowFourTwoOneBarsBeforeBeatLines() {
         let sections = [TimelineTempoSection(start: 0, end: 120, bpm: 120, beats: 4, unit: 4, timebase: .free)]
-        let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 8, pixelsPerSecond: 8)
-        XCTAssertEqual(marks.map(\.time), Array(0...8).map(Double.init))
-        XCTAssertEqual(marks.filter { $0.primary }.map(\.time), [0, 2, 4, 6, 8])
-        XCTAssertEqual(marks.first?.label, "00:00:00")
+        for (scale, interval) in [(2.0, 8.0), (4, 4), (8, 2), (16, 2)] {
+            let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 16, pixelsPerSecond: scale)
+            XCTAssertEqual(marks.map(\.time), Array(stride(from: 0.0, through: 16, by: interval)))
+            XCTAssertTrue(marks.allSatisfy(\.primary), "Only whole-bar references precede the beat stage")
+            XCTAssertEqual(marks.first?.label, "00:00:00")
+            let grid = TimelineTimeRuler.ticks(in: sections, from: 0, to: 16, pixelsPerSecond: scale, labels: false)
+            XCTAssertEqual(marks.map(\.time), grid.map(\.time))
+        }
+        for (scale, divisions, interval) in [(32.0, 4, 0.5), (32, 8, 0.5), (64, 8, 0.25)] {
+            let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 4, pixelsPerSecond: scale, divisions: divisions)
+            XCTAssertEqual(marks.map(\.time), Array(stride(from: 0.0, through: 4, by: interval)))
+            XCTAssertEqual(marks.filter(\.primary).map(\.time), [0, 2, 4])
+        }
         XCTAssertTrue(TimelineTimeRuler.ticks(in: sections, from: 0, to: 10, pixelsPerSecond: .nan).isEmpty)
+    }
+    func testBeatLinesEnterTogetherAndRemainOnMusicalBeatsInOddMeters() {
+        for beats in [3, 4, 7] {
+            for unit in [4, 8] {
+                let beat = 60.0 / 120 * 4 / Double(unit)
+                let bar = beat * Double(beats)
+                let section = TimelineTempoSection(start: 1.25, end: 100, bpm: 120, beats: beats, unit: unit, timebase: .free)
+                let far = TimelineTimeRuler.ticks(in: [section], from: section.start, to: section.start + bar,
+                    pixelsPerSecond: 15.9 / beat)
+                XCTAssertTrue(far.allSatisfy(\.primary))
+                let near = TimelineTimeRuler.ticks(in: [section], from: section.start, to: section.start + bar,
+                    pixelsPerSecond: 16.1 / beat)
+                XCTAssertEqual(near.map(\.time), (0...beats).map { section.start + Double($0) * beat })
+                XCTAssertEqual(near.filter { !$0.primary }.count, beats - 1)
+            }
+        }
     }
     func testMeasureNumbersFollowTempoSectionsAndKeepTheirOriginalCountWhenZoomedOut() {
         let sections = [TimelineTempoSection(start: 0, end: 6, bpm: 120, beats: 4, unit: 4, timebase: .free),
@@ -574,7 +599,7 @@ final class TempoMarkerTests: XCTestCase {
         XCTAssertEqual(song.tempoSection(at: 7).bpm, 120)
         XCTAssertEqual(song.tempoSection(at: 8).barSeconds, 0.5)
         XCTAssertEqual(song.tempoSection(at: 16).barSeconds, 4)
-        XCTAssertEqual(TimelineTempo.snap(8.21, song: song, pixelsPerSecond: 500), 8 + 1.0/3, accuracy: 0.000001)
+        XCTAssertEqual(TimelineTempo.snap(8.21, song: song, pixelsPerSecond: 500), 8 + 1.0/6, accuracy: 0.000001)
         XCTAssertEqual(TimelineTempo.snap(8.213, song: song, pixelsPerSecond: 500, enabled: false), 8.213)
         XCTAssertTrue(TimelineNavigationPoints(song: song).points.isEmpty)
     }

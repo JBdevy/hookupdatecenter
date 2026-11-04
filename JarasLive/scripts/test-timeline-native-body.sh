@@ -9,7 +9,7 @@ test_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-native-body.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir" <<'PY'
 from pathlib import Path
-import sys
+import sys, os
 out = Path(sys.argv[1])
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 source = source.replace('    func update(_ items: [Item]) {',
@@ -80,7 +80,10 @@ preflight = preflight.replace('private func prepareHostedViewport', 'func prepar
 preflightTests = Path('Tests/Apple/TimelineNativeBodyPreflightTests.swift').read_text().replace('__NATIVE_BODY_PREFLIGHT_METHOD__', preflight)
 text_colors = Path('Apple/Shared/TextItemEditor.swift').read_text()
 text_colors = text_colors[text_colors.index('extension ItemTextColors {'):]
-out.joinpath('main.swift').write_text(stubs + text_colors + '\n'.join(parts) + probes + Path('Tests/Apple/TimelineNativeBodyTests.swift').read_text() + '\n' + preflightTests)
+tests = Path('Tests/Apple/TimelineNativeBodyTests.swift').read_text() + '\n' + preflightTests
+if os.environ.get('CATLIVE_ZOOM_BENCHMARK') == '1':
+    tests = Path('Tests/Apple/TimelineZoomBodyPerformanceTests.swift').read_text()
+out.joinpath('main.swift').write_text(stubs + text_colors + '\n'.join(parts) + probes + tests)
 renderer = Path('Apple/Shared/MetalWaveformRenderer.swift').read_text()
 renderer = renderer.replace('    private var latest: MetalWaveformFrame?', '    var nativeBodySubmissionsForTest = 0\n    private var latest: MetalWaveformFrame?', 1)
 renderer = renderer.replace('    func submit(_ frame: MetalWaveformFrame) {', '    func submit(_ frame: MetalWaveformFrame) {\n        nativeBodySubmissionsForTest += 1', 1)
@@ -109,4 +112,11 @@ swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Apple/Shared/Theme.swift Apple/Shared/TimelineItemWaveformColors.swift Apple/Shared/ItemWaveformPreview.swift "$test_dir/TimelineAudioWaveform.swift" \
   "$test_dir/MetalWaveformRenderer.swift" Apple/Shared/TimelineMetalWaveforms.swift \
   "$test_dir/GridSelectionGeometry.swift" "$test_dir/main.swift" -o "$test_dir/test"
-"$test_dir/test"
+if [[ "${CATLIVE_ZOOM_PROFILE:-0}" == "1" ]]; then
+  "$test_dir/test" &
+  benchmark_pid=$!
+  sample "$benchmark_pid" 12 -file /tmp/catlive-zoom-body-sample.txt >/dev/null 2>&1
+  wait "$benchmark_pid"
+else
+  "$test_dir/test"
+fi

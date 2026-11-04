@@ -479,10 +479,11 @@ struct DAWRemoteBlockPreparation: Equatable {
     var destination: DAWRemoteState.Region
     var end: Double
 
-    init?(_ state: DAWRemoteState) {
-        guard state.playing, !state.paused, !state.subPlaying, !state.loop,
+    init?(_ state: DAWRemoteState, stopping: Bool = false) {
+        guard state.playing || (stopping && state.paused), !state.subPlaying,
+              stopping || (!state.paused && !state.loop),
               state.regionAutoUntilBlockEnd == true, state.queuedRegion == nil,
-              state.sectionPlayback?.queuedMarker == nil,
+              stopping || state.sectionPlayback?.queuedMarker == nil,
               let current = state.currentRegion else { return nil }
         let physical = state.timelineRegions.first { $0.id == current }
         let root = physical?.parentRegion ?? current
@@ -493,9 +494,9 @@ struct DAWRemoteBlockPreparation: Equatable {
         let target = entries[index + 1]
         guard state.setlistBlocks?.contains(where: { $0.beforeRegion == target.id }) == true,
               let owner = state.timelineRegions.first(where: { $0.id == root }) ?? entries.first(where: { $0.id == root }),
-              owner.end.isFinite, owner.end > state.position else { return nil }
+              owner.end.isFinite, stopping || owner.end > state.position else { return nil }
         // Ignore-next and section jumps can change the real completion boundary.
-        guard state.playbackEnd == nil || abs(state.playbackEnd! - owner.end) < 1e-6 else { return nil }
+        guard stopping || state.playbackEnd == nil || abs(state.playbackEnd! - owner.end) < 1e-6 else { return nil }
         project = state.project; song = state.song; playlist = state.selectedPlaylist
         self.current = current; occurrence = state.currentPlaylistEntryId
         destination = target; end = owner.end
@@ -522,7 +523,23 @@ struct DAWRemoteBlockFeedback {
     private(set) var plan: DAWRemoteBlockPreparation?
     private(set) var deadline: Double?
     private var completed = false
+    private var manualStopUntil: Double?
+    mutating func stop(_ state: DAWRemoteState, now: Double) -> DAWRemoteState? {
+        reset()
+        guard let next = DAWRemoteBlockPreparation(state, stopping: true) else { return nil }
+        confirmed = state; plan = next; completed = true
+        manualStopUntil = now + 1.5; deadline = manualStopUntil
+        return next.applying(to: state)
+    }
     mutating func receive(_ state: DAWRemoteState, now: Double) -> DAWRemoteState {
+        if let until = manualStopUntil {
+            if now < until, let plan, DAWRemoteBlockPreparation(state, stopping: true) == plan,
+               state.position + 1e-6 >= (confirmed?.position ?? 0) {
+                confirmed = state
+                return plan.applying(to: state)
+            }
+            reset() // Host confirmation, a seek or timeout supersedes optimism.
+        }
         let next = DAWRemoteBlockPreparation(state)
         let samePosition = next == plan && state.position == confirmed?.position
         let previousDeadline = deadline
@@ -533,6 +550,7 @@ struct DAWRemoteBlockFeedback {
     }
     mutating func advance(now: Double) -> DAWRemoteState? {
         guard let deadline, now >= deadline, let plan, let confirmed else { return nil }
+        if manualStopUntil != nil { reset(); return confirmed }
         completed = true; self.deadline = nil
         return plan.applying(to: confirmed)
     }

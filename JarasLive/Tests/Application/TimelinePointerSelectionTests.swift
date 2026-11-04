@@ -148,12 +148,10 @@ extension TimelineSnapTests {
         for scale in [10.0, 40, 100, 1000] {
             let position = 16.0
             let boundary = position + 12 / scale
-            XCTAssertEqual(TimelineTempo.snap(position, song: song, pixelsPerSecond: scale, cursor: boundary,
-                includeHiddenDivisions: true), boundary, accuracy: 1e-9)
-            XCTAssertEqual(TimelineTempo.snap(position, song: song, pixelsPerSecond: scale, cursor: position + 13 / scale,
-                includeHiddenDivisions: true), position, accuracy: 1e-9)
+            XCTAssertEqual(TimelineTempo.snap(position, song: song, pixelsPerSecond: scale, cursor: boundary), boundary, accuracy: 1e-9)
+            XCTAssertEqual(TimelineTempo.snap(position, song: song, pixelsPerSecond: scale, cursor: position + 13 / scale), position, accuracy: 1e-9)
             XCTAssertEqual(TimelineTempo.snap(position + 0.003, song: song, pixelsPerSecond: scale, cursor: boundary,
-                enabled: false, includeHiddenDivisions: true), position + 0.003, accuracy: 1e-9)
+                enabled: false), position + 0.003, accuracy: 1e-9)
         }
     }
 }

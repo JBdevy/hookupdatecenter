@@ -775,12 +775,13 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
                 // a softer finish. Start at the visible scale, with no jump.
                 lastZoomInput = ProcessInfo.processInfo.systemUptime
                 zoomFinish = TimelineZoomFinish(from: zoom, to: target, began: lastZoomInput,
-                                               duration: 0.420, immediateFraction: 0)
+                                               duration: 0.600, immediateFraction: 0)
             }
         }
         if event.phase.contains(.began), event.momentumPhase.isEmpty, zoomRunning {
-            // Commit the last coalesced input before a new gesture takes over.
-            if let zoomGrid { advanceZoom(zoomGrid, finish: true) }
+            // Finger-down interrupts the previous release at its visible
+            // scale. Completing its unseen remainder here makes every item
+            // jump, then rebound when the new gesture reverses direction.
             stopZoomUpdates()
         }
         // The bounded finger-up finish owns the release. Do not accumulate
@@ -873,7 +874,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         if !preservingVelocity { zoomResponse.reset() }
         awaitingRenderedZoom = nil
     }
-    private func advanceZoom(_ grid: GridNativeScrollView, finish: Bool = false) {
+    private func advanceZoom(_ grid: GridNativeScrollView) {
         guard let target = pendingZoom else { stopZoomUpdates(); return }
         // Keep the scene, waveforms and anchor on the current input scale.
         if target == zoom {
@@ -881,7 +882,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             return
         }
         grid.prioritizeZoom()
-        let next = finish ? target : zoomFinish?.value(at: ProcessInfo.processInfo.systemUptime) ?? target
+        let next = zoomFinish?.value(at: ProcessInfo.processInfo.systemUptime) ?? target
         if next == target { zoomFinish = nil }
         guard next != zoom else { return }
         let fraction = gestureAnchor ?? zoomPosition

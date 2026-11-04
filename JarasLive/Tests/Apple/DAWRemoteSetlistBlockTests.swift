@@ -202,5 +202,26 @@ waitFor("Remote timer prepares next block without a stopped host packet") {
 require(preparationCommands == 0, "Local completion never sends Play, Stop or selection to the host")
 preparationPacket = localPrepared
 waitFor("Remote accepts host confirmation") { preparationClient.remoteState?.currentRegion == localNext }
+preparationPacket = localBlock
+preparationPacket.position = 35
+waitFor("Remote receives a fresh playing block for manual Stop") { preparationClient.remoteState?.playing == true && preparationClient.remoteState?.position == 35 }
+preparationClient.send(.init(project: preparationPacket.project, song: preparationPacket.song, action: .stop))
+require(preparationClient.remoteState?.focusedRegion == localNext && preparationClient.remoteState?.gridRegion == localNext && preparationClient.remoteState?.playing == false, "Remote Stop selects and reveals synchronously before host acknowledgment")
+waitFor("Remote sends exactly the requested Stop") { preparationCommands == 1 }
+preparationPacket = localPrepared
+waitFor("Remote accepts manual Stop confirmation") { preparationClient.remoteState?.currentRegion == localNext }
 preparationClient.stop(); preparationHost.stop()
 print("REMOTE_NETWORK_LOCAL_BLOCK_TIMER_NO_TRANSPORT_COMMANDS_OK")
+
+// Stop must predict the same grid/blue selection before any host round trip.
+var manualFeedback = DAWRemoteBlockFeedback()
+let manualPrepared = manualFeedback.stop(localBlock, now: 50)!
+require(manualPrepared.focusedRegion == localNext && manualPrepared.gridRegion == localNext && manualPrepared.editPosition == 4 && !manualPrepared.playing, "Manual Remote Stop immediately reveals the next block")
+require(manualFeedback.receive(localBlock, now: 50.1).focusedRegion == localNext, "Late running packets cannot undo a requested Stop")
+require(manualFeedback.receive(manualPrepared, now: 50.2).gridRegion == localNext, "Stopped host confirms next-block grid")
+require(manualFeedback.stop(manualPrepared, now: 51) == nil, "Repeated idle Stop does not advance")
+var pausedBlock = localBlock; pausedBlock.playing = false; pausedBlock.paused = true
+require(manualFeedback.stop(pausedBlock, now: 52)?.focusedRegion == localNext, "Stop after Pause prepares next block")
+_ = manualFeedback.stop(localBlock, now: 53)
+require(manualFeedback.advance(now: 54.5)?.playing == true, "Unconfirmed manual prediction expires")
+print("REMOTE_MANUAL_STOP_BLOCK_PREPARATION_OK")

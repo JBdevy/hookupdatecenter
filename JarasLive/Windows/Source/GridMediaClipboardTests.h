@@ -6,6 +6,36 @@
 
 namespace catlive::gridMediaClipboardTests {
 template <class Test> void registerTests(Test &test) {
+    test("Cross-project paste copies media and FX samples without overwriting destination files", [] {
+        const auto root = File::getSpecialLocation(File::tempDirectory).getChildFile("catlive-clipboard-" + text(uuid()));
+        struct Cleanup { File folder; ~Cleanup() { folder.deleteRecursively(); } } cleanup{root};
+        const auto source = root.getChildFile("source"), destination = root.getChildFile("destination");
+        source.getChildFile("Stems").createDirectory(); destination.getChildFile("Stems").createDirectory();
+        const auto audio = source.getChildFile("Stems/voice.wav"), sample = source.getChildFile("Stems/trigger.wav");
+        if (!audio.replaceWithText("audio fixture") || !sample.replaceWithText("sample fixture") ||
+            !destination.getChildFile("Stems/voice.wav").replaceWithText("existing file")) throw std::runtime_error("Cannot create media fixture");
+        jaras::AudioClip clip; clip.id = uuid(); clip.audioFile = jaras::AudioFile{"Stems/voice.wav", {}};
+        clip.fxJSON = R"({"trigger":{"samplePath":"Stems/trigger.wav"},"instances":[{"settings":{"trigger":{"samplePath":"Stems/trigger.wav"}}}]})";
+        jaras::Track track; track.id = uuid(); track.clips = {clip, clip};
+        const auto transfer = gridMediaClipboard::stage({track}, source, destination);
+        const auto &copied = transfer.tracks[0].clips[0];
+        const auto fx = JSON::parse(text(*copied.fxJSON));
+        const auto path = fx["trigger"]["samplePath"].toString();
+        if (copied.audioFile->path == clip.audioFile->path ||
+            copied.audioFile->path != transfer.tracks[0].clips[1].audioFile->path ||
+            fx["instances"][0]["settings"]["trigger"]["samplePath"].toString() != path ||
+            destination.getChildFile("Stems/voice.wav").loadFileAsString() != "existing file")
+            throw std::runtime_error("Cross-project transfer corrupted or duplicated media references");
+        source.deleteRecursively();
+        if (ProjectCodec::resolveMedia(destination, copied.audioFile->path).loadFileAsString() != "audio fixture" ||
+            destination.getChildFile(path).loadFileAsString() != "sample fixture")
+            throw std::runtime_error("Pasted media still depends on the source project");
+        const auto count = destination.getChildFile("Stems").getNumberOfChildFiles(File::findDirectories);
+        bool failed = false;
+        try { gridMediaClipboard::stage({track}, source, destination); } catch (...) { failed = true; }
+        if (!failed || destination.getChildFile("Stems").getNumberOfChildFiles(File::findDirectories) != count)
+            throw std::runtime_error("Failed cross-project transfer left a partial media batch");
+    });
     test("Explorer Unicode and long file paths are read without changing the clipboard", [] {
         const StringArray expected{String::fromUTF8("C:\\Shows\\São João 🎹\\Voz.wav"),
                                    String::fromUTF8("\\\\palco\\mídia\\Vídeo.mov"),

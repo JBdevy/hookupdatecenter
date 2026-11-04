@@ -113,6 +113,13 @@ class Gain final: public IComponent,public IAudioProcessor,public IEditControlle
 #endif
     unsigned latencyFrames=0,delayPosition=0;
     bool tempoGain=false;
+#ifdef CATLIVE_TRANSPORT_DIAGNOSTICS
+    std::array<double,8> transportValues{};
+#endif
+#ifdef CATLIVE_MIDI_STATE_DIAGNOSTICS
+    float midiVolume=.8f,midiPan=.5f;
+    unsigned programCommands=0;
+#endif
 #ifdef CATLIVE_MODULE_LIFECYCLE_DIAGNOSTICS
     bool dynamicLatency=false;
 #endif
@@ -171,13 +178,26 @@ if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*
 #ifdef CATLIVE_CAPTURE_STATE_DIAGNOSTICS
         ++stateWrites;
 #endif
-        float v;int32 n=0;if(stream->read(&v,4,&n)!=kResultOk||n!=4)return kResultFalse;gain=v;return kResultOk;}
+        float v;int32 n=0;if(stream->read(&v,4,&n)!=kResultOk||n!=4)return kResultFalse;gain=v;
+#ifdef CATLIVE_MIDI_STATE_DIAGNOSTICS
+        uint64 mask=0;stream->read(&mask,8,nullptr);
+        stream->read(&midiVolume,4,nullptr);stream->read(&midiPan,4,nullptr);
+#endif
+        return kResultOk;}
     tresult PLUGIN_API getState(IBStream *stream) override{
 #ifdef CATLIVE_CAPTURE_STATE_DIAGNOSTICS
         ++stateReads;
         if (const auto delay = stateDelayMicros.load()) std::this_thread::sleep_for(std::chrono::microseconds(delay));
 #endif
-        float v=gain.load();auto mask=inputSilence.load();auto result=stream->write(&v,4,nullptr);return result==kResultOk?stream->write(&mask,8,nullptr):result;}
+        float v=gain.load();auto mask=inputSilence.load();auto result=stream->write(&v,4,nullptr);
+        if(result==kResultOk)result=stream->write(&mask,8,nullptr);
+#ifdef CATLIVE_TRANSPORT_DIAGNOSTICS
+        if(result==kResultOk)result=stream->write(transportValues.data(),int32(sizeof(transportValues)),nullptr);
+#endif
+#ifdef CATLIVE_MIDI_STATE_DIAGNOSTICS
+        stream->write(&midiVolume,4,nullptr);stream->write(&midiPan,4,nullptr);stream->write(&programCommands,4,nullptr);
+#endif
+        return result;}
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement* inputs,int32 in,SpeakerArrangement* outputs,int32 out) override{return in==1&&out==1&&inputs[0]==fixtureArrangement&&outputs[0]==fixtureArrangement?kResultOk:kResultFalse;}
     tresult PLUGIN_API getBusArrangement(BusDirection,int32,SpeakerArrangement &arr) override{arr=fixtureArrangement;return kResultOk;}
     tresult PLUGIN_API canProcessSampleSize(int32 size) override{return size==kSample32?kResultOk:kResultFalse;}
@@ -198,11 +218,20 @@ if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*
             while(!releaseProcess.load())std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 #endif
+#ifdef CATLIVE_TRANSPORT_DIAGNOSTICS
+        if(auto* c=data.processContext)transportValues={c->tempo,c->projectTimeMusic,double(c->projectTimeSamples)/c->sampleRate,c->barPositionMusic,double(c->timeSigNumerator),double(c->timeSigDenominator),double((c->state&ProcessContext::kPlaying)!=0),double(c->state)};
+#endif
         lastProcessMode=data.processMode;
         if(data.processMode!=configuredMode){++processModeMismatches;return kInvalidArgument;}
         inputSilence.store(data.inputs[0].silenceFlags);
 
-        if(data.inputParameterChanges)for(int i=0;i<data.inputParameterChanges->getParameterCount();i++){auto q=data.inputParameterChanges->getParameterData(i);int32 offset;double value;if(q->getPoint(0,offset,value)==kResultOk){if(q->getParameterId()==1){pedal=value>=0.5;if(!pedal&&!held)note=false;}else gain=value;}}
+        if(data.inputParameterChanges)for(int i=0;i<data.inputParameterChanges->getParameterCount();i++){auto q=data.inputParameterChanges->getParameterData(i);int32 offset;double value;if(q->getPoint(0,offset,value)==kResultOk){
+#ifdef CATLIVE_MIDI_STATE_DIAGNOSTICS
+            if(q->getParameterId()==2){midiVolume=value;continue;}
+            if(q->getParameterId()==3){midiPan=value;continue;}
+            if(q->getParameterId()==4){++programCommands;continue;}
+#endif
+            if(q->getParameterId()==1){pedal=value>=0.5;if(!pedal&&!held)note=false;}else gain=value;}}
         int nextEvent=0;
         for(int f=0;f<data.numSamples;f++) {
             while(data.inputEvents && nextEvent<data.inputEvents->getEventCount()) {
@@ -230,15 +259,30 @@ if(FUnknownPrivate::iidEqual(id,IMidiMapping_iid))*out=static_cast<IMidiMapping*
     }
     uint32 PLUGIN_API getTailSamples() override{return 0;}
     tresult PLUGIN_API setComponentState(IBStream *stream) override{controllerSynchronized=true;return setState(stream);}
-    int32 PLUGIN_API getParameterCount() override{return 2;}
-    tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo &info) override{info.id=index;UString(info.title,128).fromAscii(index==0?"Gain":"Sustain");info.defaultNormalizedValue=index==0?0.5:0;info.flags=ParameterInfo::kCanAutomate;return kResultOk;}
+    int32 PLUGIN_API getParameterCount() override{
+#ifdef CATLIVE_MIDI_STATE_DIAGNOSTICS
+        return 5;
+#else
+        return 2;
+#endif
+    }
+    tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo &info) override{info.id=index;UString(info.title,128).fromAscii(index==0?"Gain":"MIDI proxy");info.defaultNormalizedValue=index==0?0.5:0;info.flags=ParameterInfo::kCanAutomate;
+#ifdef CATLIVE_MIDI_STATE_DIAGNOSTICS
+        if(index==4)info.flags=ParameterInfo::kIsProgramChange;
+#endif
+        return kResultOk;}
     tresult PLUGIN_API getParamStringByValue(ParamID,ParamValue value,String128 text) override{UString(text,128).printFloat(value,3);return kResultOk;}
     tresult PLUGIN_API getParamValueByString(ParamID,TChar*,ParamValue&) override{return kResultFalse;}
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID,ParamValue value) override{return value;}
     ParamValue PLUGIN_API plainParamToNormalized(ParamID,ParamValue value) override{return value;}
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override{return id==0?gain.load():0;}
     tresult PLUGIN_API setParamNormalized(ParamID id,ParamValue value) override{if(id==0)gain=value;return kResultOk;}
-    tresult PLUGIN_API getMidiControllerAssignment(int32,int16,CtrlNumber cc,ParamID &id) override{if(cc==64){id=1;return kResultOk;}return kResultFalse;}
+    tresult PLUGIN_API getMidiControllerAssignment(int32,int16,CtrlNumber cc,ParamID &id) override{if(cc==64){id=1;return kResultOk;}
+#ifdef CATLIVE_MIDI_STATE_DIAGNOSTICS
+        if(cc==7){id=2;return kResultOk;}if(cc==10){id=3;return kResultOk;}
+        id=0; // An output argument on failure is not a valid assignment.
+#endif
+        return kResultFalse;}
     tresult PLUGIN_API setComponentHandler(IComponentHandler*) override{return kResultOk;}
     IPlugView *PLUGIN_API createView(FIDString) override{return new Editor;}
 };

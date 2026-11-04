@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "../../Core/Transport/PluginTransport.hpp"
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -14,11 +15,7 @@ struct Description {
 };
 struct State { std::vector<std::uint8_t> component, controller; };
 struct MIDIEvent { int offset = 0; std::uint8_t status = 0, data1 = 0, data2 = 0; };
-struct Transport {
-    double seconds = 0, quarterNotes = 0, tempo = 120;
-    int numerator = 4, denominator = 4;
-    bool playing = false;
-};
+using Transport = jaras::PluginTransport;
 // Scan in a child process: third-party DLL entry points may crash or hang.
 std::vector<Description> scan(const std::filesystem::path &);
 // Keep the factory/module loaded for a complete scan/validation session, including

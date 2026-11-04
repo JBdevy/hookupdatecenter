@@ -1284,12 +1284,42 @@ public struct ShowTimelinePresentationState: Equatable {
     public func cancelGridCut() {
         if itemClipboard?.moving == true { itemClipboard = nil }
     }
+    public var copiedGridItems: GridItemClipboard? { itemClipboard }
+    private var trackClipboard: (song: Song, ids: Set<UUID>)?
+    public var hasTrackClipboard: Bool { trackClipboard?.song.id == current?.id && trackClipboard != nil }
+    @discardableResult public func copyTracks(_ ids: Set<UUID>) -> Bool {
+        guard canControl(), !finishing, let song = current else { return false }
+        let targets = song.trackDuplicationTargets(ids)
+        guard !targets.isEmpty else { return false }
+        do {
+            try captureTracksForCopy(targets, in: song)
+            guard let captured = current, captured.id == song.id else { return false }
+            trackClipboard = (captured, targets)
+            itemClipboard = nil; programChangeClipboard = nil; programChangePasteReady = false
+            message = ""; return true
+        } catch { message = error.localizedDescription; modalNotice = message; return false }
+    }
+    @discardableResult public func pasteTracks() -> Set<UUID> {
+        guard canControl(), !finishing, let clipboard = trackClipboard, clipboard.song.id == current?.id else { return [] }
+        do { return try insertTrackCopies(clipboard.ids, song: clipboard.song.id, copiedSong: clipboard.song) }
+        catch { message = error.localizedDescription; modalNotice = message; return [] }
+    }
+    @discardableResult public func pasteTransferredItems(_ entries: [GridItemClipboard.Entry], song: UUID, addingTracks: [Track] = []) throws -> Set<UUID> {
+        guard canControl(), !finishing, current?.id == song else { throw ProjectError.invalid("The destination project is no longer active.") }
+        var project = snapshot.project
+        try project.pasteItems(entries, song: song, moving: false, addingTracks: addingTracks)
+        tick()
+        if addingTracks.isEmpty { try executor.pasteItems(entries, song: song, moving: false) }
+        else { try executor.applyProjectEdit(project) }
+        snapshot.project = project; markChanged(); onProjectEdited(); message = ""
+        return Set(entries.map { $0.clip.id })
+    }
     @discardableResult public func copyItems(_ ids: Set<UUID>, moving: Bool = false) -> Bool {
         if ids.isEmpty, selectedProgramChange != nil { return !moving && copyProgramChange() }
         guard canControl(), !finishing, !moving || !timelineMovementLocked, let song = current?.id,
               let copied = GridItemClipboard(project: snapshot.project, song: song, selected: ids, moving: moving) else { return false }
         if pendingFXEdit { commitFX() }
-        itemClipboard = copied; programChangeClipboard = nil; programChangePasteReady = false
+        itemClipboard = copied; trackClipboard = nil; programChangeClipboard = nil; programChangePasteReady = false
         return true
     }
     @discardableResult public func pasteItems(selectedTracks: Set<UUID>? = nil) -> Set<UUID> {
@@ -1326,25 +1356,29 @@ public struct ShowTimelinePresentationState: Equatable {
         guard canControl(), !finishing, let song = current else { return [] }
         let targets = song.trackDuplicationTargets(ids)
         guard !targets.isEmpty else { return [] }
-        finishAutomationRecording(); commitFX()
         do {
-            // Editors can hold newer opaque plugin state than the document.
-            // Capture each populated track and take before cloning any data.
-            for track in song.tracks where targets.contains(track.id) {
-                if let effects = track.fx?.inserted, !effects.isEmpty { try prepareForFXChange(track.id, nil, effects) }
-                for clip in track.clips {
-                    if let effects = clip.fx?.inserted, !effects.isEmpty { try prepareForFXChange(nil, clip.id, effects) }
-                }
-            }
-            var project = snapshot.project
-            let copied = try project.duplicateTracks(targets, song: song.id)
-            guard !copied.isEmpty else { return [] }
-            tick(); try executor.applyProjectEdit(project)
-            snapshot = try executor.snapshot(); markChanged(); onProjectEdited()
-            setMixerTrackSelection(copied, anchor: current?.tracks.first { copied.contains($0.id) }?.id)
-            message = ""
-            return copied
+            try captureTracksForCopy(targets, in: song)
+            return try insertTrackCopies(targets, song: song.id)
         } catch { message = error.localizedDescription; return [] }
+    }
+    private func captureTracksForCopy(_ targets: Set<UUID>, in song: Song) throws {
+        finishAutomationRecording(); commitFX()
+        // Capture live plugin presets before taking the immutable Copy snapshot.
+        for track in song.tracks where targets.contains(track.id) {
+            if let effects = track.fx?.inserted, !effects.isEmpty { try prepareForFXChange(track.id, nil, effects) }
+            for clip in track.clips {
+                if let effects = clip.fx?.inserted, !effects.isEmpty { try prepareForFXChange(nil, clip.id, effects) }
+            }
+        }
+    }
+    private func insertTrackCopies(_ targets: Set<UUID>, song: UUID, copiedSong: Song? = nil) throws -> Set<UUID> {
+        var project = snapshot.project
+        let copied = try project.duplicateTracks(targets, song: song, copiedSong: copiedSong)
+        guard !copied.isEmpty else { return [] }
+        tick(); try executor.applyProjectEdit(project)
+        snapshot = try executor.snapshot(); markChanged(); onProjectEdited()
+        setMixerTrackSelection(copied, anchor: current?.tracks.first { copied.contains($0.id) }?.id)
+        message = ""; return copied
     }
     public func deleteTracks(_ ids: Set<UUID>) { editProject { $0.deleteTracks(ids) } }
     public func removeTrackFromGroup(_ id: UUID) { editProject { $0.removeTrackFromGroup(id) } }
@@ -2457,13 +2491,13 @@ public struct ShowTimelinePresentationState: Equatable {
         let previous = snapshot.project.songs[location.song].tracks[location.track]
         guard previous.kind == .standard, previous.role.rawValue != "vinhetas", previous.inputPatch != input else { return }
         do {
-            try input.validate(allowMaster: false)
+            try input.validate(allowMaster: false, allowNone: true)
             var project = snapshot.project
             if let link = previous.stereoLink {
                 let first = min(1023, max(1, input.firstChannel - (link.left ? 0 : 1)))
-                project.songs[location.song].tracks[location.track].inputPatch = OutputPatch(firstChannel: first + (link.left ? 0 : 1), channelCount: 1)
+                project.songs[location.song].tracks[location.track].inputPatch = input == .none ? OutputPatch.none : OutputPatch(firstChannel: first + (link.left ? 0 : 1), channelCount: 1)
                 if let other = project.songs[location.song].tracks.firstIndex(where: { $0.id == link.partner }) {
-                    project.songs[location.song].tracks[other].inputPatch = OutputPatch(firstChannel: first + (link.left ? 1 : 0), channelCount: 1)
+                    project.songs[location.song].tracks[other].inputPatch = input == .none ? OutputPatch.none : OutputPatch(firstChannel: first + (link.left ? 1 : 0), channelCount: 1)
                 }
             } else { project.songs[location.song].tracks[location.track].inputPatch = input }
             try executor.applyProjectEdit(project); snapshot = try executor.snapshot()
@@ -2987,7 +3021,7 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     @discardableResult public func copyProgramChange() -> Bool {
         guard let marker = selectedProgramChange else { return false }
-        programChangeClipboard = marker; itemClipboard = nil; programChangePasteReady = true
+        programChangeClipboard = marker; itemClipboard = nil; trackClipboard = nil; programChangePasteReady = true
         return true
     }
     @discardableResult public func pasteProgramChange() -> Bool {
@@ -3508,7 +3542,7 @@ public struct ShowTimelinePresentationState: Equatable {
         detectBPMRegion = nil; detectBPMRegions = []; modalNotice = nil
         resetTapTempo()
         pendingFXEdit = false; clipFXDefaults.removeAll()
-        itemClipboard = nil
+        itemClipboard = nil; trackClipboard = nil
         selectedSetlistBlock = nil
         selectedTimelineRegion = nil; timelineFollowPaused = false
         focusedRegion = nil; restoredCursorPosition = nil; navigationFocusPosition = nil; regionFocusRequest = UUID(); message = ""

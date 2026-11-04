@@ -348,10 +348,9 @@ for phase: NSEvent.Phase in [[], .began] {
     let mouseToPreciseStart = ProcessInfo.processInfo.systemUptime
     precondition(wheel.handleWheelEvent(event))
     requireZoomFrame(after: mouseToPreciseStart, callbackCount: 2)
-    let expectedBase = phase.contains(.began) ? exp(2 * TimelineZoomLimits.wheelSensitivity) : switchBase
-    precondition(abs(zoomValues.last! - expectedBase * exp(-TimelineZoomLimits.preciseSensitivity)) < 1e-12,
-                 "a new gesture commits its preceding input; a continuous reversal cancels the unseen finish")
-    if phase.isEmpty { requireMonotonicZoom([switchBase] + Array(zoomValues.dropFirst(switchCount)), increasing: false) }
+    precondition(abs(zoomValues.last! - switchBase * exp(-TimelineZoomLimits.preciseSensitivity)) < 1e-12,
+                 "new gestures and continuous reversals both resume from the visible scale")
+    requireMonotonicZoom([switchBase] + Array(zoomValues.dropFirst(switchCount)), increasing: false)
     let switchedCount = zoomValues.count
     RunLoop.main.run(until: Date().addingTimeInterval(0.12))
     precondition(zoomValues.count == switchedCount, "switching devices must not leave a long tail")
@@ -409,6 +408,11 @@ for precise in [false, true] {
                          "the trackpad finish continues beyond the former 180 ms release")
         }
         RunLoop.main.run(until: Date().addingTimeInterval(0.24))
+        if precise {
+            precondition(abs(log(zoomValues.last! / target)) > 0.0001,
+                         "the trackpad finish continues beyond the former 420 ms release")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.18))
         precondition(abs(zoomValues.last! - target) < 1e-12, "the release reaches the exact requested scale promptly")
         requireMonotonicZoom(zoomValues, increasing: sign > 0)
         let complete = zoomValues.count
@@ -428,6 +432,28 @@ precondition(zoomValues.count == releaseCountBeforeCancel && wheel.zoom == relea
              "opening a modal cancels the longer trackpad release immediately")
 gate.setBlocked(false, for: window)
 print("TRACKPAD_SOFT_RELEASE_MOUSE_UNCHANGED_EXACT_TARGET_AND_CANCELLATION_OK")
+
+// Touching the trackpad again must interrupt its release at the visible scale,
+// not finish the unseen travel and then bounce back on the first reverse delta.
+for sign in [-1.0, 1.0] {
+    resetZoomInput()
+    event.delta = sign * 20
+    precondition(wheel.handleWheelEvent(event))
+    event.delta = 0; event.gesturePhase = .ended
+    precondition(wheel.handleWheelEvent(event))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    let visible = wheel.zoom, count = zoomValues.count
+    event.gesturePhase = .began; event.inputTime += 0.06
+    precondition(wheel.handleWheelEvent(event))
+    precondition(wheel.zoom == visible && zoomValues.count == count,
+                 "touching the trackpad during release cannot jump to the unfinished target")
+    event.gesturePhase = .changed; event.delta = -sign
+    let began = ProcessInfo.processInfo.systemUptime
+    precondition(wheel.handleWheelEvent(event))
+    requireZoomFrame(after: began, callbackCount: count + 1)
+    requireMonotonicZoom([visible] + Array(zoomValues.dropFirst(count)), increasing: sign < 0)
+}
+print("TRACKPAD_RELEASE_RESTART_BOTH_DIRECTIONS_WITHOUT_REBOUND_OK")
 
 // Holding the left button converts only an unmodified physical wheel into pan.
 // A pending trackpad zoom/anchor is cancelled before the viewport moves.
@@ -630,8 +656,8 @@ let nativeMomentumUpdates = zoomValues.count
 RunLoop.main.run(until: Date().addingTimeInterval(0.12))
 precondition(zoomValues.count == nativeMomentumUpdates,"trackpad zoom cannot coast beyond the common finish")
 
-// Ending a gesture and beginning another before a display tick cannot lose
-// the previous gesture's queued signed travel, including a zero-delta begin.
+// A zero-delta finger-down stops unfinished motion, including changes queued
+// before a display tick. The next movement starts from what was visible.
 resetZoomInput()
 event.delta = 0.1
 precondition(wheel.handleWheelEvent(event))
@@ -641,11 +667,11 @@ event.gesturePhase = .ended; event.delta = 0
 precondition(wheel.handleWheelEvent(event))
 event.gesturePhase = .began; event.inputTime += 1.0 / 120
 precondition(wheel.handleWheelEvent(event))
-precondition(zoomValues.count == 2 && abs(log(zoomValues.last!) - 0.3 * TimelineZoomLimits.preciseSensitivity) < 1e-12,
-             "new zero-delta begin commits the preceding gesture's pending movement")
+precondition(zoomValues.count == 1 && abs(log(zoomValues.last!) - 0.1 * TimelineZoomLimits.preciseSensitivity) < 1e-12,
+             "new zero-delta begin leaves the visible scale unchanged")
 event.gesturePhase = .changed; event.delta = 0.1; event.inputTime += 1.0 / 120
-precondition(wheel.handleWheelEvent(event) && zoomValues.count == 3)
-precondition(abs(log(zoomValues.last!) - 0.4 * TimelineZoomLimits.preciseSensitivity) < 1e-12)
+precondition(wheel.handleWheelEvent(event) && zoomValues.count == 2)
+precondition(abs(log(zoomValues.last!) - 0.2 * TimelineZoomLimits.preciseSensitivity) < 1e-12)
 
 resetZoomInput(precise: false)
 let preferenceBeforeDebounce = TimelineViewportPreferences.storage.double(forKey: "jaras.timelineZoom")

@@ -21,18 +21,18 @@ private func brightness(_ image: NSBitmapImageRep, x: Int, y: Int) -> CGFloat {
 view.update(content())
 private let initialLayers = view.layer!.sublayers!.map(ObjectIdentifier.init)
 private let first = bitmap()
-// The thin dotted line covers 0.75 physical pixels, starting below the ruler.
-precondition(brightness(first, x: 80, y: 100) > 0.7 && brightness(first, x: 80, y: 100) < 0.8)
-precondition(brightness(first, x: 80, y: 104) < 0.1, "dotted grid retains gaps")
+// The thin continuous line covers 0.5 physical pixels, starting below the ruler.
+precondition(brightness(first, x: 80, y: 100) > 0.45 && brightness(first, x: 80, y: 100) < 0.55)
+precondition(brightness(first, x: 80, y: 104) > 0.45, "grid line stays continuous")
 precondition(brightness(first, x: 79, y: 100) < 0.1 && brightness(first, x: 81, y: 100) < 0.1)
 precondition(brightness(first, x: 80, y: 20) < 0.1)
-precondition(brightness(first, x: 160, y: 100) > 0.4 && brightness(first, x: 160, y: 100) < 0.6)
+precondition(brightness(first, x: 160, y: 100) > 0.25 && brightness(first, x: 160, y: 100) < 0.32)
 
 // Large document coordinates must remain precise and bounded to the viewport.
 view.update(content(origin: CGPoint(x: 1_000_000_000, y: 100), primary: [1_000_000_020], secondary: []))
 private let scrolled = bitmap()
-precondition(brightness(scrolled, x: 40, y: 4) > 0.7)
-precondition(brightness(scrolled, x: 40, y: 10) < 0.1, "vertical scrolling preserves the dot phase")
+precondition(brightness(scrolled, x: 40, y: 4) > 0.45)
+precondition(brightness(scrolled, x: 40, y: 10) > 0.45, "vertical scrolling keeps the line continuous")
 precondition(brightness(scrolled, x: 80, y: 100) < 0.1, "obsolete lines disappear in the next frame")
 for step in 0..<200 {
     view.update(content(primary: [CGFloat(step % 250) + 0.1], secondary: []))

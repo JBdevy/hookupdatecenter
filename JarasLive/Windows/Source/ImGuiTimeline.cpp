@@ -195,14 +195,15 @@ struct ImGuiTimeline::Impl {
     double snap(double time,const J& song,bool exact,std::optional<double> editAnchor={})const {
         time=std::max(0.,time);if(exact)return time;
         if(editAnchor&&std::isfinite(*editAnchor)&&*editAnchor>=0&&std::abs(time-*editAnchor)*scale<=12*std::max(.01f,lastUIScale))return *editAnchor;
-        double origin=0,bpm=number(song,"bpm",120),unit=number(song,"beatUnit",4);
+        double origin=0,bpm=number(song,"bpm",120),unit=number(song,"beatUnit",4),beats=number(song,"beatsPerBar",4);
         for(const auto& marker:array(song,"markers"))if(number(marker,"position")<=time&&number(marker,"position")>=origin&&number(marker,"tempoBPM")>0) {
-            origin=number(marker,"position");bpm=number(marker,"tempoBPM");unit=number(marker,"tempoUnit",4);
+            origin=number(marker,"position");bpm=number(marker,"tempoBPM");unit=number(marker,"tempoUnit",4);beats=number(marker,"tempoBeats",4);
         }
         const auto divisions=number(member(song,"timeSettings"),"divisions",4);
-        if(bpm<=0||unit<=0||divisions<=0)return time;
-        double step=60/bpm*4/divisions;
-        step*=std::pow(2.,std::max(0.,std::ceil(std::log2(12/std::max(.001,step*scale)))));
+        if(bpm<=0||unit<=0||beats<=0||divisions<=0)return time;
+        const double pixels=scale/std::max(.01f,lastUIScale),beat=60/bpm*4/unit;
+        double step=beat*pixels>=16?std::min(beat,beat*unit/divisions):beat*beats;
+        step*=std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,step*pixels)))));
         double chosen=origin+std::round((time-origin)/step)*step,distance=std::abs(chosen-time);
         auto consider=[&](double at){if(at>=0&&std::abs(at-time)<distance){chosen=at;distance=std::abs(at-time);}};
         for(const auto& part:regions){consider(part.start);consider(part.end);}
@@ -244,10 +245,9 @@ struct ImGuiTimeline::Impl {
         const double bar=bpm>0&&unit>0?60/bpm*beats*4/unit:0;
         double step=0;
         if(divisions>0&&bar>0) {
-            if(bar*pixels>=64) {
-                step=bar/beats*unit/divisions;
-                step*=std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,step*pixels)))));
-            } else step=bar*std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,bar*pixels)))))/2;
+            const double beat=bar/beats;
+            step=beat*pixels>=16?std::min(beat,beat*unit/divisions):bar;
+            step*=std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,step*pixels)))));
         }
         double nearest=0,distance=position;
         auto consider=[&](double at) {
@@ -314,14 +314,17 @@ struct ImGuiTimeline::Impl {
             const auto& tempo=tempos[t];const auto until=t+1<tempos.size()?std::min(end,tempos[t+1].start):end;
             if(until<offset||tempo.start>end||tempo.bpm<=0||tempo.unit<=0)continue;
             const auto beat=60/tempo.bpm*4/tempo.unit,bar=beat*std::max(1.,tempo.beats);
-            double step=beat*tempo.unit/gridDivisions;step*=std::pow(2.,std::max(0.,std::ceil(std::log2(14*uiScale()/std::max(.001,step*scale)))));
+            const double minimumSpacing=16*uiScale();
+            const bool showBeats=beat*scale>=minimumSpacing;
+            double step=showBeats?std::min(beat,beat*tempo.unit/(gridDivisions==0?4:gridDivisions)):bar;
+            step*=std::pow(2.,std::max(0.,std::ceil(std::log2(minimumSpacing/std::max(.001,step*scale)))));
             const auto first=std::ceil(std::max(0.,offset-tempo.start)/step);
             for(double i=first,time=tempo.start+i*step;time<=until+1.e-9;i+=1,time=tempo.start+i*step) {
                 const auto x=body.x+float((time-offset)*scale);const bool major=std::abs(std::round((time-tempo.start)/bar)-(time-tempo.start)/bar)<1.e-7;
                 const auto c=major?IM_COL32(117,126,138,100):IM_COL32(88,96,108,65);
-                for(float y=body.y+2;y<body.y+body.h;y+=8*uiScale())draw.AddRectFilled({x,y},{x+1,y+(major?2.f:1.f)},c);
+                draw.AddLine({x,body.y},{x,body.y+body.h},c,.5f);
                 draw.AddLine({x,ruler.y+ruler.h-(major?8.f:4.f)*uiScale()},{x,ruler.y+ruler.h},c);
-                if(x-lastLabel>78*uiScale()) {label(draw,{x+2,ruler.y,110*uiScale(),ruler.h-3},clockText(time,scale>400),IM_COL32(173,182,194,255),0);lastLabel=x;}
+                if(x-lastLabel>78*uiScale()) {label(draw,{x+2,ruler.y,110*uiScale(),ruler.h-8*uiScale()},clockText(time,scale>400),IM_COL32(173,182,194,255),0);lastLabel=x;}
             }
         }
     }
