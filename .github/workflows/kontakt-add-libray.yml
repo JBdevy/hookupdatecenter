@@ -1,0 +1,91 @@
+name: Kontakt Add Libray - signed Mac installer
+
+on:
+  push:
+    tags:
+      - 'kontakt-add-libray-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão do aplicativo (X.XX)'
+        required: true
+        default: '1.00'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kontakt-add-libray-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    runs-on: macos-26
+    timeout-minutes: 110
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate standalone release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${VERSION:-${GITHUB_REF_NAME#kontakt-add-libray-v}}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]{2}$ ]] || { echo 'Use uma versão X.XX.'; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Test library discovery and registration using temporary fixtures
+        run: |
+          set -o pipefail
+          swift test --package-path KontaktAddLibray --scratch-path "$RUNNER_TEMP/kontakt-tests" --jobs 2 2>&1 | tee "$RUNNER_TEMP/kontakt-tests.log"
+      - name: Build for Intel and Apple Silicon, macOS 12 or newer
+        run: bash KontaktAddLibray/scripts/build-mac.sh "$PWD/kontakt-build"
+      - name: Sign and notarize standalone installer
+        env:
+          APP_CERT_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          APP_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          INSTALLER_CERT_BASE64: ${{ secrets.MACOS_INSTALLER_CERT_P12_BASE64 }}
+          INSTALLER_CERT_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash KontaktAddLibray/scripts/package-mac.sh "$PWD/kontakt-build"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kontakt-Add-Libray-${{ env.VERSION }}-Mac-Installer
+          path: |
+            kontakt-build/installer/*.pkg
+            kontakt-build/installer/*.sha256
+          if-no-files-found: error
+      - name: Publish separate Kontakt Add Libray release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="kontakt-add-libray-v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "A release $tag já existe. Use uma nova versão para preservar o instalador publicado."
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/kontakt-release-notes.md" <<'NOTES'
+          Instalador independente do Kontakt Add Libray para macOS 12 Monterey ou posterior.
+
+          Compatível com Intel e Apple Silicon. Aplicativo e instalador assinados com Developer ID e notarizados pela Apple.
+
+          Baixe o arquivo `.pkg`. O arquivo `.sha256` permite conferir a integridade do instalador.
+          NOTES
+          gh release create "$tag" kontakt-build/installer/*.pkg kontakt-build/installer/*.sha256 \
+            --target "$GITHUB_SHA" --title "Kontakt Add Libray $VERSION" --latest=false \
+            --notes-file "$RUNNER_TEMP/kontakt-release-notes.md"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: Kontakt-Add-Libray-diagnostics
+          path: |
+            ${{ runner.temp }}/kontakt-tests.log
+            kontakt-build/notary-result.json
+          if-no-files-found: ignore
