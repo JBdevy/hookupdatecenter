@@ -99,8 +99,12 @@ public:
             next->events.push_back({n.start,index,true});next->events.push_back({n.end,index,false});
         }
         std::sort(next->events.begin(),next->events.end(),[](const auto&a,const auto&b){return a.time==b.time ? a.on<b.on : a.time<b.time;});
-        auto old=std::move(current);current=std::move(next);published.store(current.get(),std::memory_order_seq_cst);
-        if(old)retired.push_back(std::move(old));if(readers.load(std::memory_order_seq_cst)==0)retired.clear();
+        // Allocate the retirement slot before exposing new storage. A failed
+        // allocation must leave the plan held by an audio reader alive.
+        if(current)retired.emplace_back();
+        if(current)retired.back()=std::move(current);
+        current=std::move(next);published.store(current.get(),std::memory_order_seq_cst);
+        if(readers.load(std::memory_order_seq_cst)==0)retired.clear();
     }
     void configure(unsigned head,double position,double clock,bool running,double loopStart,double loopEnd) {
         if(head>=2)return;auto& c=clocks[head];c.generation.fetch_add(1);

@@ -1,4 +1,5 @@
 #include "VST3Host.h"
+#include "VST3ParameterSlots.h"
 #include "../../Core/Audio/VST3ParameterRestore.hpp"
 #include <windows.h>
 #include "pluginterfaces/base/ipluginbase.h"
@@ -242,19 +243,23 @@ public:
 class Changes final: public IParameterChanges {
 public:
     std::unique_ptr<Queue[]> queues;ParameterPointPool pool;int32 capacity=0,count=0;FIXED_REF
-    void prepare(int parameterCount){
-        capacity=parameterCount+2048;queues=std::make_unique<Queue[]>(capacity);
+    ParameterSlots slots;
+    void prepare(int parameterCount,std::vector<std::pair<std::uint32_t,int>> identifiers){
+        slots.prepare(std::move(identifiers));
+        capacity=slots.capacity();queues=std::make_unique<Queue[]>(capacity);
         pool.capacity=parameterCount+18432;pool.points=std::make_unique<ParameterPoint[]>(pool.capacity);
         for(int i=0;i<capacity;++i)queues[i].pool=&pool;
     }
-    void clear(){count=0;pool.used=0;}
+    void clear(){count=0;pool.used=0;slots.beginBlock();}
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override {*out=nullptr;if(iidIs<FUnknown>(id)||iidIs<IParameterChanges>(id)){*out=this;return kResultOk;}return kNoInterface;}
     int32 PLUGIN_API getParameterCount() override {return count;}
     IParamValueQueue *PLUGIN_API getParameterData(int32 index) override {return index>=0&&index<count?&queues[index]:nullptr;}
     IParamValueQueue *PLUGIN_API addParameterData(const ParamID &id,int32 &index) override {
-        for(int i=0;i<count;++i)if(queues[i].id==id){index=i;return &queues[i];}
-        if(count==capacity){index=-1;return nullptr;}
-        index=count++;queues[index].id=id;queues[index].clear();return &queues[index];
+        int slot=-1;bool inserted=false;
+        if(!slots.queue(id,slot,inserted)){index=-1;return nullptr;}
+        index=slot;
+        if(inserted){count=slots.count();queues[index].id=id;queues[index].clear();}
+        return &queues[index];
     }
 };
 class EventList final: public IEventList {
@@ -306,7 +311,8 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
     tresult PLUGIN_API beginEdit(ParamID) override {return kResultOk;}
     tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override {
         if(!std::isfinite(value))return kInvalidArgument;
-        for(int i=0;i<paramCount;++i)if(params[i].id==id){
+        const auto i=changes.slots.parameterIndex(id);
+        if(i>=0){
             params[i].pending=std::clamp(value,0.,1.);
             params[i].dirty.store(true,std::memory_order_release);
             parametersChanged.store(true,std::memory_order_release);
@@ -414,7 +420,7 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         }
         if(controller){
             paramCount=std::clamp(controller->getParameterCount(),0,65536);
-            params=std::make_unique<Param[]>(paramCount);changes.prepare(paramCount);
+            params=std::make_unique<Param[]>(paramCount);
             for(int i=0;i<paramCount;++i){
                 ParameterInfo p{};controller->getParameterInfo(i,p);params[i].id=p.id;
                 params[i].pending=controller->getParamNormalized(p.id);
@@ -424,6 +430,13 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
                 }
             }
         }
+        // Include hidden MIDI mappings too: they need queues even when the
+        // controller omits them from its ordinary parameter enumeration.
+        std::vector<std::pair<std::uint32_t,int>> parameterIDs;
+        parameterIDs.reserve(size_t(paramCount)+midiParameterIDs.size());
+        for(int i=0;i<paramCount;++i)parameterIDs.emplace_back(params[i].id,i);
+        for(const auto id:midiParameterIDs)parameterIDs.emplace_back(id,-1);
+        changes.prepare(paramCount,std::move(parameterIDs));
         ProcessSetup setup{kRealtime,kSample32,maxFrames,rate};
         if(processor->setupProcessing(setup)!=kResultOk)throw std::runtime_error("VST3 audio setup failed.");
         if(component->setActive(true)!=kResultOk)throw std::runtime_error("Could not activate this VST3 processor.");active=true;

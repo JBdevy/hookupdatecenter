@@ -1,13 +1,23 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Multiple fixtures reuse the expensive C++/Objective-C bridge compilation.
+# The existing single-fixture environment variable remains supported.
+fixtures=("$@")
+if [[ ${#fixtures[@]} -eq 0 ]]; then
+ fixtures=("${JARAS_AUDIO_TEST_SOURCE:-Tests/Apple/AudioRenderTests.swift}")
+fi
+for fixture in "${fixtures[@]}"; do
+ [[ -f "$fixture" ]] || { echo "Audio fixture not found: $fixture" >&2; exit 1; }
+done
+export MACOSX_DEPLOYMENT_TARGET=12.0
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-audio.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasCoreBridge.mm -o "$build_dir/bridge.o"
 clang++ -std=c++17 -c Core/Project/Models.cpp -o "$build_dir/models.o"
 clang++ -std=c++17 -c Core/Transport/Engine.cpp -o "$build_dir/engine.o"
 clang++ -std=c++17 -c Core/Import/TrackTaxonomy.cpp -o "$build_dir/taxonomy.o"
-clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir/effects.o"
+clang++ -O3 -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir/effects.o"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasStemSeparator.mm -o "$build_dir/stemseparator.o"
 bash scripts/compile-vst3.sh "$build_dir"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasSoundFont.mm -o "$build_dir/soundfont.o"
@@ -17,11 +27,19 @@ for source in Core/ThirdParty/Lame/*.c; do
  clang -O2 -DHAVE_CONFIG_H -ICore/ThirdParty/Lame -c "$source" -o "$build_dir/lame/$(basename "$source" .c).o"
 done
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasRecording.mm -o "$build_dir/recording.o"
-cp "${JARAS_AUDIO_TEST_SOURCE:-Tests/Apple/AudioRenderTests.swift}" "$build_dir/main.swift"
-swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift Apple/Shared/AudioDeviceSettings.swift Apple/Shared/NativeTooltips.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/CatStemRealtimeRuntime.swift Apple/Shared/VideoMediaSettings.swift Application/Project/ClickTrack.swift Apple/Shared/ClickAudioSample.swift Application/Project/AudioFileRead.swift Apple/Shared/StemAudioPlayback.swift Apple/Shared/Theme.swift Apple/Shared/InstrumentLibrary.swift "$build_dir/main.swift" "$build_dir/bridge.o" "$build_dir/models.o" "$build_dir/engine.o" "$build_dir/taxonomy.o" "$build_dir/effects.o" "$build_dir/stemseparator.o" "$build_dir/soundfont.o" "$build_dir/timecode.o" "$build_dir/recording.o" "$build_dir"/lame/*.o "$build_dir"/vst3*.o -framework Accelerate -lc++ -o "$build_dir/test"
+for fixture in "${fixtures[@]}"; do
+printf "Audio fixture: %s\n" "$fixture"
+cp "$fixture" "$build_dir/main.swift"
+swiftc -target "$(uname -m)-apple-macos12.0" -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift Apple/Shared/AudioDeviceSettings.swift Apple/Shared/NativeTooltips.swift Apple/Shared/NativeEffectsChain.swift Apple/Shared/CatStemRealtimeRuntime.swift Apple/Shared/VideoMediaSettings.swift Application/Project/ClickTrack.swift Apple/Shared/ClickAudioSample.swift Application/Project/AudioFileRead.swift Apple/Shared/StemAudioPlayback.swift Apple/Shared/Theme.swift Apple/Shared/InstrumentLibrary.swift "$build_dir/main.swift" "$build_dir/bridge.o" "$build_dir/models.o" "$build_dir/engine.o" "$build_dir/taxonomy.o" "$build_dir/effects.o" "$build_dir/stemseparator.o" "$build_dir/soundfont.o" "$build_dir/timecode.o" "$build_dir/recording.o" "$build_dir"/lame/*.o "$build_dir"/vst3*.o -framework Accelerate -lc++ -o "$build_dir/test"
 repeats="${JARAS_AUDIO_TEST_REPEATS:-1}"
 [[ "$repeats" =~ ^[1-9][0-9]*$ ]] || { echo 'JARAS_AUDIO_TEST_REPEATS must be a positive integer.' >&2; exit 1; }
 for ((pass=1; pass<=repeats; ++pass)); do
     "$build_dir/test"
-    JARAS_TEST_SAMPLE_RATE=48000 "$build_dir/test"
+    # These fixtures own a 44.1/48/96 kHz matrix internally. Repeating the
+    # executable with a different environment would duplicate that whole matrix.
+    case "$fixture" in
+        */EQIntelStabilityTests.swift|*/DynamicsStabilityTests.swift) ;;
+        *) JARAS_TEST_SAMPLE_RATE=48000 "$build_dir/test" ;;
+    esac
+done
 done

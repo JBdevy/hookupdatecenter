@@ -1,10 +1,54 @@
 import AVFoundation
 import Foundation
 import Darwin
+import ObjectiveC
 setbuf(stdout, nil)
 
 func require(_ value: @autoclosure () -> Bool, _ message: String) {
     precondition(value(), message)
+}
+
+// Decoder failures must be repeatable on every supported macOS version. A
+// truncated WAV can fail either at open or at read depending on the decoder,
+// so this fixture rejects reads for one URL after AVAudioFile has opened it.
+private final class AudioReadFailureSwitch {
+    private let lock = NSLock()
+    private var denied = true
+    func allowReads() { lock.lock(); denied = false; lock.unlock() }
+    func rejectsReads() -> Bool { lock.lock(); defer { lock.unlock() }; return denied }
+}
+
+private typealias AudioReadImplementation = @convention(c) (
+    AVAudioFile, Selector, AVAudioPCMBuffer, AVAudioFrameCount,
+    AutoreleasingUnsafeMutablePointer<NSError?>?
+) -> Bool
+
+private func withRejectedAudioReads(at url: URL, body: (AudioReadFailureSwitch) throws -> Void) rethrows {
+    let selector = NSSelectorFromString("readIntoBuffer:frameCount:error:")
+    let method = class_getInstanceMethod(AVAudioFile.self, selector)!
+    let original = method_getImplementation(method)
+    let read = unsafeBitCast(original, to: AudioReadImplementation.self)
+    let failure = AudioReadFailureSwitch()
+    let replacement: @convention(block) (
+        AVAudioFile, AVAudioPCMBuffer, AVAudioFrameCount,
+        AutoreleasingUnsafeMutablePointer<NSError?>?
+    ) -> Bool = { file, buffer, count, error in
+        if file.url == url && failure.rejectsReads() {
+            error?.pointee = NSError(domain: "CatLive.PreparedAudio.Test", code: 1,
+                                    userInfo: [NSLocalizedDescriptionKey: "Injected decoder read failure"])
+            return false
+        }
+        return read(file, selector, buffer, count, error)
+    }
+    let implementation = imp_implementationWithBlock(replacement)
+    method_setImplementation(method, implementation)
+    defer {
+        failure.allowReads()
+        method_setImplementation(method, original)
+        // Keep this one test block alive until process exit: a decoder worker
+        // may already have fetched its IMP when the original is restored.
+    }
+    try body(failure)
 }
 
 let directory = FileManager.default.temporaryDirectory.appendingPathComponent("prepared-clip-" + UUID().uuidString)
@@ -111,3 +155,122 @@ require(source.underruns == 0, "Streaming or loop lookahead starved")
 source.stop(); engine.stop()
 print("PREPARED_CLIP_STREAM_AND_LOOP_OK")
 print("PREPARED_CLIP_PCM_PITCH_RATE_STOP_SEEK_OK")
+
+// Many stems must keep independent rolling lookahead. Use exact dry PCM at a
+// high source speed so each stream crosses its initial pages in under a second.
+do {
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let engine = AVAudioEngine()
+    let sources = (0..<24).map { _ in JarasPreparedClip(format: format) }
+    let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+    for source in sources {
+        engine.attach(source.node)
+        engine.connect(source.node, to: engine.mainMixerNode, format: format)
+        try source.prepare(directory.appendingPathComponent("source-48000.wav"), sourceFrame: 0,
+                           endFrame: 480000, rate: 8, pitch: 36, loopStart: 0, loopEnd: 0)
+    }
+    try engine.enableManualRenderingMode(.realtime, format: format, maximumFrameCount: 512)
+    try engine.start()
+    sources.forEach { $0.start(atHostTime: 0, ramp: false) }
+    for block in 0..<100 {
+        var status: OSStatus = 0; output.frameLength = 512
+        require(engine.manualRenderingBlock(512, output.mutableAudioBufferList, &status) == .success && status == 0,
+                "Multi-stem render failed")
+        for n in 0..<512 {
+            let frame = Double((block * 512 + n) * 8)
+            let expected = Float(sources.count) * 0.25 * Float(cos(frame / 48000 * 2 * .pi * 440))
+            require(abs(output.floatChannelData![0][n] - expected) < 0.00002,
+                    "Rolling prefetch skipped/stalled a stem")
+        }
+        Thread.sleep(forTimeInterval: 512.0 / 48000)
+    }
+    require(sources.allSatisfy { $0.underruns == 0 }, "Multi-stem lookahead starved")
+    sources.forEach { $0.stop() }; engine.stop()
+    print("PREPARED_CLIP_MULTI_STEM_PREFETCH_OK")
+}
+
+// At 192 kHz and 32x source speed the warm spectral cursor is more than six
+// physical pages ahead of dry playback. The worker must retain/fill that whole
+// window, rather than reverting to its old fixed six-page limit after prepare.
+do {
+    let sampleRate = 192000.0, speed = 32.0
+    let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
+    let url = directory.appendingPathComponent("high-source-rate.wav")
+    let samples = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sampleRate * 16))!
+    samples.frameLength = samples.frameCapacity
+    for n in 0..<Int(samples.frameLength) {
+        samples.floatChannelData![0][n] = 0.1 * Float(cos(Double(n) / sampleRate * 2 * .pi * 220))
+        samples.floatChannelData![1][n] = -samples.floatChannelData![0][n]
+    }
+    do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: samples) }
+    let engine = AVAudioEngine(), source = JarasPreparedClip(format: format)
+    engine.attach(source.node); engine.connect(source.node, to: engine.mainMixerNode, format: format)
+    try source.prepare(url, sourceFrame: 0, endFrame: sampleRate * 16, rate: speed, pitch: 60,
+                       loopStart: 0, loopEnd: 0)
+    try engine.enableManualRenderingMode(.realtime, format: format, maximumFrameCount: 512)
+    try engine.start(); source.start(atHostTime: 0, ramp: false)
+    let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+    for block in 0..<100 {
+        var status: OSStatus = 0; output.frameLength = 512
+        require(engine.manualRenderingBlock(512, output.mutableAudioBufferList, &status) == .success && status == 0,
+                "High source-rate render failed")
+        for n in 0..<512 {
+            let frame = Int(Double(block * 512 + n) * speed)
+            require(abs(output.floatChannelData![0][n] - samples.floatChannelData![0][frame]) < 0.000001,
+                    "High-rate prefetch changed dry PCM")
+        }
+        Thread.sleep(forTimeInterval: 512.0 / sampleRate)
+    }
+    require(source.underruns == 0, "High-rate FFT lookahead starved")
+    source.stop(); engine.stop()
+    print("PREPARED_CLIP_HIGH_RATE_LOOKAHEAD_OK")
+}
+
+// A newly opened cache can retain the same start/rate/range as the previous
+// source while its first read fails. Retrying it must never reuse the previous
+// source's successful prime or start stale FFT history/empty PCM.
+do {
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let engine = AVAudioEngine(), source = JarasPreparedClip(format: format)
+    engine.attach(source.node); engine.connect(source.node, to: engine.mainMixerNode, format: format)
+    try engine.enableManualRenderingMode(.realtime, format: format, maximumFrameCount: 512)
+    try engine.start()
+    defer { source.stop(); engine.stop() }
+    let first = directory.appendingPathComponent("source-48000.wav")
+    let second = directory.appendingPathComponent("retry-source.wav")
+    let samples = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 480000)!
+    samples.frameLength = samples.frameCapacity
+    for n in 0..<Int(samples.frameLength) {
+        samples.floatChannelData![0][n] = -0.125
+        samples.floatChannelData![1][n] = 0.125
+    }
+    do { let file = try AVAudioFile(forWriting: second, settings: format.settings); try file.write(from: samples) }
+    try source.prepare(first, sourceFrame: 0, endFrame: 480000, rate: 1, pitch: 0, loopStart: 0, loopEnd: 0)
+    try withRejectedAudioReads(at: second) { failure in
+        for _ in 0..<2 {
+            var rejected = false
+            do {
+                try source.prepare(second, sourceFrame: 0, endFrame: 480000, rate: 1, pitch: 0,
+                                   loopStart: 0, loopEnd: 0)
+            } catch { rejected = true }
+            require(rejected, "A failed replacement cache reused stale successful preparation")
+            source.start(atHostTime: 0, ramp: false)
+            require(!source.playing, "A failed source preparation was allowed to start")
+        }
+        failure.allowReads()
+        try source.prepare(second, sourceFrame: 0, endFrame: 480000, rate: 1, pitch: 0, loopStart: 0, loopEnd: 0)
+        source.start(atHostTime: 0, ramp: false)
+        let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+        output.frameLength = 512
+        var status: OSStatus = 0
+        require(engine.manualRenderingBlock(512, output.mutableAudioBufferList, &status) == .success && status == 0,
+                "Retry render failed")
+        for n in 0..<512 {
+            require(abs(output.floatChannelData![0][n] + 0.125) < 0.000001 &&
+                    abs(output.floatChannelData![1][n] - 0.125) < 0.000001,
+                    "Recovered preparation replayed stale source PCM")
+        }
+        require(source.underruns == 0, "Recovered preparation left an empty PCM cache")
+    }
+    print("PREPARED_CLIP_FAILED_REPLACEMENT_RETRY_OK")
+}

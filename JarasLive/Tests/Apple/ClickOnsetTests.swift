@@ -198,3 +198,44 @@ if !roundedAccentFailures.isEmpty {
 }
 precondition(roundedAccentFailures.isEmpty, "Rounded accent regression")
 print("CLICK_PCM_ROUNDED_ACCENTS_INTEGER_TEMPO_AND_TWO_BAR_CHANGES_44100_48000_OK")
+
+// A transition can contain one irregular gap without constituting a third
+// musical tempo. Exercise PCM extraction and project marker generation together.
+for rate in [44100.0, 48000.0] {
+    let first = (0..<24).map { 0.123 + Double($0) * 60 / 170 }
+    let change = first.last! + 0.5254421768707402
+    let beats = first + (0..<24).map { change + Double($0) * 60 / 142 }
+    let url = directory.appendingPathComponent("transition-gap-\(Int(rate)).wav")
+    let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+    let frames = Int(ceil((beats.last! + 1) * rate))
+    let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))!
+    pcm.frameLength = pcm.frameCapacity
+    for channel in 0..<2 { pcm.floatChannelData![channel].initialize(repeating: 0, count: frames) }
+    for (index, beat) in beats.enumerated() {
+        let start = Int((beat * rate).rounded())
+        for offset in 0..<Int(rate * 0.02) {
+            pcm.floatChannelData![index % 2][start + offset] = Float(0.6 * exp(-Double(offset) / 80) * cos(Double(offset) * 0.3))
+        }
+    }
+    do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: pcm) }
+    let pulses = try TimelineAudioWaveform.clickTransients(url).map {
+        ClickTempoDetector.Transient(position: $0.position, peak: $0.peak, shape: $0.shape)
+    }
+    precondition(pulses.count == beats.count)
+    let raw = ClickTempoDetector.sections(onsets: pulses.map(\.position))
+    precondition(raw.count == 3 && abs(raw[1].bpm - 114) < 0.3,
+                 "The fixture must reproduce an apparent third tempo from the isolated gap")
+    var song = Project.empty(name: "Transition").songs[0]
+    song.timeSettings?.timebase = .free
+    var track = Track(id: UUID(), name: "Click", role: .click)
+    track.clips = [AudioClip(id: UUID(), name: "Click", startTime: 40, duration: Double(frames) / rate,
+                            audioFile: AudioFile(path: url.lastPathComponent))]
+    song.tracks = [track]
+    let region = Part(id: UUID(), name: "Song", startTime: 40, endTime: 40 + Double(frames) / rate)
+    let result = try ClickTempoDetector.markersWithMeter(song: song, region: region) { _ in pulses }
+    precondition(result.markers.map(\.tempoBPM) == [170, 170, 142],
+                 "A single transition gap must not become a public 114 BPM marker")
+    precondition(abs(result.markers.last!.position - (40 + pulses[24].position)) < 1e-9,
+                 "The actual 142 BPM entry must retain its measured sample position")
+}
+print("CLICK_PCM_ISOLATED_TRANSITION_GAP_AND_EXACT_NEXT_TEMPO_44100_48000_OK")

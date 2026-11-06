@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export MACOSX_DEPLOYMENT_TARGET=12.0
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/catlive-fx-refresh.XXXXXX")"
 trap 'rm -rf "$build_dir"' EXIT
 python3 - "$build_dir/Views.swift" <<'PY'
@@ -22,7 +23,7 @@ Path(sys.argv[1]).write_text('import SwiftUI\nimport Combine\n' +
     declaration('Apple/Shared/StemAudioPlayback.swift', '@MainActor final class TrackMeterLevel') + '\n' +
     declaration('Apple/Shared/FXControls.swift', 'struct EffectVerticalMeters'))
 PY
-swiftc -swift-version 5 -parse-as-library "$build_dir/Views.swift" \
+swiftc -target "$(uname -m)-apple-macos12.0" -swift-version 5 -parse-as-library "$build_dir/Views.swift" \
     Apple/Shared/EQRTAOverlay.swift Apple/Shared/EQRealTimeAnalysis.swift Apple/Shared/EffectSpectrogram.swift \
     Tests/Apple/FXRefreshDuringEditingTests.swift -framework Accelerate -o "$build_dir/test"
 "$build_dir/test"

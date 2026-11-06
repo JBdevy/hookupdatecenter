@@ -152,8 +152,8 @@ struct TimecodeSignal {
 - (void)dealloc { if(_timer) dispatch_source_cancel(_timer); if(_port) MIDIPortDispose(_port); if(_client) MIDIClientDispose(_client); }
 @end
 
-// Immutable sound/tempo programs are published with a hazard pointer. The render
-// callback neither locks nor allocates; retired programs are reclaimed by the UI.
+// Immutable sound/tempo programs use bounded reader admission. The callback
+// never retries publication; retired programs are reclaimed by the UI.
 struct MetronomeProgram {
     struct Tempo { double start, bpm; int beats, unit; double end=INFINITY, origin=NAN; };
     std::vector<Tempo> sections;
@@ -163,7 +163,8 @@ struct MetronomeProgram {
     uint64_t timingRevision = 0;
 };
 struct MetronomeSignal {
-    std::atomic<MetronomeProgram*> program{nullptr}, reading{nullptr};
+    std::atomic<MetronomeProgram*> program{nullptr};
+    std::atomic<unsigned> readers{0};
     std::atomic<float> gainA{1}, gainB{1};
     float renderedA=1, renderedB=1;
     std::vector<std::unique_ptr<MetronomeProgram>> programs;
@@ -234,13 +235,15 @@ struct MetronomeSignal {
         }
         value->timingRevision=sameTiming ? current->timingRevision : ++nextTimingRevision;
         auto* next=value.get(); programs.push_back(std::move(value)); program.store(next);
-        const auto* protectedProgram=reading.load();
-        // Read the callback hazard before the voice hazards: the callback
-        // publishes a voice's sound before releasing its program hazard.
+        // Admission, publication and this check are seq_cst across distinct
+        // atomics. A new reader after quiescence can only take the new program;
+        // an admitted reader keeps all old programs alive until it finishes.
+        if(readers.load()!=0)return;
+        // Completed callbacks may still own sounding tails across blocks.
         std::array<MetronomeProgram*,32> sounding{};
         for(size_t i=0;i<sounding.size();++i) sounding[i]=voicePrograms[i].load();
         programs.erase(std::remove_if(programs.begin(),programs.end(),[&](const auto& p) {
-            return p.get()!=next && p.get()!=protectedProgram &&
+            return p.get()!=next &&
                 std::find(sounding.begin(),sounding.end(),p.get())==sounding.end();
         }),programs.end());
     }
@@ -265,9 +268,11 @@ struct MetronomeSignal {
         running.store(nextRunning);
     }
     void render(const AudioTimeStamp* time, AVAudioFrameCount count, AudioBufferList* list) {
+        jaras::ScopedAudioDenormals denormals;
         const auto physical = jaras::physicalRenderTime(*time, sampleRate); time = &physical;
-        MetronomeProgram* p;
-        do { p=program.load(); reading.store(p); } while(p!=program.load());
+        readers.fetch_add(1);
+        struct ReaderExit { std::atomic<unsigned>& readers; ~ReaderExit(){readers.fetch_sub(1);} } readerExit{readers};
+        auto* p=program.load();
         const auto version=generation.load(std::memory_order_acquire);
         const auto jumpSerial=jumpVersion.load(std::memory_order_acquire);
         if(!(jumpSerial&1)) {
@@ -277,7 +282,7 @@ struct MetronomeSignal {
         const bool active=running.load() && enabled.load(std::memory_order_acquire);
         if(!active && gain==0) {
             for(unsigned b=0;b<list->mNumberBuffers;++b) if(list->mBuffers[b].mData) std::memset(list->mBuffers[b].mData,0,list->mBuffers[b].mDataByteSize);
-            reading.store(nullptr); return;
+            return;
         }
         bool rebaseBeat=p && renderedTimingRevision!=0 && renderedTimingRevision!=p->timingRevision;
         if(p) renderedTimingRevision=p->timingRevision;
@@ -376,7 +381,6 @@ struct MetronomeSignal {
                 if(data) for(unsigned ch=0;ch<buffer.mNumberChannels;++ch) data[sample*buffer.mNumberChannels+ch]=value;
             }
         }
-        reading.store(nullptr);
     }
 };
 @implementation JarasMetronomeGenerator {

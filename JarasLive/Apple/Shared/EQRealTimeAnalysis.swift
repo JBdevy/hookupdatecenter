@@ -3,6 +3,31 @@ import SwiftUI
 import Combine
 import Accelerate
 
+/// The response editor prepares coefficients once per redraw. Rebuilding every
+/// band's biquads at every screen pixel made steep cuts expensive on Intel.
+struct EQResponseCurve {
+    private let coefficients: [[Double]]
+    private let rate: Double
+    init(coefficients: [[Double]], rate: Double) {
+        self.coefficients = coefficients.filter { $0.count == 5 && $0.allSatisfy(\.isFinite) }
+        self.rate = rate.isFinite && rate > 0 ? rate : 48000
+    }
+    func response(frequency: Double) -> Double {
+        let w = 2 * Double.pi * frequency / rate
+        let cosine = cos(w), sine = sin(w), cosine2 = cos(2 * w), sine2 = sin(2 * w)
+        var power = 1.0, decibels = 0.0
+        for k in coefficients {
+            let nr = k[0] + k[1] * cosine + k[2] * cosine2, ni = -k[1] * sine - k[2] * sine2
+            let dr = 1 + k[3] * cosine + k[4] * cosine2, di = -k[3] * sine - k[4] * sine2
+            power *= max(1e-20, (nr * nr + ni * ni) / max(1e-20, dr * dr + di * di))
+            // Preserve the original per-stage floor without under/overflow in
+            // a cascade of brickwall filters. Most pixels need one log only.
+            if power < 1e-200 || power > 1e200 { decibels += 10 * log10(power); power = 1 }
+        }
+        return decibels + 10 * log10(power)
+    }
+}
+
 struct EQSpectrum: Equatable, Sendable {
     static let binCount = 384
     static let minimumDB: Float = -96
@@ -42,10 +67,27 @@ final class EQSpectrumAnalyzer: @unchecked Sendable {
     private var imaginary = [Float](repeating: 0, count: samples / 2)
     private var powers = [Float](repeating: 0, count: samples / 2)
     private var current = EQSpectrum()
+    private struct Bin { let lower: Int; let upper: Int; let fraction: Float }
+    private static let frequencies = (0..<EQSpectrum.binCount).map { EQSpectrum.frequency(at: $0) }
+    private var binMaps: [Double: [Bin?]] = [:]
     init() { vDSP_hann_window(&window, vDSP_Length(Self.samples), Int32(vDSP_HANN_NORM)) }
     deinit { vDSP_destroy_fftsetup(setup) }
     private func accumulate(_ data: Data?, rate: Double, into levels: inout [Float]) {
         guard rate.isFinite, rate >= 8000, let data, data.count == Self.samples * 2 * MemoryLayout<Float>.size else { return }
+        let bins: [Bin?]
+        if let cached = binMaps[rate] { bins = cached }
+        else {
+            bins = Self.frequencies.map { frequency in
+                guard frequency < rate / 2 else { return nil }
+                let position = min(Double(Self.samples / 2 - 1), max(1, frequency * Double(Self.samples) / rate))
+                let lower = Int(position)
+                return Bin(lower: lower, upper: min(Self.samples / 2 - 1, lower + 1), fraction: Float(position - Double(lower)))
+            }
+            // A handful of simultaneous sources can have different rates;
+            // keep the lookup bounded across repeated device changes.
+            if binMaps.count >= 8 { binMaps.removeAll(keepingCapacity: true) }
+            binMaps[rate] = bins
+        }
         data.withUnsafeBytes { bytes in
             let samples = bytes.bindMemory(to: Float.self)
             for channel in 0..<2 {
@@ -60,12 +102,8 @@ final class EQSpectrumAnalyzer: @unchecked Sendable {
                     vDSP_zvmags(&split, 1, &powers, 1, vDSP_Length(Self.samples / 2))
                 } }
                 for bin in 0..<EQSpectrum.binCount {
-                    let frequency = EQSpectrum.frequency(at: bin)
-                    guard frequency < rate / 2 else { continue }
-                    let position = min(Double(Self.samples / 2 - 1), max(1, frequency * Double(Self.samples) / rate))
-                    let lower = Int(position), upper = min(Self.samples / 2 - 1, lower + 1)
-                    let fraction = Float(position - Double(lower))
-                    let power = (powers[lower] + (powers[upper] - powers[lower]) * fraction) / Float(Self.samples * Self.samples / 2)
+                    guard let map = bins[bin] else { continue }
+                    let power = (powers[map.lower] + (powers[map.upper] - powers[map.lower]) * map.fraction) / Float(Self.samples * Self.samples / 2)
                     if power.isFinite { levels[bin] += max(0, power) }
                 }
             }
@@ -95,11 +133,16 @@ final class EQSpectrumAnalyzer: @unchecked Sendable {
     private let analyzer = EQSpectrumAnalyzer()
     private var busy = false
     private var lastUpdate = 0.0
-    func update(frames: [EQAnalysisFrame]) {
+    func update(frames read: () -> [EQAnalysisFrame]) {
         let now = ProcessInfo.processInfo.systemUptime
-        guard !busy, now - lastUpdate >= 1.0 / 20 else { return }
+        // The UI timer already runs at 20 Hz. A strict 50 ms second gate
+        // can reject alternating ticks arriving a fraction early due to jitter.
+        guard !busy, now - lastUpdate >= 0.045 else { return }
         let elapsed = lastUpdate == 0 ? 1.0 / 15 : now - lastUpdate
         lastUpdate = now; busy = true
+        // Snapshot PCM only when this worker can accept it. Previously every
+        // timer tick allocated/captured audio even while analysis was busy.
+        let frames = read()
         let analyzer = analyzer
         worker.async { [weak self] in
             var next = analyzer.analyze(frames, elapsed: elapsed)

@@ -191,6 +191,24 @@ func testRoundedSpectrum() {
 }
 func testSpectrumWorker(rate: Double) {
     testRoundedSpectrum()
+    // The plot must match the actual filter response after eliminating
+    // per-pixel coefficient construction and per-stage logarithms.
+    for slope in [6, 12, 24, 48, 96, 192] {
+        var low = EQBand(frequency: 240, type: "lowCut"); low.slope = slope
+        var high = EQBand(frequency: 5700, type: "highCut"); high.slope = slope
+        var bell = EQBand(frequency: 1200); bell.gain = 17; bell.q = 12
+        var shelf = EQBand(frequency: 3500, type: "highShelf"); shelf.gain = -11
+        let bands = [low, high, bell, shelf]
+        let curve = EQResponseCurve(coefficients: bands.flatMap { $0.coefficients(rate: rate) }, rate: rate)
+        for index in 0..<EQSpectrum.binCount {
+            let frequency = EQSpectrum.frequency(at: index)
+            let expected = bands.reduce(0) { $0 + $1.response(frequency: frequency, rate: rate) }
+            let actual = curve.response(frequency: frequency)
+            precondition(actual.isFinite && abs(actual - expected) < 1e-7,
+                         "Prepared display response changed: slope=\(slope) Hz=\(frequency) rate=\(rate)")
+        }
+    }
+    print("EQ_PREPARED_RESPONSE_MATCHES_STEEP_CUTS_AND_BANDS_OK", rate)
     let tone = rate * 46 / 2048
     let input = stereoFrame(rate: rate, frequency: tone, gain: 0.5)
     let output = stereoFrame(rate: rate, frequency: tone, gain: 0.125)
@@ -205,6 +223,13 @@ func testSpectrumWorker(rate: Double) {
     precondition(abs(decayed.input[peak] - spectrum.input[peak] + 7.2) < 0.001, "inactive PCM decays smoothly instead of freezing")
     let malformed = EQSpectrumAnalyzer().analyze([EQAnalysisFrame(input: Data([1,2]), output: input, sampleRate: .nan)])
     precondition(malformed.input.allSatisfy { $0 == EQSpectrum.minimumDB } && malformed.output.allSatisfy { $0 == EQSpectrum.minimumDB }, "invalid frames cannot corrupt the display")
+    for _ in 0..<32 { _ = analyzer.analyze([], elapsed: 0.25) }
+    let alternateRate = rate == 44100 ? 48000.0 : 44100.0
+    let alternateInput = stereoFrame(rate: alternateRate, frequency: 1800, gain: 0.25)
+    let frame = EQAnalysisFrame(input: alternateInput, output: alternateInput, sampleRate: alternateRate)
+    let changedRate = analyzer.analyze([frame])
+    precondition(changedRate == EQSpectrumAnalyzer().analyze([frame]),
+                 "Cached frequency bins must follow the source rate after a device/source change")
 }
 @MainActor func testEQCapture(rate: Double, channels: AVAudioChannelCount = 2) throws {
     let engine = AVAudioEngine()
@@ -693,7 +718,106 @@ func testSpectrumWorker(rate: Double) {
     }
     print("DEFAULT_EQ_LIVE_INSERT_GROUP_FANOUT_VARIABLE_BUFFERS_OK")
 }
-try MainActor.assumeIsolated { try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
+@MainActor func testEffectOutputSilenceFlags() throws {
+    // A host may skip mixing a block carrying OutputIsSilence. Exercise the
+    // real AU boundary, not only PCM math, with impulse -> flagged silence.
+    // Input hints must not change PCM or suppress a native processor's tail.
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    for rate in [44100.0, 48000.0, 96000.0] {
+        let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+        let sample = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate * 0.15))!
+        sample.frameLength = sample.frameCapacity
+        for ch in 0..<2 { for frame in 0..<Int(sample.frameLength) {
+            sample.floatChannelData![ch][frame] = Float(0.1 * sin(Double(frame) * 0.12)) * (ch == 0 ? 1 : -0.5)
+        } }
+        let sampleURL = folder.appendingPathComponent("trigger-\(Int(rate)).wav")
+        do { let file = try AVAudioFile(forWriting: sampleURL, settings: format.settings); try file.write(from: sample) }
+        for block in [64, 512] {
+            for kind in ["EQ", "Item", "Compressor", "Limiter", "Reverb", "Gate", "Trigger"] {
+                for enabled in [false, true] {
+                    func render(declareSilence: Bool) throws -> [Float] {
+                        let node: AVAudioUnitEffect
+                        switch kind {
+                        case "EQ": node = JarasEqualizer.makeNode()
+                        case "Item": node = JarasDynamics.makeItemEqualizerCompressor()
+                        case "Compressor": node = JarasDynamics.makeCompressor()
+                        case "Limiter": node = JarasDynamics.makeLimiter()
+                        case "Reverb": node = JarasDynamics.makeReverb()
+                        case "Gate": node = JarasDynamics.makeGate()
+                        default: node = JarasDynamics.makeTrigger()
+                        }
+                        let unit = node.auAudioUnit
+                        try unit.inputBusses[0].setFormat(format)
+                        try unit.outputBusses[0].setFormat(format)
+                        unit.maximumFramesToRender = AVAudioFrameCount(block)
+                        switch kind {
+                        case "EQ", "Item":
+                            JarasEqualizer.configure(node, coefficients: [[0.1, 0, 0, -0.9, 0]], enabled: enabled)
+                            if kind == "Item" {
+                                JarasDynamics.configureCompressor(node, enabled: enabled, threshold: -12, ratio: 4, attack: 0.005, release: 0.1, gain: 0)
+                            }
+                        case "Compressor": JarasDynamics.configureCompressor(node, enabled: enabled, threshold: -12, ratio: 4, attack: 0.005, release: 0.1, gain: 0)
+                        case "Limiter": JarasDynamics.configureLimiter(node, enabled: enabled, gain: 3, ceiling: -6, release: 0.1)
+                        case "Reverb": JarasDynamics.configureReverb(node, enabled: enabled, space: 1, mix: 100, decay: 2, lowCut: 80, highCut: 12000)
+                        case "Gate": JarasDynamics.configureGate(node, enabled: enabled, threshold: -60, attack: 0, decay: 0.02, hold: 0.02, release: 0.1, highPass: 20, lowPass: 5000, filterOutput: true)
+                        default:
+                            try JarasDynamics.loadTriggerSample(node, url: sampleURL)
+                            JarasDynamics.configureTrigger(node, enabled: enabled, threshold: -30, retrigger: 0.08, gain: 0, mix: 100, attack: 0, decay: 0, sustain: 1, release: 0.02)
+                        }
+                        try unit.allocateRenderResources()
+                        defer { unit.deallocateRenderResources() }
+                        let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(block))!
+                        let renderBlock = unit.renderBlock
+                        let impulseBlock = max(8, 4096 / block)
+                        let finalBlock = impulseBlock + Int(rate * 0.25) / block + 1
+                        var current = 0, tails = 0, result: [Float] = []
+                        let pull: AURenderPullInputBlock = { flags, _, frames, _, buffers in
+                            for (ch, buffer) in UnsafeMutableAudioBufferListPointer(buffers).enumerated() {
+                                let data = buffer.mData!.assumingMemoryBound(to: Float.self)
+                                data.initialize(repeating: 0, count: Int(frames))
+                                if current == impulseBlock { data[Int(frames) - 1] = ch == 0 ? 0.5 : -0.25 }
+                            }
+                            if declareSilence && current != impulseBlock { flags.pointee.insert(.unitRenderAction_OutputIsSilence) }
+                            return noErr
+                        }
+                        for index in 0...finalBlock {
+                            current = index
+                            if index == finalBlock { unit.reset() }
+                            pcm.frameLength = AVAudioFrameCount(block)
+                            var flags = AudioUnitRenderActionFlags()
+                            var time = AudioTimeStamp(); time.mSampleTime = Double(index * block); time.mFlags = .sampleTimeValid
+                            precondition(renderBlock(&flags, &time, AVAudioFrameCount(block), 0, pcm.mutableAudioBufferList, pull) == noErr)
+                            var peak: Float = 0
+                            for ch in 0..<2 { for frame in 0..<block {
+                                let value = pcm.floatChannelData![ch][frame]
+                                precondition(value.isFinite)
+                                peak = max(peak, abs(value)); result.append(value)
+                            } }
+                            precondition(!flags.contains(.unitRenderAction_OutputIsSilence) || peak == 0,
+                                         "\(kind) marks audible PCM as silence: rate=\(rate), block=\(block), peak=\(peak)")
+                            if declareSilence && peak == 0 && index != impulseBlock {
+                                precondition(flags.contains(.unitRenderAction_OutputIsSilence), "\(kind) lost the idle-silence hint")
+                            }
+                            if index > impulseBlock && index < finalBlock && peak > 1e-10 { tails += 1 }
+                            if index == finalBlock { precondition(peak == 0, "\(kind) reset no longer cuts its tail") }
+                        }
+                        if enabled && ["EQ", "Item", "Reverb", "Trigger"].contains(kind) {
+                            precondition(tails > 0, "\(kind) fixture did not exercise a tail")
+                        }
+                        return result
+                    }
+                    let flagged = try render(declareSilence: true), plain = try render(declareSilence: false)
+                    precondition(flagged == plain, "\(kind) output changed when the source declared silence")
+                }
+            }
+        }
+    }
+    print("NATIVE_FX_SILENCE_HINT_TAILS_IDLE_BYPASS_AND_RESET_44100_48000_96000_OK")
+}
+
+try MainActor.assumeIsolated { try testEffectOutputSilenceFlags(); try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
 
 
 let spectrumStart = EQSpectrum(input: Array(repeating: -72, count: EQSpectrum.binCount), output: Array(repeating: -48, count: EQSpectrum.binCount))

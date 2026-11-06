@@ -208,6 +208,26 @@ inline std::vector<Section> markerSections(std::vector<Section> input,int beatsP
     input.erase(std::remove_if(input.begin(),input.end(),[&](const auto& s){return !std::isfinite(s.position)||!std::isfinite(s.bpm)||s.bpm<60||s.bpm>300||s.position>=end;}),input.end());
     std::sort(input.begin(),input.end(),[](const auto&a,const auto&b){return a.position<b.position;});
     if(input.empty())return {};
+    // An irregular interval joining two established clocks is not evidence of
+    // a third tempo. Suppress only that isolated, out-of-range one-beat bridge
+    // before marker spacing can prolong it and delay the real following tempo.
+    // Keep raw phase analysis, short intros, genuine sections and ramps intact.
+    std::vector<Section> stable;stable.reserve(input.size());
+    for(size_t i=0;i<input.size();++i) {
+        bool bridge=false;
+        if(i>0 && i+1<input.size()) {
+            const auto &previous=input[i-1],&current=input[i],&next=input[i+1];
+            const double afterNext=i+2<input.size()?input[i+2].position:end;
+            const double beats=(next.position-current.position)*current.bpm/60;
+            const double previousBeats=(current.position-previous.position)*previous.bpm/60;
+            const double nextBeats=(afterNext-next.position)*next.bpm/60;
+            const bool outlier=current.bpm<std::min(previous.bpm,next.bpm)*.97 ||
+                current.bpm>std::max(previous.bpm,next.bpm)*1.03;
+            bridge=std::abs(beats-1)<=.05 && previousBeats>=4 && nextBeats>=4 && outlier;
+        }
+        if(!bridge)stable.push_back(input[i]);
+    }
+    input=std::move(stable);
     std::vector<Section> result{{input.front().position,rounded(input.front().bpm)}};
     for(size_t i=1;i<input.size();++i) {
         const auto previous=result.back();

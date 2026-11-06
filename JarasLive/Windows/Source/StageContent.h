@@ -15,6 +15,8 @@ struct StageContent {
         const double position=(transport.playing||transport.paused)?transport.position:transport.editPosition;
         const bool preview=stage.preview && flag(settings,"previewEnabled",true) && !flag(settings,"ignorePreview");
         put(out,"index",index);put(out,"settings",settings);put(out,"preview",preview);
+        put(out,"loopActive",transport.loop.enabled);
+        put(out,"loopLabel",localization::translate("Loop ativo"));
         put(out,"timer",stage.timeText(true));put(out,"expired",stage.seconds()<0);
         put(out,"localTime",Time::getCurrentTime().formatted("%H:%M:%S"));
         put(out,"mediaStretch",flag(settings,"mediaStretch"));

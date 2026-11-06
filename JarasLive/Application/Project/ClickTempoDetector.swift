@@ -104,8 +104,25 @@ public enum ClickTempoDetector {
             let integer = value.rounded()
             return abs(value - integer) <= 0.25 ? integer : value
         }
-        let sections = input.filter { $0.position.isFinite && $0.bpm.isFinite && $0.bpm >= 60 && $0.bpm <= 300 && $0.position < end }
+        let measured = input.filter { $0.position.isFinite && $0.bpm.isFinite && $0.bpm >= 60 && $0.bpm <= 300 && $0.position < end }
             .sorted { $0.position < $1.position }
+        let sections = measured.indices.compactMap { index -> Section? in
+            let section = measured[index]
+            guard index > 0, index + 1 < measured.count else { return section }
+            let previous = measured[index - 1], next = measured[index + 1]
+            let nextEnd = index + 2 < measured.count ? measured[index + 2].position : end
+            let beats = (next.position - section.position) * section.bpm / 60
+            let previousBeats = (section.position - previous.position) * previous.bpm / 60
+            let nextBeats = (nextEnd - next.position) * next.bpm / 60
+            // One irregular gap between two stable clocks is not evidence of
+            // another tempo. Publishing it would also hold that false tempo
+            // for two bars and move the following, measured tempo anchor.
+            // Keep raw phase analysis, short intros and gradual ramps intact.
+            let outsideNeighbors = section.bpm < min(previous.bpm, next.bpm) * 0.97 ||
+                section.bpm > max(previous.bpm, next.bpm) * 1.03
+            if abs(beats - 1) <= 0.05, previousBeats >= 4, nextBeats >= 4, outsideNeighbors { return nil }
+            return section
+        }
         guard let first = sections.first else { return [] }
         var result = [Section(position: first.position, bpm: rounded(first.bpm))]
         var index = 1

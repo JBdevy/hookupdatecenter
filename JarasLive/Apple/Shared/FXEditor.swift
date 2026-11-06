@@ -134,7 +134,8 @@ struct FXEditor: View {
         #endif
             .onChange(of: settings) { value in
                 guard show.snapshot.project.id == project else { return }
-                guard currentSettings.merging(effect: page, from: value) != currentSettings else { return }
+                let current = currentSettings
+                guard current.merging(effect: page, from: value) != current else { return }
                 changed = true
                 if let clip { show.updateClipFX(clip, effect: effectKey, settings: value) }
                 else { show.updateFX(track, effect: effectKey, settings: value) }
@@ -239,16 +240,8 @@ struct FXEditor: View {
                         }
                     }
                     EQRTAOverlay(target: audioTarget, effect: effectKey)
-                    Canvas { context, size in
-                        var response = Path()
-                        for pixel in stride(from: 0, through: Int(size.width), by: 2) {
-                            let hz = 20 * pow(1000.0, Double(pixel) / Double(size.width))
-                            let db = settings.bands.reduce(0) { $0 + $1.response(frequency: hz) }
-                            let point = CGPoint(x: Double(pixel), y: (24 - min(30,max(-30,db))) / 48 * size.height)
-                            if pixel == 0 { response.move(to: point) } else { response.addLine(to: point) }
-                        }
-                        context.stroke(response, with: .color(settings.eqEnabled ? JarasTheme.green : JarasTheme.secondary), lineWidth: 2)
-                    }
+                    EQResponsePlot(bands: settings.bands, enabled: settings.eqEnabled,
+                                   sampleRate: AudioDeviceSettings.shared.sampleRate).equatable()
                     #if os(macOS)
                     EQAddBandInput { x, y in
                         if abs(y - geometry.size.height / 2) < 18 { addBand(frequency: 20 * pow(1000.0, Double(min(1,max(0,x / geometry.size.width))))) }
@@ -343,6 +336,27 @@ struct FXEditor: View {
             HStack { Text(LocalizedStringKey(label)).font(.jarasCaption); Spacer(); Text(String(format: "%.1f %@", value.wrappedValue * scale, suffix)).font(.jarasSystem(size: 10, design: .monospaced)) }
             Slider(value: value, in: range).tint(JarasTheme.green)
         }.mapFXMIDI(parameter, name: label, range: range, band: band)
+    }
+}
+
+private struct EQResponsePlot: View, Equatable {
+    let bands: [EQBand]
+    let enabled: Bool
+    let sampleRate: Double
+    var body: some View {
+        Canvas { context, size in
+            guard size.width > 0, size.height > 0 else { return }
+            let rate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 48000
+            let curve = EQResponseCurve(coefficients: bands.flatMap { $0.coefficients(rate: rate) }, rate: rate)
+            var response = Path()
+            for pixel in stride(from: 0, through: Int(size.width), by: 2) {
+                let hz = 20 * pow(1000.0, Double(pixel) / Double(size.width))
+                let db = curve.response(frequency: hz)
+                let point = CGPoint(x: Double(pixel), y: (24 - min(30, max(-30, db))) / 48 * size.height)
+                if pixel == 0 { response.move(to: point) } else { response.addLine(to: point) }
+            }
+            context.stroke(response, with: .color(enabled ? JarasTheme.green : JarasTheme.secondary), lineWidth: 2)
+        }.allowsHitTesting(false)
     }
 }
 #if !os(macOS)

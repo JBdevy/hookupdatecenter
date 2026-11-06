@@ -99,6 +99,14 @@ malformedTP = tpFixture; malformedTP.timer?.remainingSeconds = .nan
 require(!malformedTP.valid, "invalid timer sample rejected")
 require(fixture.valid && fixture.teleprompters == nil && fixture.notices == nil && fixture.timer == nil, "older optional-state fixture remains valid")
 print("PASS: native teleprompter, notices and timer protocol")
+for looping in [true, false] {
+    var value = tpFixture
+    value.teleprompters?[0].loopActive = looping
+    if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(value)) {
+        require(decoded.teleprompters?[0].loopActive == looping, "Loop activation and release reach the Remote projection")
+    } else { fatalError("loop projection packet") }
+}
+require(tpFixture.teleprompters?[0].loopActive == nil, "Legacy hosts remain compatible without loop projection data")
 
 var fullProjectionSettings = TeleprompterSettings(preset: .day)
 fullProjectionSettings.clockPosition = "right-bottom"

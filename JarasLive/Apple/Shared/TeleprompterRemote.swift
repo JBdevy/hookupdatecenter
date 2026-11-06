@@ -29,6 +29,8 @@ struct TeleprompterRemotePayload: Codable {
     var text = "", chords = "", song = "", queued = ""
     var textStyled: String? = nil, chordsStyled: String? = nil
     var progress = 0.0, preview = false
+    var loopActive: Bool? = nil
+    var loopLabel: String? = nil
     var blocks: [TeleprompterRemoteBlock] = []
     var settings = TeleprompterSettings()
     var timer = "00:00:00", expired = false
@@ -173,6 +175,7 @@ final class TeleprompterHTTPServer {
 .row{display:flex;align-items:center;gap:8px}.timer,.clock{padding:5px 10px;border:2px solid transparent;border-radius:6px;font-weight:bold;white-space:nowrap;font-variant-numeric:tabular-nums}
 .clock{padding:5px;border-width:1px;line-height:1.15}
 .title,.chords{text-align:center;padding:4px;overflow:hidden}.title{white-space:nowrap;text-overflow:ellipsis}.chords{border:1px solid transparent;border-radius:6px;white-space:pre-wrap;width:max-content;max-width:100%;margin-inline:auto;overflow-wrap:anywhere}
+.loop-active{height:24px;background:#ffff00;color:#000;font:700 14px Arial,sans-serif;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0}
 .progress{height:5px;background:#ffffff20}.progress div{height:100%}#blocks{display:none;width:100%;height:100%;gap:8px;align-items:stretch;min-height:0}.block{font-weight:bold;padding:6px;border:1px solid;border-radius:6px;overflow:hidden;min-width:0;min-height:0;line-height:1.2;box-sizing:border-box}.block-title{border-bottom:2px solid;padding-bottom:6px;margin-bottom:6px}.preview-song{padding:0 3px 4px;margin-bottom:4px}
 video,img{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}#connection{position:absolute;bottom:10px;right:10px;z-index:4;color:#ffdc52;font-size:12px;display:none}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:.25}}.expired{animation:blink 1s infinite}
@@ -205,7 +208,8 @@ function lyricColumns(d,s){
  }
 }
 function textNode(tag,cls,text){const e=document.createElement(tag);e.className=cls;e.textContent=text;return e}
-function decorations(d,position){const s=d.settings,host=$(position);host.replaceChildren();if(s.clearMode&&!d.preview)return;
+function appendLoopBar(d,position,host){if(d.loopActive&&position==='bottom')host.append(textNode('div','loop-active',d.loopLabel||'Loop ativo'))}
+function decorations(d,position){const s=d.settings,host=$(position);host.replaceChildren();if(s.clearMode&&!d.preview){appendLoopBar(d,position,host);return;}
  const clockHere=s.clockEnabled&&s.clockPosition.endsWith(position),localHere=s.localClockEnabled&&(s.clockEnabled?clockHere:position==='top');
  if(clockHere||localHere){const row=document.createElement('div');row.className='row';
  const timerFont=Math.max(innerHeight>innerWidth?15:18,Math.min((innerWidth-16)/11,innerHeight/8)*s.clockScale/100);
@@ -220,7 +224,8 @@ function decorations(d,position){const s=d.settings,host=$(position);host.replac
  host.append(row);if(side){for(const e of row.children){const wanted=parseFloat(e.style.fontSize),available=e.clientWidth-24;const measure=document.createElement('canvas').getContext('2d');measure.font='bold '+wanted+'px Arial';const actual=measure.measureText(e.textContent).width;e.style.fontSize=Math.min(wanted,Math.max(1,e.clientHeight-10),wanted*Math.max(1,available)/Math.max(1,actual))+'px'}}}
  for(const [enabled,pos,value,col,scale,font] of [[s.songNameEnabled,s.songNamePosition,d.song,s.songNameColor,s.songNameScale,s.songNameFontFamily],[s.queueNameEnabled,s.queueNamePosition,d.queued,s.queueNameColor,s.queueNameScale,s.queueNameFontFamily]])if(!d.preview&&enabled&&value&&pos===position){const e=textNode('div','title',applyCase(value,s));e.style.color=hex(col);e.style.fontSize=22*scale/100+'px';e.style.fontFamily=fonts[font];host.append(e)}
  if(!d.preview&&s.chordsEnabled&&d.chords&&s.chordPosition===position){const e=textNode('div','chords','');coloredText(e,d.chords,d.chordsStyled,s);e.style.color=hex(s.chordColor);e.style.fontSize=s.chordScale+'px';e.style.fontFamily=fonts[s.chordFontFamily];e.style.borderColor=color(s.chordColor,s.rgbChordBorderEnabled);host.append(e)}
- if(!d.preview&&s.progressEnabled&&s.progressPosition===position){const e=document.createElement('div');e.className='progress';const fill=document.createElement('div');fill.style.width=Math.max(0,Math.min(1,d.progress))*100+'%';fill.style.background=hex(s.progressColor);e.append(fill);host.append(e)}
+ if(!d.loopActive&&!d.preview&&s.progressEnabled&&s.progressPosition===position){const e=document.createElement('div');e.className='progress';const fill=document.createElement('div');fill.style.width=Math.max(0,Math.min(1,d.progress))*100+'%';fill.style.background=hex(s.progressColor);e.append(fill);host.append(e)}
+ appendLoopBar(d,position,host);
 }
 const previewLayouts=new Map();
 function render(d){current=d;const s=d.settings;$('screen').style.borderColor=!s.clearMode&&s.windowBorderEnabled?color(s.borderColor,s.rgbWindowBorderEnabled):'transparent';decorations(d,'top');decorations(d,'bottom');
@@ -335,6 +340,8 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode&&!cu
         guard enabled, ProcessInfo.processInfo.systemUptime - lastPublish >= 0.1 else { return }
         payload.text = ItemTextColors.plain(text); payload.chords = ItemTextColors.plain(chords); payload.textStyled = text; payload.chordsStyled = chords; payload.song = song; payload.queued = queued
         payload.progress = progress; payload.preview = preferences.settings.displaysPreview(preview); payload.blocks = blocks
+        payload.loopActive = snapshot.transport.loop.enabled
+        payload.loopLabel = JarasLocalization.string("Loop ativo")
         payload.mediaStretch = preferences.settings.stretchesMedia
         mediaURL = nil; payload.mediaID = nil; payload.mediaKind = nil
         let t = snapshot.transport, position = t.playing || t.paused == true ? t.position : t.editPosition ?? t.position

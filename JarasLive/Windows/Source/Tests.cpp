@@ -71,6 +71,7 @@
 #include "TrackDuplicationTests.h"
 #include "RecordingCaptureTests.h"
 #include "BufferedAudioWriterTests.h"
+#include "VST3ParameterDispatchTests.h"
 #include "VinhetasTests.h"
 #include "ProjectReductionTests.h"
 #include "TransportFadeoutTests.h"
@@ -404,6 +405,7 @@ int runTests(const File &directory) {
     recordingCaptureTests::registerTests(directory, test);
     nativeAudioDeviceHostTests::run(test);
     bufferedAudioWriterTests::run(test);
+    vst3ParameterDispatchTests::run(test);
     vinhetasTests::run(directory,test);
     projectReductionTests::run(directory,test,projectFixture);
     audioSeparationTests::run(test,projectFixture);
@@ -3089,6 +3091,49 @@ int runTests(const File &directory) {
         const auto shortChange=clickTempo::markerSections({{0,140},{.5,160},{1,140}},4,4,20);
         expect(shortChange.size()==1 && shortChange[0].bpm==140,"Short fluctuation left a stale tempo");
     });
+    test("Detected tempo markers reject an isolated transition gap without delaying the next clock", [&] {
+        // Measured from the reported 170 -> 142 BPM medley. Only the interval
+        // between clocks suggests 114; it must not become a four-second tempo.
+        const std::vector<clickTempo::Section> raw{{.625850340136,170},
+            {179.214353741497,114.189539098914},{179.739795918367,142}};
+        const auto result=clickTempo::markerSections(raw,4,4,216.5);
+        expect(result.size()==2 && result[0].bpm==170 && result[1].bpm==142,
+            "A single transition interval fabricated a 114 BPM section");
+        expect(result[0].position==raw[0].position && result[1].position==raw[2].position,
+            "The real 142 BPM anchor was delayed by the rejected bridge");
+        const auto slow=clickTempo::markerSections({{0,170},{20,114},{20+4*60./114,142}},4,4,40);
+        expect(slow.size()==3 && slow[1].bpm==114 && slow[1].position==20,
+            "A genuine four-beat slow section was removed");
+        const auto intro=clickTempo::markerSections({{0,114},{60./114,170},{20,142}},4,4,40);
+        expect(intro.size()==3 && intro[0].bpm==114 && intro[0].position==0,
+            "A one-interval intro was removed without surrounding clock evidence");
+        const auto intermediate=clickTempo::markerSections({{0,170},{20,155},{20+60./155,142}},4,4,40);
+        expect(intermediate.size()==3 && intermediate[1].bpm==155 && intermediate[1].position==20,
+            "A genuine intermediate ramp tempo was removed");
+        const auto shortNeighbor=clickTempo::markerSections({{0,170},{20,114},
+            {20+60./114,142},{20+60./114+2*60./142,170}},4,4,40);
+        expect(shortNeighbor.size()>=2 && shortNeighbor[1].bpm==114,
+            "A bridge was removed without a stable following clock");
+    });
+    test("Transition gap detection generalizes across tempos offsets and meters", [&] {
+        for(double rate:{44100.,48000.,96000.})
+        for(const auto &tempo:std::vector<std::array<double,3>>{{96,128,74},{156,112,236},{210,250,180},{135,92,68}})
+        for(const auto &placement:std::vector<std::pair<double,int>>{{0,4},{37.125,3},{750.9,7}}) {
+            const auto sample=[&](double time){return std::round(time*rate)/rate;};
+            std::vector<double> pulses;
+            for(int i=0;i<32;++i)pulses.push_back(sample(.123+i*60/tempo[0]));
+            const auto entry=pulses.back()+60/tempo[2];
+            const auto expected=placement.first+sample(entry);
+            for(int i=0;i<32;++i)pulses.push_back(sample(entry+i*60/tempo[1]));
+            for(auto &pulse:pulses)pulse+=placement.first;
+            const auto measured=clickTempo::sections(pulses,placement.second);
+            const auto markers=clickTempo::markerSections(measured,placement.second,4,pulses.back()+60/tempo[1]);
+            expect(markers.size()==2 && markers[0].bpm==tempo[0] && markers[1].bpm==tempo[1],
+                "An unrelated transition acquired a false tempo");
+            expect(std::abs(markers[1].position-expected)<=1/rate,
+                "The next real tempo moved away from its measured entry");
+        }
+    });
     test("Click BPM detection preserves Mac clock phase, meter, rests and tempo changes", [&] {
         for(double rate:{44100.,48000.})for(double bpm:{147.999,130.001,119.9995,155.998})for(int count:{8,64,600}){
             std::vector<double> pulses;for(int i=0;i<count;++i)pulses.push_back(std::round((.123+i*60/bpm)*rate)/rate);
@@ -4248,6 +4293,37 @@ int runTests(const File &directory) {
         }
         expect(feedback, "Audio routing accepted a feedback cycle");
         trace("done");
+    });
+    test("Prepared routing handles more than 513 destinations without duplicate parent sends", [&] {
+        constexpr int destinationCount=520;
+        auto project=projectFixture();auto &song=project.songs.front();
+        song.tracks.clear();song.parts.clear();song.markers.reset();song.duration=1;
+        project.masterVolume=1;project.masterPan=0;project.masterMute=false;project.masterSolo=false;
+        project.masterOutputs=std::vector<jaras::OutputPatch>{{1,2}};
+        jaras::Track source;source.id=uuid();source.name="Matrix source";
+        source.inputPatch=jaras::OutputPatch{1,2};source.inputMonitoring=true;
+        source.outputs=std::vector<jaras::OutputPatch>{{-2,2},{-2,2}};
+        source.routing=jaras::TrackRouting{};
+        for(int i=0;i<destinationCount;++i) {
+            jaras::Track destination;destination.id=uuid();destination.name="Matrix destination";
+            destination.volume=1./destinationCount;destination.outputs=std::vector<jaras::OutputPatch>{{0,2}};
+            if(i==0)source.parentTrackID=destination.id;
+            source.routing->transmitters.push_back(destination.id);
+            // Both sides may describe the same connection; it is still one route.
+            destination.routing=jaras::TrackRouting{{source.id},{}};
+            song.tracks.push_back(std::move(destination));
+        }
+        const auto sourceID=source.id;song.tracks.push_back(std::move(source));
+        auto engine=std::make_unique<AudioEngine>();engine->prepareOffline(48000);
+        engine->prepareSong(song,directory,{},&project);engine->setMixer(project,song);
+        engine->instrumentAllowed=true;engine->armTrack(sourceID,true);
+        AudioBuffer<float> input(2,64),output(2,64);
+        FloatVectorOperations::fill(input.getWritePointer(0),.1f,64);
+        FloatVectorOperations::fill(input.getWritePointer(1),.2f,64);
+        engine->render(output.getArrayOfWritePointers(),2,64,input.getArrayOfReadPointers(),2);
+        expect(std::abs(output.getSample(0,32)-.1f)<.00001f &&
+               std::abs(output.getSample(1,32)-.2f)<.00001f,
+               "Prepared routing dropped destinations or counted a send/receive/parent connection twice");
     });
     test("Export plan tokens, collision naming and secondary outputs match desktop documents", [&] {
         auto p = projectFixture();
@@ -5499,6 +5575,20 @@ int runTests(const File &directory) {
                 expect(contextCount == before + 1 && state.running,
                        "Timer button context did not configure without stopping the timer");
             }
+    });
+    test("Teleprompter publishes active and released loops for both projections without progress", [&] {
+        Session session; session.inspection = true; session.mediaDirectory = directory;
+        auto project = projectFixture(); project.songs.front().parts.front().startTime = 0;
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        Appearance preferences(directory.getNonexistentChildFile("loop-projection", ".json"));
+        StageState stage(preferences);
+        session.command(jaras::CommandKind::toggleLoop);
+        expect(session.presentationTransport().loop.enabled, "Fixture loop was not activated");
+        for (int index : {1, 2})
+            expect(flag(StageContent::make(session, stage, index).payload, "loopActive"), "Loop status missing from projection payload");
+        session.command(jaras::CommandKind::toggleLoop);
+        for (int index : {1, 2})
+            expect(!flag(StageContent::make(session, stage, index).payload, "loopActive"), "Released loop remains visible");
     });
     test("Stage clock, notices and independent teleprompter profiles", [&] {
         const auto file = directory.getChildFile("stage-preferences.json");

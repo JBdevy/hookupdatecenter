@@ -1,6 +1,63 @@
 import XCTest
 @testable import JarasApplication
 final class ClickTempoTests: XCTestCase {
+    func testTransitionGapsAcrossDifferentTemposOffsetsAndMeters() throws {
+        // Synthetic, unrelated songs: both slower and faster bridge intervals,
+        // increasing/decreasing tempos, and different timeline/sample clocks.
+        let transitions = [(96.0, 128.0, 74.0), (156.0, 112.0, 236.0),
+                           (210.0, 250.0, 180.0), (135.0, 92.0, 68.0)]
+        for rate in [44100.0, 48000.0, 96000.0] {
+            for (before, after, gapBPM) in transitions {
+                for (offset, signature) in [(0.0, 4), (37.125, 3), (750.9, 7)] {
+                    func sample(_ time: Double) -> Double { (time * rate).rounded() / rate }
+                    let first = (0..<32).map { sample(0.123 + Double($0) * 60 / before) }
+                    let entry = first.last! + 60 / gapBPM
+                    let second = (0..<32).map { sample(entry + Double($0) * 60 / after) }
+                    var song = Project.empty(name: "Unrelated \(before)-\(after)").songs[0]
+                    song.timeSettings?.timebase = .free
+                    var track = Track(id: UUID(), name: "Click", role: .click)
+                    let duration = second.last! + 60 / after
+                    track.clips = [AudioClip(id: UUID(), name: "Pulse", startTime: offset, duration: duration,
+                                            audioFile: AudioFile(path: "unrelated-click.wav"))]
+                    song.tracks = [track]
+                    let region = Part(id: UUID(), name: "Unrelated region", startTime: offset, endTime: offset + duration)
+                    let pulses = (first + second).enumerated().map { index, time in
+                        ClickTempoDetector.Transient(position: time, peak: index % signature == 0 ? 1 : 0.5)
+                    }
+                    let result = try ClickTempoDetector.markersWithMeter(song: song, region: region) { _ in pulses }
+                    let context = "\(before) -> \(after), gap=\(gapBPM), offset=\(offset), rate=\(rate), meter=\(signature)"
+                    XCTAssertEqual(result.markers.map(\.tempoBPM), [before, before, after], context)
+                    XCTAssertEqual(try XCTUnwrap(result.markers.last).position,
+                                   offset + second[0], accuracy: 1 / rate, context)
+                }
+            }
+        }
+    }
+
+    func testIsolatedGapBetweenStableTemposDoesNotDelayTheNextMarker() {
+        typealias Section = ClickTempoDetector.Section
+        let gap = 179.2143537414966, change = 179.73979591836735
+        let measured = [Section(position: 0.6258503401360545, bpm: 170),
+                        Section(position: gap, bpm: 60 / (change - gap)),
+                        Section(position: change, bpm: 142)]
+        let markers = ClickTempoDetector.markerSections(measured, until: 217.5)
+        XCTAssertEqual(markers.map(\.bpm), [170, 142])
+        XCTAssertEqual(markers[1].position, change, accuracy: 1e-9,
+                       "An irregular transition gap must not postpone the real next tempo by two bars")
+        let fourBeats = [Section(position: 0, bpm: 170), Section(position: 30, bpm: 114),
+                         Section(position: 30 + 4 * 60 / 114, bpm: 142)]
+        XCTAssertTrue(ClickTempoDetector.markerSections(fourBeats, until: 60).contains { $0.bpm == 114 },
+                      "Several repeated beats are evidence of a real short tempo section")
+        let intro = [Section(position: 0, bpm: 114), Section(position: 60 / 114, bpm: 142)]
+        XCTAssertEqual(ClickTempoDetector.markerSections(intro, until: 30).first?.bpm, 114)
+        let intermediate = [Section(position: 0, bpm: 170), Section(position: 30, bpm: 155),
+                            Section(position: 30 + 60 / 155, bpm: 142)]
+        XCTAssertTrue(ClickTempoDetector.markerSections(intermediate, until: 60).contains { $0.bpm == 155 },
+                      "An intermediate rate in a ramp is not an isolated outlier")
+        XCTAssertTrue(ClickTempoDetector.markerSections(measured, until: change + 60 / 142).contains { $0.bpm == 114 },
+                      "Do not infer a stable neighboring tempo from one final pulse")
+    }
+
     func testWeakSecondaryAttacksDoNotTurn160Into284OrEraseQuietQuarterNotes() {
         var pulses: [ClickTempoDetector.Transient] = []
         for beat in 0..<80 {

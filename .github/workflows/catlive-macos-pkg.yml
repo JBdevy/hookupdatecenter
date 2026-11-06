@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão pública do CatLive (ex.: 1.25)'
         required: true
-        default: '1.28'
+        default: '1.29'
       audio_only:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
@@ -16,13 +16,13 @@ on:
         type: boolean
         default: false
       audio_tests:
-        description: 'Executar testes de renderização, Dynamics e Trigger/Gate (ativar ao alterar áudio)'
+        description: 'Executar testes de renderização, Dynamics e Trigger/Gate (1.29 altera áudio)'
         type: boolean
-        default: false
+        default: true
       full_fx_tests:
-        description: 'Executar também a bateria completa dos FX em 44,1 e 48 kHz (ativar ao alterar áudio/FX)'
+        description: 'Executar também a bateria completa dos FX em 44,1 e 48 kHz (1.29 altera áudio/FX)'
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
@@ -32,6 +32,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  audio-audit:
+    if: ${{ !inputs.windows_only && (inputs.audio_only || inputs.audio_tests || inputs.full_fx_tests) }}
+    uses: ./.github/workflows/catlive-audio-audit.yml
+
   integration:
     if: ${{ !inputs.audio_only && !inputs.windows_only }}
     uses: ./.github/workflows/catlive-integration.yml
@@ -183,18 +187,27 @@ jobs:
         run: |
           python3 scripts/prepare-catstem.py
 
-      # UI/integration-only releases skip the expensive audio suites. Enable
-      # audio_tests and full_fx_tests for engine, DSP, recording or export changes.
+      # Audio suites default ON for the 1.29 engine corrections. Turn them off
+      # again only for releases that do not alter engine, DSP, recording or export.
       # Requesting the full FX matrix also includes the base rendering suites.
       - name: Validate audio rendering and unified song entry
         if: ${{ inputs.audio_tests || inputs.full_fx_tests }}
         working-directory: JarasLive
-        run: bash scripts/test-audio.sh
+        run: |
+          bash scripts/test-audio.sh Tests/Apple/AudioRenderTests.swift Tests/Apple/PlaybackSampleEpochTests.swift Tests/Apple/PlaybackEditingContinuityTests.swift Tests/Apple/AudioMediaPreparationTests.swift Tests/Apple/AutomationAudioTests.swift
+
+      - name: Validate media failure isolation and VST3 realtime state
+        if: ${{ inputs.audio_tests || inputs.full_fx_tests }}
+        working-directory: JarasLive
+        run: |
+          CATLIVE_EXPORT_TEST_SOURCE=Tests/Apple/PlaybackMediaIsolationTests.swift bash scripts/test-offline-export.sh
+          bash scripts/test-vst3-state-stream.sh
+          bash scripts/test-metronome.sh
 
       - name: Validate native FX playback continuity at 44.1 and 48 kHz
         if: ${{ inputs.full_fx_tests }}
         working-directory: JarasLive
-        run: JARAS_AUDIO_TEST_SOURCE=Tests/Apple/NativeFXPlaybackTests.swift bash scripts/test-audio.sh
+        run: bash scripts/test-audio.sh Tests/Apple/NativeFXPlaybackTests.swift Tests/Apple/TrackEQPlaybackTests.swift Tests/Apple/EQIntelStabilityTests.swift Tests/Apple/DynamicsStabilityTests.swift
 
       - name: Validate Cat Dynamics
         if: ${{ inputs.audio_tests || inputs.full_fx_tests }}
@@ -419,8 +432,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: ${{ !inputs.audio_only && !inputs.windows_only }}
-    needs: [windows, macos-pkg, compatibility, integration]
+    if: ${{ always() && !cancelled() && !inputs.audio_only && !inputs.windows_only && needs.windows.result == 'success' && needs.macos-pkg.result == 'success' && needs.compatibility.result == 'success' && needs.integration.result == 'success' && (needs.audio-audit.result == 'success' || (!inputs.audio_tests && !inputs.full_fx_tests && needs.audio-audit.result == 'skipped')) }}
+    needs: [windows, macos-pkg, compatibility, integration, audio-audit]
     runs-on: ubuntu-latest
     steps:
       - name: Validate release publication credentials
@@ -441,7 +454,7 @@ jobs:
           path: dist
       - uses: actions/download-artifact@v4
         with:
-          pattern: CatLive-Integration-1.28-*-Installer
+          pattern: CatLive-Integration-1.29-*-Installer
           path: dist
           merge-multiple: true
       - name: Verify release installers and checksums
@@ -454,8 +467,8 @@ jobs:
           test -s "Catlive-$VERSION.exe"
           sha256sum --check "Catlive-$VERSION.pkg.sha256"
           sha256sum --check "Catlive-$VERSION.exe.sha256"
-          test -s CatLive-Integration-1.28-Mac.pkg
-          test -s CatLive-Integration-1.28-Windows.exe
+          test -s CatLive-Integration-1.29-Mac.pkg
+          test -s CatLive-Integration-1.29-Windows.exe
       - name: Publish both desktop installers together
         uses: softprops/action-gh-release@v2
         with:
@@ -468,7 +481,7 @@ jobs:
           fail_on_unmatched_files: true
           body: |
             CatLive ${{ inputs.version }} para macOS universal e Windows 10/11 x64.
-            CatLive Integration possui instaladores separados, gratuitos e sem login/licença: CatLive-Integration-1.28-Mac.pkg e CatLive-Integration-1.28-Windows.exe.
+            CatLive Integration possui instaladores separados, gratuitos e sem login/licença: CatLive-Integration-1.29-Mac.pkg e CatLive-Integration-1.29-Windows.exe.
             Projeto .jl compartilhado entre as plataformas, com preservação do mapa grandMA2 ao salvar no Mac.
             Publicação condicionada aos testes nativos e à troca de documentos Windows → Mac → Windows e Mac → Windows.
             Instalador macOS assinado e notarizado. Instalador Windows sem assinatura Authenticode nesta configuração.
@@ -491,7 +504,7 @@ jobs:
             const { owner, repo } = context.repo;
             const tag = `catlive-v${version}`;
             const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`, `CatLive-Integration-1.28-Mac.pkg`, `CatLive-Integration-1.28-Windows.exe`]);
+            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`, `CatLive-Integration-1.29-Mac.pkg`, `CatLive-Integration-1.29-Windows.exe`]);
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id: release.id });
             for (const name of installers) {
               const matches = assets.filter(asset => asset.name === name);

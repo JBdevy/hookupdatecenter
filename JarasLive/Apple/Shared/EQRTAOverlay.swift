@@ -12,7 +12,7 @@ struct EQRTAOverlay: View {
     var body: some View {
         EQRTAPlot(levels: EQSpectrumVector(display.spectrum))
             .animation(.linear(duration: 1.0 / 20), value: display.spectrum)
-            .onReceive(clock) { _ in display.update(frames: StemAudioPlayback.shared.eqSpectrumFrames(target, effect: effect)) }
+            .onReceive(clock) { _ in display.update { StemAudioPlayback.shared.eqSpectrumFrames(target, effect: effect) } }
     }
 }
 

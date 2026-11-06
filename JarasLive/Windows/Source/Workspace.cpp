@@ -2593,7 +2593,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             }
                         }
                     }
-                    drawGrid(rect.getY()+(compact?0:std::min(17.f,rect.getHeight())),rect.getBottom());
                     if(!simpleOverview)header.drawFades(g,clip);
                     g.restoreState();
                     // Text goes directly onto the opaque canvas, outside the

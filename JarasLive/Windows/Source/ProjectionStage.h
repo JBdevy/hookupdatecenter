@@ -53,8 +53,18 @@ void Projection::paintStage(Graphics &g) {
         return;
     }
     const auto content = StageContent::make(session,*stage,profile).payload;
+    const bool loopActive = flag(content, "loopActive");
     if (preview)
         g.fillAll(Colours::black);
+    if (loopActive) {
+        const auto bar = box.removeFromBottom(24);
+        g.setColour(Colour(0xffffff00));
+        g.fillRect(bar);
+        g.setColour(Colours::black);
+        g.setFont(Font(FontOptions(14.f, Font::bold)));
+        g.drawFittedText(str(content, "loopLabel", "Loop ativo"), bar.toNearestInt(), Justification::centred, 1);
+        box.removeFromBottom(3);
+    }
     auto label = [&](String value, juce::Rectangle<float> area, String family, float size,
                      Colour ink, Justification alignment = Justification::centred, int lines = 1) {
         if(value.startsWith(ItemTextColors::prefix())) {
@@ -121,7 +131,7 @@ void Projection::paintStage(Graphics &g) {
             label(chords, area.reduced(5), "chordFontFamily", size, color("chordColor"),
                   Justification::centred, 2);
         }
-        if (!preview && flag(settings, "progressEnabled")) {
+        if (!preview && !loopActive && flag(settings, "progressEnabled")) {
             const double progress=num(content,"progress");
             auto area = str(settings, "progressPosition", "bottom") == "top"
                             ? box.removeFromTop(7)

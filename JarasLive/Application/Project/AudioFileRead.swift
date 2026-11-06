@@ -5,6 +5,66 @@ import AVFoundation
 /// after successfully decoding all samples. Other errors remain errors.
 enum AudioFileRead {
     private static let mediaLock = NSLock()
+    // One decoder at a time across project tabs. Cancelling a cursor/project
+    // request removes its queued operation and releases the awaiting UI task;
+    // an already running decoder checks cancellation between media packets.
+    private static let preparationQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "CatLive.idleMediaPreparation"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
+    private final class Preparation<Value: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        private var continuation: CheckedContinuation<Value, Error>?
+        private weak var operation: Operation?
+        var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+        func begin(_ continuation: CheckedContinuation<Value, Error>, operation: Operation) {
+            lock.lock()
+            let wasCancelled = cancelled
+            if !wasCancelled { self.continuation = continuation; self.operation = operation }
+            lock.unlock()
+            if wasCancelled { operation.cancel(); continuation.resume(throwing: CancellationError()) }
+        }
+        func finish(_ result: Result<Value, Error>) {
+            lock.lock()
+            let continuation = self.continuation, wasCancelled = cancelled
+            self.continuation = nil; operation = nil
+            lock.unlock()
+            continuation?.resume(with: wasCancelled ? .failure(CancellationError()) : result)
+        }
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let continuation = self.continuation, operation = self.operation
+            self.continuation = nil; self.operation = nil
+            lock.unlock()
+            operation?.cancel()
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
+    /// Only immutable requests and exclusively owned readers/buffers cross
+    /// this boundary. No AVAudioEngine graph or live player's reader may enter.
+    static func prepare<Value: Sendable>(
+        _ work: @escaping @Sendable (_ cancelled: @escaping @Sendable () -> Bool) throws -> Value
+    ) async throws -> Value {
+        let request = Preparation<Value>()
+        let value: Value = try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                let operation = BlockOperation {
+                    guard !request.isCancelled else { request.finish(.failure(CancellationError())); return }
+                    request.finish(Result { try work { request.isCancelled } })
+                }
+                request.begin(continuation, operation: operation)
+                preparationQueue.addOperation(operation)
+            }
+        }, onCancel: { request.cancel() })
+        try Task.checkCancellation()
+        return value
+    }
     enum MediaError: LocalizedError {
         /// Only a readable movie with a video track and no audio track can
         /// produce this result. Decoder and filesystem errors remain errors.
@@ -53,8 +113,8 @@ enum AudioFileRead {
         for byte in signature.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("CatLive-MovieAudio", isDirectory: true)
         let cached = folder.appendingPathComponent(String(hash, radix: 16) + ".caf")
-        mediaLock.lock(); defer { mediaLock.unlock() }
         if let file = try? AVAudioFile(forReading: cached) { return file }
+        if cancelled() { throw CancellationError() }
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let temporary = folder.appendingPathComponent(UUID().uuidString + ".caf")
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -84,6 +144,15 @@ enum AudioFileRead {
             }
             guard reader.status == .completed else { throw reader.error ?? NSError(domain: "CatLive.Media", code: 6) }
         } catch { reader.cancelReading(); throw error }
+        if cancelled() { throw CancellationError() }
+        // Conversion is independent per source. Serialize only publication:
+        // a cold movie in another tab must not hold this lock for its duration.
+        // Concurrent callers can finish the same movie; the first complete
+        // cache file wins, and the other caller discards its private temporary.
+        mediaLock.lock(); defer { mediaLock.unlock() }
+        if cancelled() { throw CancellationError() }
+        if let file = try? AVAudioFile(forReading: cached) { return file }
+        if FileManager.default.fileExists(atPath: cached.path) { try FileManager.default.removeItem(at: cached) }
         try FileManager.default.moveItem(at: temporary, to: cached)
         return try AVAudioFile(forReading: cached)
     }

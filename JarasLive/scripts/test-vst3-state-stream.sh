@@ -3,6 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 test_build="$(mktemp -d "${TMPDIR:-/tmp}/catlive-vst3-stream.XXXXXX")"
 trap 'rm -rf "$test_build"' EXIT
+clang++ -std=c++17 -fsanitize=address,undefined -fno-sanitize-recover=all \
+    -ICore/ThirdParty/VST3 Tests/Apple/VST3/UnalignedUIDTests.cpp \
+    -o "$test_build/unaligned-uid"
+"$test_build/unaligned-uid"
 plugin="$test_build/GainFixture.vst3"
 mkdir -p "$plugin/Contents/MacOS"
 cat > "$plugin/Contents/Info.plist" <<'PLIST'

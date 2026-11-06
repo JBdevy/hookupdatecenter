@@ -773,6 +773,7 @@ struct DAWRemoteClientView: View {
             song: settings.display(region?.name ?? ""), queued: settings.display(queueName), progress: progress,
             style: style, preview: settings.displaysPreview(previewActive), settings: settings)
         result.textStyled = lyric?.text; result.chordsStyled = chord?.text
+        result.loopActive = transport.loop.enabled
         if result.preview, let song {
             let setlist = snapshot.project.regionSetlist ?? RegionSetlist()
             let played = SetlistLivePlaybackTracker.previewMarks(project: snapshot.project)
@@ -3869,7 +3870,7 @@ private struct RemoteNativeTimeline: View {
                         } else { seek(time) }
                     }))
                     #endif
-                }.overlay {
+                }.background {
                     if state.gridLines != false {
                         GeometryReader { grid in
                             TimelineRetainedGrid(
@@ -4675,7 +4676,8 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     var body: some View {
         let itemGeometry = IpadNativeItemGeometry(track: local ? previewTrack : nil, remoteTrack: track, scale: heightScale, preparedLanes: resizing == nil ? preparedTrack?.lanes : nil)
         ZStack(alignment: .topLeading) {
-            remoteColor(backgroundColor).opacity(local ? 0 : 1)
+            // The shared grid is behind every item, including Remote rows.
+            Color.clear
             if local && track.emphasized == true {
                 remoteColor(track.color).opacity(0.16).saturation(track.silenced == true ? 0 : 1).allowsHitTesting(false)
             }
@@ -6388,6 +6390,8 @@ private struct RemoteNativeProjectionImage: View {
         remote.send(.init(project: state.project, song: state.song, action: .remotePanel, value: Double(panel)))
     }
     private func projection(_ content: DAWRemoteTeleprompter, state: DAWRemoteState) -> some View {
+        var content = content
+        if content.loopActive == nil { content.loopActive = state.loop }
         let notice = state.notices
         let active = notice.map { $0.active && (index == 1 ? $0.window1 : $0.window2) } ?? false
         return TeleprompterNoticeStage(settings: content.resolvedSettings, preview: content.preview, noticeActive: active) {

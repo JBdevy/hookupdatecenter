@@ -869,6 +869,8 @@ struct DAWRemoteTeleprompter: Codable, Equatable {
     var imageID: UUID? = nil
     // Optional for compatibility with hosts predating full native projection settings.
     var settings: TeleprompterSettings? = nil
+    // Optional so clients can still decode projection data from older hosts.
+    var loopActive: Bool? = nil
     var resolvedSettings: TeleprompterSettings {
         if let settings { return settings.sanitized() }
         var result = TeleprompterSettings()

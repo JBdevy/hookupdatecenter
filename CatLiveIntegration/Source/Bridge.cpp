@@ -31,7 +31,7 @@ struct Bridge::Impl {
     JSON job=JSON::object();
     JSON info() const {
         JSON ports=JSON::array(); for(auto& p:midiPorts()) ports.push_back({{"id",p.id},{"name",p.name}});
-        return {{"name","CatLive Integration"},{"version","1.28"},{"protocol",protocolVersion},{"midiOutputs",ports},{"features",JSON::array({"resolume-create","grandma2-create"})}};
+        return {{"name","CatLive Integration"},{"version","1.29"},{"protocol",protocolVersion},{"midiOutputs",ports},{"features",JSON::array({"resolume-create","grandma2-create"})}};
     }
     JSON status() const {
         std::lock_guard lock(mutex);

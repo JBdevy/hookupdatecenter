@@ -59,6 +59,21 @@ MainActor.assumeIsolated {
         }
     }
     var coloredSettings = TeleprompterSettings()
+    // Loop status always occupies the footer, even with progress disabled or at the top.
+    var loopSettings = TeleprompterSettings()
+    loopSettings.rgbWindowBorderEnabled = false
+    var loopContent = fixture(loopSettings)
+    let withoutLoop = pixels(loopContent)
+    loopContent.loopActive = true
+    let withLoop = pixels(loopContent)
+    precondition(withLoop != withoutLoop, "Active loop must change the projection when progress is disabled")
+    for position in ["top", "bottom"] {
+        loopSettings.progressEnabled = true; loopSettings.progressPosition = position
+        loopContent.settings = loopSettings
+        precondition(pixels(loopContent) == withLoop, "Loop footer replaces progress regardless of its configured position")
+    }
+    loopContent.loopActive = false
+    precondition(pixels(loopContent) != withLoop, "Releasing the loop must restore normal progress")
     coloredSettings.clockEnabled = false; coloredSettings.localClockEnabled = false
     coloredSettings.songNameEnabled = false; coloredSettings.queueNameEnabled = false
     coloredSettings.windowBorderEnabled = false; coloredSettings.textBoxEnabled = false

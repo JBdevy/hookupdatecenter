@@ -3,8 +3,50 @@
 #include <mach/mach_time.h>
 #include <cmath>
 #include <algorithm>
+#include <atomic>
+#if defined(__x86_64__)
+#include <xmmintrin.h>
+#endif
 
 namespace jaras {
+// Every supported Apple slice must use native atomics in its audio callback.
+// Fail at build time instead of silently introducing a runtime locking helper.
+static_assert(std::atomic<float>::is_always_lock_free);
+static_assert(std::atomic<double>::is_always_lock_free);
+static_assert(std::atomic<uint64_t>::is_always_lock_free);
+static_assert(std::atomic<unsigned>::is_always_lock_free);
+static_assert(std::atomic<bool>::is_always_lock_free);
+
+// Cover source nodes as well as effects: a source may also be rendered directly
+// by a mixer. Nested units leave the existing mode alone; the outermost guard
+// restores the host's floating-point environment after the block.
+struct ScopedAudioDenormals {
+#if defined(__aarch64__)
+    uint64_t previous=0;
+    bool changed=false;
+    ScopedAudioDenormals() {
+        asm volatile("mrs %0, fpcr" : "=r"(previous));
+        const auto next=previous | (uint64_t(1)<<24);
+        changed=next!=previous;
+        if(changed) asm volatile("msr fpcr, %0" :: "r"(next));
+    }
+    ~ScopedAudioDenormals() {
+        uint64_t current=0;
+        asm volatile("mrs %0, fpcr" : "=r"(current));
+        if(current!=previous) asm volatile("msr fpcr, %0" :: "r"(previous));
+    }
+#elif defined(__x86_64__)
+    unsigned previous=_mm_getcsr();
+    bool changed=(previous & 0x8040)!=0x8040;
+    ScopedAudioDenormals() { if(changed) _mm_setcsr(previous | 0x8040); }
+    // A hosted processor may change the mode even when this guard inherited
+    // FTZ/DAZ. Restore the whole caller control word on both entry paths.
+    ~ScopedAudioDenormals() { if(_mm_getcsr()!=previous) _mm_setcsr(previous); }
+#endif
+    ScopedAudioDenormals(const ScopedAudioDenormals&)=delete;
+    ScopedAudioDenormals& operator=(const ScopedAudioDenormals&)=delete;
+};
+
 // The manually clocked graph never owns a RemoteIO unit. Carry the physical
 // callback's host clock through native processors without locks or allocations.
 struct RealtimeClock {

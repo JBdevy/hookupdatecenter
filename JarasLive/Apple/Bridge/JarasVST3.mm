@@ -1,6 +1,7 @@
 #import "JarasVST3.h"
 #if TARGET_OS_OSX
 #include "CatMIDISequenceBridge.h"
+#include "JarasRealtimeClock.hpp"
 #include "../../Core/Transport/PluginTransportClock.hpp"
 #include "../../Core/Audio/VST3ParameterRestore.hpp"
 #include "pluginterfaces/base/ipluginbase.h"
@@ -239,6 +240,13 @@ public:
 class Changes final: public IParameterChanges {
 public:
     std::unique_ptr<Queue[]> queues; int32 capacity=0,count=0; FIXED_REF
+    // Host parameters have unique IDs and are visited once per block. Avoid
+    // searching the preceding queues for every dirty parameter: large sampler
+    // presets otherwise turn their first callback into quadratic work.
+    void appendKnownParameter(ParamID id,ParamValue value) noexcept {
+        if(count>=capacity)return;
+        auto& queue=queues[count++];queue.id=id;queue.value=value;
+    }
     tresult PLUGIN_API queryInterface(const TUID id,void **out) override {*out=nullptr;if(iidIs<FUnknown>(id)||iidIs<IParameterChanges>(id)){*out=this;return kResultOk;}return kNoInterface;}
     int32 PLUGIN_API getParameterCount() override {return count;}
     IParamValueQueue *PLUGIN_API getParameterData(int32 index) override {return index>=0&&index<count?&queues[index]:nullptr;}
@@ -270,6 +278,7 @@ public:
     IConnectionPoint *source=nullptr,*destination=nullptr; bool initialized=false,controllerInitialized=false,active=false,processing=false;
     bool instrument=false;
     NSString *identifier; std::atomic<bool> bypass{false},hasChanges{false}; std::unique_ptr<Param[]> params; int paramCount=0; Changes changes;
+    std::vector<std::pair<ParamID,int>> parameterIndex;
     std::vector<AudioBusBuffers> inputs,outputs; std::vector<std::vector<float>> storage; std::vector<std::vector<float *>> pointers;
     EventList events;
     std::shared_ptr<MIDIPerformance> midiPerformance=std::make_shared<MIDIPerformance>();
@@ -288,7 +297,21 @@ public:
     tresult PLUGIN_API startGroupEdit() override{return kResultOk;}
     tresult PLUGIN_API finishGroupEdit() override{notifyEdit();return kResultOk;}
     tresult PLUGIN_API beginEdit(ParamID) override{return kResultOk;}
-    tresult queueParameter(ParamID id,ParamValue value) {for(int i=0;i<paramCount;i++)if(params[i].id==id){params[i].pending.store(value);params[i].dirty.store(true,std::memory_order_release);hasChanges.store(true,std::memory_order_release);return kResultOk;}return kInvalidArgument;}
+    void prepareParameterIndex() {
+        parameterIndex.clear();parameterIndex.reserve(paramCount);
+        for(int i=0;i<paramCount;++i)parameterIndex.emplace_back(params[i].id,i);
+        std::sort(parameterIndex.begin(),parameterIndex.end());
+    }
+    tresult queueParameter(ParamID id,ParamValue value) {
+        // The immutable index is prepared with the processor, not on audio.
+        // Held-controller restoration also uses this path inside process().
+        const auto found=std::lower_bound(parameterIndex.begin(),parameterIndex.end(),id,
+            [](const auto& entry,ParamID key){return entry.first<key;});
+        if(found==parameterIndex.end()||found->first!=id)return kInvalidArgument;
+        auto& parameter=params[found->second];parameter.pending.store(value);
+        parameter.dirty.store(true,std::memory_order_release);hasChanges.store(true,std::memory_order_release);
+        return kResultOk;
+    }
     tresult PLUGIN_API performEdit(ParamID id,ParamValue value) override {
         auto result=queueParameter(id,value);
         if(result==kResultOk&&parameterEdited){auto callback=parameterEdited;auto active=editCallbacksActive;dispatch_async(dispatch_get_main_queue(),^{if(active->load())callback(id,value,NO);});}
@@ -359,6 +382,7 @@ public:
                     params[i].dirty=true;hasChanges=true;
                 }
             }
+            prepareParameterIndex();
         }
         ProcessSetup setup{processMode,kSample32,frames,rate};if(processor->setupProcessing(setup)!=kResultOk)throw std::runtime_error("VST3 audio setup failed.");
         if(component->setActive(true)!=kResultOk)throw std::runtime_error("Could not activate this VST3 processor.");active=true;
@@ -417,7 +441,11 @@ public:
             }
         }
         for(auto &bus:outputs){bus.silenceFlags=0;for(int c=0;c<bus.numChannels;c++)memset(bus.channelBuffers32[c],0,count*sizeof(float));}
-        changes.count=0;if(hasChanges.exchange(false,std::memory_order_acq_rel))for(int i=0;i<paramCount;i++)if(params[i].dirty.exchange(false,std::memory_order_acq_rel)){int32 index;auto q=changes.addParameterData(params[i].id,index);q->addPoint(0,params[i].pending.load(),index);}
+        changes.count=0;
+        if(hasChanges.exchange(false,std::memory_order_acq_rel))
+            for(int i=0;i<paramCount;i++)
+                if(params[i].dirty.exchange(false,std::memory_order_acq_rel))
+                    changes.appendKnownParameter(params[i].id,params[i].pending.load());
         events.count=0;
         auto recordNote=[&](int channel,int note,uint8 velocity){
             if(velocity){held[channel][note]=velocity;midiPerformance->sustained[channel][note]=0;}
@@ -495,6 +523,7 @@ struct Kernel {
     std::vector<std::unique_ptr<jaras::PluginTempoMap>> retiredTempos;
     std::atomic<Chain *> published{nullptr}; std::atomic<unsigned> readers{0}; std::unique_ptr<Chain> current;std::vector<std::unique_ptr<Chain>> retired;
     void process(AudioBufferList *b,unsigned n,const AudioTimeStamp* timestamp){
+        jaras::ScopedAudioDenormals denormals;
         sequence.render(catMIDIClock(timestamp,sampleRate.load()),sampleRate.load(),n);
         if(!published.load())return;
         readers.fetch_add(1);auto chain=published.load();
@@ -510,7 +539,14 @@ struct Kernel {
         if(chain)for(auto &i:chain->instances)if(!i->bypass.load())seconds+=i->processor->getLatencySamples()/i->rate;
         readers.fetch_sub(1);return seconds;
     }
-    void replace(std::unique_ptr<Chain> next){auto old=std::move(current);current=std::move(next);published.store(current.get());if(old)retired.push_back(std::move(old));if(readers.load()==0)retired.clear();}
+    void replace(std::unique_ptr<Chain> next){
+        // Reserve ownership before publication. If allocation fails, keep the
+        // live chain intact instead of freeing an in-flight reader's old one.
+        if(current)retired.emplace_back();
+        if(current)retired.back()=std::move(current);
+        current=std::move(next);published.store(current.get());
+        if(readers.load()==0)retired.clear();
+    }
     std::shared_ptr<Instance> find(NSString *id){if(current)for(auto &i:current->instances)if([i->identifier isEqualToString:id])return i;return nullptr;}
 };
 class Frame final: public IPlugFrame {
@@ -709,8 +745,9 @@ static void replaceNativeEditors(std::shared_ptr<Instance> previous,std::shared_
     std::vector<jaras::PluginTempoMap::Point> values;values.reserve(points.count);
     for(NSDictionary *p in points)values.push_back({[p[@"seconds"] doubleValue],[p[@"bpm"] doubleValue],[p[@"beats"] intValue],[p[@"unit"] intValue]});
     auto next=std::make_unique<jaras::PluginTempoMap>(std::move(values));
-    auto old=std::move(k.tempoMap);k.tempoMap=std::move(next);k.publishedTempo.store(k.tempoMap.get());
-    if(old)k.retiredTempos.push_back(std::move(old));
+    if(k.tempoMap)k.retiredTempos.emplace_back();
+    if(k.tempoMap)k.retiredTempos.back()=std::move(k.tempoMap);
+    k.tempoMap=std::move(next);k.publishedTempo.store(k.tempoMap.get());
     if(k.readers.load()==0)k.retiredTempos.clear();
 }
 + (void)onEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(void))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->edited=[action copy];}

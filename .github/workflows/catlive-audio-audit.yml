@@ -1,0 +1,85 @@
+name: CatLive Audio Audit - Intel and Apple Silicon
+
+# Never packages, signs, publishes or modifies device settings. Releases that
+# change audio call this workflow as a gate. Hosted Intel is NOT macOS 12 runtime
+# validation; the minimum-OS hardware pass remains separate.
+on:
+  workflow_dispatch:
+    inputs:
+      apple_silicon:
+        description: 'Incluir Apple Silicon além do Intel'
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      apple_silicon:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  offline-audio:
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.apple_silicon && '{"include":[{"runner":"macos-15-intel","architecture":"x86_64"},{"runner":"macos-26","architecture":"arm64"}]}' || '{"include":[{"runner":"macos-15-intel","architecture":"x86_64"}]}') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    defaults:
+      run:
+        working-directory: JarasLive
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify execution architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.architecture }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          sw_vers
+          xcrun swiftc --version
+      - name: Validate transport and realtime queues
+        run: |
+          cmake -S . -B "$RUNNER_TEMP/catlive-core-audit" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          cmake --build "$RUNNER_TEMP/catlive-core-audit" --parallel 2
+          ctest --test-dir "$RUNNER_TEMP/catlive-core-audit" --output-on-failure
+      - name: Validate prepared PCM, mobile clock and native output mapping
+        run: |
+          bash scripts/test-prepared-clip-audio.sh
+          bash scripts/test-mobile-audio-driver.sh
+          bash scripts/test-audio-output-connection.sh
+      - name: Prepare generated native instrument fixture
+        run: |
+          python3 scripts/generate-test-sf2.py "$RUNNER_TEMP/catlive-native-test.sf2"
+          echo "JARAS_TEST_SF2=$RUNNER_TEMP/catlive-native-test.sf2" >> "$GITHUB_ENV"
+      - name: Validate audio continuity at 44.1 and 48 kHz
+        run: |
+          bash scripts/test-audio.sh \
+            Tests/Apple/AudioRenderTests.swift \
+            Tests/Apple/PlaybackSampleEpochTests.swift \
+            Tests/Apple/PlaybackEditingContinuityTests.swift \
+            Tests/Apple/MobileQueueSyncTests.swift \
+            Tests/Apple/AudioPhaseTests.swift \
+            Tests/Apple/AudioMediaPreparationTests.swift \
+            Tests/Apple/AutomationAudioTests.swift \
+            Tests/Apple/TrackEQPlaybackTests.swift \
+            Tests/Apple/NativeFXPlaybackTests.swift \
+            Tests/Apple/EQIntelStabilityTests.swift \
+            Tests/Apple/DynamicsStabilityTests.swift \
+            Tests/Apple/TriggerGateRenderTests.swift
+      - name: Validate native effect DSP and editor refresh
+        run: |
+          bash scripts/test-effects.sh
+          bash scripts/test-fx-refresh-during-editing.sh
+          bash scripts/test-instruments.sh
+          bash scripts/test-instrument-behavior.sh
+      - name: Validate failed media without stopping healthy stems
+        run: CATLIVE_EXPORT_TEST_SOURCE=Tests/Apple/PlaybackMediaIsolationTests.swift bash scripts/test-offline-export.sh
+      - name: Validate VST3 state and metronome publication
+        run: |
+          bash scripts/test-vst3-state-stream.sh
+          bash scripts/test-metronome.sh
+          bash scripts/test-midi-sequence.sh

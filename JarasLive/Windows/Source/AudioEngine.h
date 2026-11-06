@@ -241,6 +241,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
                 transitionOpens += reader->transitionOpens.load();
             }
         auto result = object();
+        put(result, "nativeDeviceHost", usesNativeAudioDeviceHost(devices));
         put(result, "cacheMisses", (int64)caches); put(result, "inactiveMisses", (int64)inactive);
         put(result, "fallbackDecoderOpens", (int64)fallbackOpens);
         put(result, "transitionDecoderOpens", (int64)transitionOpens);

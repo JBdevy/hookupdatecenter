@@ -15,7 +15,12 @@ if (yaml) {
     assert.equal(data.jobs.windows.needs, undefined);
     assert.equal(data.jobs['macos-compatibility'].needs, 'windows');
     assert.deepEqual(data.jobs.compatibility.needs, ['windows', 'macos-compatibility']);
-    assert.deepEqual(data.jobs.release.needs, ['windows', 'macos-pkg', 'compatibility', 'integration']);
+    assert.deepEqual(data.jobs.release.needs, ['windows', 'macos-pkg', 'compatibility', 'integration', 'audio-audit']);
+    assert.equal(data.jobs['audio-audit'].uses, './.github/workflows/catlive-audio-audit.yml');
+    assert(data.jobs.release.if.includes("needs.audio-audit.result == 'success'"));
+    assert(data.jobs.release.if.includes("!inputs.audio_tests && !inputs.full_fx_tests && needs.audio-audit.result == 'skipped'"));
+    for (const dependency of ['windows', 'macos-pkg', 'compatibility', 'integration'])
+        assert(data.jobs.release.if.includes(`needs.${dependency}.result == 'success'`));
     const publication = data.jobs.release.steps.find(step => step.uses?.startsWith('softprops/action-gh-release@'));
     assert.deepEqual(publication.with.files.trim().split(/\s+/), ['dist/Catlive-*.pkg', 'dist/Catlive-*.exe', 'dist/CatLive-Integration-*.pkg', 'dist/CatLive-Integration-*.exe'], 'Publish the separate desktop and Integration installers; checksums remain internal CI artifacts.');
     assert.equal(publication.with.target_commitish, '${{ github.sha }}');
@@ -25,10 +30,10 @@ if (yaml) {
     assert(data.jobs['macos-pkg'].steps.some(step => step.run?.includes('build-catlive-pkg.py')));
     const fullFX = data.on.workflow_dispatch.inputs.full_fx_tests;
     assert.equal(fullFX.type, 'boolean');
-    assert.equal(fullFX.default, false, 'UI/integration releases must not run the expensive FX matrix by default.');
+    assert.equal(fullFX.default, true, 'The 1.29 engine audit must validate FX by default.');
     const audioTests = data.on.workflow_dispatch.inputs.audio_tests;
     assert.equal(audioTests.type, 'boolean');
-    assert.equal(audioTests.default, false, 'Audio rendering checks are opt-in for audio changes.');
+    assert.equal(audioTests.default, true, 'The 1.29 engine corrections must validate audio rendering by default.');
     const continuity = data.jobs['macos-pkg'].steps.find(step => step.run?.includes('NativeFXPlaybackTests.swift'));
     assert.equal(continuity.if, '${{ inputs.full_fx_tests }}');
     for (const name of ['Validate audio rendering and unified song entry', 'Validate Cat Dynamics', 'Validate Trigger and Gate rendering']) {
@@ -39,7 +44,7 @@ if (yaml) {
     assert.equal(packaging.if, undefined, 'Installer integrity checks must always run.');
     console.log('Release YAML parsed; parallel builds, exchange gate and installer-only publication validated.');
 }
-for (const required of ['needs: [windows, macos-pkg, compatibility, integration]', 'CatLive-Mac-Fixtures', 'CatLive-Windows-Fixtures', 'verify-mac-roundtrip.cjs', '-Installer', 'bash scripts/test-audio.sh']) assert(workflow.includes(required), required);
+for (const required of ['needs: [windows, macos-pkg, compatibility, integration, audio-audit]', 'CatLive-Mac-Fixtures', 'CatLive-Windows-Fixtures', 'verify-mac-roundtrip.cjs', '-Installer', 'bash scripts/test-audio.sh']) assert(workflow.includes(required), required);
 assert(workflow.includes('build-catlive-pkg.py'));
 assert(read('JarasLive/scripts/sign-catlive-pkg.py').includes('/usr/bin/productsign'));
 const model = read('JarasLive/Application/Project/ProjectModels.swift');
@@ -92,8 +97,8 @@ if (yaml) {
                       {id: 2, name: 'Catlive-1.07.exe', state: 'uploaded', size: 100},
                       {id: 3, name: 'Catlive-1.07.pkg.sha256', state: 'uploaded', size: 64},
                       {id: 4, name: 'old-preview.zip', state: 'uploaded', size: 200},
-                      {id: 5, name: 'CatLive-Integration-1.28-Mac.pkg', state: 'uploaded', size: 100},
-                      {id: 6, name: 'CatLive-Integration-1.28-Windows.exe', state: 'uploaded', size: 100}];
+                      {id: 5, name: 'CatLive-Integration-1.29-Mac.pkg', state: 'uploaded', size: 100},
+                      {id: 6, name: 'CatLive-Integration-1.29-Windows.exe', state: 'uploaded', size: 100}];
         const github = {rest: {repos: {
             getReleaseByTag: async ({tag}) => {assert.equal(tag, 'catlive-v1.07');return {data: {id: 7, target_commitish: 'old'}};},
             listReleaseAssets: () => {},

@@ -5,6 +5,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 #include <deque>
 #include "../../Core/Audio/SingleReaderSlots.hpp"
 #include "../../Core/Audio/RealtimeRunState.hpp"
@@ -18,8 +19,8 @@ struct PreparedPCMPage {
 };
 
 struct PreparedPCMCache {
-    // Slots are cheap until populated. Ordinary playback keeps six pages;
-    // very high source rates/speeds need a larger initial FFT lookahead.
+    // Slots are cheap until populated. Keep six streaming pages plus spectral
+    // lookahead; very high source rates/speeds need more initial coverage.
     static constexpr int pageSize = 32768, pageCount = 64;
     AVAudioFile *__strong file;
     NSURL *__strong url;
@@ -30,6 +31,9 @@ struct PreparedPCMCache {
     Pages pages;
     std::atomic<double> requested{0}, loopStart{0}, loopEnd{0};
     std::atomic<bool> active{false};
+    std::atomic<int> lookaheadPages{6};
+    std::chrono::steady_clock::time_point retryAfter{}; // Decoder lock only.
+    enum class Prefetch { ready, pending, busy, failed };
 
     PreparedPCMCache(AVAudioFile *f) : file(f), url(f.url), length(f.length), sampleRate(f.processingFormat.sampleRate) {}
     double wrapped(double frame) const {
@@ -51,51 +55,92 @@ struct PreparedPCMCache {
         }
         return nullptr;
     }
-    bool prefetch(int count, NSError **error = nullptr) {
+    Prefetch prefetch(int count, NSError **error = nullptr, bool background = false) {
+        // A slow decoder/preparation must not make every other stem wait behind
+        // its mutex. The callback never takes this lock or performs file I/O.
+        std::unique_lock<std::mutex> lock(decoder, std::defer_lock);
+        if (background) {
+            if (!active.load()) return Prefetch::ready;
+            if (!lock.try_lock()) return Prefetch::busy;
+            if (std::chrono::steady_clock::now() < retryAfter) return Prefetch::busy;
+        } else {
+            lock.lock();
+            retryAfter = {};
+        }
         // Physical pages on opposite sides of a loop can have the same ring
         // index. Keep the whole lookahead set resident instead of letting one
         // side evict the other (also handles loops not aligned to page edges).
-        std::lock_guard<std::mutex> lock(decoder);
-        std::vector<int64_t> wanted;
+        std::array<int64_t, pageCount> wanted{};
+        int wantedCount = 0;
+        const auto wantedEnd = [&] { return wanted.begin() + wantedCount; };
+        const auto contains = [&](int64_t first) {
+            return std::find(wanted.begin(), wantedEnd(), first) != wantedEnd();
+        };
         double frame = wrapped(requested.load());
         const double start = loopStart.load(), end = loopEnd.load();
-        for (int i = 0; i < count; ++i) {
+        for (int i = 0; i < std::min(count, pageCount); ++i) {
             const int64_t first = int64_t(std::max(0., frame)) / pageSize * pageSize;
-            if (first >= length || std::find(wanted.begin(), wanted.end(), first) != wanted.end()) break;
-            wanted.push_back(first);
+            if (first >= length || contains(first)) break;
+            wanted[wantedCount++] = first;
             const double next = double(first + pageSize);
             frame = end > start && next >= end ? start : next;
         }
-        for (const auto first : wanted) {
+        int decoded = 0;
+        for (int i = 0; i < wantedCount; ++i) {
+            const auto first = wanted[i];
             if (producerPageAt(first)) continue;
+            if (background) {
+                if (!active.load()) return Prefetch::ready;
+                // One physical read per stem per pass. Continue the next pass
+                // immediately, so a large session gets fair rolling lookahead.
+                if (decoded != 0) return Prefetch::pending;
+            }
             size_t slot = 0;
             for (; slot < pageCount; ++slot) {
                 const auto* page = pages.producerView(slot);
-                if (!page || std::find(wanted.begin(), wanted.end(), page->first) == wanted.end()) break;
+                if (!page || !contains(page->first)) break;
             }
-            if (slot == pageCount) return false;
+            if (slot == pageCount) return Prefetch::failed;
             auto page = std::make_unique<PreparedPCMPage>();
             page->first = first;
             AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat frameCapacity:pageSize];
             file.framePosition = first;
-            if (![file readIntoBuffer:buffer frameCount:pageSize error:error]) return false;
+            if (!buffer || ![file readIntoBuffer:buffer frameCount:pageSize error:error]) {
+                // An unavailable/cloud-backed file cannot consume every pass
+                // with repeated failing reads while healthy tracks need PCM.
+                retryAfter = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                return Prefetch::failed;
+            }
             page->count = int(buffer.frameLength);
+            if (page->count == 0 || buffer.format.channelCount == 0 || !buffer.floatChannelData) {
+                // Do not publish an empty/unsupported page as permanently ready.
+                // A transient failed decode must remain retryable by the worker.
+                if (error) {
+                    *error = [NSError errorWithDomain:@"CatLive.PreparedAudio" code:3
+                        userInfo:@{NSLocalizedDescriptionKey:@"Could not decode source audio"}];
+                }
+                retryAfter = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+                return Prefetch::failed;
+            }
             for (int channel = 0; channel < 2; ++channel) {
                 const float *data = buffer.floatChannelData[std::min(channel, int(buffer.format.channelCount) - 1)];
                 page->samples[channel].resize(page->count);
                 for (int n = 0; n < page->count; ++n) page->samples[channel][n] = data[n * buffer.stride];
             }
             pages.publish(slot, std::move(page));
+            ++decoded;
         }
         pages.collectRetired();
-        return true;
+        return Prefetch::ready;
     }
+
 };
 
 class PreparedPCMWorkers {
     std::mutex mutex;
     std::condition_variable wake;
     bool closing = false;
+    uint64_t wakeGeneration = 0;
     std::vector<std::weak_ptr<PreparedPCMCache>> caches;
     std::thread thread;
     PreparedPCMWorkers() : thread([this] {
@@ -106,15 +151,28 @@ class PreparedPCMWorkers {
                 if (auto cache = it->lock()) { if (cache->active.load()) work.push_back(cache); ++it; }
                 else it = caches.erase(it);
             }
+            const auto observedWake = wakeGeneration;
             lock.unlock();
-            @autoreleasepool { for (auto &cache : work) cache->prefetch(6); }
+            bool pending = false;
+            @autoreleasepool {
+                for (auto &cache : work) {
+                    const auto result = cache->prefetch(cache->lookaheadPages.load(), nullptr, true);
+                    pending = pending || result == PreparedPCMCache::Prefetch::pending;
+                }
+            }
             lock.lock();
-            wake.wait_for(lock, std::chrono::milliseconds(10), [this] { return closing; });
+            if (!pending) {
+                wake.wait_for(lock, std::chrono::milliseconds(10), [this, observedWake] {
+                    return closing || wakeGeneration != observedWake;
+                });
+            }
         }
     }) {}
 public:
     static PreparedPCMWorkers &shared() { static PreparedPCMWorkers workers; return workers; }
-    void add(const std::shared_ptr<PreparedPCMCache> &cache) { std::lock_guard<std::mutex> lock(mutex); caches.push_back(cache); wake.notify_one(); }
+    void add(const std::shared_ptr<PreparedPCMCache> &cache) { std::lock_guard<std::mutex> lock(mutex); caches.push_back(cache); ++wakeGeneration; wake.notify_one(); }
+    // Control/preparation threads only; the audio callback never signals locks.
+    void requestWake() { std::lock_guard<std::mutex> lock(mutex); ++wakeGeneration; wake.notify_one(); }
     ~PreparedPCMWorkers() { { std::lock_guard<std::mutex> lock(mutex); closing = true; } wake.notify_one(); thread.join(); }
 };
 
@@ -129,6 +187,9 @@ struct PreparedClipKernel {
     std::atomic<uint64_t> startHost{0}, misses{0};
     std::atomic<double> rate{1}, semitones{0}, endFrame{0}, position{0};
     double source = 0, ahead = 0, preparedFrame = -1, preparedRate = 1, preparedPitch = 0;
+    // Control-side only, protected by preparation. A cache URL/range alone is
+    // not evidence that its PCM and spectral history were successfully primed.
+    bool prepared = false;
     bool spectral = false, ramp = false;
     bool mobileClockAnchored = false;
     double mobileClockOffset = 0;
@@ -168,6 +229,14 @@ struct PreparedClipKernel {
         }
         return ok;
     }
+    int prefetchPages(double speed) const {
+        // Exact dry PCM and the warm spectral processor have separate cursors.
+        // Include their separation even at high source rates/live rate changes;
+        // a fixed six-page window can otherwise evict needed FFT lookahead.
+        return std::clamp(6 + int(std::ceil(pitch.outputSeekLength(1.f) * speed /
+                                         PreparedPCMCache::pageSize)),
+                          6, PreparedPCMCache::pageCount);
+    }
     bool prime(double frame, double speed, double tuning) {
         source = ahead = frame;
         spectral = std::abs(tuning - 12 * std::log2(speed)) >= 1e-8;
@@ -186,6 +255,7 @@ struct PreparedClipKernel {
         return true;
     }
     OSStatus render(const AudioTimeStamp *time, AVAudioFrameCount frames, AudioBufferList *buffers) {
+        jaras::ScopedAudioDenormals denormals;
         for (UInt32 ch = 0; ch < buffers->mNumberBuffers; ++ch)
             if (buffers->mBuffers[ch].mData) memset(buffers->mBuffers[ch].mData, 0, buffers->mBuffers[ch].mDataByteSize);
         if (!playback.enter()) return noErr;
@@ -229,6 +299,7 @@ struct PreparedClipKernel {
 
             spectral = spectral || std::abs(shift) >= 1e-8;
             preparedRate = speed; preparedPitch = tuning;
+            cache->lookaheadPages.store(prefetchPages(speed));
         }
         for (int done = offset; done < int(frames);) {
             const int count = std::min(512, int(frames) - done);
@@ -287,40 +358,54 @@ struct PreparedClipKernel {
     _kernel->playback.stop();
     _kernel->playback.waitStopped();
     auto &cache = _kernel->cache;
-    if (cache && [cache->url isEqual:url] && _kernel->source == frame && _kernel->preparedFrame == frame &&
+    if (_kernel->prepared && cache && [cache->url isEqual:url] && _kernel->source == frame && _kernel->preparedFrame == frame &&
         _kernel->preparedRate == rate && _kernel->preparedPitch == pitch && _kernel->endFrame.load() == end &&
         cache->loopStart.load() == loopStart && cache->loopEnd.load() == loopEnd) {
         cache->active.store(true);
+        PreparedPCMWorkers::shared().requestWake();
         return YES;
     }
+    _kernel->prepared = false;
+    if (cache) cache->active.store(false);
     if (!cache || ![cache->url isEqual:url]) {
         AVAudioFile *file = [[AVAudioFile alloc] initForReading:url error:error];
         if (!file) return NO;
         cache = std::make_shared<PreparedPCMCache>(file);
         PreparedPCMWorkers::shared().add(cache);
     }
-    cache->loopStart.store(loopStart); cache->loopEnd.store(loopEnd);
-    cache->requested.store(frame); cache->active.store(true);
+    {
+        // Publish a coherent preparation only while the worker is excluded.
+        // Leave it inactive if synchronous preparation or priming fails.
+        std::lock_guard<std::mutex> decoderLock(cache->decoder);
+        cache->loopStart.store(loopStart); cache->loopEnd.store(loopEnd);
+        cache->requested.store(frame);
+        cache->lookaheadPages.store(_kernel->prefetchPages(rate));
+    }
     _kernel->endFrame.store(end); _kernel->rate.store(rate); _kernel->semitones.store(pitch);
     const double lookahead = _kernel->pitch.outputSeekLength(1.f) * rate;
     const double pageOffset = std::fmod(cache->wrapped(frame), double(PreparedPCMCache::pageSize));
     const int initialPages = std::clamp(int(std::ceil((pageOffset + lookahead + 2) / PreparedPCMCache::pageSize)) + 1,
-                                        6, PreparedPCMCache::pageCount);
-    if (!cache->prefetch(initialPages, error)) return NO;
+                                        cache->lookaheadPages.load(), PreparedPCMCache::pageCount);
+    if (cache->prefetch(initialPages, error) != PreparedPCMCache::Prefetch::ready) return NO;
     if (!_kernel->prime(frame, rate, pitch)) {
         if (error) *error = [NSError errorWithDomain:@"CatLive.PreparedAudio" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Could not prepare source audio"}];
         return NO;
     }
+    _kernel->prepared = true;
+    cache->active.store(true);
+    PreparedPCMWorkers::shared().requestWake();
     return YES;
 }
 - (void)startAtHostTime:(uint64_t)host ramp:(BOOL)ramp {
     std::lock_guard<std::mutex> lock(_kernel->preparation);
     _kernel->playback.stop();
     _kernel->playback.waitStopped();
+    if (!_kernel->prepared) return;
     _kernel->ramp = ramp; _kernel->rampFrame = 0;
     _kernel->mobileClockAnchored = false;
     _kernel->startHost.store(host);
     if (_kernel->cache) _kernel->cache->active.store(true);
+    PreparedPCMWorkers::shared().requestWake();
     _kernel->playback.start();
 }
 - (void)setRate:(double)rate pitch:(double)pitch {

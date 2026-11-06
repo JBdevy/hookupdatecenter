@@ -5,9 +5,6 @@
 #include "../../Core/Audio/PadGateRelease.hpp"
 #include <TargetConditionals.h>
 #import <Accelerate/Accelerate.h>
-#if defined(__x86_64__)
-#include <xmmintrin.h>
-#endif
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -92,29 +89,28 @@
     }
 }
 @end
-// A callback may pull several nested units. Only the outermost unit changes
-// the floating-point mode; restoring it preserves the caller's environment.
-struct ScopedAudioDenormals {
-#if defined(__aarch64__)
-    uint64_t previous=0;
-    bool changed=false;
-    ScopedAudioDenormals() {
-        asm volatile("mrs %0, fpcr" : "=r"(previous));
-        const auto next=previous | (uint64_t(1)<<24);
-        changed=next!=previous;
-        if(changed) asm volatile("msr fpcr, %0" :: "r"(next));
-    }
-    ~ScopedAudioDenormals() { if(changed) asm volatile("msr fpcr, %0" :: "r"(previous)); }
-#elif defined(__x86_64__)
-    unsigned previous=_mm_getcsr();
-    ScopedAudioDenormals() { _mm_setcsr(previous | 0x8040); }
-    ~ScopedAudioDenormals() { _mm_setcsr(previous); }
-#endif
-};
+using jaras::ScopedAudioDenormals;
 static void scaleAudioBlock(float* data,unsigned count,float gain) {
     if(!count || gain==1) return;
     if(count>=64) vDSP_vsmul(data,1,&gain,data,1,count);
     else for(unsigned i=0;i<count;++i) data[i]*=gain;
+}
+// Upstream silence describes the input, not a filter/reverb/trigger tail.
+// Correct only a stale hint: audible input takes no extra scan, while truly
+// silent output keeps the host's idle optimization. No threshold may discard
+// quiet tails, and stop/item gates remain downstream of these processors.
+static void updateEffectSilenceFlag(AudioUnitRenderActionFlags* flags,
+                                    const AudioBufferList* buffers,unsigned frames) {
+    if(!frames || !(*flags & kAudioUnitRenderAction_OutputIsSilence)) return;
+    for(unsigned ch=0;ch<buffers->mNumberBuffers;++ch) {
+        const auto& buffer=buffers->mBuffers[ch];
+        const auto* data=static_cast<const float*>(buffer.mData);
+        const auto samples=vDSP_Length(frames)*buffer.mNumberChannels;
+        if(!data || !samples) continue;
+        float peak=0;
+        vDSP_maxmgv(data,1,&peak,samples);
+        if(peak!=0) { *flags &= ~kAudioUnitRenderAction_OutputIsSilence; return; }
+    }
 }
 // Level meters read the same maximum absolute sample as the former node taps.
 // Capture the existing render buffer directly; the UI consumes only atomics.
@@ -535,7 +531,15 @@ struct EQKernel {
             }
             for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
                 auto data=static_cast<float*>(buffers->mBuffers[ch].mData); if(!data) continue;
-                double dry=data[frame], value=dry;
+                const double dry=data[frame];
+                if(!std::isfinite(dry)) {
+                    // An invalid upstream sample must not poison the recursive
+                    // history, or survive recovery through the dry/wet blend.
+                    for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
+                    data[frame]=0;
+                    continue;
+                }
+                double value=dry;
                 for(unsigned n=0;n<sections;n++) {
                     auto k=coefficients[n];
                     double out=k[0]*value+z1[ch][n];
@@ -547,7 +551,13 @@ struct EQKernel {
                     for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
                     value=0;
                 }
-                data[frame]=float(dry+(value-dry)*mix);
+                const float rendered=float(dry+(value-dry)*mix);
+                if(!std::isfinite(rendered)) {
+                    // The double cascade can still overflow when narrowed to
+                    // Float32. Contain this sample and recover on the next one.
+                    for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
+                    data[frame]=0;
+                } else data[frame]=rendered;
             }
         }
     }
@@ -589,6 +599,7 @@ struct EQKernel {
             state->fade.gate(output,frames,time);
             if(auto analysis=state->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             state->process(output,frames);
+            updateEffectSilenceFlag(flags,output,frames);
             if(auto analysis=state->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             state->outputPeaks.capture(output,frames);
         }
@@ -771,6 +782,14 @@ struct DynamicsKernel {
     std::array<unsigned,8> positions{};
     std::array<double,8> damping{};
     double lowState[2]{}, highState[2]{};
+    std::array<double,5> reverbConfiguration{{-1,-1,-1,-1,-1}};
+    std::array<unsigned,8> reverbLengths{};
+    std::array<double,8> reverbFeedback{};
+    double reverbHP=0,reverbLP=0,reverbSmoothing=0,reverbDamping=0;
+    static float finitePCM(double value) noexcept {
+        const auto sample=static_cast<float>(value);
+        return std::isfinite(sample)?sample:0.f;
+    }
     DynamicsKernel() { for(auto &v:params) v.store(0); for(auto &v:peaks) v.store(0); }
     void prepare(double sampleRate) {
         rate=sampleRate; envelope=0; gain=1; mix=0;
@@ -779,6 +798,22 @@ struct DynamicsKernel {
         for(auto &v:peaks) v.store(0);
         for(unsigned ch=0;ch<2;ch++) lowState[ch]=highState[ch]=0;
         if(reverb) for(auto &line:delays) line.assign(unsigned(rate*.18)+1,0);
+        reverbConfiguration.fill(-1);
+    }
+    void prepareReverbCoefficients(unsigned space,double decay,double lowCut,double highCut) noexcept {
+        const std::array<double,5> configuration{{rate,double(space),decay,lowCut,highCut}};
+        if(configuration==reverbConfiguration) return;
+        reverbConfiguration=configuration;
+        reverbHP=exp(-2*M_PI*lowCut/rate);
+        reverbLP=1-exp(-2*M_PI*std::min(rate*.45,highCut)/rate);
+        reverbSmoothing=1-exp(-1/(rate*.01));
+        static const double times[3][8]={{.0191,.0239,.0293,.0317,.0371,.0419,.0437,.0479},{.0473,.0531,.0617,.0713,.0797,.0893,.1013,.1139},{.0113,.0137,.0179,.0199,.0233,.0271,.0299,.0313}};
+        for(unsigned n=0;n<8;n++) {
+            reverbLengths[n]=std::min(unsigned(delays[n].size()),std::max(1u,unsigned(times[space][n]*rate)));
+            reverbFeedback[n]=pow(.001,double(reverbLengths[n])/rate/decay);
+            positions[n]%=reverbLengths[n];
+        }
+        reverbDamping=space==2?.72:(space==1?.46:.6);
     }
     void process(AudioBufferList *buffers, unsigned frames) {
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
@@ -809,12 +844,12 @@ struct DynamicsKernel {
             const double release=exp(-1/(rate*std::max(.01,params[2].load(std::memory_order_relaxed))));
             const bool metering=meteringEnabled.load(std::memory_order_relaxed);
             for(unsigned i=0;i<frames;i++) {
-                const double left=l[i], right=r[i];
-                if(metering) { observed[0]=std::max(observed[0],fabsf(l[i])); observed[1]=std::max(observed[1],fabsf(r[i])); }
+                const double left=finitePCM(l[i]), right=finitePCM(r[i]);
+                if(metering) { observed[0]=std::max(observed[0],float(fabs(left))); observed[1]=std::max(observed[1],float(fabs(right))); }
                 const double peak=std::max(fabs(left),fabs(right))*inputGain;
                 const double target=on?inputGain*std::min(1.0,ceiling/std::max(1e-20,peak)):1;
                 gain=on && target<gain?target:target+(gain-target)*release;
-                l[i]=float(left*gain); r[i]=float(right*gain);
+                l[i]=finitePCM(left*gain); r[i]=finitePCM(right*gain);
                 if(metering) { observed[2]=std::max(observed[2],fabsf(l[i])); observed[3]=std::max(observed[3],fabsf(r[i])); }
             }
             if(metering) for(unsigned ch=0;ch<4;ch++) {
@@ -830,6 +865,7 @@ struct DynamicsKernel {
             const double attack=exp(-1/(rate*std::max(.0001,params[2].load()))), release=exp(-1/(rate*std::max(.01,params[3].load())));
             const double makeup=pow(10,params[4].load()/20), smoothing=1-exp(-1/(rate*.002));
             for(unsigned i=0;i<frames;i++) {
+                l[i]=finitePCM(l[i]); r[i]=finitePCM(r[i]);
                 const double peak=std::max(fabs(l[i]),fabs(r[i]));
                 if(metering) { observed[0]=std::max(observed[0],fabsf(l[i])); observed[1]=std::max(observed[1],fabsf(r[i])); }
                 if(!on && fabs(gain-1)<1e-7) {
@@ -844,7 +880,7 @@ struct DynamicsKernel {
                 envelope=coefficient*envelope+(1-coefficient)*reduction;
                 const double target=on?(envelope==0?makeup:pow(10,-envelope/20)*makeup):1;
                 gain+=(target-gain)*smoothing;
-                l[i]*=gain; r[i]*=gain;
+                l[i]=finitePCM(l[i]*gain); r[i]=finitePCM(r[i]*gain);
                 if(metering) { observed[2]=std::max(observed[2],fabsf(l[i])); observed[3]=std::max(observed[3],fabsf(r[i])); }
             }
             if(metering) for(unsigned ch=0;ch<4;ch++) {
@@ -855,38 +891,35 @@ struct DynamicsKernel {
             return;
         }
         if(!on && mix<1e-6) { mix=0; return; }
+        if(delays[0].empty()) return;
         const unsigned space=std::min(2u,unsigned(std::max(0.0,params[0].load())));
         const double targetMix=on?params[1].load()*.01:0;
         const double decay=std::max(.1,params[2].load());
-        const double hp=exp(-2*M_PI*params[3].load()/rate), lp=1-exp(-2*M_PI*std::min(rate*.45,params[4].load())/rate);
-        const double smooth=1-exp(-1/(rate*.01));
+        prepareReverbCoefficients(space,decay,params[3].load(),params[4].load());
         // Eight mutually prime delay lengths, orthogonal Householder feedback.
         // RT60 is calibrated independently of room size. Plate uses dense short
         // reflections; Hall longer diffuse reflections; Room a smaller space.
-        static const double times[3][8]={{.0191,.0239,.0293,.0317,.0371,.0419,.0437,.0479},{.0473,.0531,.0617,.0713,.0797,.0893,.1013,.1139},{.0113,.0137,.0179,.0199,.0233,.0271,.0299,.0313}};
-        unsigned lengths[8]; double feedback[8];
-        for(unsigned n=0;n<8;n++) { lengths[n]=std::min(unsigned(delays[n].size()),std::max(1u,unsigned(times[space][n]*rate))); feedback[n]=pow(.001,double(lengths[n])/rate/decay); positions[n]%=lengths[n]; }
-        const double damp=space==2?.72:(space==1?.46:.6);
         for(unsigned frame=0;frame<frames;frame++) {
-            mix+=(targetMix-mix)*smooth;
+            const float dryLeft=finitePCM(l[frame]),dryRight=finitePCM(r[frame]);
+            mix+=(targetMix-mix)*reverbSmoothing;
             double values[8],sum=0,wetL=0,wetR=0;
-            for(unsigned n=0;n<8;n++) { double v=delays[n][positions[n]]; damping[n]+=damp*(v-damping[n]); values[n]=damping[n]; sum+=values[n]; }
+            for(unsigned n=0;n<8;n++) { double v=delays[n][positions[n]]; damping[n]+=reverbDamping*(v-damping[n]); values[n]=damping[n]; sum+=values[n]; }
             for(unsigned n=0;n<8;n++) {
-                double input=(n&1?r[frame]:l[frame])*.24;
+                double input=(n&1?dryRight:dryLeft)*.24;
                 // I - 2/N * ones is energy-preserving before RT60 attenuation.
-                double value=input+(values[n]-.25*sum)*feedback[n];
-                delays[n][positions[n]]=std::isfinite(value)?float(value):0;
+                double value=input+(values[n]-.25*sum)*reverbFeedback[n];
+                delays[n][positions[n]]=finitePCM(value);
                 // Block setup bounds every position below its current length.
-                if(++positions[n]==lengths[n]) positions[n]=0;
+                if(++positions[n]==reverbLengths[n]) positions[n]=0;
                 wetL+=values[n]*(n&2?-1:1)*.45;
                 wetR+=values[n]*(n&1?-1:1)*.45;
             }
             double wet[2]={wetL,wetR};
             for(unsigned ch=0;ch<2;ch++) {
-                lowState[ch]=(1-hp)*wet[ch]+hp*lowState[ch];
-                highState[ch]+=lp*((wet[ch]-lowState[ch])-highState[ch]);
+                lowState[ch]=(1-reverbHP)*wet[ch]+reverbHP*lowState[ch];
+                highState[ch]+=reverbLP*((wet[ch]-lowState[ch])-highState[ch]);
                 auto data=ch?r:l;
-                data[frame]=float(data[frame]*(1-mix)+highState[ch]*mix);
+                data[frame]=finitePCM((ch?dryRight:dryLeft)*(1-mix)+highState[ch]*mix);
             }
         }
     }
@@ -926,7 +959,7 @@ struct DynamicsKernel {
         if(!pull) return kAudioUnitErr_NoConnection;
         auto status=pull(flags,time,frames,0,output);
         if(status==noErr) { state->inputAnalysis.capture(output,frames); state->process(output,frames); state->outputAnalysis.capture(output,frames);
-            if(state->catDynamics && state->catDynamics->trigger) *flags &= ~kAudioUnitRenderAction_OutputIsSilence; }
+            updateEffectSilenceFlag(flags,output,frames); }
         return status;
     };
 }
@@ -959,6 +992,7 @@ struct DynamicsKernel {
             if(auto analysis=eq->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             compressor->inputAnalysis.capture(output,frames);
             compressor->process(output,frames);
+            updateEffectSilenceFlag(flags,output,frames);
             compressor->outputAnalysis.capture(output,frames);
             eq->outputPeaks.capture(output,frames);
         }
@@ -1054,11 +1088,17 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 }
 + (void)configureCompressor:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold ratio:(double)ratio attack:(double)attack release:(double)release gain:(double)gain {
     auto &k=dynamicsKernel(node);
-    const double values[]={threshold,ratio,attack,release,gain}; for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
+    if(!std::isfinite(threshold)||!std::isfinite(ratio)||!std::isfinite(attack)||!std::isfinite(release)||!std::isfinite(gain)) return;
+    const double values[]={std::clamp(threshold,-60.0,0.0),std::clamp(ratio,1.0,20.0),
+        std::clamp(attack,.0001,.2),std::clamp(release,.01,3.0),std::clamp(gain,-12.0,24.0)};
+    for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
 }
 + (void)configureReverb:(AVAudioUnitEffect *)node enabled:(BOOL)enabled space:(NSInteger)space mix:(double)mix decay:(double)decay lowCut:(double)lowCut highCut:(double)highCut {
     auto &k=dynamicsKernel(node);
-    const double values[]={double(space),mix,decay,lowCut,highCut}; for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
+    if(!std::isfinite(mix)||!std::isfinite(decay)||!std::isfinite(lowCut)||!std::isfinite(highCut)) return;
+    const double values[]={double(std::clamp(space,NSInteger(0),NSInteger(2))),std::clamp(mix,0.0,100.0),
+        std::clamp(decay,.1,20.0),std::clamp(lowCut,20.0,2000.0),std::clamp(highCut,2000.0,20000.0)};
+    for(unsigned i=0;i<5;i++) k.params[i].store(values[i]); k.enabled.store(enabled);
 }
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node input:(BOOL)input enabled:(BOOL)enabled {
     auto &k=dynamicsKernel(node);

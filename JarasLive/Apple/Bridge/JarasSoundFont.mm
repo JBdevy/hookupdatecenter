@@ -1,5 +1,6 @@
 #import "JarasSoundFont.h"
 #include "CatMIDISequenceBridge.h"
+#include "JarasRealtimeClock.hpp"
 #include <atomic>
 #include <array>
 #include <memory>
@@ -132,6 +133,7 @@ struct InstrumentRenderer {
         }
     }
     void render(AudioBufferList *output, unsigned frames, const AudioTimeStamp* time = nullptr) {
+        jaras::ScopedAudioDenormals denormals;
         if(time) sequence.render(catMIDIClock(time,font->outSampleRate),font->outSampleRate,frames);
         else sequence.count=0;
         const bool mono=monophonic.load();

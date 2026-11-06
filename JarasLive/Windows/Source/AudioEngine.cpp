@@ -50,6 +50,8 @@ AudioEngine::~AudioEngine() {
 void AudioEngine::startRecording(const File &file, int channels, int bits) {
     if (recording.load())
         return;
+    if (channels < 1 || channels > 128)
+        throw std::invalid_argument("Invalid recording channel count.");
     auto *device = devices.getCurrentAudioDevice();
     if (!device || device->getActiveInputChannels().countNumberOfSetBits() < channels)
         throw std::runtime_error(
@@ -2669,23 +2671,20 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             if (!silent) for (int ch = 0; ch < 2; ++ch)
                 stereoPeak[(size_t)ch] = std::max(stereoPeak[(size_t)ch], buffer.getMagnitude(ch, 0, samples));
             if(silent)buffer.clear(0,samples);
-            auto routeBus=[&](int target) {
-                if(!compensation)return;
-                for(auto &route:compensation->routes)if(route.target==target) {
+            // The prepared graph already contains each send/parent destination
+            // exactly once. Traverse it directly: callback-side deduplication
+            // used quadratic searches and a fixed 513-entry stack array even
+            // though a valid Matrix Patch can contain more destinations.
+            if(compensation)
+                for(auto &route:compensation->routes) {
                     auto &scratch=latencyPlan->scratch;
                     for(int ch=0;ch<2;ch++)scratch.copyFrom(ch,0,buffer,ch,0,samples);
                     route.delay[head].process(scratch.getWritePointer(0),scratch.getWritePointer(1),samples,clock,moving);
-                    for(int ch=0;ch<2;ch++)latencyPlan->buses[size_t(target)].routed[head].addFrom(ch,0,scratch,ch,0,samples);
-                    return;
+                    for(int ch=0;ch<2;ch++)latencyPlan->buses[size_t(route.target)].routed[head].addFrom(ch,0,scratch,ch,0,samples);
                 }
-            };
-            std::array<int,513> sentTargets{};unsigned sentCount=0;
-            auto sendOnce=[&](int target) {if(std::find(sentTargets.begin(),sentTargets.begin()+sentCount,target)==sentTargets.begin()+sentCount){sentTargets[sentCount++]=target;routeBus(target);}};
-            for(int target:bus.sends)sendOnce(target);
             bool sentMaster=false,preparedHardware=false;
             for(const auto &patch:bus.outputs) {
-                if(patch.firstChannel==-2&&bus.parent>=0)sendOnce(bus.parent);
-                else if(patch.firstChannel==0&&!sentMaster) {
+                if(patch.firstChannel==0&&!sentMaster) {
                     sentMaster=true;auto &scratch=latencyPlan->scratch;
                     for(int ch=0;ch<2;ch++)scratch.copyFrom(ch,0,buffer,ch,0,samples);
                     compensation->master[head].process(scratch.getWritePointer(0),scratch.getWritePointer(1),samples,clock,moving);
@@ -2852,7 +2851,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float *const *input, in
     AudioCallbackMetrics::Scope callbackScope(callbackMetrics, samples, rate.load());
     {
         auto lease=recorderSlot.read();
-        if (auto* writer=lease.get(); writer && inputs > 0 && !writer->write(input, samples))
+        if (auto* writer=lease.get(); writer && !writer->writeDeviceInput(input, inputs, samples))
             recordingDrops.fetch_add(1, std::memory_order_relaxed);
     }
     // JUCE packs enabled device channels. The routing graph uses physical,

@@ -22,6 +22,27 @@ private:
     Result& result;
 };
 template<class Register> void run(Register&& test) {
+    test("Recording preserves channel bounds and frame clock after device input changes",[] {
+        auto require=[](bool ok,const char* message){if(!ok)throw std::runtime_error(message);};
+        TimeSliceThread disk("Test changing device inputs");
+        Result result;
+        BufferedAudioWriter writer(std::make_unique<Sink>(result),disk,16);
+        const float mono[]{.1f,.2f,.3f,.4f};
+        const float* oneChannel[]{mono};
+        require(writer.writeDeviceInput(oneChannel,1,4),"One-channel callback was rejected");
+        // A null pointer is legal when the device reports no active inputs.
+        require(writer.writeDeviceInput(nullptr,0,4),"Zero-input block did not preserve the take clock");
+        const float right[]{-.1f,-.2f,-.3f,-.4f};const float* stereo[]{mono,right};
+        require(writer.writeDeviceInput(stereo,2,4),"Restored stereo callback was rejected");
+        require(result.samples.empty(),"Device callback wrote PCM to disk synchronously");
+        writer.finish();
+        require(!writer.failed()&&result.samples.size()==24,"Channel change lost recorded frame positions");
+        for(int i=0;i<4;++i) {
+            require(result.samples[2*i]==mono[i]&&result.samples[2*i+1]==0,"Absent right input was not silent");
+            require(result.samples[8+2*i]==0&&result.samples[9+2*i]==0,"No-input block was not silent");
+            require(result.samples[16+2*i]==mono[i]&&result.samples[17+2*i]==right[i],"Stereo did not resume at the expected frame");
+        }
+    });
     test("Recording PCM queue drains before finalization and reports disk failure",[] {
         auto require=[](bool ok,const char* message){if(!ok)throw std::runtime_error(message);};
         // Intentionally no running disk thread: the producer must neither wait

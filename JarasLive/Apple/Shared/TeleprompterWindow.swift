@@ -15,7 +15,10 @@ struct TeleprompterProjectionLayout<Media: View>: View {
     private var preview: Bool { settings.displaysPreview(content.preview) }
     var body: some View {
         GeometryReader { geometry in
-            if settings.isClear && !preview { media().frame(width: geometry.size.width, height: geometry.size.height).scaleEffect(settings.mediaScale / 100).frame(width: geometry.size.width, height: geometry.size.height).clipped() }
+            if settings.isClear && !preview {
+                media().frame(width: geometry.size.width, height: geometry.size.height).scaleEffect(settings.mediaScale / 100).frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                    .overlay(alignment: .bottom) { if content.loopActive == true { loopBar } }
+            }
             else {
                 let animatedBorders = settings.rgbWindowBorderEnabled || settings.rgbClockBorderEnabled || settings.rgbTextBoxBorderEnabled || settings.rgbChordBorderEnabled
                 TimelineView(.periodic(from: .now,by: animatedBorders ? 0.2 : 0.5)) { context in
@@ -57,10 +60,17 @@ struct TeleprompterProjectionLayout<Media: View>: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(border(settings.chordColor,rgb: settings.rgbChordBorderEnabled,date: date),lineWidth: 1))
                 .frame(maxWidth: .infinity)
         }
-        if !preview && settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
+        if content.loopActive == true {
+            if !top { loopBar }
+        } else if !preview && settings.progressEnabled && settings.progressPosition == (top ? "top" : "bottom") {
             GeometryReader { bar in Color(hex: settings.progressColor).frame(width: bar.size.width * content.progress) }
                 .frame(height: 5).background(Color.white.opacity(0.1))
         }
+    }
+    private var loopBar: some View {
+        Text("Loop ativo").font(.system(size: 14, weight: .bold)).foregroundStyle(Color.black)
+            .lineLimit(1).minimumScaleFactor(0.5).frame(maxWidth: .infinity).frame(height: 24)
+            .background(Color(hex: 0xffff00))
     }
     private func clockRow(date: Date, size: CGSize, timer: Bool, local: Bool) -> some View {
         let width = max(1,size.width - 16), side = !settings.clockPosition.hasPrefix("center")
@@ -347,6 +357,7 @@ private struct TPProjectionData: Equatable {
     var text = "", chords = "", song = "", queued = ""
     var currentRegion: UUID?, queuedRegion: UUID?
     var progress = 0.0
+    var loopActive = false
     var previewPlayback = TeleprompterPreviewPlayback()
     var preview: [TPPreviewBlock] = []
 }
@@ -498,6 +509,7 @@ private struct LocalizedTeleprompterConfig: View {
             .min { $0.endTime - $0.startTime < $1.endTime - $1.startTime }
         let queue = song.parts.first(where: { $0.id == transport.queuedRegionId })
         var next = TPProjectionData()
+        next.loopActive = transport.loop.enabled
         next.song = region?.name ?? ""
         next.queued = queue?.name ?? snapshot.project.songs.first(where: { $0.id == transport.queue.songId })?.name ?? ""
         next.currentRegion = transport.playlistEntryId ?? region?.id; next.queuedRegion = transport.queuedPlaylistEntryId ?? queue?.id
@@ -691,7 +703,7 @@ private struct TeleprompterProjectionView: View {
             }, nameColor: UInt32(blockTextColor.value))
         }
         return .init(index: index, text: data.text, chords: data.chords, song: data.song, queued: data.queued,
-                     progress: data.progress, style: .init(), preview: display.previewActive, blocks: blocks, settings: settings)
+                     progress: data.progress, style: .init(), preview: display.previewActive, blocks: blocks, settings: settings, loopActive: data.loopActive)
     }
     var body: some View {
         TeleprompterNoticeStage(settings: preferences.settings, preview: display.previewActive,

@@ -24,6 +24,7 @@ let url = URL(string: "http://127.0.0.1:\(port)\(server.path)")!
 var payload = TeleprompterRemotePayload()
 payload.text = "Lyrics <script>alert(1)</script>"; payload.chords = "Am"; payload.song = "Song 2"
 payload.timer = "-00:00:01"; payload.expired = true
+payload.loopActive = true; payload.loopLabel = "Loop ativo"
 payload.blocks = [TeleprompterRemoteBlock(name: "Bloco 01", color: 123, duration: 10, songs: [])]
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -37,6 +38,7 @@ precondition(page.1.statusCode == 200 && String(decoding: page.0, as: UTF8.self)
 let state = request(url.appendingPathComponent("state"))
 let decoded = try JSONDecoder().decode(TeleprompterRemotePayload.self, from: state.0)
 precondition(decoded.song == payload.song && decoded.text == payload.text && decoded.blocks.count == 1 && decoded.expired)
+precondition(decoded.loopActive == true && decoded.loopLabel == "Loop ativo", "Browser must receive loop status independently of progress settings")
 precondition(request(url.appendingPathComponent("unknown")).1.statusCode == 404, "Unknown paths must not expose content")
 precondition(request(url.appendingPathComponent("media/../outside")).1.statusCode == 404)
 let media = url.appendingPathComponent("media/video")
@@ -49,7 +51,10 @@ precondition(request(media).0 == source, "Chunked media content differs")
 let head = request(media, method: "HEAD")
 precondition(head.0.isEmpty && head.1.value(forHTTPHeaderField: "Content-Length") == "200000")
 payload.preview = true; payload.mediaID = nil
+payload.loopActive = false
 server.publish(payload, mediaURL: nil)
+let releasedLoop = try JSONDecoder().decode(TeleprompterRemotePayload.self, from: request(url.appendingPathComponent("state")).0)
+precondition(releasedLoop.loopActive == false, "Released loop must clear the browser footer")
 precondition(request(media).1.statusCode == 404, "Preview still serves video")
 // TP2 owns a different listener, payload and media namespace. Disabling
 // TP1 must not interrupt TP2, including a file with the same media identifier.

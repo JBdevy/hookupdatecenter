@@ -48,7 +48,7 @@ jobs:
         run: bash CatLiveIntegration/Installer/package-mac.sh "$PWD/integration-build"
       - uses: actions/upload-artifact@v4
         with:
-          name: CatLive-Integration-1.28-${{ runner.os }}-Installer
+          name: CatLive-Integration-1.29-${{ runner.os }}-Installer
           path: |
             integration-build/installer/*.pkg
             integration-build/installer/*.exe
@@ -58,8 +58,8 @@ jobs:
         run: cpack -C Release
       - uses: actions/upload-artifact@v4
         with:
-          name: CatLive-Integration-1.28-${{ runner.os }}
-          path: integration-build/CatLive-Integration-1.28-*.zip
+          name: CatLive-Integration-1.29-${{ runner.os }}
+          path: integration-build/CatLive-Integration-1.29-*.zip
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: failure()

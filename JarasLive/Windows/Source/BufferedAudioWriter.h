@@ -21,6 +21,15 @@ public:
         return frames >= 0 && !finished_.load(std::memory_order_relaxed) && !failed_.load(std::memory_order_relaxed) &&
                queue_.push(data, std::size_t(frames));
     }
+    bool writeDeviceInput(const float* const* data, int availableChannels, int frames) noexcept {
+        // A device restart can provide fewer packed channels than the file
+        // opened with. Never read beyond that pointer array or shorten the
+        // take's clock: absent inputs become silence in the existing channels.
+        std::array<const float*,128> planes{};
+        const auto channels=std::min(queue_.channels(),std::size_t(std::max(0,availableChannels)));
+        if(data)for(std::size_t channel=0;channel<channels;++channel)planes[channel]=data[channel];
+        return write(planes.data(),frames);
+    }
     bool failed() const noexcept { return failed_.load(std::memory_order_relaxed); }
     // Control only, after capture detaches. Also finalizes InputWriter tails and
     // container headers here, so callers can inspect failure before disposal.

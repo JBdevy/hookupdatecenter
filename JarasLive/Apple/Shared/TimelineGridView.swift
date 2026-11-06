@@ -3587,14 +3587,14 @@ private final class NativeTimelineBaseMountView: NSView {
         switch kind {
         case .background:
             backgroundMount = mount
-            mount.addSubview(backdrop); mount.addSubview(audioBody); mount.addSubview(wheel); mount.addSubview(documentSize)
+            mount.addSubview(backdrop); mount.addSubview(backdrop.foregroundInk); mount.addSubview(audioBody); mount.addSubview(wheel); mount.addSubview(documentSize)
         case .ruler:
             rulerMount = mount
             mount.addSubview(ruler); mount.addSubview(header); mount.addSubview(rulerInput)
             updateHeaderInteraction()
         case .foreground:
             foregroundMount = mount
-            mount.addSubview(backdrop.foregroundInk); mount.addSubview(selectionPin); mount.addSubview(automationLanes); mount.addSubview(needlePin)
+            mount.addSubview(selectionPin); mount.addSubview(automationLanes); mount.addSubview(needlePin)
         }
         return mount
     }
