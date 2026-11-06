@@ -53,7 +53,7 @@ int main() {
     check(snapSelection(163,song,1,transport,false,&multi,&index),163,"entire moving selection excluded");
     song.tracks.clear(); song.timeSettings->divisions = 4;
     song.timeSettings->divisions = 8;
-    for(const auto [scale,target]:{std::pair{2.,8.}, {4.,12.}, {8.,10.}, {32.,10.5}, {64.,10.75}}) {
+    for(const auto [scale,target]:{std::pair{1.,8.}, {2.,12.}, {4.,10.}, {8.,10.}, {32.,10.5}, {64.,10.75}}) {
         check(snapSelection(10.74,song,scale,transport,false),target,"item snaps to visible bars then beats and subdivisions");
         check(snap(10.74,song,scale,false),target,"marker snaps to visible bars then beats and subdivisions");
     }
