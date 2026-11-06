@@ -940,9 +940,15 @@ try audioAutoreleasepool {
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 176400)!
     buffer.frameLength = 176400
     for channel in 0..<2 {
+        let frequency: Double = channel == 0 ? 440 : 880
+        let samples = buffer.floatChannelData![channel]
         for frame in 0..<176400 {
-            let ramp = min(1, min(Double(frame) / 441, Double(132300-frame) / 441))
-            buffer.floatChannelData![channel][frame] = frame < 132300 ? Float(0.1 * max(0,ramp) * sin(2 * .pi * Double(channel == 0 ? 440 : 880) * Double(frame) / 44100)) : 0
+            let fadeIn = Double(frame) / 441.0
+            let fadeOut = Double(132300 - frame) / 441.0
+            let ramp = min(1.0, min(fadeIn, fadeOut))
+            let phase = 2.0 * Double.pi * frequency * Double(frame) / 44100.0
+            let sample = 0.1 * max(0.0, ramp) * sin(phase)
+            samples[frame] = frame < 132300 ? Float(sample) : 0
         }
     }
     try file.write(from: buffer)
