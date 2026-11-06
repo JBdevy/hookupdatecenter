@@ -52,7 +52,7 @@ const PROJECT_SYNC_CONTROL_TYPES = new Set([
   "director_live_toggle", "director_loop_toggle", "director_pause",
   "director_play_button", "director_play_no_seek", "director_stop_break",
   "director_stop_no_seek", "edit_mode_stop_pause_set",
-  "esc", "escape_key", "faderout_set",
+  "edit_cursor_move", "esc", "escape_key", "faderout_set",
   "key_escape", "live_reset_item", "live_set",
   "live_toggle", "loop_set", "loop_toggle",
   "lyrics_settings", "manual_stop_fadeout_set", "manual_stop_fadeout_set_all_tracks",
@@ -99,9 +99,9 @@ const PROJECT_SYNC_CONTROL_TYPES = new Set([
 ])
 
 // Traditional Timecode keeps continuous transport/cursor following. Project
-// Sync leaves each DAW's timeline, Auto and queue running independently.
+// Sync shares stopped edit-cursor gestures; playback, Auto and queue run independently.
 const TIMECODE_CONTROL_TYPES = new Set([...PROJECT_SYNC_CONTROL_TYPES,
-  'edit_cursor_move', 'project_sync_viewport_v1', 'mixer_viewport_set', 'timecode_transport_sync'])
+  'project_sync_viewport_v1', 'mixer_viewport_set', 'timecode_transport_sync'])
 
 function isRelayControlCommand(command, mode) {
   const types = mode === 'project_sync' ? PROJECT_SYNC_CONTROL_TYPES : TIMECODE_CONTROL_TYPES
@@ -180,6 +180,7 @@ function readJsonBody(req, maxBytes = MAX_HTTP_BODY_BYTES) {
 function requestJson({ hostname, port, path, method = 'GET', payload = null,
   timeoutMs = 900, maxResponseBytes = MAX_HTTP_BODY_BYTES }) {
   const body = payload == null ? '' : JSON.stringify(payload)
+  let deadlineTimer
   return new Promise((resolve, reject) => {
     const req = http.request({
       hostname,
@@ -219,9 +220,14 @@ function requestJson({ hostname, port, path, method = 'GET', payload = null,
     })
     req.setTimeout(timeoutMs, () => req.destroy(new Error('Tempo limite da sincronização esgotado.')))
     req.on('error', reject)
+    // Socket inactivity timeouts do not bound TCP connection establishment.
+    // An unreachable discovery address must not hold an entire scan batch
+    // until the operating system gives up (potentially minutes later).
+    deadlineTimer = setTimeout(() => req.destroy(
+      new Error('Tempo limite da sincronização esgotado.')), timeoutMs)
     if (body) req.write(body)
     req.end()
-  })
+  }).finally(() => clearTimeout(deadlineTimer))
 }
 
 function requestRaw({ hostname, port, path, body = '', timeoutMs = 900 }) {
@@ -781,7 +787,9 @@ function createTimecodeLanRelay(options = {}) {
       mode: status.mode,
       projectSyncRole: projectSyncRole(status),
     }
-    for (const address of getBroadcastAddresses()) sendUdp(payload, address)
+    for (const address of getBroadcastAddresses().filter(peerAddressAllowed)) {
+      sendUdp(payload, address)
+    }
   }
 
   function redundantMtcRole(status) {
@@ -1032,12 +1040,16 @@ function createTimecodeLanRelay(options = {}) {
 
   async function discoverReceiverOverTcp(status) {
     let addresses = []
-    try { addresses = [...new Set(listDirectDiscoveryAddresses())] } catch (_) {}
+    const cablePrefix = preferredCablePrefix()
+    try {
+      addresses = [...new Set(listDirectDiscoveryAddresses())].filter(peerAddressAllowed)
+    } catch (_) {}
     const ports = [...new Set([
       Math.max(1, Math.min(65535, Number(getDirectorPort()) || 47831)),
       47831,
     ])]
     for (let offset = 0; offset < addresses.length && !transmitterPeer?.connected && !stopped; offset += DIRECT_DISCOVERY_BATCH_SIZE) {
+      if (cablePrefix !== preferredCablePrefix()) break
       const batch = addresses.slice(offset, offset + DIRECT_DISCOVERY_BATCH_SIZE)
       await Promise.allSettled(batch.flatMap((address) => ports.map(
         async (port) => {

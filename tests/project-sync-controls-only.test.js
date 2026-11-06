@@ -1,12 +1,13 @@
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const dgram = require('node:dgram');
+const { performance } = require('node:perf_hooks');
 const { createTimecodeLanRelay } = require('../src/timecode-lan');
 
 const A = 'a'.repeat(32), B = 'b'.repeat(32);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function until(check, message) {
-  const deadline = Date.now() + 5000;
+async function until(check, message, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (check()) return;
     await delay(25);
@@ -50,13 +51,16 @@ async function peer(id, role, mode = 'project_sync') {
     transport: { sequence: 1, controlSequence: 0, playState: 1,
       position: 10, sampledAtMs: 1000, audioHealthy: true },
   };
-  const commands = [], inbox = [], events = [], wire = [], requests = [];
-  let inboxAvailable = true, connected = false, relay;
+  const commands = [], inbox = [], events = [], wire = [], requests = [], receipts = [];
+  let inboxAvailable = true, connected = false, relay, nativeHealth = 'online';
   const native = http.createServer((request, response) => {
     let body = '';
     request.on('data', chunk => { body += chunk; });
     request.on('end', () => {
       requests.push(request.url);
+      if (nativeHealth === 'hung') return;
+      if (nativeHealth === 'crashed') { request.socket.destroy(); return; }
+      if (nativeHealth === 'closed') { response.writeHead(503); response.end('{}'); return; }
       let result = { ok: true };
       if (request.url === '/timecode/status') result = state;
       else if (request.url === '/timecode/outbox') {
@@ -68,7 +72,10 @@ async function peer(id, role, mode = 'project_sync') {
         if (command.type === 'project_sync_role_handover') state.projectSyncRole = command.role;
       } else if (request.url === '/timecode/inbox') {
         const batch = body.split('\n').filter(Boolean).map(JSON.parse);
-        if (inboxAvailable) inbox.push(...batch);
+        if (inboxAvailable) {
+          inbox.push(...batch);
+          receipts.push(...batch.map(command => ({ command, at: performance.now() })));
+        }
         result = { ok: inboxAvailable, queued: inboxAvailable ? batch.length : 0 };
       } else { response.statusCode = 404; result = { ok: false }; }
       response.setHeader('Content-Type', 'application/json');
@@ -91,11 +98,27 @@ async function peer(id, role, mode = 'project_sync') {
     getProjectSyncStagingDir: () => { throw new Error('Controls-only relay must not request disk access'); },
   });
   await relay.start();
-  return { state, commands, inbox, events, wire, requests, port, discoveryPort,
+  return { state, commands, inbox, events, wire, requests, receipts, port, discoveryPort,
     get connected() { return connected; },
     set inboxAvailable(value) { inboxAvailable = value; },
+    set nativeHealth(value) { nativeHealth = value; },
+    stopRelay() { return relay.stop(); },
     async stop() { await relay.stop(); await close(lan); await close(native); },
   };
+}
+
+async function pairPeers(a, b, socket) {
+  const offer = Buffer.from(JSON.stringify({ magic: 'VSHOOK_TIMECODE_OFFER_V1', version: 3,
+    code: '123456', transmitterId: A, receiverId: B, receiverName: 'PC B',
+    port: b.port, projectSyncRole: 'secondary' }));
+  // Discovery repeats on the real LAN; a single UDP offer can precede the
+  // relay's first status poll and is not guaranteed to be consumed.
+  const send = () => socket.send(offer, a.discoveryPort, '127.0.0.1');
+  const timer = setInterval(send, 250);
+  try {
+    send();
+    await until(() => a.connected && b.connected, 'v3 peers did not pair');
+  } finally { clearInterval(timer); }
 }
 
 async function receiverCases() {
@@ -124,7 +147,7 @@ async function receiverCases() {
       'project_sync_manifest_snapshot', 'project_sync_prepare_bundle', 'project_sync_apply_bundle',
       'project_sync_config_snapshot', 'playlist_snapshot_sync', 'project_select',
       'teleprompt_create_chord_item', 'teleprompt_create_cifra_item', 'teleprompt_cf', 'unknown_future_mutation',
-      'edit_cursor_move', 'project_sync_viewport_v1', 'mixer_viewport_set', 'timecode_transport_sync' ];
+      'project_sync_viewport_v1', 'mixer_viewport_set', 'timecode_transport_sync' ];
     const incoming = forbidden.map((type, index) => ({ sequence: index+1,
       command: { type, path: '/secret/new.wav', contents: 'must-not-cross' } }));
     incoming.push({ sequence: 20, command: { type: 'play_start' } });
@@ -187,11 +210,7 @@ async function outboundCases() {
   const a = await peer(A, 'primary'), b = await peer(B, 'secondary');
   const socket = dgram.createSocket('udp4');
   try {
-    const offer = Buffer.from(JSON.stringify({ magic: 'VSHOOK_TIMECODE_OFFER_V1', version: 3,
-      code: '123456', transmitterId: A, receiverId: B, receiverName: 'PC B',
-      port: b.port, projectSyncRole: 'secondary' }));
-    await new Promise((resolve, reject) => socket.send(offer, a.discoveryPort, '127.0.0.1', error => error ? reject(error) : resolve()));
-    await until(() => a.connected && b.connected, 'v3 peers did not pair');
+    await pairPeers(a, b, socket);
     await delay(60);
     assert.equal(b.inbox.length, 0, 'pairing with running transport must leave B untouched');
     const pairRequest = b.wire.find(packet => packet.path.endsWith('/pair'));
@@ -226,6 +245,8 @@ async function outboundCases() {
     await until(() => b.inbox.some(command => command.type === 'marker_go'), 'explicit Parts must cross A to B');
     assert(b.inbox.some(command => command.type === 'auto_set'));
     assert(b.inbox.some(command => command.type === 'queue_region_song'));
+    await until(() => b.inbox.some(command => command.type === 'edit_cursor_move'), 'stopped grid cursor must cross');
+    assert.equal(b.inbox.find(command => command.type === 'edit_cursor_move').position, 120);
     const beforeAutoJump = b.inbox.length;
     const beforeHeartbeat = b.wire.filter(packet => packet.path.endsWith('/events')).length;
     // A reaches its queued song first. B may still be finishing its own region;
@@ -256,13 +277,13 @@ async function outboundCases() {
       assert.equal(packet.body.manifestRevision, undefined);
       assert.equal(packet.body.transport, undefined, 'Project Sync must not send cursor or transport snapshots');
       assert(packet.body.events.every(event => ['play_start', 'select_region', 'play_stop',
-        'auto_set', 'queue_region_song', 'marker_go'].includes(event.command.type)));
+        'auto_set', 'queue_region_song', 'marker_go', 'edit_cursor_move'].includes(event.command.type)));
     }
     assert(!b.wire.some(packet => /preflight|bundle/.test(packet.path)));
-    assert(!b.inbox.some(command => /upsert|snapshot|viewport|cursor|transport_sync/.test(command.type)));
+    assert(!b.inbox.some(command => /upsert|snapshot|viewport|transport_sync/.test(command.type)));
     assert.equal(b.inbox.filter(command => command.type === 'play_start').length, 1);
     assert.equal(b.inbox.filter(command => command.type === 'marker_go').length, 1);
-    console.log('PROJECT_SYNC_CONTROLS_OUTBOUND_OK: independent queue/Auto, manual Parts, no cursor/pulse sync, reliable command ACK');
+    console.log('PROJECT_SYNC_CONTROLS_OUTBOUND_OK: independent queue/Auto, manual Parts, stopped cursor selection, no pulse sync, reliable command ACK');
   } finally {
     socket.close(); await a.stop(); await b.stop();
   }
@@ -287,6 +308,91 @@ async function traditionalReceiverCase() {
   } finally { await b.stop(); }
 }
 
-(async () => { await receiverCases(); await outboundCases(); await traditionalReceiverCase(); })().catch(error => {
+async function timingCases() {
+  const a = await peer(A, 'primary'), b = await peer(B, 'secondary');
+  const socket = dgram.createSocket('udp4');
+  try {
+    await pairPeers(a, b, socket);
+    const samples = { play: [], stop: [] };
+    let sequence = 0;
+    for (let i = 0; i < 40; ++i) {
+      // Vary the phase relative to the relay timer; include cursor immediately
+      // before Play, exactly as a fast grid-click/Space gesture is published.
+      await delay((i * 7) % 21);
+      for (const kind of ['play', 'stop']) {
+        const id = `${kind}-${i}`;
+        if (kind === 'play') a.events.push({ sequence: ++sequence,
+          command: { type: 'edit_cursor_move', position: 123.456 + i, noSeek: true, timingId: `cursor-${i}` } });
+        const sent = performance.now();
+        a.events.push({ sequence: ++sequence,
+          command: { type: kind === 'play' ? 'play_start' : 'play_stop', timingId: id } });
+        a.state.eventSequence = sequence;
+        await until(() => b.receipts.some(receipt => receipt.command.timingId === id), `${id} was lost`);
+        const received = b.receipts.find(receipt => receipt.command.timingId === id);
+        samples[kind].push(received.at - sent);
+        if (kind === 'play') {
+          const index = b.inbox.findIndex(command => command.timingId === id);
+          assert.equal(b.inbox[index - 1].timingId, `cursor-${i}`, 'cursor must arrive before Play');
+        }
+      }
+    }
+    assert.equal(b.inbox.length, 120, '40 cursor/Play/Stop gestures must arrive exactly once');
+    const summary = {};
+    for (const [kind, values] of Object.entries(samples)) {
+      const sorted = [...values].sort((a, b) => a - b);
+      summary[kind] = { count: values.length, p50Ms: +sorted[19].toFixed(2),
+        p95Ms: +sorted[37].toFixed(2), maxMs: +sorted.at(-1).toFixed(2) };
+      assert(sorted.at(-1) < 1000, `${kind} relay stalled for over a second on loopback`);
+    }
+    console.log('PROJECT_SYNC_RELAY_TIMING_LOOPBACK ' + JSON.stringify(summary));
+  } finally { socket.close(); await a.stop(); await b.stop(); }
+}
+
+async function failoverCases() {
+  const a = await peer(A, 'primary'), b = await peer(B, 'secondary');
+  const socket = dgram.createSocket('udp4');
+  try {
+    await pairPeers(a, b, socket);
+    a.events.push({ sequence: 1, command: { type: 'play_start' } });
+    a.state.eventSequence = 1;
+    await until(() => b.inbox.some(command => command.type === 'play_start'), 'initial Play did not reach B');
+    const baseline = b.inbox.length;
+    // Device loss can either stop or freeze A. Neither is an operator's Stop.
+    for (const playState of [0, 1]) {
+      a.state.transport = { ...a.state.transport, sequence: a.state.transport.sequence + 1,
+        controlSequence: 999, playState, audioHealthy: false, position: 0 };
+      await delay(450);
+      assert.equal(b.inbox.length, baseline, `audio loss (state ${playState}) injected a command into B`);
+    }
+    for (const fault of ['closed', 'crashed', 'hung']) {
+      a.nativeHealth = fault;
+      await until(() => !b.connected, `${fault}: B never noticed the lost peer`, 12000);
+      assert.equal(b.inbox.length, baseline, `${fault}: losing A changed B's transport`);
+      assert(b.commands.every(command => command.type === 'timecode_peer_status'),
+        `${fault}: failure generated an operational command outside the inbox`);
+      // The restarted A is stopped, with a fresh event sequence. Pairing must
+      // not stop, replay or reposition the B that continued on its own.
+      a.state.sessionId += '-restart';
+      a.state.eventSequence = 0;
+      a.events.length = 0;
+      a.state.transport = { sequence: 1, controlSequence: 1, playState: 0,
+        audioHealthy: true, position: 0, sampledAtMs: Date.now() };
+      a.nativeHealth = 'online';
+      await delay(600);
+      await pairPeers(a, b, socket);
+      await delay(450);
+      assert.equal(b.inbox.length, baseline, `${fault}: reconnecting a stopped A changed B's transport`);
+    }
+    await a.stopRelay();
+    await until(() => !b.connected, 'Hook Center shutdown was not noticed by B', 12000);
+    assert.equal(b.inbox.length, baseline, 'closing Hook Center on A must not stop B');
+    console.log('PROJECT_SYNC_FAILOVER_OK: audio loss/freeze, REAPER close/crash/hang, stopped-A reconnect and Hook Center shutdown never send Stop to B');
+  } finally {
+    a.nativeHealth = 'online';
+    socket.close(); await a.stop(); await b.stop();
+  }
+}
+
+(async () => { await receiverCases(); await outboundCases(); await traditionalReceiverCase(); await timingCases(); await failoverCases(); })().catch(error => {
   console.error(error); process.exitCode = 1;
 });
