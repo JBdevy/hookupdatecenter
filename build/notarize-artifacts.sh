@@ -20,6 +20,35 @@ json_get() {
   python3 -c 'import json,sys; key=sys.argv[1]; data=json.load(sys.stdin); print(data.get(key, ""))' "$key"
 }
 
+stapler_with_network_retry() {
+  local operation="$1" file="$2"
+  local attempt=1 max_attempts=5 output status
+
+  while true; do
+    if output=$(xcrun stapler "$operation" "$file" 2>&1); then
+      printf '%s\n' "$output"
+      return 0
+    else
+      status=$?
+    fi
+    printf '%s\n' "$output" >&2
+
+    # CloudKit can drop the ticket download even after Apple accepted the
+    # package. Retry only that network operation, never the submission/build.
+    if (( status != 68 && status != 69 )) ||
+       ! grep -Eiq 'NSURLErrorDomain Code=-(1001|1003|1004|1005|1006|1009)|network connection was lost|timed out|temporarily unavailable|could not (connect|resolve)' <<< "$output"; then
+      return "$status"
+    fi
+    if (( attempt >= max_attempts )); then
+      echo "[macOS] Falha de rede no stapler $operation após $max_attempts tentativas." >&2
+      return "$status"
+    fi
+    echo "[macOS] Falha transitória de rede no stapler $operation; repetindo em 15s ($attempt/$max_attempts)..."
+    sleep 15
+    attempt=$((attempt + 1))
+  done
+}
+
 notary_submit_and_wait() {
   local file="$1"
   local max_seconds=$((NOTARY_TIMEOUT_MINUTES * 60))
@@ -82,8 +111,8 @@ notary_submit_and_wait() {
   done
 
   echo "[macOS] Gravando ticket no artefato: $file"
-  xcrun stapler staple "$file"
-  xcrun stapler validate "$file"
+  stapler_with_network_retry staple "$file"
+  stapler_with_network_retry validate "$file"
 }
 
 shopt -s nullglob

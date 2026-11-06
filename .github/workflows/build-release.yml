@@ -158,6 +158,9 @@ jobs:
         with:
           node-version: 20
 
+      - name: Validate notarization network retries
+        run: node tests/notarize-artifacts.test.js
+
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
