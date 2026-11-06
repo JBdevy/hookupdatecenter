@@ -233,8 +233,14 @@ struct PreparedClipKernel {
         // Exact dry PCM and the warm spectral processor have separate cursors.
         // Include their separation even at high source rates/live rate changes;
         // a fixed six-page window can otherwise evict needed FFT lookahead.
-        return std::clamp(6 + int(std::ceil(pitch.outputSeekLength(1.f) * speed /
-                                         PreparedPCMCache::pageSize)),
+        // Six pages cover seconds at ordinary rates, but only 32 ms at
+        // 192 kHz / 32x. Preserve at least 100 ms of decoded output ahead of
+        // the spectral cursor, including worker wake/scheduling jitter.
+        const double streamingFrames = std::max(6.0 * PreparedPCMCache::pageSize,
+                                                sampleRate * speed * 0.1);
+        const double spectralFrames = pitch.outputSeekLength(1.f) * speed;
+        return std::clamp(int(std::ceil((streamingFrames + spectralFrames) /
+                                      PreparedPCMCache::pageSize)),
                           6, PreparedPCMCache::pageCount);
     }
     bool prime(double frame, double speed, double tuning) {

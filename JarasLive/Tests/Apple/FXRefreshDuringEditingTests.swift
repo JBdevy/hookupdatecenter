@@ -51,12 +51,26 @@ extension Font {
         window.title = "CatLive — teste de atualização dos FX"
         window.contentView = NSHostingView(rootView: EditingHost(activity: activity))
         window.orderFrontRegardless()
+        // Mounting SwiftUI and preparing the first Core Animation frames can
+        // consume the entire measurement window on a cold CI runner. Wait for
+        // all production displays to start before exercising parameter edits.
+        let source = StemAudioPlayback.shared
+        let readyDeadline = ProcessInfo.processInfo.systemUptime + 15
+        while (source.rta == 0 || source.meters == 0 || source.spectrogram == 0),
+              ProcessInfo.processInfo.systemUptime < readyDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        let ready = "FX_REFRESH_READY rta=\(source.rta) meters=\(source.meters) spectrogram=\(source.spectrogram)\n"
+        FileHandle.standardError.write(Data(ready.utf8))
+        precondition(source.rta > 0 && source.meters > 0 && source.spectrogram > 0,
+                     "FX displays must mount before measuring editing refresh")
+        source.rta = 0; source.meters = 0; source.spectrogram = 0
         let editing = Timer(timeInterval: 1.0 / 120, repeats: true) { _ in MainActor.assumeIsolated { activity.revision += 1 } }
         RunLoop.main.add(editing, forMode: .common)
         RunLoop.main.run(until: Date().addingTimeInterval(2))
         editing.invalidate()
-        let source = StemAudioPlayback.shared
-        print("FX_REFRESH_DURING_EDITING revisions=\(activity.revision) rta=\(source.rta) meters=\(source.meters) spectrogram=\(source.spectrogram)")
+        let result = "FX_REFRESH_DURING_EDITING revisions=\(activity.revision) rta=\(source.rta) meters=\(source.meters) spectrogram=\(source.spectrogram)\n"
+        FileHandle.standardError.write(Data(result.utf8))
         window.contentView = nil; window.close()
         precondition(activity.revision >= 80, "Must exercise continuous parameter changes")
         precondition(source.rta >= 20 && source.meters >= 30 && source.spectrogram >= 15, "FX displays froze during parameter editing")
