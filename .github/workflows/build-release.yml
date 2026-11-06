@@ -2,6 +2,13 @@ name: Build Hook Update Center
 
 on:
   workflow_dispatch:
+    inputs:
+      validated_run_id:
+        description: 'Opcional: publicar os instaladores de uma build concluída com sucesso'
+        default: ''
+      release_tag:
+        description: 'Nova tag para publicar a build validada (ex.: v1.0.5-build4)'
+        default: ''
   push:
     tags:
       - 'hook-update-*'
@@ -9,9 +16,11 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build-windows:
+    if: ${{ !inputs.validated_run_id }}
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -148,6 +157,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    if: ${{ !inputs.validated_run_id }}
     runs-on: macos-15-intel
     steps:
       - name: Checkout
@@ -307,6 +317,82 @@ jobs:
           path: |
             dist/*.pkg
           if-no-files-found: error
+
+  publish-validated-build:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.validated_run_id != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_RUN_ID: ${{ inputs.validated_run_id }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Verify completed build and source version
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-build[0-9]+)?$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > run.json
+          jq -e --arg repo "$GH_REPO" '
+            .status == "completed" and .conclusion == "success" and
+            .path == ".github/workflows/build-release.yml" and
+            .head_repository.full_name == $repo and
+            (.event == "push" or .event == "workflow_dispatch")
+          ' run.json
+          SOURCE_SHA="$(jq -r .head_sha run.json)"
+          gh api --paginate "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID/jobs?per_page=100" > jobs.json
+          jq -se '([.[].jobs[] | select(.name == "build-macos" or .name == "build-windows")] | length == 2) and ([.[].jobs[] | select(.name == "build-macos" or .name == "build-windows")] | all(.conclusion == "success"))' jobs.json
+          gh api "repos/$GH_REPO/contents/package.json?ref=$SOURCE_SHA" --jq .content | base64 --decode > package.json
+          VERSION="$(jq -r .version package.json)"
+          [[ "$RELEASE_TAG" == "v$VERSION" || "$RELEASE_TAG" == "v$VERSION"-build* ]]
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.validated_run_id }}
+          pattern: hook-update-center-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish verified installers
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          WINDOWS="artifacts/Hook-Center-$VERSION-Windows.exe"
+          MACOS="artifacts/Hook-Center-$VERSION-macOS.pkg"
+          test -s "$WINDOWS"
+          test -s "$MACOS"
+          sha256sum "$WINDOWS" "$MACOS"
+          cat > notes.txt <<EOF
+          Project Sync volta a encaminhar o cursor de edição de A para B quando ambos estão parados, em conjunto com a extensão VS Hook atualizada. A seleção não reposiciona a reprodução em andamento.
+
+          A descoberta dos computadores respeita a interface de rede selecionada, com limite nas tentativas de conexão e interrupção de buscas antigas ao trocar de interface.
+
+          Instaladores Windows e macOS da [build validada $BUILD_RUN_ID](https://github.com/$GH_REPO/actions/runs/$BUILD_RUN_ID). O pacote macOS está assinado e notarizado pela Apple.
+
+          Versão instalada: $VERSION. Tag desta atualização: $RELEASE_TAG. Código-fonte: $SOURCE_SHA.
+          EOF
+          gh release create "$RELEASE_TAG" "$WINDOWS" "$MACOS" --draft --target "$SOURCE_SHA" --title "Hook Center $VERSION — Project Sync" --notes-file notes.txt
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets' > assets.json
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          assets = json.loads(pathlib.Path('assets.json').read_text())
+          assert len(assets) == 2, 'Expected exactly two installers'
+          for platform in ('Windows.exe', 'macOS.pkg'):
+              path = pathlib.Path('artifacts', f'Hook-Center-{os.environ["VERSION"]}-{platform}')
+              asset = next(a for a in assets if a['name'] == path.name)
+              assert asset['state'] == 'uploaded' and asset['size'] == path.stat().st_size
+              assert asset['digest'] == 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+          PY
+          gh release edit "$RELEASE_TAG" --draft=false --latest
 
   release:
     needs: [build-windows, build-macos]
