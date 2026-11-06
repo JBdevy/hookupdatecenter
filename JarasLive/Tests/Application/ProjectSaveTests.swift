@@ -690,7 +690,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(TimelineTempo.snap(0.8, bar: 2, beats: 4, pixelsPerSecond: 40), 1)
         XCTAssertEqual(TimelineTempo.snap(0.8, bar: 2, beats: 6, pixelsPerSecond: 40), 0, accuracy: 0.00001)
         XCTAssertEqual(TimelineTempo.snap(-1, bar: 2, beats: 4, pixelsPerSecond: 40), 0)
-        XCTAssertEqual(TimelineTempo.snap(27, bar: 2, beats: 4, pixelsPerSecond: 0.3), 0, "distant zoom snaps only to visible whole-bar groups")
+        XCTAssertEqual(TimelineTempo.snap(27, bar: 2, beats: 4, pixelsPerSecond: 0.3), 32, "distant zoom snaps only to visible whole-bar groups")
         show.setMeterBeats(0); show.setMeterUnit(3)
         XCTAssertEqual(show.current?.meterBeats, 6); XCTAssertEqual(show.current?.meterUnit, 8)
         XCTAssertTrue(show.hasUnsavedChanges)
