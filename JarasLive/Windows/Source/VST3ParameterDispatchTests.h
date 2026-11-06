@@ -8,7 +8,7 @@ template<class Register> void run(Register&& test) {
         constexpr int parameters=32768, midiMappings=16*130;
         std::vector<std::pair<std::uint32_t,int>> identifiers;
         identifiers.reserve(parameters+midiMappings+1);
-        const auto parameterID=[](int index){return 100000u+unsigned(parameters-index)*3u;};
+        const auto parameterID=[parameters](int index){return 100000u+unsigned(parameters-index)*3u;};
         for(int i=0;i<parameters;++i)identifiers.emplace_back(parameterID(i),i);
         // Every MIDI channel may expose 128 CCs plus aftertouch/pitch bend.
         // Some plugins do not list those hidden IDs as ordinary parameters.

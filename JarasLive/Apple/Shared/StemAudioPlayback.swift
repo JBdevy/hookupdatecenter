@@ -1927,9 +1927,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         return voice
     }
     private func availableInputBus(track: UUID, node: AVAudioMixerNode) -> AVAudioNodeBus {
-        let occupied = Set(voices.values.filter { $0.track == track }.map(\.mixInputBus) +
-                           effectTails.values.filter { $0.voice.track == track }.map { $0.voice.mixInputBus } +
-                           (idleVoices[track] ?? []).map(\.mixInputBus) + retiredVoices.filter { $0.track == track }.map(\.mixInputBus) + boundaryTails.filter { $0.0.track == track }.map { $0.0.mixInputBus })
+        var occupied = Set<AVAudioNodeBus>()
+        for voice in voices.values where voice.track == track { occupied.insert(voice.mixInputBus) }
+        for tail in effectTails.values where tail.voice.track == track { occupied.insert(tail.voice.mixInputBus) }
+        for voice in idleVoices[track] ?? [] { occupied.insert(voice.mixInputBus) }
+        for voice in retiredVoices where voice.track == track { occupied.insert(voice.mixInputBus) }
+        for (voice, _) in boundaryTails where voice.track == track { occupied.insert(voice.mixInputBus) }
         var inputBus: AVAudioNodeBus = 1
         while occupied.contains(inputBus) || engine.inputConnectionPoint(for: node, inputBus: inputBus) != nil { inputBus += 1 }
         return inputBus
