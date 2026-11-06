@@ -24,7 +24,7 @@ const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Vocal', pattern: /\bvocals?\b/ },
   { name: 'Vox', pattern: /\bvox\b/ },
   { name: 'Guia', pattern: /\b(guia|guide|voz|vz)\b/ },
-  { name: 'Sanfona', pattern: /\b(sanfona|acordeon|accordion)\b/ },
+  { name: 'Sanfona', pattern: /\b(sanfona|acordeon|accordion|acc)\b/ },
   { name: 'Ukulele', pattern: /\b(ukulele|ukelele|uke)\b/ },
   { name: 'Cavaquinho', pattern: /\b(cavaquinho|cavaquinhos|cavaco|cavacos)\b/ },
   { name: 'Banjo', pattern: /\b(banjo|banjos)\b/ },
@@ -484,7 +484,10 @@ function classifyCreateProjectTrack(filePath, folderName = '') {
   const fileName = path.basename(String(filePath || ''));
   const fileStem = path.basename(fileName, path.extname(fileName));
   const normalizedName = stripSongName(fileStem, folderName);
-  const rule = CREATE_PROJECT_TRACK_RULES.find((item) => item.pattern.test(normalizedName));
+  // A guide label may describe an instrumental stem ("Bateria guia").
+  // Prefer its instrument identity while preserving the existing ordering.
+  const matches = CREATE_PROJECT_TRACK_RULES.filter((item) => item.pattern.test(normalizedName));
+  const rule = matches.find((item) => item.name !== 'Guia') || matches[0];
 
   if (!rule) {
     const candidate = inferUnknownTrackCandidate(fileStem, folderName);

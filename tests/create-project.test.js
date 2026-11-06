@@ -85,6 +85,15 @@ async function main() {
   assert.strictEqual(classifyCreateProjectTrack('Voz.wav', 'Música').name, 'Guia');
   assert.strictEqual(classifyCreateProjectTrack('Back Voz.wav', 'Música').name, 'Backing Vocal');
   assert.strictEqual(classifyCreateProjectTrack('Sanfona L.wav', 'Música').name, 'Sanfona L');
+  for (const name of ['Bateria guia.wav', 'Guia Bateria.wav', '03_BATERIA_GUIA.wav', 'Drums guide.wav']) {
+    assert.strictEqual(classifyCreateProjectTrack(name, 'Música').name, 'Bateria', name);
+  }
+  for (const name of ['ACC.wav', 'acc.mp3', 'Acordeon.wav', 'Acordéon.wav', 'Accordion.wav', 'Sanfona guia.wav']) {
+    assert.strictEqual(classifyCreateProjectTrack(name, 'Música').name, 'Sanfona', name);
+  }
+  assert.strictEqual(classifyCreateProjectTrack('ACC L.wav', 'Música').name, 'Sanfona L');
+  assert.strictEqual(classifyCreateProjectTrack('Accidental.wav', 'Música').recognized, false);
+
   assert.strictEqual(classifyCreateProjectTrack('Ukelele L.wav', 'Música').name, 'Ukulele L');
   assert.strictEqual(classifyCreateProjectTrack('Ukulele.wav', 'Música').name, 'Ukulele');
   assert.strictEqual(classifyCreateProjectTrack('Cavaco.wav', 'Música').name, 'Cavaquinho');

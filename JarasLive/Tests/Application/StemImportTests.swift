@@ -49,6 +49,28 @@ final class StemImportTests: XCTestCase {
         XCTAssertTrue(ignored.isEmpty)
         XCTAssertTrue(repaired.songs[0].tracks[0].clips.allSatisfy { $0.waveformChannels != nil })
     }
+    func testInstrumentGuideAndAccordionAliasesReuseExistingTracks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try fixture(root, folder: "Original", file: "Bateria.wav")
+        _ = try fixture(root, folder: "Original", file: "Sanfona.wav")
+        _ = try fixture(root, folder: "Original", file: "Voz Guia.wav")
+        let destination = root.appendingPathComponent("Project/Show.jl")
+        let base = try StemProjectImporter.build(scan: StemProjectImporter.scan([original]), remove: "", base: .empty(name: "Import"), destination: destination)
+        let added = try fixture(root, folder: "Added", file: "Bateria guia.wav")
+        _ = try fixture(root, folder: "Added", file: "ACC.wav")
+        let appended = try StemProjectImporter.build(scan: StemProjectImporter.scan([added]), remove: "", base: base, destination: destination)
+        XCTAssertEqual(appended.songs[0].tracks.map(\.id), base.songs[0].tracks.map(\.id))
+        for (name, count) in [("Bateria", 2), ("Sanfona", 2), ("Guia", 1)] {
+            let track = try XCTUnwrap(appended.songs[0].tracks.first { $0.name == name })
+            XCTAssertEqual(track.clips.count, count, name)
+            XCTAssertEqual(track.parentTrackID, base.songs[0].tracks.first { $0.id == track.id }?.parentTrackID)
+        }
+        let accordion = try fixture(root, folder: "Accordion alias", file: "Acordeon.wav")
+        let final = try StemProjectImporter.build(scan: StemProjectImporter.scan([accordion]), remove: "", base: appended, destination: destination)
+        XCTAssertEqual(final.songs[0].tracks.map(\.id), base.songs[0].tracks.map(\.id))
+        XCTAssertEqual(final.songs[0].tracks.first { $0.name == "Sanfona" }?.clips.count, 3)
+    }
     func testAppendUsesExistingNumberedInternalTracksAndGroups() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

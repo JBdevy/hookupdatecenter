@@ -74,6 +74,15 @@ function countTrackName(rpp, name) {
 }
 
 function main() {
+  const instruments = makeAudit('Original', ['Bateria', 'Sanfona', 'Voz Guia'].map(name => makeFile(name)));
+  const instrumentRpp = buildCreateProjectRpp(instruments, { platform: 'win32' });
+  for (const [filename, destination] of [['Bateria guia', 'Bateria'], ['ACC', 'Sanfona'], ['Acordeon', 'Sanfona']]) {
+    const incoming = makeAudit('Added', [makeFile(filename)]);
+    assert.strictEqual(incoming.songs[0].files[0].trackName, destination);
+    const append = auditAddProjectRpp(instrumentRpp, incoming);
+    assert.strictEqual(append.reusedTrackCount, 1, filename);
+    assert.strictEqual(append.newTrackCount, 0, filename);
+  }
   for (const name of ['Click 2', 'Guia 2', 'Regência 3', 'Guitarra 2']) {
     assert.notStrictEqual(canonicalExistingTrackKey(name), canonicalExistingTrackKey(name.replace(/ \d+$/, '')));
   }
