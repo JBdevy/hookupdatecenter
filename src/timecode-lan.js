@@ -1,9 +1,7 @@
 const crypto = require('crypto')
 const dgram = require('dgram')
-const fs = require('fs')
 const http = require('http')
 const os = require('os')
-const pathUtil = require('path')
 
 const DISCOVERY_PORT = 47833
 const DISCOVER_MAGIC = 'VSHOOK_TIMECODE_DISCOVER_V1'
@@ -11,7 +9,7 @@ const OFFER_MAGIC = 'VSHOOK_TIMECODE_OFFER_V1'
 const MTC_REDUNDANT_MAGIC = 'VSHOOK_MTC_REDUNDANT_V1'
 const MTC_REDUNDANT_ACK_MAGIC = 'VSHOOK_MTC_REDUNDANT_ACK_V1'
 const MTC_SOURCE_TIMEOUT_MS = 280
-const PROJECT_SYNC_PROTOCOL_VERSION = 2
+const PROJECT_SYNC_PROTOCOL_VERSION = 3
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024
 const LOCAL_STATUS_INTERVAL_MS = 18
 const TRANSMIT_INTERVAL_MS = 20
@@ -25,29 +23,6 @@ const DIRECT_DISCOVERY_TIMEOUT_MS = 260
 const DIRECT_DISCOVERY_BATCH_SIZE = 24
 const RECEIVER_TIMEOUT_MS = 8000
 const IDLE_LINK_HEARTBEAT_MS = 400
-const PROJECT_SYNC_PREFLIGHT_TIMEOUT_MS = 30000
-const PROJECT_SYNC_PREFLIGHT_POLL_MS = 80
-const PROJECT_SYNC_PREFLIGHT_TTL_MS = 90000
-const PROJECT_SYNC_APPLY_TTL_MS = 30 * 60 * 1000
-const PROJECT_SYNC_BUNDLE_CHUNK_BYTES = 1024 * 1024
-const PROJECT_SYNC_BUNDLE_MANIFEST_BYTES = 8 * 1024 * 1024
-const PROJECT_SYNC_BUNDLE_SOURCE_MAP = '.vshook-source-map.json'
-const PROJECT_SYNC_BUNDLE_MAX_FILES = 16384
-const PROJECT_SYNC_BUNDLE_MAX_FILE_BYTES = 64 * 1024 * 1024 * 1024
-const PROJECT_SYNC_BUNDLE_MAX_TOTAL_BYTES = 256 * 1024 * 1024 * 1024
-const PROJECT_SYNC_BUNDLE_PROGRESS_INTERVAL_MS = 120
-const PROJECT_SYNC_CHUNK_RETRY_WINDOW_MS = 2 * 60 * 1000
-const PROJECT_SYNC_CHUNK_RETRY_MAX_DELAY_MS = 3000
-const PROJECT_SYNC_STAGING_TTL_MS = 24 * 60 * 60 * 1000
-const PROJECT_SYNC_STAGING_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
-const PROJECT_SYNC_STAGING_QUOTA_BYTES = 64 * 1024 * 1024 * 1024
-const PROJECT_SYNC_MIN_FREE_BYTES = 1024 * 1024 * 1024
-const PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS = 30 * 60 * 1000
-const PROJECT_SYNC_LOCAL_RPP_MAX_BYTES = 128 * 1024 * 1024
-const PROJECT_SYNC_LOCAL_RPP_MAX_REFERENCES = 65536
-const PROJECT_SYNC_LOCAL_RPP_MAX_PATH_CHARS = 32768
-const PROJECT_SYNC_LIVE_MANIFEST_BYTES = 640 * 1024
-
 // A ponta LAN e um servidor Node e aceita conexao persistente. Reutilizar o
 // socket remove o custo de um novo TCP handshake em cada pulso do Project Sync.
 const lanHttpAgent = new http.Agent({
@@ -56,6 +31,83 @@ const lanHttpAgent = new http.Agent({
   maxSockets: 32,
   maxFreeSockets: 8,
 })
+
+// Explicit control protocol shared with the native extension. Legacy project,
+// media, playlist and configuration snapshots never enter the LAN or REAPER.
+const PROJECT_SYNC_CONTROL_TYPES = new Set([
+  "app_list_scroll", "at_bl_set", "at_bl_toggle",
+  "atbl_toggle", "auto1_set", "auto1_toggle",
+  "auto2_set", "auto2_toggle", "auto_bloco_set",
+  "auto_bloco_toggle", "auto_set", "auto_stop",
+  "auto_stop_set", "auto_stop_toggle", "auto_toggle",
+  "autoplay1_set", "autoplay1_toggle", "autoplay2_set",
+  "autoplay2_toggle", "autoplay_set", "autoplay_toggle",
+  "autostop", "autostop_set", "autostop_toggle",
+  "bpm_adjust", "bpm_focus", "bpm_set",
+  "clear_queue", "clear_queued_song", "clear_selected_song",
+  "clear_selection", "director_at_bl_toggle", "director_auto2_toggle",
+  "director_auto_stop_toggle", "director_auto_toggle", "director_drawers_sync",
+  "director_family_drawers_sync", "director_family_view_set", "director_family_view_toggle",
+  "director_list_scroll", "director_live_reset_item", "director_live_set",
+  "director_live_toggle", "director_loop_toggle", "director_pause",
+  "director_play_button", "director_play_no_seek", "director_stop_break",
+  "director_stop_no_seek", "edit_mode_stop_pause_set",
+  "esc", "escape_key", "faderout_set",
+  "key_escape", "live_reset_item", "live_set",
+  "live_toggle", "loop_set", "loop_toggle",
+  "lyrics_settings", "manual_stop_fadeout_set", "manual_stop_fadeout_set_all_tracks",
+  "manual_stop_fadeout_set_duration", "manual_stop_fadeout_set_enabled", "manual_stop_fadeout_toggle_track",
+  "marker_cancel", "marker_go", "marker_select",
+  "mixer_bulk_unmute", "mixer_bulk_unsolo", "mixer_focus",
+  "mixer_reset_volume", "mixer_route", "mixer_select_track",
+  "mixer_set_route", "mixer_set_volume", "mixer_toggle_mute",
+  "mixer_toggle_solo", "multi_loop_bypass_set",
+  "multi_loop_bypass_toggle", "multi_loop_close", "multi_loop_focus",
+  "multi_loop_ms_toggle", "multi_loop_open", "multi_loop_slot_toggle",
+  "multi_loop_track_limit_set", "multi_loop_track_set", "multi_loop_track_toggle",
+  "multi_project_playlists_set", "multiloop_bypass_set", "multiloop_bypass_toggle",
+  "multiloop_close", "multiloop_fade_adjust", "multiloop_fade_set",
+  "multiloop_focus", "multiloop_loop_toggle", "multiloop_ms_set",
+  "multiloop_ms_toggle", "multiloop_open", "multiloop_slot_set",
+  "multiloop_slot_toggle", "multiloop_track_limit_set", "multiloop_track_set",
+  "multiloop_track_toggle", "parts_visibility_set", "play",
+  "play_button", "play_protection_set", "play_protection_toggle",
+  "play_start", "play_stop", "play_stop_no_seek",
+  "play_toggle", "playlist_multi_set", "playlist_multi_toggle",
+  "playlist_select", "premix_close", "premix_focus_song",
+  "premix_item_open", "premix_item_set_track_solo", "premix_item_set_unique_solo",
+  "premix_item_set_volume", "premix_item_toggle_mute", "premix_open",
+  "premix_open_song", "premix_refresh", "premix_screen_close",
+  "premix_set_volume", "premix_toggle_mute", "preview_clear",
+  "preview_set", "preview_toggle", "project_sync_track_state",
+  "queue_playlist_song", "queue_region_song",
+  "recados_settings", "save_technical_notice_settings", "save_teleprompt_settings",
+  "select_marker", "select_playlist", "select_playlist_song",
+  "select_region", "set_active_playlist", "set_auto_stop",
+  "set_autostop", "set_bpm_visibility", "set_page",
+  "set_playlist", "set_tuner_visibility", "smart_search_activate",
+  "smart_search_close", "smart_search_open", "smart_search_query",
+  "stop", "stop_break", "stop_pause_mode_set",
+  "stop_pause_mode_toggle", "technical_notice_settings", "teleprompt_settings",
+  "teleprompt_window", "timer_config",
+  "timer_init_auto_toggle", "timer_reset", "timer_set_init_auto",
+  "timer_set_mode", "timer_set_target", "timer_start",
+  "timer_stop", "timer_stop_reset", "timer_toggle",
+  "toggle_auto_stop", "toggle_autostop", "transport_stop_no_seek",
+  "trigger_marker", "tuner_adjust", "tuner_focus",
+  "tuner_reset", "tuner_set", "ui_music_selection_snapshot",
+])
+
+// Traditional Timecode keeps continuous transport/cursor following. Project
+// Sync leaves each DAW's timeline, Auto and queue running independently.
+const TIMECODE_CONTROL_TYPES = new Set([...PROJECT_SYNC_CONTROL_TYPES,
+  'edit_cursor_move', 'project_sync_viewport_v1', 'mixer_viewport_set', 'timecode_transport_sync'])
+
+function isRelayControlCommand(command, mode) {
+  const types = mode === 'project_sync' ? PROJECT_SYNC_CONTROL_TYPES : TIMECODE_CONTROL_TYPES
+  return !!command && typeof command === 'object' && !Array.isArray(command) &&
+    types.has(String(command.type || '').trim().toLowerCase())
+}
 
 function isPairCode(value) {
   return /^\d{6}$/.test(String(value || '').trim())
@@ -73,335 +125,8 @@ function safeSequence(value, fallback = 0) {
     : fallback
 }
 
-function safeBundleId(value) {
-  const id = String(value || '').trim()
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) ? id : ''
-}
-
-function safeSha256(value) {
-  const digest = String(value || '').trim().toLowerCase()
-  return /^[a-f0-9]{64}$/.test(digest) ? digest : ''
-}
-
-function safeBundleRelativePath(value) {
-  const raw = String(value || '').trim().replace(/\\/g, '/')
-  if (!raw || raw.length > 1024 || raw.includes('\u0000') ||
-      raw.startsWith('/') || raw.startsWith('//') ||
-      /^[A-Za-z]:/.test(raw)) return ''
-  const parts = raw.split('/')
-  const windowsReserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i
-  if (parts.some((part) => !part || part === '.' || part === '..' ||
-      part.length > 255 || /[\u0000-\u001f<>:"|?*]/.test(part) ||
-      /[. ]$/.test(part) || windowsReserved.test(part))) return ''
-  return parts.join('/')
-}
-
 function normalizePeerAddress(value) {
   return String(value || '').trim().replace(/^::ffff:/, '')
-}
-
-function resolveInside(root, relativePath) {
-  const safeRelative = safeBundleRelativePath(relativePath)
-  if (!safeRelative) return ''
-  const absoluteRoot = pathUtil.resolve(root)
-  const resolved = pathUtil.resolve(absoluteRoot,
-    ...safeRelative.split('/'))
-  const rootPrefix = absoluteRoot.endsWith(pathUtil.sep)
-    ? absoluteRoot
-    : `${absoluteRoot}${pathUtil.sep}`
-  const caseFold = process.platform === 'win32'
-    ? (text) => text.toLowerCase()
-    : (text) => text
-  return caseFold(resolved).startsWith(caseFold(rootPrefix)) ? resolved : ''
-}
-
-async function readLimitedJsonFile(filename, maxBytes) {
-  const stat = await fs.promises.stat(filename)
-  if (!stat.isFile() || stat.size <= 0 || stat.size > maxBytes) {
-    throw new Error('Descritor do pacote Project Sync inválido.')
-  }
-  const raw = await fs.promises.readFile(filename, 'utf8')
-  try {
-    return JSON.parse(raw)
-  } catch (_) {
-    throw new Error('Descritor do pacote Project Sync corrompido.')
-  }
-}
-
-async function sha256File(filename) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256')
-    const stream = fs.createReadStream(filename)
-    stream.on('data', (chunk) => hash.update(chunk))
-    stream.on('error', reject)
-    stream.on('end', () => resolve(hash.digest('hex')))
-  })
-}
-
-function sameFileVersion(left, right) {
-  if (!left || !right || left.size !== right.size ||
-      left.mtimeMs !== right.mtimeMs || left.ctimeMs !== right.ctimeMs) {
-    return false
-  }
-  // Alguns filesystems nao publicam inode/dispositivo de forma util. Quando
-  // publicam, eles tambem precisam permanecer estaveis durante a operacao.
-  if (left.ino && right.ino && left.ino !== right.ino) return false
-  if (left.dev && right.dev && left.dev !== right.dev) return false
-  return true
-}
-
-const projectSyncLocalHashCache = new Map()
-
-function projectSyncLocalHashCacheKey(filename) {
-  const resolved = pathUtil.resolve(String(filename || ''))
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
-}
-
-async function projectSyncCachedLocalSha256(filename, expectedStat) {
-  const key = projectSyncLocalHashCacheKey(filename)
-  const cached = projectSyncLocalHashCache.get(key)
-  if (cached && sameFileVersion(cached.stat, expectedStat) &&
-      /^[a-f0-9]{64}$/i.test(cached.sha256)) {
-    return cached.sha256
-  }
-  const sha256 = await sha256RegularFileNoFollow(
-    filename, expectedStat.size)
-  const finalStat = await lstatRegularFileNoSymlinkPath(
-    filename, expectedStat.size)
-  if (!sameFileVersion(expectedStat, finalStat)) {
-    throw new Error('A midia local mudou durante a verificacao.')
-  }
-  if (projectSyncLocalHashCache.size >= 32768 &&
-      !projectSyncLocalHashCache.has(key)) {
-    projectSyncLocalHashCache.clear()
-  }
-  projectSyncLocalHashCache.set(key, { stat: finalStat, sha256 })
-  return sha256
-}
-
-async function lstatRegularFileNoSymlinkPath(filename, expectedSize = null) {
-  if (!filename || String(filename).includes('\u0000') ||
-      !pathUtil.isAbsolute(filename)) {
-    throw new Error('Caminho local invalido.')
-  }
-  const resolved = pathUtil.resolve(filename)
-  const root = pathUtil.parse(resolved).root
-  const relative = pathUtil.relative(root, resolved)
-  if (!root || !relative || relative === '..' ||
-      relative.startsWith(`..${pathUtil.sep}`) ||
-      pathUtil.isAbsolute(relative)) {
-    throw new Error('Caminho local invalido.')
-  }
-
-  let cursor = root
-  let result = null
-  const components = relative.split(pathUtil.sep)
-  for (let index = 0; index < components.length; index += 1) {
-    const component = components[index]
-    if (!component || component === '.' || component === '..') {
-      throw new Error('Caminho local invalido.')
-    }
-    cursor = pathUtil.join(cursor, component)
-    const stat = await fs.promises.lstat(cursor)
-    if (stat.isSymbolicLink()) {
-      throw new Error('Links nao sao aceitos como midia local.')
-    }
-    if (index + 1 < components.length) {
-      if (!stat.isDirectory()) throw new Error('Pasta local invalida.')
-    } else {
-      if (!stat.isFile()) throw new Error('Midia local invalida.')
-      result = stat
-    }
-  }
-  if (!result || (expectedSize != null && result.size !== expectedSize)) {
-    throw new Error('Tamanho da midia local nao confere.')
-  }
-  return result
-}
-
-async function lstatDirectoryNoSymlinkPath(dirname) {
-  if (!dirname || String(dirname).includes('\u0000') ||
-      !pathUtil.isAbsolute(dirname)) {
-    throw new Error('Pasta local invalida.')
-  }
-  const resolved = pathUtil.resolve(dirname)
-  const root = pathUtil.parse(resolved).root
-  const relative = pathUtil.relative(root, resolved)
-  if (!root || relative === '..' || relative.startsWith(`..${pathUtil.sep}`) ||
-      pathUtil.isAbsolute(relative)) {
-    throw new Error('Pasta local invalida.')
-  }
-  let cursor = root
-  if (!relative) return fs.promises.lstat(root)
-  for (const component of relative.split(pathUtil.sep)) {
-    if (!component || component === '.' || component === '..') {
-      throw new Error('Pasta local invalida.')
-    }
-    cursor = pathUtil.join(cursor, component)
-    const stat = await fs.promises.lstat(cursor)
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new Error('Pasta local invalida.')
-    }
-  }
-  return fs.promises.lstat(resolved)
-}
-
-async function readRegularFileLimitedNoFollow(filename, maximumSize) {
-  const pathStat = await lstatRegularFileNoSymlinkPath(filename)
-  const noFollow = Number(fs.constants.O_NOFOLLOW) || 0
-  const handle = await fs.promises.open(filename, fs.constants.O_RDONLY | noFollow)
-  try {
-    const before = await handle.stat()
-    if (!before.isFile() || before.size < 0 || before.size > maximumSize ||
-        !sameFileVersion(pathStat, before)) {
-      throw new Error('RPP local ausente ou maior que o limite seguro.')
-    }
-    const contents = Buffer.allocUnsafe(before.size)
-    let offset = 0
-    while (offset < contents.length) {
-      const { bytesRead } = await handle.read(
-        contents, offset, Math.min(1024 * 1024, contents.length - offset), offset)
-      if (bytesRead <= 0) throw new Error('Falha ao ler o RPP local.')
-      offset += bytesRead
-    }
-    const after = await handle.stat()
-    const pathAfter = await lstatRegularFileNoSymlinkPath(filename)
-    if (!sameFileVersion(before, after) ||
-        !sameFileVersion(before, pathAfter)) {
-      throw new Error('O RPP local mudou durante a leitura.')
-    }
-    return contents.toString('utf8')
-  } finally {
-    await handle.close()
-  }
-}
-
-async function sha256RegularFileNoFollow(filename, expectedSize) {
-  const pathStat = await lstatRegularFileNoSymlinkPath(filename, expectedSize)
-  const noFollow = Number(fs.constants.O_NOFOLLOW) || 0
-  const handle = await fs.promises.open(filename, fs.constants.O_RDONLY | noFollow)
-  try {
-    const before = await handle.stat()
-    if (!before.isFile() || before.size !== expectedSize ||
-        !sameFileVersion(pathStat, before)) {
-      throw new Error('Midia local mudou antes da verificacao.')
-    }
-    const hash = crypto.createHash('sha256')
-    const buffer = Buffer.allocUnsafe(1024 * 1024)
-    let offset = 0
-    while (offset < before.size) {
-      const { bytesRead } = await handle.read(
-        buffer, 0, Math.min(buffer.length, before.size - offset), offset)
-      if (bytesRead <= 0) throw new Error('Falha ao verificar a midia local.')
-      hash.update(buffer.subarray(0, bytesRead))
-      offset += bytesRead
-    }
-    const after = await handle.stat()
-    const pathAfter = await lstatRegularFileNoSymlinkPath(
-      filename, expectedSize)
-    if (!sameFileVersion(before, after) ||
-        !sameFileVersion(before, pathAfter)) {
-      throw new Error('Midia local mudou durante a verificacao.')
-    }
-    return hash.digest('hex')
-  } finally {
-    await handle.close()
-  }
-}
-
-async function assertRegularFileInside(root, filename) {
-  const absoluteRoot = pathUtil.resolve(root)
-  const resolved = pathUtil.resolve(filename)
-  const relative = pathUtil.relative(absoluteRoot, resolved)
-  if (!relative || relative.startsWith('..') || pathUtil.isAbsolute(relative)) {
-    throw new Error('Arquivo fora do pacote Project Sync.')
-  }
-  let cursor = absoluteRoot
-  for (const component of relative.split(pathUtil.sep)) {
-    cursor = pathUtil.join(cursor, component)
-    const stat = await fs.promises.lstat(cursor)
-    if (stat.isSymbolicLink()) {
-      throw new Error('Links não são permitidos no pacote Project Sync.')
-    }
-  }
-  const stat = await fs.promises.stat(resolved)
-  if (!stat.isFile()) throw new Error('Arquivo inválido no pacote Project Sync.')
-  return stat
-}
-
-async function directorySizeNoFollow(root, limitBytes = Number.MAX_SAFE_INTEGER) {
-  let total = 0
-  const pending = [pathUtil.resolve(root)]
-  while (pending.length > 0) {
-    const directory = pending.pop()
-    let entries = []
-    try {
-      entries = await fs.promises.readdir(directory, { withFileTypes: true })
-    } catch (error) {
-      if (error?.code === 'ENOENT') continue
-      throw error
-    }
-    for (const entry of entries) {
-      const filename = pathUtil.join(directory, entry.name)
-      if (entry.isSymbolicLink()) continue
-      if (entry.isDirectory()) pending.push(filename)
-      else if (entry.isFile()) {
-        const stat = await fs.promises.lstat(filename)
-        total += stat.size
-        if (total > limitBytes) return total
-      }
-    }
-  }
-  return total
-}
-
-async function removeTreeNoFollow(root, target) {
-  const absoluteRoot = pathUtil.resolve(root)
-  const absoluteTarget = pathUtil.resolve(target)
-  const relative = pathUtil.relative(absoluteRoot, absoluteTarget)
-  if (!relative || relative.startsWith('..') || pathUtil.isAbsolute(relative)) {
-    throw new Error('Limpeza fora do staging recusada.')
-  }
-  let stat
-  try { stat = await fs.promises.lstat(absoluteTarget) } catch (error) {
-    if (error?.code === 'ENOENT') return
-    throw error
-  }
-  if (stat.isSymbolicLink() || stat.isFile()) {
-    await fs.promises.unlink(absoluteTarget)
-    return
-  }
-  if (!stat.isDirectory()) {
-    await fs.promises.unlink(absoluteTarget)
-    return
-  }
-  const entries = await fs.promises.readdir(absoluteTarget)
-  for (const entry of entries) {
-    await removeTreeNoFollow(absoluteRoot,
-      pathUtil.join(absoluteTarget, entry))
-  }
-  await fs.promises.rmdir(absoluteTarget)
-}
-
-function descriptorContainsAbsolutePath(value, key = '', depth = 0) {
-  if (depth > 20) return true
-  if (typeof value === 'string') {
-    if (/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)) return true
-    if (/^(?:descriptorPath|sourcePath|absolutePath|stagingRoot)$/i.test(key)) {
-      return true
-    }
-    return false
-  }
-  if (Array.isArray(value)) {
-    return value.some((entry) =>
-      descriptorContainsAbsolutePath(entry, key, depth + 1))
-  }
-  if (value && typeof value === 'object') {
-    return Object.entries(value).some(([childKey, childValue]) =>
-      /^(?:__proto__|prototype|constructor)$/i.test(childKey) ||
-      descriptorContainsAbsolutePath(childValue, childKey, depth + 1))
-  }
-  return false
 }
 
 function sendJson(res, status, payload) {
@@ -497,79 +222,6 @@ function requestJson({ hostname, port, path, method = 'GET', payload = null,
     if (body) req.write(body)
     req.end()
   })
-}
-
-function requestBinary({ hostname, port, path, payload = null,
-  timeoutMs = 30000, maxResponseBytes = PROJECT_SYNC_BUNDLE_CHUNK_BYTES }) {
-  const body = payload == null ? '' : JSON.stringify(payload)
-  return new Promise((resolve, reject) => {
-    const req = http.request({
-      hostname,
-      port,
-      path,
-      method: 'POST',
-      agent: hostname === '127.0.0.1' || hostname === 'localhost'
-        ? undefined
-        : lanHttpAgent,
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Content-Length': Buffer.byteLength(body),
-      },
-    }, (res) => {
-      const chunks = []
-      let size = 0
-      res.on('data', (chunk) => {
-        size += chunk.length
-        if (size <= maxResponseBytes) chunks.push(chunk)
-      })
-      res.on('end', () => {
-        if (size > maxResponseBytes) {
-          reject(new Error('Bloco do pacote Project Sync excedeu o limite.'))
-          return
-        }
-        const data = Buffer.concat(chunks)
-        if ((res.statusCode || 500) < 200 || (res.statusCode || 500) >= 300) {
-          let message = 'Falha ao transferir arquivo do Project Sync.'
-          try {
-            const remoteError = String(
-              JSON.parse(data.toString('utf8')).error ?? '').trim()
-            if (remoteError && remoteError !== '0' &&
-                remoteError.toLowerCase() !== 'false' &&
-                remoteError.toLowerCase() !== 'null') {
-              message = remoteError
-            }
-          } catch (_) {}
-          message = `${message} (HTTP ${res.statusCode || 500})`
-          const error = new Error(message)
-          error.status = res.statusCode || 500
-          reject(error)
-          return
-        }
-        resolve({
-          ok: true,
-          status: res.statusCode || 200,
-          headers: res.headers || {},
-          data,
-        })
-      })
-    })
-    req.setTimeout(timeoutMs, () => req.destroy(
-      new Error('Tempo limite ao transferir o pacote Project Sync.')))
-    req.on('error', reject)
-    if (body) req.write(body)
-    req.end()
-  })
-}
-
-function sendBinary(res, status, data, headers = {}) {
-  const body = Buffer.isBuffer(data) ? data : Buffer.from(data || '')
-  res.writeHead(status, {
-    'Content-Type': 'application/octet-stream',
-    'Content-Length': body.length,
-    'Cache-Control': 'no-store',
-    ...headers,
-  })
-  res.end(body)
 }
 
 function requestRaw({ hostname, port, path, body = '', timeoutMs = 900 }) {
@@ -707,13 +359,6 @@ function createTimecodeLanRelay(options = {}) {
     typeof options.onMtcSwitchChanged === 'function'
       ? options.onMtcSwitchChanged
       : () => {}
-  // main.js deve devolver uma pasta privada e persistente da Hook Center,
-  // atualmente app.getPath('userData')/project-sync-staging. O relay nunca
-  // aceita uma raiz de staging vinda da rede.
-  const getProjectSyncStagingDir =
-    typeof options.getProjectSyncStagingDir === 'function'
-      ? options.getProjectSyncStagingDir
-      : () => ''
   // Os dois canais da mesma Hook Center recebem a mesma identidade persistente
   // de main.js. Assim o mesmo computador nao pode ocupar simultaneamente os
   // papeis PC B (Project Sync) e PC C (Timecode), mesmo por placas/IPs distintos.
@@ -736,20 +381,10 @@ function createTimecodeLanRelay(options = {}) {
   let tickRunning = false
   let stopped = true
   let lastNotifiedPeer = ''
-  let pendingProjectSyncPreflight = null
-  let projectSyncPairAttempt = null
-  let projectSyncApplyPeer = null
-  let projectSyncApplySession = null
-  let projectSyncExportBundle = null
-  let projectSyncBundlePullPromise = null
-  let lastProjectSyncApplyKey = ''
   let projectSyncRoleHandoverPromise = null
   let lastProjectSyncRoleHandoverKey = ''
-  let projectSyncAutomaticRetry = null
+  let pairingInProgress = false
   let relayLifecycleSequence = 0
-  let lastProjectSyncStagingCleanupAt = 0
-  let projectSyncStagingCleanupPromise = null
-  const projectSyncProtocolNotices = new Set()
   const pairingCandidateNotices = new Set()
   const mtcRedundantSources = new Map()
   let mtcActiveRole = ''
@@ -787,220 +422,23 @@ function createTimecodeLanRelay(options = {}) {
       String(receiverRole || '').trim().toLowerCase() === 'secondary'
   }
 
-  function projectSyncManifestRevision(status) {
-    return String(status?.manifestRevision || '').trim().slice(0, 256)
+  async function projectSyncCapabilities(status, address, port) {
+    try {
+      const result = await requestJson({
+        hostname: address, port,
+        path: `${outboundLinkPrefix}/capabilities`, method: 'POST',
+        payload: { mode: 'project_sync', protocolVersion: PROJECT_SYNC_PROTOCOL_VERSION },
+        timeoutMs: 1200,
+      })
+      return result.ok && result.data?.ok === true &&
+        Number(result.data.projectSyncProtocolVersion) === PROJECT_SYNC_PROTOCOL_VERSION &&
+        result.data.projectSyncControlsOnly === true
+    } catch (_) { return false }
   }
 
-  function projectSyncStructuralRevision(status) {
-    // Builds novas separam estrutura de configuracao. O fallback conserva o
-    // pareamento com a build de transicao, embora nela uma mudanca visual ainda
-    // exija novo preflight por nao existir uma revisao estrutural separada.
-    return String(
-      status?.structuralManifestRevision ||
-      status?.projectStructuralRevision ||
-      status?.manifestRevision || '').trim().slice(0, 256)
-  }
-
-  function projectSyncManifestChangedDiff(side, previousRevision,
-    currentRevision) {
-    return {
-      schemaVersion: 1,
-      ready: false,
-      differences: [{
-        category: 'project',
-        severity: 'blocking',
-        kind: 'manifest_changed',
-        side: side === 'primary' ? 'primary' : 'secondary',
-        previousRevision: String(previousRevision || ''),
-        currentRevision: String(currentRevision || ''),
-        message: side === 'primary'
-          ? 'O projeto do PC A mudou. Faça o preflight novamente.'
-          : 'O projeto do PC B mudou. Faça o preflight novamente.',
-      }],
-    }
-  }
-
-  function projectSyncProtocolMismatchDiff(detail = '') {
-    const suffix = String(detail || '').trim()
-    return {
-      schemaVersion: 1,
-      ready: false,
-      configApplied: false,
-      differenceCount: 1,
-      structuralDifferenceCount: 1,
-      configDifferenceCount: 0,
-      truncated: false,
-      summary: { project: 1 },
-      message: 'A Hook Center do outro computador esta desatualizada. ' +
-        'Atualize e reinicie a Hook Center nos dois PCs.' +
-        (suffix ? ` ${suffix}` : ''),
-      differences: [{
-        category: 'project',
-        severity: 'blocking',
-        kind: 'incompatible_hook_center_protocol',
-        id: 'hook_center_protocol',
-        primary: `Project Sync v${PROJECT_SYNC_PROTOCOL_VERSION}`,
-        secondary: 'Protocolo antigo ou incompleto',
-      }],
-    }
-  }
-
-  async function notifyProjectSyncProtocolMismatch(status, address, detail = '') {
-    if (status?.mode !== 'project_sync' ||
-        projectSyncRole(status) !== 'primary') return
-    const key = [
-      String(status.sessionId || ''),
-      projectSyncStructuralRevision(status),
-      normalizePeerAddress(address),
-    ].join('|')
-    if (projectSyncProtocolNotices.has(key)) return
-    projectSyncProtocolNotices.add(key)
-    const requestId = projectSyncPairRequestId(status) ||
-      newPreflightRequestId()
-    await sendLocalCommand({
-      type: 'project_sync_preflight',
-      phase: 'pairing',
-      showConference: true,
-      role: 'primary',
-      requestId,
-      ready: false,
-      diff: projectSyncProtocolMismatchDiff(detail),
-    })
-  }
-
-  function isRecognizableLegacyRelayResponse(result) {
-    const error = String(result?.data?.error || '').toLowerCase()
-    return result?.status === 413 ||
-      error.includes('timecode lan') ||
-      error.includes('pacote de sincroniza') ||
-      error.includes('pareamento')
-  }
-
-  async function projectSyncCapabilities(
-    status, address, port, reportMismatch = false) {
-    let result = null
-    // A primeira conexao TCP pode coincidir com a abertura do REAPER, troca
-    // de placa ou retorno do Wi-Fi. Uma unica janela de 500 ms criava falso
-    // "nao compativel" e obrigava o usuario a tentar parear novamente.
-    for (let attempt = 0; attempt < 3 && !stopped; attempt += 1) {
-      try {
-        result = await requestJson({
-          hostname: address,
-          port,
-          path: `${outboundLinkPrefix}/capabilities`,
-          method: 'POST',
-          payload: {
-            mode: 'project_sync',
-            protocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
-          },
-          timeoutMs: 1200,
-        })
-        if (result.ok) break
-      } catch (_) {
-        result = null
-      }
-      if (attempt < 2) await wait(120 * (attempt + 1))
-    }
-    if (!result) return false
-    const compatible = result.ok && result.data?.ok === true &&
-      Number(result.data.projectSyncProtocolVersion) ===
-        PROJECT_SYNC_PROTOCOL_VERSION &&
-      result.data.projectSyncPreflight === true
-    if (!compatible && reportMismatch &&
-        isRecognizableLegacyRelayResponse(result)) {
-      await notifyProjectSyncProtocolMismatch(status, address)
-    }
-    return compatible
-  }
-
-  function wait(delayMs) {
-    return new Promise((resolve) => setTimeout(resolve, delayMs))
-  }
-
-  function newPreflightRequestId() {
-    return crypto.randomBytes(16).toString('hex')
-  }
-
-  function projectSyncPairRequestId(status) {
-    const sessionId = String(status?.sessionId || '').trim()
-    const structuralRevision = projectSyncStructuralRevision(status)
-    // Um preflight bloqueado continua sendo a sessao autenticada usada pelo
-    // botao "Aplicar modificacoes". Enquanto essa autorizacao estiver viva,
-    // as sondagens UDP/TCP automaticas precisam reutilizar o mesmo requestId.
-    // Gerar outro ID durante a verificacao local do PC B substitui o token no
-    // PC A e faz o primeiro arquivo realmente ausente falhar com HTTP 403.
-    const applyPeerMatchesCurrentProject =
-      applyPeerIsCurrent(projectSyncApplyPeer) &&
-      projectSyncApplyPeer.localSessionId === sessionId &&
-      String(projectSyncApplyPeer.code || '') === String(status?.code || '') &&
-      String(projectSyncApplyPeer.localStructuralRevision || '') ===
-        structuralRevision
-    if (applyPeerMatchesCurrentProject) {
-      projectSyncPairAttempt = {
-        requestId: projectSyncApplyPeer.requestId,
-        sessionId,
-        structuralRevision,
-        createdAt: Date.now(),
-      }
-      return projectSyncApplyPeer.requestId
-    }
-    if (projectSyncApplyPeer &&
-        projectSyncApplyPeer.localSessionId === sessionId &&
-        String(projectSyncApplyPeer.code || '') === String(status?.code || '') &&
-        String(projectSyncApplyPeer.localStructuralRevision || '') !==
-          structuralRevision) {
-      // O REAPER continua na mesma sessao quando o usuario troca de aba ou
-      // abre outro projeto. A autorizacao abaixo, porem, pertence ao manifesto
-      // antigo. Reutiliza-la prende a Conferencia ao projeto vazio/anterior e
-      // ainda permitiria aplicar o snapshot errado. Invalida apenas o preflight
-      // bloqueado; o novo projeto recebe requestId/token proprios no proximo
-      // pedido automatico, sem desligar e ligar o Project Sync.
-      projectSyncApplyPeer = null
-      projectSyncExportBundle = null
-      lastProjectSyncApplyKey = ''
-      projectSyncPairAttempt = null
-    }
-    if (!projectSyncPairAttempt ||
-        projectSyncPairAttempt.sessionId !== sessionId ||
-        projectSyncPairAttempt.structuralRevision !== structuralRevision ||
-        Date.now() - projectSyncPairAttempt.createdAt >
-          PROJECT_SYNC_PREFLIGHT_TIMEOUT_MS + 1000) {
-      projectSyncPairAttempt = {
-        requestId: newPreflightRequestId(),
-        sessionId,
-        structuralRevision,
-        createdAt: Date.now(),
-      }
-    }
-    return projectSyncPairAttempt.requestId
-  }
-
-  function finishProjectSyncPairAttempt(requestId) {
-    if (projectSyncPairAttempt?.requestId === requestId) {
-      projectSyncPairAttempt = null
-    }
-  }
-
-  function safePreflightRequestId(value) {
+  function safeRequestId(value) {
     const requestId = String(value || '').trim().toLowerCase()
     return /^[a-f0-9]{16,128}$/.test(requestId) ? requestId : ''
-  }
-
-  function statusPreflightRequestId(status) {
-    // projectSyncPreflightRequestId e o nome atual. O segundo nome permite que
-    // uma build de transicao da extensao converse com a mesma Hook Center.
-    return safePreflightRequestId(
-      status?.projectSyncPreflightRequestId || status?.projectSyncRequestId)
-  }
-
-  function preflightResultFromStatus(status, requestId) {
-    if (!status || statusPreflightRequestId(status) !== requestId ||
-        typeof status.projectSyncReady !== 'boolean') return null
-    return {
-      ready: status.projectSyncReady === true,
-      diff: status.projectSyncDiff || null,
-      manifestRevision: String(status.manifestRevision || ''),
-    }
   }
 
   function transportAudioHealthy(status, transport = null) {
@@ -1033,7 +471,8 @@ function createTimecodeLanRelay(options = {}) {
     }
   }
 
-  function projectSyncTransportForSend(status, peer, transport) {
+  function timecodeTransportForSend(status, peer, transport) {
+    if (status?.mode === 'project_sync') return null
     const snapshot = transportSnapshot(transport)
     if (!snapshot) return null
     const observedControlSequence = Number.isFinite(
@@ -1044,9 +483,8 @@ function createTimecodeLanRelay(options = {}) {
       snapshot.controlSequence > observedControlSequence
     peer.lastObservedControlSequence = Math.max(
       observedControlSequence, snapshot.controlSequence)
-    // A protecao da placa vale nos dois canais. Project Sync protege o PC B e
-    // Receive/Transmitter protege o PC C: uma queda fisica nunca pode virar
-    // Stop/seek remoto nem manter o receptor preso numa amostra congelada.
+    // Traditional Timecode protects the receiver from physical device loss;
+    // Project Sync never sends these samples, even when explicitly flagged.
     const healthy = transportAudioHealthy(status, transport)
     if (!healthy) {
       // Contrato com a extensão: controlSequence sobe no hook da ação local,
@@ -1109,8 +547,8 @@ function createTimecodeLanRelay(options = {}) {
       : transport
   }
 
-  function projectSyncTransportForReceive(session, status, payload, transport) {
-    if (!transport) return null
+  function timecodeTransportForReceive(session, status, payload, transport) {
+    if (status?.mode === 'project_sync' || !transport) return null
     const healthy = transportAudioHealthy(payload, transport)
     const explicitControl = transport.explicitControl === true
     if (!healthy && !explicitControl) {
@@ -1118,37 +556,8 @@ function createTimecodeLanRelay(options = {}) {
       return null
     }
     session.audioHealthy = healthy
-    // No canal tradicional, o emissor atual ja fez o gate completo. Mantemos
-    // aqui a compatibilidade com transmissores antigos, mas nunca aceitamos
-    // deles uma amostra explicitamente marcada como audio indisponivel.
-    if (status?.mode !== 'project_sync') return transport
-    const current = transportSnapshot(transport)
-    if (!current) return null
-    const previous = session.lastSourceTransport
-    if (!previous) {
-      session.lastSourceTransport = current
-      session.lastControlSequence = current.controlSequence
-      return transport
-    }
-    if (current.controlSequence < session.lastControlSequence) return null
-    if (explicitControl &&
-        current.controlSequence <= session.lastControlSequence) return null
-    if (current.controlSequence === session.lastControlSequence) {
-      // O controlSequence e a prova de intencao. Sem ele, uma mudanca de
-      // play/pause/stop ou um salto brusco pode ser apenas falha da placa A.
-      if (current.playState !== previous.playState) return null
-      const previousActive = previous.playState !== 0 &&
-        (previous.playState & 2) !== 2
-      const elapsedSec = previous.sampledAtMs > 0 && current.sampledAtMs > 0
-        ? Math.max(0, Math.min(5,
-            (current.sampledAtMs - previous.sampledAtMs) / 1000))
-        : 0
-      const expectedPosition = previous.position +
-        (previousActive ? elapsedSec : 0)
-      if (Math.abs(current.position - expectedPosition) > 0.20) return null
-    }
-    session.lastSourceTransport = current
-    session.lastControlSequence = current.controlSequence
+    // Traditional transmitters apply the driver-failure gate before sending.
+    // Older transmitters remain supported, except explicitly unhealthy samples.
     return transport
   }
 
@@ -1174,31 +583,11 @@ function createTimecodeLanRelay(options = {}) {
     return !prefix || String(address || '').replace(/^::ffff:/, '').startsWith(prefix)
   }
 
-  function projectSyncBundlePeerAllowed(address) {
-    const prefix = preferredCablePrefix()
-    const normalized = normalizePeerAddress(address)
-    if (prefix) return normalized.startsWith(prefix)
-    const numeric = ipv4ToNumber(normalized)
-    if (numeric == null) return false
-    // Sem a conexão redundante configurada, permite somente uma rede local
-    // privada/link-local. O token HMAC e o endereço exato do peer pareado
-    // continuam obrigatórios nas rotas de manifesto e chunks.
-    return (numeric >= ipv4ToNumber('10.0.0.0') &&
-            numeric <= ipv4ToNumber('10.255.255.255')) ||
-      (numeric >= ipv4ToNumber('172.16.0.0') &&
-       numeric <= ipv4ToNumber('172.31.255.255')) ||
-      (numeric >= ipv4ToNumber('192.168.0.0') &&
-       numeric <= ipv4ToNumber('192.168.255.255')) ||
-      (numeric >= ipv4ToNumber('169.254.0.0') &&
-       numeric <= ipv4ToNumber('169.254.255.255'))
-  }
-
   async function readLocalStatus(force = false) {
     const now = Date.now()
     if (!force && localStatus && now - localStatusAt < LOCAL_STATUS_INTERVAL_MS) return localStatus
     if (!force && now - lastStatusPollAt < 12) return localStatus
-    // Serializa leituras concorrentes. Em especial, o poll de preflight nao
-    // pode ser sobrescrito depois por uma requisicao antiga iniciada pelo tick.
+    // Serializa leituras concorrentes para não publicar status fora de ordem.
     if (localStatusRequest) {
       try { await localStatusRequest } catch (_) {}
       if (!force && localStatus &&
@@ -1250,1629 +639,12 @@ function createTimecodeLanRelay(options = {}) {
     }
   }
 
-  function projectSyncApplyRequest(status) {
-    const apply = status?.projectSyncApply &&
-      typeof status.projectSyncApply === 'object'
-      ? status.projectSyncApply
-      : null
-    const requested = apply
-      ? String(apply.state || '').trim().toLowerCase() === 'requested'
-      : status?.projectSyncApplyRequested === true
-    if (!requested) return null
-    const requestId = safePreflightRequestId(
-      apply?.requestId || status?.projectSyncApplyRequestId)
-    if (!requestId) return null
-    return {
-      requestId,
-      sequence: safeSequence(
-        apply?.sequence ?? status?.projectSyncApplySequence),
-      automatic: apply?.automatic === true,
-      differencePlan: String(apply?.differencePlan || '').slice(0, 128 * 1024),
-    }
-  }
-
   function projectSyncRoleHandoverRequest(status) {
     const handover = status?.projectSyncRoleHandover
     if (!handover || typeof handover !== 'object' ||
-        String(handover.state || '').trim().toLowerCase() !== 'requested') {
-      return null
-    }
-    const requestId = safePreflightRequestId(handover.requestId)
+        String(handover.state || '').trim().toLowerCase() !== 'requested') return null
+    const requestId = safeRequestId(handover.requestId)
     return requestId ? { requestId } : null
-  }
-
-  function projectSyncApplyIsActive(status, requestId) {
-    const apply = status?.projectSyncApply
-    if (!apply || typeof apply !== 'object' ||
-        safePreflightRequestId(apply.requestId) !== requestId) return false
-    return new Set([
-      'requested', 'requesting', 'downloading', 'verifying',
-      'validating', 'applying', 'apply_started',
-    ]).has(String(apply.state || '').trim().toLowerCase())
-  }
-
-  function projectSyncBundleAuthCanonical(payload) {
-    return [
-      'VSHOOK_PROJECT_SYNC_BUNDLE_AUTH_V1',
-      String(payload.requestId || ''),
-      String(payload.transmitterId || ''),
-      String(payload.receiverId || ''),
-      String(payload.sourceSessionId || ''),
-      String(payload.receiverSessionId || ''),
-      String(payload.bundleId || ''),
-      payload.automatic === true ? '1' : '0',
-      String(payload.fileId || ''),
-      String(payload.offset ?? ''),
-      String(payload.length ?? ''),
-      String(payload.authTimestamp || ''),
-      String(payload.authNonce || ''),
-    ].join('\n')
-  }
-
-  function projectSyncBundleMac(token, purpose, fields) {
-    const values = Array.isArray(fields) ? fields : [fields]
-    return crypto.createHmac('sha256', String(token || ''))
-      .update(['VSHOOK_PROJECT_SYNC_BUNDLE_MAC_V1', purpose,
-        ...values.map((value) => String(value ?? ''))].join('\n'), 'utf8')
-      .digest('hex')
-  }
-
-  function projectSyncAuthPayload(session, status, extra = {}) {
-    const payload = {
-      code: String(session.code || status?.code || ''),
-      requestId: session.requestId,
-      transmitterId: session.transmitterId,
-      receiverId: instanceId,
-      sourceSessionId: session.remoteSessionId,
-      receiverSessionId: session.localSessionId,
-      projectSyncRole: 'secondary',
-      automatic: session.automatic === true,
-      ...extra,
-    }
-    payload.authTimestamp = Date.now()
-    payload.authNonce = crypto.randomBytes(16).toString('hex')
-    payload.authMac = crypto.createHmac('sha256', String(session.token || ''))
-      .update(projectSyncBundleAuthCanonical(payload), 'utf8')
-      .digest('hex')
-    return payload
-  }
-
-  async function notifyProjectSyncBundleProgress(payload) {
-    const rawError = String(payload.error ?? '').trim()
-    const progressError = rawError && rawError !== '0' &&
-      rawError.toLowerCase() !== 'false' &&
-      rawError.toLowerCase() !== 'null'
-      ? rawError.slice(0, 1000) : ''
-    return sendLocalCommand({
-      type: 'project_sync_bundle_progress',
-      requestId: String(payload.requestId || ''),
-      bundleId: String(payload.bundleId || ''),
-      state: String(payload.state || ''),
-      bytesDone: Math.max(0, Number(payload.bytesDone) || 0),
-      totalBytes: Math.max(0, Number(payload.totalBytes) || 0),
-      fileIndex: Math.max(0, Math.trunc(Number(payload.fileIndex) || 0)),
-      fileCount: Math.max(0, Math.trunc(Number(payload.fileCount) || 0)),
-      error: progressError,
-    })
-  }
-
-  async function projectSyncStagingRoot() {
-    let configured = ''
-    try { configured = String(getProjectSyncStagingDir() || '').trim() } catch (_) {}
-    if (!configured || !pathUtil.isAbsolute(configured)) {
-      throw new Error('Pasta segura de preparação do Project Sync indisponível.')
-    }
-    const root = pathUtil.resolve(configured)
-    await fs.promises.mkdir(root, { recursive: true })
-    const stat = await fs.promises.lstat(root)
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new Error('Pasta de preparação do Project Sync inválida.')
-    }
-    return root
-  }
-
-  async function projectSyncLocalProjectContext() {
-    // /state e localhost-only e e a unica fonte aceita. Assim nenhum caminho
-    // publicado pelo peer ou recebido no manifesto pode escolher arquivos do B.
-    let projectPath = ''
-    let mediaPath = ''
-    try {
-      const result = await requestJson({
-        hostname: '127.0.0.1',
-        port: nativeBridgePort,
-        path: '/state',
-        timeoutMs: 1000,
-        maxResponseBytes: PROJECT_SYNC_BUNDLE_MANIFEST_BYTES,
-      })
-      if (result.ok && result.data && typeof result.data === 'object') {
-        projectPath = String(
-          result.data.projectPath || result.data.activeProjectPath || '').trim()
-        mediaPath = String(result.data.projectMediaPath || '').trim()
-      }
-    } catch (_) {}
-    if (!projectPath || projectPath.includes('\u0000') ||
-        !pathUtil.isAbsolute(projectPath)) return null
-    const resolved = pathUtil.resolve(projectPath)
-    try {
-      await lstatRegularFileNoSymlinkPath(resolved)
-    } catch (_) {
-      return null
-    }
-    let resolvedMediaPath = ''
-    if (mediaPath && !mediaPath.includes('\u0000') &&
-        pathUtil.isAbsolute(mediaPath)) {
-      try {
-        resolvedMediaPath = pathUtil.resolve(mediaPath)
-        await lstatDirectoryNoSymlinkPath(resolvedMediaPath)
-      } catch (_) {
-        resolvedMediaPath = ''
-      }
-    }
-    return { projectPath: resolved, mediaPath: resolvedMediaPath }
-  }
-
-  function projectSyncRppFileReferences(rpp) {
-    const references = []
-    let position = 0
-    while (position < rpp.length &&
-           references.length < PROJECT_SYNC_LOCAL_RPP_MAX_REFERENCES) {
-      const newline = rpp.indexOf('\n', position)
-      const end = newline < 0 ? rpp.length : newline
-      let cursor = position
-      while (cursor < end &&
-             (rpp[cursor] === ' ' || rpp[cursor] === '\t')) cursor += 1
-      if (cursor + 5 <= end && rpp.startsWith('FILE ', cursor)) {
-        cursor += 5
-        while (cursor < end &&
-               (rpp[cursor] === ' ' || rpp[cursor] === '\t')) cursor += 1
-        let sourcePath = ''
-        if (cursor < end && rpp[cursor] === '"') {
-          const valueStart = ++cursor
-          let escaped = false
-          while (cursor < end) {
-            const character = rpp[cursor]
-            if (character === '"' && !escaped) break
-            if (character === '\\') escaped = !escaped
-            else escaped = false
-            cursor += 1
-          }
-          if (cursor < end && cursor > valueStart &&
-              cursor - valueStart <= PROJECT_SYNC_LOCAL_RPP_MAX_PATH_CHARS) {
-            sourcePath = rpp.slice(valueStart, cursor).trim()
-          }
-        } else if (cursor < end) {
-          const valueStart = cursor
-          while (cursor < end && rpp[cursor] !== ' ' &&
-                 rpp[cursor] !== '\t' && rpp[cursor] !== '\r') cursor += 1
-          if (cursor > valueStart &&
-              cursor - valueStart <= PROJECT_SYNC_LOCAL_RPP_MAX_PATH_CHARS) {
-            sourcePath = rpp.slice(valueStart, cursor).trim()
-          }
-        }
-        if (sourcePath &&
-            !/[\u0000-\u001f\u007f]/.test(sourcePath)) {
-          references.push(sourcePath)
-        }
-      }
-      if (newline < 0) break
-      position = newline + 1
-    }
-    return references
-  }
-
-  function projectSyncLocalPathIdentity(filename) {
-    const normalized = pathUtil.normalize(pathUtil.resolve(filename))
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized
-  }
-
-  async function projectSyncRppMediaIndex(projectPath, manifest,
-    ensureActive, onCandidate) {
-    const mediaBySha = new Map()
-    const allowedHashesBySize = new Map()
-    for (const file of manifest.files) {
-      if (String(file.kind || '').toLowerCase() !== 'media') continue
-      if (!allowedHashesBySize.has(file.size)) {
-        allowedHashesBySize.set(file.size, new Set())
-      }
-      allowedHashesBySize.get(file.size).add(file.sha256)
-    }
-    if (allowedHashesBySize.size === 0) return mediaBySha
-
-    let rpp = ''
-    try {
-      ensureActive()
-      rpp = await readRegularFileLimitedNoFollow(
-        projectPath, PROJECT_SYNC_LOCAL_RPP_MAX_BYTES)
-      ensureActive()
-    } catch (_) {
-      ensureActive()
-      return mediaBySha
-    }
-
-    const projectDirectory = pathUtil.dirname(projectPath)
-    const seenNormalizedPaths = new Set()
-    const seenRealPaths = new Set()
-    const seenFiles = new Set()
-    for (const reference of projectSyncRppFileReferences(rpp)) {
-      ensureActive()
-      let candidate = ''
-      try {
-        candidate = pathUtil.resolve(pathUtil.isAbsolute(reference)
-          ? reference
-          : pathUtil.join(projectDirectory, reference))
-      } catch (_) {
-        continue
-      }
-      const normalizedIdentity = projectSyncLocalPathIdentity(candidate)
-      if (seenNormalizedPaths.has(normalizedIdentity)) continue
-      seenNormalizedPaths.add(normalizedIdentity)
-
-      try {
-        const candidateStat = await lstatRegularFileNoSymlinkPath(candidate)
-        const allowedHashes = allowedHashesBySize.get(candidateStat.size)
-        if (!allowedHashes) continue
-        const realPath = pathUtil.resolve(await fs.promises.realpath(candidate))
-        const realIdentity = projectSyncLocalPathIdentity(realPath)
-        // Diferenca aqui indica alias, junction ou outro redirecionamento. A
-        // otimizacao e abandonada mesmo que o alvo final seja um arquivo comum.
-        if (realIdentity !== normalizedIdentity ||
-            seenRealPaths.has(realIdentity)) continue
-        seenRealPaths.add(realIdentity)
-        const fileIdentity = candidateStat.ino
-          ? `${candidateStat.dev}:${candidateStat.ino}` : ''
-        if (fileIdentity && seenFiles.has(fileIdentity)) continue
-        if (fileIdentity) seenFiles.add(fileIdentity)
-
-        if (typeof onCandidate === 'function') {
-          try { await onCandidate(candidate, candidateStat) } catch (_) {
-            ensureActive()
-          }
-        }
-        ensureActive()
-        const digest = await projectSyncCachedLocalSha256(
-          candidate, candidateStat)
-        ensureActive()
-        if (!allowedHashes.has(digest)) continue
-        if (!mediaBySha.has(digest)) mediaBySha.set(digest, [])
-        mediaBySha.get(digest).push(candidate)
-      } catch (_) {
-        // Uma referencia offline, alterada ou insegura nao impede o pacote.
-        ensureActive()
-      }
-    }
-    return mediaBySha
-  }
-
-  async function projectSyncMediaDirectoryIndex(mediaPath, manifest,
-    knownBySha, ensureActive, onCandidate) {
-    const mediaBySha = new Map()
-    if (!mediaPath) return mediaBySha
-    const allowedHashesBySize = new Map()
-    for (const file of manifest.files) {
-      if (String(file.kind || '').toLowerCase() !== 'media') continue
-      if (knownBySha?.has(file.sha256)) continue
-      if (!allowedHashesBySize.has(file.size)) {
-        allowedHashesBySize.set(file.size, new Set())
-      }
-      allowedHashesBySize.get(file.size).add(file.sha256)
-    }
-    if (allowedHashesBySize.size === 0) return mediaBySha
-    try { await lstatDirectoryNoSymlinkPath(mediaPath) } catch (_) {
-      return mediaBySha
-    }
-
-    const pending = [{ directory: mediaPath, depth: 0 }]
-    let visited = 0
-    while (pending.length > 0 && visited < 32768) {
-      ensureActive()
-      const current = pending.shift()
-      let entries = []
-      try {
-        entries = await fs.promises.readdir(current.directory, {
-          withFileTypes: true,
-        })
-      } catch (_) {
-        continue
-      }
-      for (const entry of entries) {
-        if (++visited > 32768) break
-        ensureActive()
-        const candidate = pathUtil.join(current.directory, entry.name)
-        if (entry.isSymbolicLink()) continue
-        if (entry.isDirectory()) {
-          if (current.depth < 4) {
-            pending.push({ directory: candidate, depth: current.depth + 1 })
-          }
-          continue
-        }
-        if (!entry.isFile()) continue
-        try {
-          const stat = await lstatRegularFileNoSymlinkPath(candidate)
-          const allowedHashes = allowedHashesBySize.get(stat.size)
-          if (!allowedHashes) continue
-          if (typeof onCandidate === 'function') {
-            try { await onCandidate(candidate, stat) } catch (_) {
-              ensureActive()
-            }
-          }
-          const digest = await projectSyncCachedLocalSha256(candidate, stat)
-          if (!allowedHashes.has(digest)) continue
-          if (!mediaBySha.has(digest)) mediaBySha.set(digest, [])
-          mediaBySha.get(digest).push(candidate)
-        } catch (_) {
-          ensureActive()
-        }
-      }
-    }
-    return mediaBySha
-  }
-
-  function mergeProjectSyncMediaIndexes(...indexes) {
-    const merged = new Map()
-    for (const index of indexes) {
-      for (const [sha256, filenames] of index || []) {
-        if (!merged.has(sha256)) merged.set(sha256, [])
-        const target = merged.get(sha256)
-        for (const filename of filenames || []) {
-          if (!target.includes(filename)) target.push(filename)
-        }
-      }
-    }
-    return merged
-  }
-
-  function projectSyncManagedBaseDirectory(projectPath) {
-    // Espelha nativeProjectSyncManagedBaseDirectory da extensao. Projetos que
-    // ja sao clones continuam compartilhando o cache Media da raiz original.
-    const normalized = String(projectPath || '').replace(/\\/g, '/')
-    const marker = '/VS Hook Project Sync/Clones/'
-    const searchable = process.platform === 'win32'
-      ? normalized.toLowerCase() : normalized
-    const markerToFind = process.platform === 'win32'
-      ? marker.toLowerCase() : marker
-    const markerPosition = searchable.indexOf(markerToFind)
-    let base = markerPosition > 0
-      ? normalized.slice(0, markerPosition)
-      : pathUtil.dirname(projectPath)
-    if (process.platform === 'win32' && /^[A-Za-z]:$/.test(base)) base += '/'
-    return base && pathUtil.isAbsolute(base) ? pathUtil.resolve(base) : ''
-  }
-
-  async function projectSyncManagedMediaCache(projectPath) {
-    if (!projectPath) return null
-    const base = projectSyncManagedBaseDirectory(projectPath)
-    if (!base) return null
-    const projectSyncRoot = pathUtil.join(base, 'VS Hook Project Sync')
-    const cacheRoot = pathUtil.join(projectSyncRoot, 'Media')
-    const relative = pathUtil.relative(base, cacheRoot)
-    if (!relative || relative.startsWith('..') ||
-        pathUtil.isAbsolute(relative)) return null
-
-    try {
-      // Nao segue junction/symlink em nenhuma parte criada pelo Project Sync.
-      // Se o cache nao existir ou estiver redirecionado, o download normal e
-      // usado sem transformar um cache local defeituoso em falha de sync.
-      for (const directory of [base, projectSyncRoot, cacheRoot]) {
-        const stat = await fs.promises.lstat(directory)
-        if (!stat.isDirectory() || stat.isSymbolicLink()) return null
-      }
-      const entries = await fs.promises.readdir(cacheRoot, {
-        withFileTypes: true,
-      })
-      const candidatesByPrefix = new Map()
-      for (const entry of entries) {
-        if (!entry.isFile()) continue
-        const match = /^([a-f0-9]{20})_/i.exec(entry.name)
-        if (!match) continue
-        const prefix = match[1].toLowerCase()
-        if (!candidatesByPrefix.has(prefix)) candidatesByPrefix.set(prefix, [])
-        candidatesByPrefix.get(prefix).push(entry.name)
-      }
-      return { root: cacheRoot, candidatesByPrefix }
-    } catch (_) {
-      return null
-    }
-  }
-
-  function projectSyncReusableMediaCandidates(cache, rppMediaBySha, file) {
-    const candidates = []
-    for (const source of rppMediaBySha?.get(file.sha256) || []) {
-      candidates.push({ source, managedRoot: '' })
-    }
-    const prefix = String(file.sha256 || '').slice(0, 20).toLowerCase()
-    for (const entryName of cache?.candidatesByPrefix.get(prefix) || []) {
-      candidates.push({
-        source: pathUtil.resolve(cache.root, entryName),
-        managedRoot: cache.root,
-      })
-    }
-    return candidates
-  }
-
-  async function findReusableProjectSyncMedia(cache, rppMediaBySha, file,
-    ensureActive, onCandidate) {
-    if (String(file?.kind || '').toLowerCase() !== 'media') {
-      return ''
-    }
-    const seenSources = new Set()
-    for (const candidate of projectSyncReusableMediaCandidates(
-      cache, rppMediaBySha, file)) {
-      ensureActive()
-      const source = pathUtil.resolve(candidate.source)
-      const sourceIdentity = projectSyncLocalPathIdentity(source)
-      if (seenSources.has(sourceIdentity)) continue
-      seenSources.add(sourceIdentity)
-      if (candidate.managedRoot) {
-        const relative = pathUtil.relative(candidate.managedRoot, source)
-        if (!relative || relative.startsWith('..') ||
-            pathUtil.isAbsolute(relative) || relative.includes(pathUtil.sep)) {
-          continue
-        }
-      }
-      let sourceBefore
-      try {
-        sourceBefore = await lstatRegularFileNoSymlinkPath(source, file.size)
-        const realPath = pathUtil.resolve(await fs.promises.realpath(source))
-        if (projectSyncLocalPathIdentity(realPath) !== sourceIdentity) continue
-      } catch (_) {
-        continue
-      }
-
-      if (typeof onCandidate === 'function') await onCandidate()
-      ensureActive()
-      try {
-        const digest = await projectSyncCachedLocalSha256(
-          source, sourceBefore)
-        const sourceAfter = await lstatRegularFileNoSymlinkPath(
-          source, file.size)
-        if (sameFileVersion(sourceBefore, sourceAfter) &&
-            digest === file.sha256) return source
-      } catch (_) {
-        // Fonte local ausente, alterada ou ilegivel nunca bloqueia o pacote.
-        // A rede continua sendo a fonte autoritativa.
-        ensureActive()
-      }
-    }
-    return ''
-  }
-
-  async function materializeProjectSyncCachedMedia(cache, rppMediaBySha, file,
-    destination, ensureActive, onCandidate) {
-    const source = await findReusableProjectSyncMedia(
-      cache, rppMediaBySha, file, ensureActive, onCandidate)
-    if (!source) return false
-    let temporaryPath = `${destination}.local-${
-      crypto.randomBytes(8).toString('hex')}.partial`
-    try {
-      // Compatibilidade com extensoes antigas: elas ainda exigem que toda
-      // midia exista fisicamente no staging.
-      await fs.promises.copyFile(
-        source, temporaryPath, fs.constants.COPYFILE_EXCL)
-      ensureActive()
-      if (await sha256RegularFileNoFollow(
-        temporaryPath, file.size) !== file.sha256) return false
-      try {
-        await fs.promises.lstat(destination)
-        return false
-      } catch (error) {
-        if (error?.code !== 'ENOENT') return false
-      }
-      await fs.promises.rename(temporaryPath, destination)
-      temporaryPath = ''
-      return true
-    } catch (_) {
-      ensureActive()
-      return false
-    } finally {
-      if (temporaryPath) {
-        try { await fs.promises.unlink(temporaryPath) } catch (_) {}
-      }
-    }
-  }
-
-  async function cleanupProjectSyncStaging(force = false) {
-    const now = Date.now()
-    if (!force && now - lastProjectSyncStagingCleanupAt <
-        PROJECT_SYNC_STAGING_CLEANUP_INTERVAL_MS) return
-    if (projectSyncStagingCleanupPromise) {
-      await projectSyncStagingCleanupPromise
-      return
-    }
-    lastProjectSyncStagingCleanupAt = now
-    const cleanup = (async () => {
-      const root = await projectSyncStagingRoot()
-      const entries = await fs.promises.readdir(root, { withFileTypes: true })
-      for (const entry of entries) {
-        const target = pathUtil.join(root, entry.name)
-        let stat
-        try { stat = await fs.promises.lstat(target) } catch (_) { continue }
-        // Links nunca são seguidos. Entradas antigas (incluindo .partial) são
-        // removidas somente se forem filhas diretas da raiz privada.
-        if (stat.isSymbolicLink() ||
-            now - stat.mtimeMs >
-              PROJECT_SYNC_STAGING_TTL_MS) {
-          try { await removeTreeNoFollow(root, target) } catch (_) {}
-        }
-      }
-    })()
-    projectSyncStagingCleanupPromise = cleanup
-    try { await cleanup } finally {
-      if (projectSyncStagingCleanupPromise === cleanup) {
-        projectSyncStagingCleanupPromise = null
-      }
-    }
-  }
-
-  async function assertProjectSyncStagingCapacity(root, requiredBytes) {
-    const stagingBytes = await directorySizeNoFollow(
-      root, PROJECT_SYNC_STAGING_QUOTA_BYTES + 1)
-    if (stagingBytes + requiredBytes > PROJECT_SYNC_STAGING_QUOTA_BYTES) {
-      throw new Error('O staging do Project Sync atingiu o limite de 64 GB.')
-    }
-    if (typeof fs.promises.statfs === 'function') {
-      try {
-        const disk = await fs.promises.statfs(root)
-        const availableBytes = Number(disk.bavail) * Number(disk.bsize)
-        if (Number.isFinite(availableBytes) &&
-            availableBytes < requiredBytes + PROJECT_SYNC_MIN_FREE_BYTES) {
-          throw new Error('Espaço livre insuficiente para aplicar o projeto.')
-        }
-      } catch (error) {
-        if (String(error?.message || '').includes('Espaço livre')) throw error
-        // Node/Electron antigo ou filesystem sem statfs: a quota continua
-        // sendo aplicada; a própria gravação ainda reportará falta de espaço.
-      }
-    }
-  }
-
-  async function ensureSafeDestinationDirectory(root, directory) {
-    const relative = pathUtil.relative(pathUtil.resolve(root),
-      pathUtil.resolve(directory))
-    if (relative.startsWith('..') || pathUtil.isAbsolute(relative)) {
-      throw new Error('Destino fora da pasta segura do Project Sync.')
-    }
-    let cursor = pathUtil.resolve(root)
-    for (const component of relative.split(pathUtil.sep).filter(Boolean)) {
-      cursor = pathUtil.join(cursor, component)
-      try {
-        const stat = await fs.promises.lstat(cursor)
-        if (!stat.isDirectory() || stat.isSymbolicLink()) {
-          throw new Error('Destino inseguro no pacote Project Sync.')
-        }
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error
-        await fs.promises.mkdir(cursor)
-      }
-    }
-  }
-
-  function validateBundleManifest(raw, expectedRequestId = '') {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw) ||
-        Number(raw.schemaVersion) !== 1) {
-      throw new Error('Manifesto do pacote Project Sync inválido.')
-    }
-    const serialized = JSON.stringify(raw)
-    if (Buffer.byteLength(serialized) > PROJECT_SYNC_BUNDLE_MANIFEST_BYTES ||
-        descriptorContainsAbsolutePath(raw)) {
-      throw new Error('Manifesto do pacote Project Sync contém dados inseguros.')
-    }
-    const bundleId = safeBundleId(raw.bundleId)
-    const requestId = safePreflightRequestId(raw.requestId)
-    if (!bundleId || !requestId ||
-        (expectedRequestId && requestId !== expectedRequestId)) {
-      throw new Error('Identificação do pacote Project Sync inválida.')
-    }
-    const sourceSessionId = String(raw.sourceSessionId || '').trim().slice(0, 512)
-    const sourceManifestRevision = String(
-      raw.sourceManifestRevision || '').trim().slice(0, 256)
-    const sourceStructuralRevision = String(
-      raw.sourceStructuralRevision || '').trim().slice(0, 256)
-    if (!sourceSessionId || !sourceManifestRevision ||
-        !sourceStructuralRevision) {
-      throw new Error('Revisão do pacote Project Sync ausente.')
-    }
-    const files = Array.isArray(raw.files) ? raw.files : []
-    if (files.length < 1 || files.length > PROJECT_SYNC_BUNDLE_MAX_FILES) {
-      throw new Error('Quantidade de arquivos do pacote Project Sync inválida.')
-    }
-    const ids = new Set()
-    const paths = new Set()
-    let totalBytes = 0
-    const normalizedFiles = files.map((file) => {
-      const id = safeBundleId(file?.id)
-      const relativePath = safeBundleRelativePath(file?.relativePath)
-      const size = Number(file?.size)
-      const sha256 = safeSha256(file?.sha256)
-      // Também bloqueia colisões apenas por caixa no macOS, cuja instalação
-      // normal usa volume case-insensitive.
-      const normalizedKey = relativePath.toLowerCase()
-      if (!id || !relativePath || !sha256 ||
-          !Number.isSafeInteger(size) || size < 0 ||
-          size > PROJECT_SYNC_BUNDLE_MAX_FILE_BYTES ||
-          ids.has(id) || paths.has(normalizedKey) ||
-          /^bundle(?:\.descriptor)?\.json(?:\.partial)?$/i.test(relativePath)) {
-        throw new Error('Entrada de arquivo inválida no pacote Project Sync.')
-      }
-      ids.add(id)
-      paths.add(normalizedKey)
-      totalBytes += size
-      if (!Number.isSafeInteger(totalBytes) ||
-          totalBytes > PROJECT_SYNC_BUNDLE_MAX_TOTAL_BYTES) {
-        throw new Error('Pacote Project Sync excede o limite permitido.')
-      }
-      return {
-        id,
-        relativePath,
-        size,
-        sha256,
-        kind: safeName(file?.kind, 'media'),
-      }
-    })
-    const projectFileObject = raw.projectFile &&
-      typeof raw.projectFile === 'object' && !Array.isArray(raw.projectFile)
-      ? raw.projectFile
-      : null
-    const projectFileRelative = safeBundleRelativePath(
-      projectFileObject?.relativePath || raw.projectFile)
-    if (!projectFileRelative ||
-        !paths.has(projectFileRelative.toLowerCase())) {
-      throw new Error('Projeto principal ausente no pacote Project Sync.')
-    }
-    const projectEntry = normalizedFiles.find((file) =>
-      file.kind.toLowerCase() === 'project' &&
-      file.relativePath.toLowerCase() === projectFileRelative.toLowerCase())
-    if (!projectEntry || (projectFileObject &&
-        ((projectFileObject.size != null &&
-          Number(projectFileObject.size) !== projectEntry.size) ||
-         (projectFileObject.sha256 != null &&
-          safeSha256(projectFileObject.sha256) !== projectEntry.sha256)))) {
-      throw new Error('Metadados do projeto principal são inválidos.')
-    }
-    return {
-      ...raw,
-      schemaVersion: 1,
-      bundleId,
-      requestId,
-      sourceSessionId,
-      sourceManifestRevision,
-      sourceStructuralRevision,
-      // Sempre grava o objeto assinado esperado pela extensão B. Se uma build
-      // de transição do PC A publicou somente a string, o relay completa os
-      // metadados a partir da entrada validada em files.
-      projectFile: {
-        ...(projectFileObject || {}),
-        relativePath: projectFileRelative,
-        size: projectEntry.size,
-        sha256: projectEntry.sha256,
-      },
-      files: normalizedFiles,
-      totalBytes,
-    }
-  }
-
-  function applyPeerIsCurrent(peer) {
-    return !!peer && Date.now() - peer.createdAt < PROJECT_SYNC_APPLY_TTL_MS
-  }
-
-  async function authorizeProjectSyncBundleRequest(req, payload) {
-    const peer = projectSyncApplyPeer
-    const status = await readLocalStatus(true)
-    const remoteAddress = normalizePeerAddress(req.socket?.remoteAddress)
-    const authTimestamp = Number(payload?.authTimestamp)
-    const authNonce = String(payload?.authNonce || '').trim().toLowerCase()
-    const authMac = safeSha256(payload?.authMac)
-    const expectedMac = peer
-      ? crypto.createHmac('sha256', String(peer.token || ''))
-        .update(projectSyncBundleAuthCanonical(payload), 'utf8')
-        .digest('hex')
-      : ''
-    // Depois que o bundle foi preparado, ele e um snapshot imutavel e
-    // assinado da revisao confirmada no pareamento. Alteracoes posteriores no
-    // projeto aberto nao podem invalidar os chunks desse snapshot no meio da
-    // transferencia; session/token/requestId e a versao de cada arquivo ainda
-    // sao verificados abaixo e em handleProjectSyncBundleFile().
-    const frozenBundleAuthorized = !!projectSyncExportBundle && !!peer &&
-      projectSyncExportBundle.requestId === peer.requestId &&
-      projectSyncExportBundle.sourceSessionId === peer.localSessionId &&
-      projectSyncExportBundle.sourceStructuralRevision ===
-        peer.localStructuralRevision
-    if (!licenseIsActive() || !statusCanTransmit(status) ||
-        status?.mode !== 'project_sync' ||
-        projectSyncRole(status) !== 'primary' ||
-        !applyPeerIsCurrent(peer) ||
-        !projectSyncBundlePeerAllowed(remoteAddress) ||
-        remoteAddress !== normalizePeerAddress(peer.address) ||
-        !projectSyncRolesMatch('primary', payload?.projectSyncRole) ||
-        String(payload?.code || '') !== String(peer.code || '') ||
-        safePreflightRequestId(payload?.requestId) !== peer.requestId ||
-        String(payload?.transmitterId || '') !== instanceId ||
-        String(payload?.receiverId || '') !== peer.receiverId ||
-        String(payload?.sourceSessionId || '') !== peer.localSessionId ||
-        String(payload?.receiverSessionId || '') !== peer.remoteSessionId ||
-        String(status.sessionId || '').trim() !== peer.localSessionId ||
-        (!frozenBundleAuthorized &&
-          projectSyncStructuralRevision(status) !==
-            peer.localStructuralRevision) ||
-        !Number.isSafeInteger(authTimestamp) ||
-        Math.abs(Date.now() - authTimestamp) > 30000 ||
-        !/^[a-f0-9]{32}$/.test(authNonce) || !authMac ||
-        !tokenMatches(authMac, expectedMac)) {
-      const error = new Error('Pedido de aplicação do Project Sync não autorizado.')
-      error.status = 403
-      throw error
-    }
-    if (!peer.authNonces) peer.authNonces = new Map()
-    for (const [nonce, createdAt] of peer.authNonces) {
-      if (Date.now() - createdAt > 60000) peer.authNonces.delete(nonce)
-    }
-    if (peer.authNonces.size >= 4096) {
-      const error = new Error('Muitos pedidos Project Sync em andamento.')
-      error.status = 429
-      throw error
-    }
-    if (peer.authNonces.has(authNonce)) {
-      const error = new Error('Pedido Project Sync repetido.')
-      error.status = 409
-      throw error
-    }
-    peer.authNonces.set(authNonce, Date.now())
-    peer.automatic = payload?.automatic === true
-    peer.createdAt = Date.now()
-    return { peer, status }
-  }
-
-  async function prepareProjectSyncExport(peer, status) {
-    const cached = projectSyncExportBundle
-    if (cached && cached.requestId === peer.requestId &&
-        cached.sourceSessionId === peer.localSessionId &&
-        cached.sourceStructuralRevision === peer.localStructuralRevision &&
-        Date.now() - cached.createdAt < PROJECT_SYNC_APPLY_TTL_MS) {
-      return cached
-    }
-    const accepted = await sendLocalCommand({
-      type: 'project_sync_prepare_bundle',
-      requestId: peer.requestId,
-      expectedRevision: peer.localStructuralRevision,
-      receiverSessionId: peer.remoteSessionId,
-      peerName: peer.name || 'PC B',
-      automatic: peer.automatic === true,
-      supportsSourceMap: true,
-      differencePlan: String(peer.differencePlan || '').slice(0, 128 * 1024),
-    })
-    if (!accepted) {
-      throw new Error('A extensão do PC A não iniciou a preparação do projeto.')
-    }
-    // O PC A precisa ler e calcular SHA-256 de toda mídia uma vez para saber
-    // com segurança o que o PC B já possui. Projetos grandes podem levar mais
-    // de um minuto mesmo sem nenhum download; não confundir trabalho ativo com
-    // travamento da Hook Center.
-    const deadline = Date.now() + PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS
-    let bundleStatus = null
-    while (!stopped && Date.now() < deadline) {
-      const current = await readLocalStatus(true)
-      if (!statusCanTransmit(current) ||
-          projectSyncRole(current) !== 'primary' ||
-          String(current.sessionId || '').trim() !== peer.localSessionId ||
-          projectSyncStructuralRevision(current) !== peer.localStructuralRevision) {
-        throw new Error('O projeto do PC A mudou durante a preparação.')
-      }
-      const candidate = current?.projectSyncBundle
-      if (candidate && safePreflightRequestId(candidate.requestId) ===
-          peer.requestId) {
-        const state = String(candidate.state || '').trim().toLowerCase()
-        if (state === 'error') {
-          throw new Error(String(candidate.error ||
-            'Falha ao preparar o projeto no PC A.').slice(0, 1000))
-        }
-        if (state === 'ready') {
-          bundleStatus = candidate
-          break
-        }
-      }
-      await wait(80)
-    }
-    if (!bundleStatus) {
-      throw new Error('Tempo limite ao preparar o projeto no PC A.')
-    }
-    const descriptorPath = String(bundleStatus.descriptorPath || '').trim()
-    if (!descriptorPath || !pathUtil.isAbsolute(descriptorPath)) {
-      throw new Error('Descritor local do PC A não foi encontrado.')
-    }
-    const exportRoot = pathUtil.dirname(pathUtil.resolve(descriptorPath))
-    const rootStat = await fs.promises.lstat(exportRoot)
-    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-      throw new Error('Diretório de exportação do PC A é inválido.')
-    }
-    await assertRegularFileInside(exportRoot, descriptorPath)
-    const descriptor = await readLimitedJsonFile(
-      descriptorPath, PROJECT_SYNC_BUNDLE_MANIFEST_BYTES)
-    const manifest = validateBundleManifest(descriptor, peer.requestId)
-    if (manifest.sourceSessionId !== peer.localSessionId ||
-        manifest.sourceStructuralRevision !== peer.localStructuralRevision ||
-        (bundleStatus.bundleId &&
-          safeBundleId(bundleStatus.bundleId) !== manifest.bundleId)) {
-      throw new Error('O pacote preparado não corresponde ao projeto do PC A.')
-    }
-    const sourceMapPath = pathUtil.join(
-      exportRoot, PROJECT_SYNC_BUNDLE_SOURCE_MAP)
-    let rawSourceMap = null
-    try {
-      await assertRegularFileInside(exportRoot, sourceMapPath)
-      rawSourceMap = await readLimitedJsonFile(
-        sourceMapPath, PROJECT_SYNC_BUNDLE_MANIFEST_BYTES)
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error
-    }
-    const mediaEntries = new Map(manifest.files
-      .filter((file) => String(file.kind || '').toLowerCase() === 'media')
-      .map((file) => [file.id, file]))
-    const localSourcesById = new Map()
-    if (rawSourceMap) {
-      const descriptorStat = await lstatRegularFileNoSymlinkPath(descriptorPath)
-      const descriptorSha256 = await sha256RegularFileNoFollow(
-        descriptorPath, descriptorStat.size)
-      if (typeof rawSourceMap !== 'object' || Array.isArray(rawSourceMap) ||
-          Number(rawSourceMap.schemaVersion) !== 1 ||
-          safeBundleId(rawSourceMap.bundleId) !== manifest.bundleId ||
-          safePreflightRequestId(rawSourceMap.requestId) !== peer.requestId ||
-          safeSha256(rawSourceMap.descriptorSha256) !== descriptorSha256 ||
-          !Array.isArray(rawSourceMap.sources) ||
-          rawSourceMap.sources.length > PROJECT_SYNC_BUNDLE_MAX_FILES) {
-        throw new Error('Mapa local de mídia do PC A é inválido.')
-      }
-      for (const rawSource of rawSourceMap.sources) {
-        const id = safeBundleId(rawSource?.id)
-        const file = mediaEntries.get(id)
-        const sourcePath = String(rawSource?.absolutePath || '')
-        const size = Number(rawSource?.size)
-        const sha256 = safeSha256(rawSource?.sha256)
-        const mtimeMs = Number(rawSource?.mtimeMs)
-        if (!id || !file || localSourcesById.has(id) ||
-            !pathUtil.isAbsolute(sourcePath) || sourcePath.includes('\u0000') ||
-            !Number.isSafeInteger(size) || size !== file.size ||
-            sha256 !== file.sha256 || !Number.isFinite(mtimeMs)) {
-          throw new Error('Entrada inválida no mapa local de mídia do PC A.')
-        }
-        const stat = await lstatRegularFileNoSymlinkPath(sourcePath, file.size)
-        if (Math.abs(stat.mtimeMs - mtimeMs) > 1) {
-          throw new Error(`A mídia ${file.relativePath} mudou após a preparação.`)
-        }
-        localSourcesById.set(id, {
-          sourcePath: pathUtil.resolve(sourcePath),
-          stat,
-        })
-      }
-      if (localSourcesById.size !== mediaEntries.size) {
-        throw new Error('O mapa local não contém todas as mídias do PC A.')
-      }
-    }
-    const filesById = new Map()
-    for (const file of manifest.files) {
-      const localSource = localSourcesById.get(file.id)
-      const sourcePath = localSource?.sourcePath ||
-        resolveInside(exportRoot, file.relativePath)
-      if (!sourcePath) throw new Error('Arquivo inseguro no pacote do PC A.')
-      const stat = localSource?.stat ||
-        await assertRegularFileInside(exportRoot, sourcePath)
-      if (stat.size !== file.size) {
-        throw new Error(`O arquivo ${file.relativePath} mudou durante a preparação.`)
-      }
-      filesById.set(file.id, {
-        ...file,
-        sourcePath,
-        fileVersion: stat,
-        externalSource: !!localSource,
-        exportRoot,
-      })
-    }
-    const manifestText = JSON.stringify(manifest)
-    projectSyncExportBundle = {
-      requestId: peer.requestId,
-      bundleId: manifest.bundleId,
-      sourceSessionId: peer.localSessionId,
-      sourceStructuralRevision: peer.localStructuralRevision,
-      manifest,
-      manifestSha256: crypto.createHash('sha256')
-        .update(manifestText, 'utf8').digest('hex'),
-      filesById,
-      createdAt: Date.now(),
-    }
-    return projectSyncExportBundle
-  }
-
-  async function handleProjectSyncBundleManifest(req, res) {
-    const payload = await readJsonBody(req, 64 * 1024)
-    const { peer, status } = await authorizeProjectSyncBundleRequest(req, payload)
-    const bundle = await prepareProjectSyncExport(peer, status)
-    sendJson(res, 200, {
-      ok: true,
-      manifest: bundle.manifest,
-      manifestSha256: bundle.manifestSha256,
-      manifestMac: projectSyncBundleMac(peer.token, 'manifest', [
-        peer.requestId, bundle.bundleId, bundle.manifestSha256,
-      ]),
-    })
-  }
-
-  async function handleProjectSyncBundleFile(req, res) {
-    const payload = await readJsonBody(req, 64 * 1024)
-    const { peer } = await authorizeProjectSyncBundleRequest(req, payload)
-    const bundle = projectSyncExportBundle
-    const bundleId = safeBundleId(payload.bundleId)
-    const fileId = safeBundleId(payload.fileId)
-    const offset = Number(payload.offset)
-    const requestedLength = Number(payload.length)
-    if (!bundle || bundle.bundleId !== bundleId ||
-        bundle.requestId !== safePreflightRequestId(payload.requestId)) {
-      const error = new Error('Pacote Project Sync expirado.')
-      error.status = 410
-      throw error
-    }
-    const file = bundle.filesById.get(fileId)
-    if (!file || !Number.isSafeInteger(offset) || offset < 0 ||
-        offset > file.size || !Number.isSafeInteger(requestedLength) ||
-        requestedLength < 1 || requestedLength > PROJECT_SYNC_BUNDLE_CHUNK_BYTES) {
-      const error = new Error('Trecho de arquivo Project Sync inválido.')
-      error.status = 400
-      throw error
-    }
-    const pathStat = file.externalSource
-      ? await lstatRegularFileNoSymlinkPath(file.sourcePath, file.size)
-      : await assertRegularFileInside(file.exportRoot, file.sourcePath)
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() ||
-        pathStat.size !== file.size ||
-        !sameFileVersion(pathStat, file.fileVersion)) {
-      const error = new Error('Arquivo do PC A mudou durante a transferência.')
-      error.status = 409
-      throw error
-    }
-    const length = Math.min(requestedLength, file.size - offset)
-    const data = Buffer.alloc(length)
-    if (length > 0) {
-      const openFlags = fs.constants.O_RDONLY |
-        (fs.constants.O_NOFOLLOW || 0)
-      const handle = await fs.promises.open(file.sourcePath, openFlags)
-      try {
-        const openedStat = await handle.stat()
-        if (!openedStat.isFile() || openedStat.size !== file.size ||
-            !sameFileVersion(openedStat, file.fileVersion) ||
-            !sameFileVersion(openedStat, pathStat)) {
-          throw new Error('Arquivo do PC A mudou durante a transferência.')
-        }
-        const result = await handle.read(data, 0, length, offset)
-        if (result.bytesRead !== length) {
-          throw new Error('Leitura incompleta do arquivo no PC A.')
-        }
-        const finalStat = await handle.stat()
-        if (!sameFileVersion(finalStat, openedStat)) {
-          throw new Error('Arquivo do PC A mudou durante a transferência.')
-        }
-      } finally {
-        await handle.close()
-      }
-    }
-    sendBinary(res, 200, data, {
-      'X-VSHook-Bundle-Id': bundle.bundleId,
-      'X-VSHook-File-Id': file.id,
-      'X-VSHook-Offset': String(offset),
-      'X-VSHook-File-Size': String(file.size),
-      'X-VSHook-Chunk-SHA256': crypto.createHash('sha256')
-        .update(data).digest('hex'),
-      'X-VSHook-Chunk-MAC': projectSyncBundleMac(peer.token, 'chunk', [
-        bundle.requestId, bundle.bundleId, file.id, offset,
-        crypto.createHash('sha256').update(data).digest('hex'),
-      ]),
-    })
-  }
-
-  async function handleProjectSyncBundleConsumed(req, res) {
-    const payload = await readJsonBody(req, 64 * 1024)
-    const { peer } = await authorizeProjectSyncBundleRequest(req, payload)
-    const bundleId = safeBundleId(payload.bundleId)
-    const bundle = projectSyncExportBundle
-    if (!bundle || !bundleId || bundle.bundleId !== bundleId ||
-        bundle.requestId !== peer.requestId) {
-      sendJson(res, 410, { ok: false, error: 'Pacote Project Sync expirado.' })
-      return
-    }
-    const accepted = await sendLocalCommand({
-      type: 'project_sync_bundle_consumed',
-      requestId: peer.requestId,
-      bundleId,
-    })
-    if (!accepted) {
-      sendJson(res, 503, {
-        ok: false,
-        error: 'A extensão do PC A não confirmou a limpeza do bundle.',
-      })
-      return
-    }
-    projectSyncExportBundle = null
-    sendJson(res, 200, { ok: true })
-  }
-
-  function bundleProgressReporter(base) {
-    let lastSentAt = 0
-    let lastState = ''
-    return async (update, force = false) => {
-      const now = Date.now()
-      if (!force && update.state === lastState &&
-          now - lastSentAt < PROJECT_SYNC_BUNDLE_PROGRESS_INTERVAL_MS) return
-      lastSentAt = now
-      lastState = update.state
-      await notifyProjectSyncBundleProgress({ ...base, ...update })
-    }
-  }
-
-  async function downloadProjectSyncBundle(status, session) {
-    const lifecycleSequence = relayLifecycleSequence
-    const ensureActive = () => {
-      if (stopped || lifecycleSequence !== relayLifecycleSequence) {
-        throw new Error('Transferência Project Sync cancelada.')
-      }
-    }
-    const report = bundleProgressReporter({ requestId: session.requestId })
-    let bundleId = ''
-    try {
-      await report({ state: 'requesting' }, true)
-      const remoteManifest = await requestJson({
-        hostname: session.address,
-        port: session.port,
-        path: `${outboundLinkPrefix}/project-sync/bundle/manifest`,
-        method: 'POST',
-        payload: projectSyncAuthPayload(session, status),
-        timeoutMs: PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS + 5000,
-        maxResponseBytes: PROJECT_SYNC_BUNDLE_MANIFEST_BYTES + 64 * 1024,
-      })
-      if (!remoteManifest.ok || !remoteManifest.data?.ok ||
-          !remoteManifest.data?.manifest) {
-        throw new Error(remoteManifest.data?.error ||
-          'O PC A não preparou o pacote Project Sync.')
-      }
-      const manifestText = JSON.stringify(remoteManifest.data.manifest)
-      const receivedManifestHash = safeSha256(
-        remoteManifest.data.manifestSha256)
-      const computedManifestHash = crypto.createHash('sha256')
-        .update(manifestText, 'utf8').digest('hex')
-      if (!receivedManifestHash ||
-          !tokenMatches(receivedManifestHash, computedManifestHash)) {
-        throw new Error('Manifesto do pacote Project Sync foi alterado na rede.')
-      }
-      const manifest = validateBundleManifest(
-        remoteManifest.data.manifest, session.requestId)
-      const receivedManifestMac = safeSha256(
-        remoteManifest.data.manifestMac)
-      const expectedManifestMac = projectSyncBundleMac(
-        session.token, 'manifest', [session.requestId,
-          manifest.bundleId, receivedManifestHash])
-      if (!receivedManifestMac ||
-          !tokenMatches(receivedManifestMac, expectedManifestMac)) {
-        throw new Error('Assinatura do manifesto Project Sync é inválida.')
-      }
-      ensureActive()
-      bundleId = manifest.bundleId
-      if (manifest.sourceSessionId !== session.remoteSessionId ||
-          manifest.sourceStructuralRevision !== session.remoteStructuralRevision) {
-        throw new Error('O projeto do PC A mudou antes da transferência.')
-      }
-      const stagingRoot = await projectSyncStagingRoot()
-      const transferRoot = resolveInside(stagingRoot, bundleId)
-      if (!transferRoot) throw new Error('Identificação de staging inválida.')
-      await cleanupProjectSyncStaging(false)
-      await ensureSafeDestinationDirectory(stagingRoot, transferRoot)
-      try {
-        const markerPath = pathUtil.join(transferRoot, '.vshook-staging.json')
-        const markerPartial = `${markerPath}.partial`
-        await fs.promises.writeFile(markerPartial, JSON.stringify({
-          schemaVersion: 1,
-          bundleId,
-          requestId: session.requestId,
-          createdAt: Date.now(),
-        }), { encoding: 'utf8', mode: 0o600 })
-        try { await fs.promises.unlink(markerPath) } catch (error) {
-          if (error?.code !== 'ENOENT') throw error
-        }
-        await fs.promises.rename(markerPartial, markerPath)
-      } catch (error) {
-        throw new Error(`Não foi possível preparar o staging: ${error?.message || error}`)
-      }
-
-      // Primeiro valida o que o staging de uma tentativa anterior já concluiu.
-      // O inventário/hash do RPP B só é calculado se ainda houver mídia ausente.
-      const completeFiles = new Set()
-      for (const file of manifest.files) {
-        const destination = resolveInside(transferRoot, file.relativePath)
-        if (!destination) throw new Error('Destino de arquivo inválido.')
-        try {
-          const stat = await fs.promises.lstat(destination)
-          if (stat.isFile() && !stat.isSymbolicLink() &&
-              stat.size === file.size &&
-              await sha256File(destination) === file.sha256) {
-            completeFiles.add(file.id)
-          }
-        } catch (error) {
-          if (error?.code !== 'ENOENT') throw error
-        }
-      }
-      const supportsLocalReuse = status?.projectSyncLocalMediaReuse === true
-      const missingMedia = manifest.files.some((file) =>
-        String(file.kind || '').toLowerCase() === 'media' &&
-        !completeFiles.has(file.id))
-      const localProject = missingMedia
-        ? await projectSyncLocalProjectContext() : null
-      const localProjectPath = localProject?.projectPath || ''
-      let managedMediaCache = null
-      let rppMediaBySha = new Map()
-      if (localProjectPath) {
-        await report({
-          state: 'verifying',
-          bundleId,
-          bytesDone: 0,
-          totalBytes: 0,
-          fileIndex: 0,
-          fileCount: manifest.files.length,
-        }, true)
-        const localMediaSources = await Promise.all([
-          projectSyncManagedMediaCache(localProjectPath),
-          projectSyncRppMediaIndex(
-            localProjectPath, manifest, ensureActive, async () => {
-              await report({
-                state: 'verifying',
-                bundleId,
-                bytesDone: 0,
-                totalBytes: 0,
-                fileIndex: 0,
-                fileCount: manifest.files.length,
-              })
-              }),
-        ])
-        managedMediaCache = localMediaSources[0]
-        const mediaDirectoryBySha = await projectSyncMediaDirectoryIndex(
-          localProject?.mediaPath || '', manifest, localMediaSources[1],
-          ensureActive, async () => {
-            await report({
-              state: 'verifying',
-              bundleId,
-              bytesDone: 0,
-              totalBytes: 0,
-              fileIndex: 0,
-              fileCount: manifest.files.length,
-            })
-          })
-        rppMediaBySha = mergeProjectSyncMediaIndexes(
-          localMediaSources[1], mediaDirectoryBySha)
-      }
-
-      // Extensoes novas aceitam um mapa local assinado pelo manifesto: a
-      // midia que ja existe no projeto B e validada no proprio lugar e nao e
-      // duplicada no staging. Extensoes antigas continuam no fallback abaixo,
-      // que materializa a copia completa por compatibilidade.
-      const localReuseById = new Map()
-      if (supportsLocalReuse &&
-          (managedMediaCache || rppMediaBySha.size > 0)) {
-        for (let index = 0; index < manifest.files.length; index += 1) {
-          const file = manifest.files[index]
-          if (completeFiles.has(file.id) ||
-              String(file.kind || '').toLowerCase() !== 'media') continue
-          const source = await findReusableProjectSyncMedia(
-            managedMediaCache, rppMediaBySha, file, ensureActive, async () => {
-              await report({
-                state: 'verifying',
-                bundleId,
-                bytesDone: 0,
-                totalBytes: 0,
-                fileIndex: index + 1,
-                fileCount: manifest.files.length,
-              })
-            })
-          if (source) localReuseById.set(file.id, source)
-        }
-      }
-
-      let transferTotalBytes = 0
-      let requiredStagingBytes = 0
-      for (const file of manifest.files) {
-        if (completeFiles.has(file.id) || localReuseById.has(file.id)) continue
-        transferTotalBytes += file.size
-        const destination = resolveInside(transferRoot, file.relativePath)
-        if (!destination) throw new Error('Destino de arquivo inválido.')
-        let partialBytes = 0
-        try {
-          const partialStat = await fs.promises.lstat(`${destination}.partial`)
-          if (partialStat.isFile() && !partialStat.isSymbolicLink() &&
-              partialStat.size <= file.size) partialBytes = partialStat.size
-        } catch (error) {
-          if (error?.code !== 'ENOENT') throw error
-        }
-        requiredStagingBytes += Math.max(0, file.size - partialBytes)
-      }
-      await assertProjectSyncStagingCapacity(
-        stagingRoot, requiredStagingBytes)
-
-      let bytesDone = 0
-      for (let index = 0; index < manifest.files.length; index += 1) {
-        ensureActive()
-        const file = manifest.files[index]
-        const destination = resolveInside(transferRoot, file.relativePath)
-        if (!destination) throw new Error('Destino de arquivo inválido.')
-        await ensureSafeDestinationDirectory(
-          transferRoot, pathUtil.dirname(destination))
-        const partial = `${destination}.partial`
-        let complete = false
-        try {
-          const stat = await fs.promises.lstat(destination)
-          if (!stat.isFile() || stat.isSymbolicLink()) {
-            throw new Error('Arquivo de staging inseguro.')
-          }
-          if (completeFiles.has(file.id) || (stat.size === file.size &&
-              await sha256File(destination) === file.sha256)) {
-            complete = true
-          } else {
-            await fs.promises.unlink(destination)
-          }
-        } catch (error) {
-          if (error?.code !== 'ENOENT' &&
-              error?.message !== 'Arquivo de staging inseguro.') throw error
-          if (error?.message === 'Arquivo de staging inseguro.') throw error
-        }
-        if (!complete && localReuseById.has(file.id)) {
-          try { await fs.promises.unlink(partial) } catch (error) {
-            if (error?.code !== 'ENOENT') throw error
-          }
-          await report({
-            state: 'downloading',
-            bundleId,
-            bytesDone,
-            totalBytes: transferTotalBytes,
-            fileIndex: index + 1,
-            fileCount: manifest.files.length,
-          })
-          continue
-        }
-        if (!complete && !supportsLocalReuse &&
-            String(file.kind || '').toLowerCase() === 'media' &&
-            (managedMediaCache || rppMediaBySha.size > 0)) {
-          complete = await materializeProjectSyncCachedMedia(
-            managedMediaCache, rppMediaBySha, file, destination,
-            ensureActive, async () => {
-              await report({
-                state: 'verifying',
-                bundleId,
-                bytesDone,
-                totalBytes: transferTotalBytes,
-                fileIndex: index + 1,
-                fileCount: manifest.files.length,
-              }, true)
-            })
-          if (complete) bytesDone += file.size
-        }
-        if (complete) {
-          // Uma retomada antiga pode ter deixado um .partial ao lado. Depois
-          // que o destino completo (inclusive reutilizado localmente) foi
-          // validado, o parcial não tem mais utilidade e não deve consumir
-          // quota nem confundir uma transferência futura.
-          try { await fs.promises.unlink(partial) } catch (error) {
-            if (error?.code !== 'ENOENT') throw error
-          }
-          await report({
-            state: 'downloading',
-            bundleId,
-            bytesDone,
-            totalBytes: transferTotalBytes,
-            fileIndex: index + 1,
-            fileCount: manifest.files.length,
-          })
-          continue
-        }
-
-        let offset = 0
-        try {
-          const partialStat = await fs.promises.lstat(partial)
-          if (!partialStat.isFile() || partialStat.isSymbolicLink()) {
-            throw new Error('Arquivo parcial de staging inseguro.')
-          }
-          offset = partialStat.size <= file.size ? partialStat.size : 0
-          if (partialStat.size > file.size) {
-            await fs.promises.truncate(partial, 0)
-          }
-        } catch (error) {
-          if (error?.code !== 'ENOENT') throw error
-        }
-        bytesDone += offset
-        if (offset === 0) {
-          const handle = await fs.promises.open(partial, 'w')
-          await handle.close()
-        }
-        while (offset < file.size) {
-          ensureActive()
-          const length = Math.min(
-            PROJECT_SYNC_BUNDLE_CHUNK_BYTES, file.size - offset)
-          const retryDeadline = Date.now() +
-            PROJECT_SYNC_CHUNK_RETRY_WINDOW_MS
-          let retryAttempt = 0
-          let chunk = null
-          let lastChunkError = null
-          while (!chunk) {
-            ensureActive()
-            try {
-              const candidate = await requestBinary({
-                hostname: session.address,
-                port: session.port,
-                path: `${outboundLinkPrefix}/project-sync/bundle/file`,
-                payload: projectSyncAuthPayload(session, status, {
-                  bundleId,
-                  fileId: file.id,
-                  offset,
-                  length,
-                }),
-                timeoutMs: 30000,
-                maxResponseBytes: PROJECT_SYNC_BUNDLE_CHUNK_BYTES,
-              })
-              ensureActive()
-              const responseOffset = Number(
-                candidate.headers['x-vshook-offset'])
-              const responseSize = Number(
-                candidate.headers['x-vshook-file-size'])
-              const responseChunkHash = safeSha256(
-                candidate.headers['x-vshook-chunk-sha256'])
-              const responseChunkMac = safeSha256(
-                candidate.headers['x-vshook-chunk-mac'])
-              const computedChunkHash = crypto.createHash('sha256')
-                .update(candidate.data).digest('hex')
-              const expectedChunkMac = projectSyncBundleMac(
-                session.token, 'chunk', [session.requestId, bundleId,
-                  file.id, offset, computedChunkHash])
-              if (responseOffset !== offset || responseSize !== file.size ||
-                  candidate.data.length !== length || !responseChunkHash ||
-                  !tokenMatches(responseChunkHash, computedChunkHash) ||
-                  !responseChunkMac ||
-                  !tokenMatches(responseChunkMac, expectedChunkMac)) {
-                throw new Error(
-                  `Bloco corrompido: ${file.relativePath}`)
-              }
-              chunk = candidate
-            } catch (error) {
-              lastChunkError = error
-              const statusCode = Number(error?.status) || 0
-              const retryable = statusCode === 0 || statusCode === 408 ||
-                statusCode === 429 || statusCode >= 500
-              if (!retryable || Date.now() >= retryDeadline) {
-                const detail = String(lastChunkError?.message ||
-                  'Falha temporaria sem detalhe.').trim()
-                throw new Error(
-                  `Falha ao receber ${file.relativePath} no byte ${offset}: ${detail}`)
-              }
-              retryAttempt += 1
-              await report({
-                state: 'downloading',
-                bundleId,
-                bytesDone,
-                totalBytes: transferTotalBytes,
-                fileIndex: index + 1,
-                fileCount: manifest.files.length,
-              }, true)
-              const retryDelay = Math.min(
-                PROJECT_SYNC_CHUNK_RETRY_MAX_DELAY_MS,
-                250 * Math.pow(2, Math.min(4, retryAttempt - 1)))
-              await wait(retryDelay)
-            }
-          }
-          const handle = await fs.promises.open(partial, 'r+')
-          try {
-            const written = await handle.write(
-              chunk.data, 0, chunk.data.length, offset)
-            if (written.bytesWritten !== chunk.data.length) {
-              throw new Error('Gravação incompleta no staging Project Sync.')
-            }
-          } finally {
-            await handle.close()
-          }
-          offset += chunk.data.length
-          bytesDone += chunk.data.length
-          await report({
-            state: 'downloading',
-            bundleId,
-            bytesDone,
-            totalBytes: transferTotalBytes,
-            fileIndex: index + 1,
-            fileCount: manifest.files.length,
-          })
-        }
-        await report({
-          state: 'verifying',
-          bundleId,
-          bytesDone,
-          totalBytes: transferTotalBytes,
-          fileIndex: index + 1,
-          fileCount: manifest.files.length,
-        }, true)
-        if (await sha256File(partial) !== file.sha256) {
-          try { await fs.promises.unlink(partial) } catch (_) {}
-          throw new Error(`SHA-256 inválido: ${file.relativePath}`)
-        }
-        try { await fs.promises.unlink(destination) } catch (error) {
-          if (error?.code !== 'ENOENT') throw error
-        }
-        await fs.promises.rename(partial, destination)
-      }
-
-      // Validação de commit: confirma novamente o snapshot no PC A e o estado
-      // original do PC B antes de entregar qualquer caminho para a extensão.
-      // Assim uma edição feita durante o download não aplica um pacote sobre
-      // um projeto B que já mudou nem mistura duas revisões do PC A.
-      const sourceValidation = await requestJson({
-        hostname: session.address,
-        port: session.port,
-        path: `${outboundLinkPrefix}/project-sync/bundle/manifest`,
-        method: 'POST',
-        payload: projectSyncAuthPayload(session, status),
-        timeoutMs: PROJECT_SYNC_BUNDLE_PREPARE_TIMEOUT_MS + 5000,
-        maxResponseBytes: PROJECT_SYNC_BUNDLE_MANIFEST_BYTES + 64 * 1024,
-      })
-      ensureActive()
-      const validationManifestHash = sourceValidation.data?.manifest
-        ? crypto.createHash('sha256')
-          .update(JSON.stringify(sourceValidation.data.manifest), 'utf8')
-          .digest('hex')
-        : ''
-      const validationManifestMac = safeSha256(
-        sourceValidation.data?.manifestMac)
-      if (!sourceValidation.ok || !sourceValidation.data?.ok ||
-          safeSha256(sourceValidation.data.manifestSha256) !==
-            receivedManifestHash ||
-          validationManifestHash !== receivedManifestHash ||
-          !validationManifestMac ||
-          !tokenMatches(validationManifestMac, expectedManifestMac)) {
-        throw new Error('O projeto do PC A mudou durante a transferência.')
-      }
-      const currentLocalStatus = await readLocalStatus(true)
-      const applyStillActive = projectSyncApplyIsActive(
-        currentLocalStatus, session.requestId)
-      if (!statusCanReceive(currentLocalStatus) ||
-          projectSyncRole(currentLocalStatus) !== 'secondary' ||
-          String(currentLocalStatus.sessionId || '').trim() !==
-            session.localSessionId ||
-          projectSyncStructuralRevision(currentLocalStatus) !==
-            session.localStructuralRevision ||
-          !applyStillActive) {
-        throw new Error('O projeto mudou ou a aplicação foi cancelada no PC B.')
-      }
-
-      const descriptorPath = pathUtil.join(
-        transferRoot, 'bundle.descriptor.json')
-      const descriptorPartial = `${descriptorPath}.partial`
-      const localDescriptor = localReuseById.size > 0
-        ? {
-            ...manifest,
-            localReuseFiles: manifest.files
-              .filter((file) => localReuseById.has(file.id))
-              .map((file) => ({
-                id: file.id,
-                absolutePath: localReuseById.get(file.id),
-                size: file.size,
-                sha256: file.sha256,
-              })),
-          }
-        : manifest
-      await fs.promises.writeFile(descriptorPartial,
-        `${JSON.stringify(localDescriptor, null, 2)}\n`,
-        { encoding: 'utf8', mode: 0o600 })
-      try { await fs.promises.unlink(descriptorPath) } catch (error) {
-        if (error?.code !== 'ENOENT') throw error
-      }
-      await fs.promises.rename(descriptorPartial, descriptorPath)
-      // O pacote local B já está íntegro; avisa A para limpar somente a raiz
-      // de exportação que a própria extensão A criou. Uma falha de ACK não
-      // invalida o staging B nem impede a aplicação já verificada.
-      try {
-        await requestJson({
-          hostname: session.address,
-          port: session.port,
-          path: `${outboundLinkPrefix}/project-sync/bundle/consumed`,
-          method: 'POST',
-          payload: projectSyncAuthPayload(session, status, { bundleId }),
-          timeoutMs: 3000,
-        })
-      } catch (_) {}
-      const accepted = await sendLocalCommand({
-        type: 'project_sync_apply_bundle',
-        requestId: session.requestId,
-        bundleId,
-        descriptorPath,
-        stagingRoot: transferRoot,
-        automatic: session.automatic === true,
-      })
-      if (!accepted) {
-        throw new Error('A extensão do PC B não aceitou o pacote Project Sync.')
-      }
-      // /command confirma apenas que o comando entrou na fila da extensão.
-      // O estado semântico seguinte (validating/applying/applied ou error) é
-      // publicado pela própria extensão depois de realmente processá-lo. Não
-      // antecipe "applying" nem sobrescreva um erro detectado imediatamente.
-    } catch (error) {
-      if (!stopped && lifecycleSequence === relayLifecycleSequence) {
-        await report({
-          state: 'error',
-          bundleId,
-          error: error?.message || 'Falha ao aplicar modificações do PC A.',
-        }, true)
-      }
-    }
-  }
-
-  async function maybeStartProjectSyncBundlePull(status) {
-    const apply = projectSyncApplyRequest(status)
-    if (!apply) {
-      if (!projectSyncBundlePullPromise) lastProjectSyncApplyKey = ''
-      const failed = status?.projectSyncApply
-      const failedState = String(failed?.state || '').trim().toLowerCase()
-      const failedRequestId = safePreflightRequestId(failed?.requestId)
-      const failedSequence = safeSequence(failed?.sequence)
-      if (failedState === 'error' && failed?.automatic === true &&
-          failedRequestId && projectSyncApplySession &&
-          failedRequestId === projectSyncApplySession.requestId &&
-          status?.mode === 'project_sync' &&
-          projectSyncRole(status) === 'secondary') {
-        const retryKey = `${failedRequestId}:${failedSequence}`
-        if (!projectSyncAutomaticRetry ||
-            projectSyncAutomaticRetry.key !== retryKey) {
-          projectSyncAutomaticRetry = {
-            key: retryKey,
-            attempts: 0,
-            nextAt: Date.now() + 800,
-          }
-        }
-        // Transferencias automaticas de item novo nao podem depender de o
-        // usuario abrir Conferencia/Progresso e clicar em Tentar novamente.
-        // Repete falhas transitórias com atraso crescente; depois de quatro
-        // tentativas conserva o erro real para não mascarar arquivo ausente.
-        if (!projectSyncBundlePullPromise &&
-            projectSyncAutomaticRetry.attempts < 4 &&
-            Date.now() >= projectSyncAutomaticRetry.nextAt) {
-          const attempt = projectSyncAutomaticRetry.attempts + 1
-          projectSyncAutomaticRetry.attempts = attempt
-          projectSyncAutomaticRetry.nextAt = Date.now() +
-            Math.min(15000, 1000 * (2 ** attempt))
-          lastProjectSyncApplyKey = ''
-          await sendLocalCommand({
-            type: 'project_sync_bundle_progress',
-            requestId: failedRequestId,
-            state: 'requested',
-          })
-        }
-      } else {
-        projectSyncAutomaticRetry = null
-      }
-      return
-    }
-    const applyRetryKey = `${apply.requestId}:${apply.sequence}`
-    if (projectSyncAutomaticRetry &&
-        projectSyncAutomaticRetry.key !== applyRetryKey) {
-      projectSyncAutomaticRetry = null
-    }
-    if (projectSyncBundlePullPromise || status?.mode !== 'project_sync' ||
-        projectSyncRole(status) !== 'secondary' ||
-        !projectSyncApplySession ||
-        Date.now() - projectSyncApplySession.createdAt >=
-          PROJECT_SYNC_APPLY_TTL_MS) return
-    if (!apply || apply.requestId !== projectSyncApplySession.requestId) return
-    // O clique deve pertencer ao resultado bloqueado que ainda está exposto
-    // pela extensão B; não basta alguém fabricar state=requested no status.
-    if (statusPreflightRequestId(status) !== apply.requestId ||
-        (!apply.automatic && status.projectSyncReady === true)) return
-    const key = `${apply.requestId}:${apply.sequence}`
-    if (key === lastProjectSyncApplyKey) return
-    if (String(status.sessionId || '').trim() !==
-          projectSyncApplySession.localSessionId ||
-        projectSyncStructuralRevision(status) !==
-          projectSyncApplySession.localStructuralRevision) return
-    lastProjectSyncApplyKey = key
-    projectSyncBundlePullPromise = downloadProjectSyncBundle(
-      status, { ...projectSyncApplySession,
-        automatic: apply.automatic === true,
-        differencePlan: apply.differencePlan })
-      .catch(() => {})
-      .finally(() => { projectSyncBundlePullPromise = null })
   }
 
   async function notifyLocalPeer(connected, peerName = '') {
@@ -2889,13 +661,7 @@ function createTimecodeLanRelay(options = {}) {
   }
 
   function clearProjectSyncTransientState() {
-    pendingProjectSyncPreflight = null
-    projectSyncPairAttempt = null
-    projectSyncApplyPeer = null
-    projectSyncApplySession = null
-    projectSyncExportBundle = null
-    lastProjectSyncApplyKey = ''
-    projectSyncAutomaticRetry = null
+    lastProjectSyncRoleHandoverKey = ''
   }
 
   function resetTransmitterPeer(notify = true) {
@@ -2940,19 +706,7 @@ function createTimecodeLanRelay(options = {}) {
       transmitterPeer?.localSessionId
       ? transmitterPeer
       : null
-    // Durante a conferencia bloqueada ainda nao existe um peer de eventos,
-    // mas o preflight ja criou um canal A/B autenticado para aplicar as
-    // diferencas. Esse mesmo canal pode coordenar a troca de mestre.
-    const conferenceRequestId = statusPreflightRequestId(status)
-    const conferencePeer = !connectedPeer &&
-      applyPeerIsCurrent(projectSyncApplyPeer) &&
-      projectSyncApplyPeer?.token &&
-      projectSyncApplyPeer?.remoteSessionId &&
-      projectSyncApplyPeer?.localSessionId &&
-      projectSyncApplyPeer.requestId === conferenceRequestId
-      ? projectSyncApplyPeer
-      : null
-    const handoverPeer = connectedPeer || conferencePeer
+    const handoverPeer = connectedPeer
     if (!request || status?.mode !== 'project_sync' ||
         projectSyncRole(status) !== 'primary' ||
         !handoverPeer) {
@@ -2993,9 +747,6 @@ function createTimecodeLanRelay(options = {}) {
         // A extensão consome o comando no próximo ciclo principal. Encerrar o
         // peer antigo evita que um último pacote A -> B atravesse a troca.
         if (connectedPeer) resetTransmitterPeer(true)
-        projectSyncApplyPeer = null
-        projectSyncExportBundle = null
-        projectSyncPairAttempt = null
         await publishProjectSyncRoleHandoverState(request.requestId, 'completed')
       } catch (error) {
         lastProjectSyncRoleHandoverKey = ''
@@ -3168,348 +919,62 @@ function createTimecodeLanRelay(options = {}) {
     })
   }
 
-  async function pollRemoteProjectSyncPreflight({
-    address,
-    port,
-    status,
-    requestId,
-  }) {
-    const deadline = Date.now() + PROJECT_SYNC_PREFLIGHT_TIMEOUT_MS
-    while (!stopped && Date.now() < deadline) {
-      const currentStatus = await readLocalStatus(false)
-      if (!statusCanTransmit(currentStatus) ||
-          projectSyncRole(currentStatus) !== 'primary' ||
-          String(currentStatus.code || '') !== String(status.code || '') ||
-          String(currentStatus.sessionId || '') !==
-            String(status.sessionId || '')) {
-        return null
-      }
-      try {
-        const result = await requestJson({
-          hostname: address,
-          port,
-          path: `${outboundLinkPrefix}/preflight`,
-          method: 'POST',
-          payload: {
-            requestId,
-            code: status.code,
-            transmitterId: instanceId,
-            sessionId: String(status.sessionId || ''),
-            projectSyncRole: 'primary',
-          },
-          timeoutMs: 900,
-        })
-        if (!result.ok && result.status !== 202) return null
-        if (result.data?.pending === true) {
-          await wait(PROJECT_SYNC_PREFLIGHT_POLL_MS)
-          continue
-        }
-        if (result.data?.ok && result.data?.completed === true) {
-          return result.data
-        }
-      } catch (_) {
-        // Uma perda curta de pacote durante a comparacao nao reinicia nem troca
-        // o requestId. Continua consultando ate o limite total do preflight.
-      }
-      await wait(PROJECT_SYNC_PREFLIGHT_POLL_MS)
-    }
-    return null
-  }
-
   async function pairWithReceiver(status, address, remotePort, receiver = {}) {
     const offeredReceiverId = String(receiver.id || '').trim().toLowerCase()
     if (!statusCanTransmit(status) || !isPairCode(status.code) ||
         !offeredReceiverId || selectedPeerId(status) !== offeredReceiverId ||
-        transmitterPeer?.connected || stopped || !peerAddressAllowed(address) ||
-        !canUsePeerAddress(
-          relayChannel, normalizePeerAddress(address), offeredReceiverId)) return false
-    if (status.mode === 'project_sync' &&
-        applyPeerIsCurrent(projectSyncApplyPeer) &&
-        normalizePeerAddress(address) !==
-          normalizePeerAddress(projectSyncApplyPeer.address)) return false
+        transmitterPeer?.connected || pairingInProgress || stopped || !peerAddressAllowed(address) ||
+        !canUsePeerAddress(relayChannel, normalizePeerAddress(address), offeredReceiverId)) return false
+    const lifecycle = relayLifecycleSequence
+    pairingInProgress = true
     try {
-      // Verifica o contrato antes de enviar o manifesto. Uma Hook Center antiga
-      // aceitava /pair e se marcava como conectada, mas nao possuia preflight;
-      // isso criava uma conexao unilateral falsa no PC B.
-      if (status.mode === 'project_sync' &&
-          !await projectSyncCapabilities(
-            status, address, remotePort,
-            // Somente uma oferta UDP do PC B prova que ele inseriu o mesmo
-            // codigo e esta esperando este PC A. A varredura TCP do cabo
-            // visita todos os hosts e jamais pode abrir uma conferencia so
-            // porque encontrou uma Hook Center antiga ou ainda nao armada.
-            !!String(receiver.id || '').trim())) {
-        return false
-      }
-      const localEventBaseline = Math.max(0,
-        safeSequence(status.eventSequence))
+      const projectSync = status.mode === 'project_sync'
+      if (projectSync && !await projectSyncCapabilities(status, address, remotePort)) return false
+      const localEventBaseline = safeSequence(status.eventSequence)
       const localSessionId = String(status.sessionId || '').trim()
-      const localStructuralRevision =
-        projectSyncStructuralRevision(status)
-      if (status.mode === 'project_sync' && !localSessionId) return false
-      const proposedRequestId = status.mode === 'project_sync'
-        ? projectSyncPairRequestId(status)
-        : ''
-      let result = await requestJson({
-        hostname: address,
-        port: remotePort,
-        path: `${outboundLinkPrefix}/pair`,
-        method: 'POST',
+      if (projectSync && !localSessionId) return false
+      const result = await requestJson({
+        hostname: address, port: remotePort,
+        path: `${outboundLinkPrefix}/pair`, method: 'POST',
         payload: {
-          code: status.code,
-          transmitterId: instanceId,
-          transmitterName: deviceName(),
-          transmitterPort: Number(getDirectorPort()) || 47831,
-          mode: status.mode,
-          protocolVersion: status.mode === 'project_sync'
-            ? PROJECT_SYNC_PROTOCOL_VERSION
-            : 1,
-          projectSyncRole: projectSyncRole(status),
-          eventSequence: localEventBaseline,
+          code: status.code, transmitterId: instanceId, transmitterName: deviceName(),
+          mode: status.mode, protocolVersion: projectSync ? PROJECT_SYNC_PROTOCOL_VERSION : 1,
+          projectSyncRole: projectSyncRole(status), eventSequence: localEventBaseline,
           sessionId: localSessionId,
-          // A extensao monta o manifesto sem caminhos absolutos. O relay apenas
-          // o encaminha para que B possa comparar projeto e configuracoes.
-          manifest: status.mode === 'project_sync'
-            ? (status.manifest || null)
-            : undefined,
-          manifestRevision: status.mode === 'project_sync'
-            ? String(status.manifestRevision || '')
-            : undefined,
-          structuralManifestRevision: status.mode === 'project_sync'
-            ? localStructuralRevision
-            : undefined,
-          requestId: status.mode === 'project_sync'
-            ? proposedRequestId
-            : undefined,
         },
-        timeoutMs: Math.max(
-          status.mode === 'project_sync' ? 1800 : 0,
-          Number(receiver.timeoutMs) || 1000),
+        timeoutMs: Math.max(projectSync ? 1800 : 0, Number(receiver.timeoutMs) || 1000),
       })
-      if (!result.ok || !result.data?.ok || transmitterPeer?.connected || stopped) {
-        if (status.mode === 'project_sync' &&
-            !!String(receiver.id || '').trim() &&
-            isRecognizableLegacyRelayResponse(result)) {
-          await notifyProjectSyncProtocolMismatch(status, address)
-        }
-        return false
-      }
-      if (status.mode === 'project_sync' &&
-          !projectSyncRolesMatch(
-            projectSyncRole(status), result.data.projectSyncRole)) {
-        await notifyProjectSyncProtocolMismatch(status, address)
-        return false
-      }
-      if (status.mode === 'project_sync' && result.data.pending === true) {
-        const requestId = safePreflightRequestId(result.data.requestId)
-        if (!requestId) return false
-        const completed = await pollRemoteProjectSyncPreflight({
-          address,
-          port: remotePort,
-          status,
-          requestId,
-        })
-        if (!completed) {
-          await sendLocalCommand({
-            type: 'project_sync_preflight',
-            phase: 'pairing',
-            showConference: true,
-            role: 'primary',
-            requestId,
-            ready: false,
-            timedOut: true,
-          })
-          return false
-        }
-        result = { ok: true, data: completed }
-      }
-      if (status.mode === 'project_sync') {
-        const confirmedStatus = await readLocalStatus(true)
-        const confirmedSessionId = String(
-          confirmedStatus?.sessionId || '').trim()
-        const confirmedStructuralRevision =
-          projectSyncStructuralRevision(confirmedStatus)
-        if (!statusCanTransmit(confirmedStatus) ||
-            projectSyncRole(confirmedStatus) !== 'primary' ||
-            String(confirmedStatus.code || '') !== String(status.code || '') ||
-            confirmedSessionId !== localSessionId ||
-            confirmedStructuralRevision !== localStructuralRevision) {
-          await sendLocalCommand({
-            type: 'project_sync_preflight',
-            phase: 'pairing',
-            showConference: true,
-            role: 'primary',
-            requestId: safePreflightRequestId(result.data.requestId) ||
-              proposedRequestId,
-            ready: false,
-            diff: projectSyncManifestChangedDiff(
-              'primary', localStructuralRevision,
-              confirmedStructuralRevision),
-          })
-          finishProjectSyncPairAttempt(
-            safePreflightRequestId(result.data.requestId) ||
-              proposedRequestId)
-          return false
-        }
-        status = confirmedStatus
-      }
-      if (status.mode === 'project_sync' && result.data.ready !== true) {
-        // Mantem o diagnostico local disponivel no status da extensao, mas nao
-        // abre o fluxo A -> B enquanto o preflight apontar divergencias.
-        await sendLocalCommand({
-          type: 'project_sync_preflight',
-          phase: 'pairing',
-          showConference: true,
-          role: 'primary',
-          requestId: safePreflightRequestId(result.data.requestId) ||
-            proposedRequestId,
-          ready: false,
-          diff: result.data.diff || null,
-          remoteManifestRevision: String(
-            result.data.manifestRevision || ''),
-        })
-        const applyToken = String(result.data.applyToken || '')
-        const receiverId = String(result.data.receiverId || receiver.id || '')
-        const receiverSessionId = String(
-          result.data.receiverSessionId || '').trim()
-        const remoteStructuralRevision = String(
-          result.data.structuralManifestRevision ||
-          result.data.manifestRevision || '').trim().slice(0, 256)
-        if (/^[a-f0-9]{64}$/i.test(applyToken) && receiverId &&
-            receiverSessionId && remoteStructuralRevision) {
-          projectSyncApplyPeer = {
-            requestId: safePreflightRequestId(result.data.requestId) ||
-              proposedRequestId,
-            token: applyToken,
-            code: String(status.code || ''),
-            address: normalizePeerAddress(address),
-            port: remotePort,
-            receiverId,
-            name: safeName(result.data.receiverName || receiver.name, 'PC B'),
-            localSessionId,
-            localManifestRevision: projectSyncManifestRevision(status),
-            localStructuralRevision,
-            remoteSessionId: receiverSessionId,
-            remoteManifestRevision: String(
-              result.data.manifestRevision || '').trim().slice(0, 256),
-            remoteStructuralRevision,
-            createdAt: Date.now(),
-          }
-          // Mantém o mesmo requestId nas novas sondagens enquanto a janela de
-          // diferenças aguarda a decisão do usuário no PC B.
-          if (projectSyncPairAttempt?.requestId === proposedRequestId) {
-            projectSyncPairAttempt.createdAt = Date.now()
-          }
-        }
-        return false
-      }
-      if (status.mode === 'project_sync') {
-        await sendLocalCommand({
-          type: 'project_sync_preflight',
-          phase: 'pairing',
-          showConference: true,
-          role: 'primary',
-          requestId: safePreflightRequestId(result.data.requestId) ||
-            proposedRequestId,
-          ready: true,
-          diff: result.data.diff || null,
-          remoteManifestRevision: String(
-            result.data.manifestRevision || ''),
-        })
-      }
-      if (status.mode === 'project_sync' &&
-          (!String(result.data.receiverSessionId || '').trim() ||
-           !String(result.data.manifestRevision || '').trim())) {
-        return false
-      }
-      if (!result.data?.token || transmitterPeer?.connected || stopped) return false
-      if (status.mode === 'project_sync' &&
-          /^[a-f0-9]{64}$/i.test(String(result.data.applyToken || ''))) {
-        projectSyncApplyPeer = {
-          requestId: safePreflightRequestId(result.data.requestId) ||
-            proposedRequestId,
-          token: String(result.data.applyToken),
-          code: String(status.code || ''),
-          address: normalizePeerAddress(address),
-          port: remotePort,
-          receiverId: String(result.data.receiverId || receiver.id || ''),
-          name: safeName(result.data.receiverName || receiver.name, 'PC B'),
-          localSessionId,
-          localManifestRevision: projectSyncManifestRevision(status),
-          localStructuralRevision,
-          remoteSessionId: String(result.data.receiverSessionId || '').trim(),
-          remoteManifestRevision: String(
-            result.data.manifestRevision || '').trim().slice(0, 256),
-          remoteStructuralRevision: String(
-            result.data.structuralManifestRevision ||
-              result.data.manifestRevision || '').trim().slice(0, 256),
-          createdAt: Date.now(),
-        }
-      } else {
-        projectSyncApplyPeer = null
-      }
-      projectSyncExportBundle = null
-      const remoteId = String(result.data.receiverId || receiver.id || '')
-      if (!remoteId || !canUsePeerAddress(
-        relayChannel, normalizePeerAddress(address), remoteId)) {
-        return false
-      }
+      if (!result.ok || result.data?.ok !== true || !result.data.token ||
+          transmitterPeer?.connected || stopped || lifecycle !== relayLifecycleSequence) return false
+      if (projectSync && (Number(result.data.projectSyncProtocolVersion) !== PROJECT_SYNC_PROTOCOL_VERSION ||
+          result.data.projectSyncControlsOnly !== true || result.data.ready !== true ||
+          !projectSyncRolesMatch(projectSyncRole(status), result.data.projectSyncRole) ||
+          !String(result.data.receiverSessionId || '').trim())) return false
+      const confirmed = await readLocalStatus(true)
+      if (!statusCanTransmit(confirmed) || confirmed.mode !== status.mode ||
+          String(confirmed.code || '') !== String(status.code || '') ||
+          String(confirmed.sessionId || '').trim() !== localSessionId ||
+          selectedPeerId(confirmed) !== offeredReceiverId || stopped || lifecycle !== relayLifecycleSequence) return false
+      const remoteId = String(result.data.receiverId || '').trim().toLowerCase()
+      if (remoteId !== offeredReceiverId || !canUsePeerAddress(
+        relayChannel, normalizePeerAddress(address), remoteId)) return false
       transmitterPeer = {
-        address,
-        port: remotePort,
-        receiverId: remoteId,
+        address, port: remotePort, receiverId: remoteId,
         name: safeName(result.data.receiverName || receiver.name, 'Receiver'),
-        token: String(result.data.token),
-        lastSequence: localEventBaseline,
-        lastTransportSequence: 0,
-        lastPacketAt: 0,
-        audioHealthy: true,
-        lastHealthyTransport: null,
-        lastObservedControlSequence: safeSequence(
-          status?.transport?.controlSequence),
-        resumeControlSequenceFloor: null,
-        localSessionId,
-        localManifestRevision: status.mode === 'project_sync'
-          ? projectSyncManifestRevision(status)
-          : '',
-        localStructuralRevision: status.mode === 'project_sync'
-          ? localStructuralRevision
-          : '',
-        // O manifesto usado no handshake ja chegou ao PC B. A partir daqui,
-        // somente uma revisao nova precisa ser reenviada pelo canal vivo.
-        lastManifestSnapshotRevision: status.mode === 'project_sync'
-          ? projectSyncManifestRevision(status)
-          : '',
-        remoteSessionId: status.mode === 'project_sync'
-          ? String(result.data.receiverSessionId || '').trim()
-          : '',
-        remoteManifestRevision: status.mode === 'project_sync'
-          ? String(result.data.manifestRevision || '').trim().slice(0, 256)
-          : '',
-        remoteStructuralRevision: status.mode === 'project_sync'
-          ? String(result.data.structuralManifestRevision ||
-              result.data.manifestRevision || '').trim().slice(0, 256)
-          : '',
-        failures: 0,
-        connected: true,
+        token: String(result.data.token), code: String(status.code || ''), mode: status.mode,
+        lastSequence: localEventBaseline, lastTransportSequence: 0, lastPacketAt: 0,
+        audioHealthy: true, lastHealthyTransport: null,
+        lastObservedControlSequence: safeSequence(confirmed?.transport?.controlSequence),
+        resumeControlSequenceFloor: null, localSessionId,
+        remoteSessionId: projectSync ? String(result.data.receiverSessionId).trim() : '',
+        failures: 0, connected: true,
       }
-      try {
-        onPeerConnectionChanged(
-          relayChannel, normalizePeerAddress(address), true, remoteId)
-      } catch (_) {}
-      // Project Sync e estritamente A -> B. O PC A nunca cria uma sessao de
-      // recepcao reversa e, portanto, o escravo nao pode devolver comandos.
-      if (status.mode === 'project_sync') receiverSession = null
-      if (status.mode === 'project_sync') {
-        finishProjectSyncPairAttempt(
-          safePreflightRequestId(result.data.requestId) ||
-            proposedRequestId)
-      }
+      try { onPeerConnectionChanged(relayChannel, normalizePeerAddress(address), true, remoteId) } catch (_) {}
+      if (projectSync) receiverSession = null
       await notifyLocalPeer(true, transmitterPeer.name)
       return true
-    } catch (_) {
-      return false
-    }
+    } catch (_) { return false }
+    finally { pairingInProgress = false }
   }
 
   async function considerReceiverCandidate(status, address, remotePort,
@@ -3552,7 +1017,6 @@ function createTimecodeLanRelay(options = {}) {
     if (String(message.transmitterId || '') !== instanceId) return
     if (status.mode === 'project_sync' &&
         Number(message.version) !== PROJECT_SYNC_PROTOCOL_VERSION) {
-      await notifyProjectSyncProtocolMismatch(status, rinfo.address)
       return
     }
     if (status.mode === 'project_sync' &&
@@ -3656,13 +1120,7 @@ function createTimecodeLanRelay(options = {}) {
 
   async function transmitTick(status) {
     const now = Date.now()
-    if (!transmitterPeer || !transmitterPeer.connected) {
-      if (status.mode === 'project_sync' && projectSyncExportBundle &&
-          applyPeerIsCurrent(projectSyncApplyPeer)) {
-        // O PC B ja confirmou e esta consumindo o snapshot preparado. Nao
-        // dispara outro /pair enquanto os chunks desse bundle estao ativos.
-        return
-      }
+    if (!transmitterPeer?.connected) {
       if (now - lastDiscoveryAt >= DISCOVERY_INTERVAL_MS) {
         lastDiscoveryAt = now
         broadcastDiscovery(status)
@@ -3670,246 +1128,81 @@ function createTimecodeLanRelay(options = {}) {
       if (!directDiscoveryRunning && now - lastDirectDiscoveryAt >= DIRECT_DISCOVERY_INTERVAL_MS) {
         lastDirectDiscoveryAt = now
         directDiscoveryRunning = true
-        discoverReceiverOverTcp(status)
-          .catch(() => {})
+        discoverReceiverOverTcp(status).catch(() => {})
           .finally(() => { directDiscoveryRunning = false })
       }
       return
     }
-
-    // Se a sessao nasceu pelo Wi-Fi enquanto o cabo estava fora e o cabo
-    // preferencial voltou, refaz somente o enlace LAN. O codigo/seleção do
-    // dispositivo permanecem e o pareamento e reencontrado automaticamente.
-    const liveCablePrefix = preferredCablePrefix()
-    if (liveCablePrefix && !normalizePeerAddress(
-      transmitterPeer.address).startsWith(liveCablePrefix)) {
-      resetTransmitterPeer(true)
-      return
-    }
-
+    const peer = transmitterPeer
     const currentLocalSessionId = String(status.sessionId || '').trim()
-    const currentLocalManifestRevision = projectSyncManifestRevision(status)
-    const currentLocalStructuralRevision =
-      projectSyncStructuralRevision(status)
-    // A conferencia pertence exclusivamente ao handshake inicial. Depois que
-    // a sessao A -> B esta autenticada, revisoes do projeto/configuracao sao
-    // estados vivos da mesma sessao e nao podem derrubar o peer nem iniciar um
-    // novo preflight. O sessionId muda quando o REAPER/extensao reinicia e
-    // continua sendo a identidade forte usada para encerrar o pareamento.
-    if (transmitterPeer.localSessionId !== currentLocalSessionId) {
+    if (!peerAddressAllowed(peer.address) || peer.localSessionId !== currentLocalSessionId ||
+        peer.code !== String(status.code || '') || peer.mode !== status.mode ||
+        selectedPeerId(status) !== peer.receiverId) {
       resetTransmitterPeer(true)
-      resetReceiverSession(false)
       return
     }
-    if (status.mode === 'project_sync') {
-      // As revisoes completa e estrutural sao apenas diagnostico depois do
-      // handshake. A conferencia somente volta a existir em outro pareamento.
-      transmitterPeer.localManifestRevision = currentLocalManifestRevision
-      transmitterPeer.localStructuralRevision =
-        currentLocalStructuralRevision
-      if (projectSyncApplyPeer &&
-          projectSyncApplyPeer.receiverId === transmitterPeer.receiverId) {
-        projectSyncApplyPeer.localManifestRevision =
-          currentLocalManifestRevision
-        projectSyncApplyPeer.localStructuralRevision =
-          currentLocalStructuralRevision
-        projectSyncApplyPeer.createdAt = Date.now()
-      }
-    }
-
     try {
-      let packet = {
-        events: [],
-        transport: status.transport || {},
-        latestSequence: safeSequence(status.eventSequence),
-      }
-      const statusPublishesEventSequence =
-        Number.isFinite(Number(status.eventSequence))
-      if (!statusPublishesEventSequence ||
-          packet.latestSequence > transmitterPeer.lastSequence) {
-        const outboxResult = await requestJson({
-          hostname: '127.0.0.1',
-          port: nativeBridgePort,
-          path: nativeOutboxPath,
-          method: 'POST',
-          payload: { after: transmitterPeer.lastSequence },
-          timeoutMs: 500,
+      let packet = { events: [], transport: status.transport || {} }
+      if (!Number.isFinite(Number(status.eventSequence)) ||
+          safeSequence(status.eventSequence) > peer.lastSequence) {
+        const outbox = await requestJson({
+          hostname: '127.0.0.1', port: nativeBridgePort,
+          path: nativeOutboxPath, method: 'POST',
+          payload: { after: peer.lastSequence }, timeoutMs: 500,
         })
-        if (!outboxResult.ok || !outboxResult.data?.ok) {
-          throw new Error('Outbox indisponível.')
-        }
-        packet = outboxResult.data
+        if (!outbox.ok || !outbox.data?.ok) throw new Error('Outbox indisponível.')
+        packet = outbox.data
       }
-      const events = Array.isArray(packet.events)
-        ? packet.events.slice(0, 256)
-        : []
-      // Eventos de configuracao usam o mesmo envelope confiavel dos demais.
-      // Nao filtre project_sync_config_snapshot/patch aqui: a extensao e quem
-      // produz e aplica o payload generico (cores, Teleprompt e demais ajustes).
+      const events = Array.isArray(packet.events) ? packet.events.slice(0, 256) : []
+      const eventsForSend = events.filter(event =>
+        safeSequence(event?.sequence, -1) >= 0 && isRelayControlCommand(event?.command, status.mode))
+        .map(event => ({ sequence: event.sequence, command: event.command }))
       const rawTransport = packet.transport || status.transport || {}
       const audioHealthy = transportAudioHealthy(status, rawTransport)
-      // Em redundancia MTC, o relogio continuo chega pelo switch A/B. A
-      // sessao HTTP do PC A continua levando apenas os comandos semanticos
-      // (Parts, fila, selecao etc.), sem criar um segundo transporte paralelo.
-      const mtcRole = relayChannel === 'parallel'
-        ? redundantMtcRole(status) : ''
-      const transport = mtcRole
-        ? null
-        : projectSyncTransportForSend(
-          status, transmitterPeer, rawTransport)
-      const transportSequence = transport
-        ? safeSequence(transport.sequence)
-        : (transmitterPeer.lastTransportSequence || 0)
-      const liveManifest = status.mode === 'project_sync'
-        ? String(status.manifest || '')
-        : ''
-      const manifestSnapshot = status.mode === 'project_sync' &&
-        currentLocalManifestRevision &&
-        currentLocalManifestRevision !==
-          transmitterPeer.lastManifestSnapshotRevision &&
-        liveManifest &&
-        Buffer.byteLength(liveManifest, 'utf8') <=
-          PROJECT_SYNC_LIVE_MANIFEST_BYTES
-        ? {
-            manifest: liveManifest,
-            manifestRevision: currentLocalManifestRevision,
-            structuralManifestRevision: currentLocalStructuralRevision,
-          }
-        : null
-      // O snapshot vai sozinho. Depois que o PC B confirmar que o enfileirou,
-      // o tick seguinte entrega o resync e os demais eventos. Isso garante a
-      // ordem arquivo/manifesto antes da aplicacao e evita exceder 2 MiB ao
-      // somar um manifesto grande a chunks de comandos pendentes.
-      const eventsForSend = manifestSnapshot ? [] : events
-      const shouldSend = eventsForSend.length > 0 ||
-        !!manifestSnapshot ||
-        (!!transport && transportSequence !==
-          (transmitterPeer.lastTransportSequence || 0)) ||
-        now - (transmitterPeer.lastPacketAt || 0) >=
-          IDLE_LINK_HEARTBEAT_MS
-      if (!shouldSend) {
-        transmitterPeer.failures = 0
+      const mtcRole = relayChannel === 'parallel' ? redundantMtcRole(status) : ''
+      const transportState = { ...peer }
+      const transport = mtcRole ? null : timecodeTransportForSend(status, transportState, rawTransport)
+      const transportSequence = transport ? safeSequence(transport.sequence) : peer.lastTransportSequence
+      if (!events.length && (!transport || transportSequence === peer.lastTransportSequence) &&
+          now - peer.lastPacketAt < IDLE_LINK_HEARTBEAT_MS) return
+      const result = await requestJson({
+        hostname: peer.address, port: peer.port,
+        path: `${outboundLinkPrefix}/events`, method: 'POST',
+        payload: {
+          token: peer.token, code: status.code, transmitterId: instanceId,
+          transmitterName: deviceName(), sessionId: currentLocalSessionId,
+          projectSyncRole: projectSyncRole(status), events: eventsForSend,
+          ...(transport ? { transport } : {}), audioHealthy,
+        }, timeoutMs: 1800,
+      })
+      if (transmitterPeer !== peer || stopped) return
+      if (!result.ok || !result.data?.ok) throw new Error('Receiver indisponível.')
+      if (status.mode === 'project_sync' &&
+          String(result.data.receiverSessionId || '').trim() !== peer.remoteSessionId) {
+        resetTransmitterPeer(true)
         return
       }
-      const remoteResult = await requestJson({
-        hostname: transmitterPeer.address,
-        port: transmitterPeer.port,
-        path: `${outboundLinkPrefix}/events`,
-        method: 'POST',
-        payload: {
-          token: transmitterPeer.token,
-          code: status.code,
-          transmitterId: instanceId,
-          transmitterName: deviceName(),
-          sessionId: currentLocalSessionId,
-          projectSyncRole: projectSyncRole(status),
-          manifestRevision: status.mode === 'project_sync'
-            ? projectSyncManifestRevision(status)
-            : undefined,
-          structuralRevision: status.mode === 'project_sync'
-            ? currentLocalStructuralRevision
-            : undefined,
-          manifestSnapshot: manifestSnapshot || undefined,
-          events: eventsForSend,
-          transport,
-          audioHealthy,
-        },
-        timeoutMs: 1800,
-      })
-      if (!remoteResult.ok || !remoteResult.data?.ok) throw new Error('Receiver indisponível.')
-      if (status.mode === 'project_sync') {
-        const remoteSessionId = String(
-          remoteResult.data.receiverSessionId || '').trim()
-        const remoteManifestRevision = String(
-          remoteResult.data.manifestRevision || '').trim().slice(0, 256)
-        const remoteStructuralRevision = String(
-          remoteResult.data.structuralManifestRevision ||
-          remoteResult.data.manifestRevision || '').trim().slice(0, 256)
-        if (!remoteSessionId ||
-            remoteSessionId !== transmitterPeer.remoteSessionId) {
-          resetTransmitterPeer(true)
-          return
-        }
-        if (remoteManifestRevision) {
-          transmitterPeer.remoteManifestRevision = remoteManifestRevision
-        }
-        if (remoteStructuralRevision) {
-          transmitterPeer.remoteStructuralRevision = remoteStructuralRevision
-        }
-        if (projectSyncApplyPeer &&
-            projectSyncApplyPeer.receiverId === transmitterPeer.receiverId) {
-          if (remoteManifestRevision) {
-            projectSyncApplyPeer.remoteManifestRevision =
-              remoteManifestRevision
-          }
-          if (remoteStructuralRevision) {
-            projectSyncApplyPeer.remoteStructuralRevision =
-              remoteStructuralRevision
-          }
-        }
-        const acceptedManifestSnapshotRevision = String(
-          remoteResult.data.manifestSnapshotRevision || '').trim()
-        if (manifestSnapshot && acceptedManifestSnapshotRevision ===
-            currentLocalManifestRevision) {
-          transmitterPeer.lastManifestSnapshotRevision =
-            acceptedManifestSnapshotRevision
-        }
-
-        // O manifesto vivo e comparado no PC B. Devolve o resultado para o
-        // PC A pelo mesmo canal, sem novo pareamento e sem abrir a janela.
-        // Assim uma Conferencia que nasceu quando A estava em uma aba/projeto
-        // vazio deixa de exibir o diff antigo assim que A abre a aba certa.
-        const remotePreflightRequestId = String(
-          remoteResult.data.projectSyncPreflightRequestId || '').trim()
-        const localPreflightRequestId = String(
-          status.projectSyncPreflightRequestId ||
-          status.projectSyncRequestId || '').trim()
-        const remoteDiff = remoteResult.data.projectSyncDiff
-        if (remotePreflightRequestId &&
-            remotePreflightRequestId === localPreflightRequestId &&
-            remoteDiff && typeof remoteDiff === 'object') {
-          const remoteConferenceKey = `${remotePreflightRequestId}|` +
-            `${remoteManifestRevision}|${JSON.stringify(remoteDiff)}`
-          if (transmitterPeer.lastRemoteConferenceKey !==
-              remoteConferenceKey) {
-            transmitterPeer.lastRemoteConferenceKey = remoteConferenceKey
-            await sendLocalCommand({
-              type: 'project_sync_preflight',
-              phase: 'live',
-              showConference: false,
-              role: 'primary',
-              requestId: remotePreflightRequestId,
-              ready: remoteResult.data.projectSyncReady === true,
-              diff: remoteDiff,
-              remoteManifestRevision,
-            })
-          }
-        }
+      const acknowledged = safeSequence(result.data.acceptedSequence, -1)
+      const highestSent = eventsForSend.reduce((highest,event) => Math.max(highest,
+        safeSequence(event.sequence)), peer.lastSequence)
+      if (acknowledged >= peer.lastSequence && acknowledged <= highestSent) {
+        peer.lastSequence = acknowledged
+        // Disallowed legacy mutations must not pin the local outbox forever.
+        // Advance past them only after every allowed command was acknowledged.
+        if (acknowledged === highestSent) peer.lastSequence = events.reduce((highest,event) =>
+          Math.max(highest,safeSequence(event?.sequence)), peer.lastSequence)
       }
-      const acknowledged = Number(remoteResult.data.acceptedSequence)
-      const highestSentSequence = eventsForSend.reduce((highest, event) => {
-        const sequence = Number(event?.sequence)
-        return Number.isSafeInteger(sequence) && sequence >= 0
-          ? Math.max(highest, sequence)
-          : highest
-      }, transmitterPeer.lastSequence)
-      if (Number.isSafeInteger(acknowledged) &&
-          acknowledged >= transmitterPeer.lastSequence &&
-          acknowledged <= highestSentSequence) {
-        transmitterPeer.lastSequence = acknowledged
-      }
-      if (transport) {
-        transmitterPeer.lastTransportSequence = transportSequence
-      }
-      transmitterPeer.lastPacketAt = Date.now()
-      transmitterPeer.failures = 0
+      peer.audioHealthy = transportState.audioHealthy
+      peer.lastObservedControlSequence = transportState.lastObservedControlSequence
+      peer.lastHealthyTransport = transportState.lastHealthyTransport
+      peer.resumeControlSequenceFloor = transportState.resumeControlSequenceFloor
+      if (transport) peer.lastTransportSequence = transportSequence
+      peer.lastPacketAt = Date.now()
+      peer.failures = 0
     } catch (_) {
-      if (!transmitterPeer) return
-      transmitterPeer.failures += 1
-      // Picos curtos durante hash/aplicacao de projeto nao significam que o
-      // cabo caiu. Mantem o peer por alguns pulsos e reencontra a rota sem
-      // abrir outra conferencia se a rede realmente tiver mudado.
-      if (transmitterPeer.failures >= 5) resetTransmitterPeer(true)
+      if (transmitterPeer !== peer) return
+      peer.failures += 1
+      if (peer.failures >= 5) resetTransmitterPeer(true)
     }
   }
 
@@ -3917,7 +1210,6 @@ function createTimecodeLanRelay(options = {}) {
     if (stopped || tickRunning) return
     tickRunning = true
     try {
-      cleanupProjectSyncStaging(false).catch(() => {})
       const status = await readLocalStatus()
       if (!licenseIsActive() || !status || !isPairCode(status.code)) {
         if (transmitterPeer) resetTransmitterPeer(true)
@@ -3926,93 +1218,36 @@ function createTimecodeLanRelay(options = {}) {
         pairingCandidateNotices.clear()
         return
       }
-
-      // A e B anunciam seus relogios mesmo quando o C ja esta pareado com A.
-      // O canal reserva nao precisa tomar a sessao HTTP para permanecer pronto.
       broadcastRedundantMtc(status)
       if (relayChannel === 'parallel' && lastMtcRedundantAckAt &&
-          Date.now() - lastMtcRedundantAckAt > RECEIVER_TIMEOUT_MS &&
-          !transmitterPeer?.connected) {
+          Date.now() - lastMtcRedundantAckAt > RECEIVER_TIMEOUT_MS && !transmitterPeer?.connected) {
         lastMtcRedundantAckAt = 0
         await notifyLocalPeer(false)
       }
-
-      // O PC B e somente a fonte de relogio reserva. Ele nunca disputa com A
-      // o peer HTTP do PC C nem encaminha comandos semanticos locais.
-      if (relayChannel === 'parallel' && status.mode === 'transmitter' &&
-          redundantMtcRole(status) === 'b') {
+      if (relayChannel === 'parallel' && status.mode === 'transmitter' && redundantMtcRole(status) === 'b') {
         if (transmitterPeer) resetTransmitterPeer(false)
         if (receiverSession) resetReceiverSession(false)
         return
       }
-
-      if (status.mode === 'transmitter') {
-        projectSyncApplyPeer = null
-        projectSyncApplySession = null
-        projectSyncExportBundle = null
+      if (statusCanTransmit(status)) {
+        if (status.mode === 'project_sync' && await maybeHandoverProjectSyncRole(status)) return
         if (receiverSession) resetReceiverSession(false)
         await transmitTick(status)
-      } else if (status.mode === 'receive') {
-        projectSyncApplyPeer = null
-        projectSyncApplySession = null
-        projectSyncExportBundle = null
+      } else if (statusCanReceive(status)) {
         if (transmitterPeer) resetTransmitterPeer(false)
-        if (receiverSession && Date.now() - receiverSession.lastSeenAt > RECEIVER_TIMEOUT_MS) {
+        if (receiverSession && (receiverSession.code !== String(status.code || '') ||
+            receiverSession.mode !== status.mode ||
+            receiverSession.localSessionId !== String(status.sessionId || '').trim() ||
+            Date.now() - receiverSession.lastSeenAt > RECEIVER_TIMEOUT_MS)) {
+          // Losing the link never injects Stop: the redundant PC keeps playing.
           resetReceiverSession(true)
-        }
-      } else if (status.mode === 'project_sync') {
-        if (projectSyncRole(status) === 'primary') {
-          if (await maybeHandoverProjectSyncRole(status)) return
-          pendingProjectSyncPreflight = null
-          projectSyncApplySession = null
-          if (receiverSession) resetReceiverSession(false)
-          await transmitTick(status)
-        } else if (projectSyncRole(status) === 'secondary') {
-          projectSyncPairAttempt = null
-          projectSyncApplyPeer = null
-          projectSyncExportBundle = null
-          if (transmitterPeer) resetTransmitterPeer(false)
-          if (receiverSession &&
-              String(status.sessionId || '').trim() !==
-                receiverSession.localSessionId) {
-            // Uma nova sessao nativa significa que o REAPER/extensao anterior
-            // foi encerrado. Alterar o projeto dentro da mesma sessao nao abre
-            // novamente a conferencia nem desfaz o Project Sync.
-            resetReceiverSession(true)
-          }
-          if (receiverSession) {
-            receiverSession.localManifestRevision =
-              projectSyncManifestRevision(status)
-            receiverSession.localStructuralRevision =
-              projectSyncStructuralRevision(status)
-          }
-          if (receiverSession && Date.now() - receiverSession.lastSeenAt > RECEIVER_TIMEOUT_MS) {
-            // Perder heartbeat apenas desfaz o link visual. Nao injeta Stop no
-            // REAPER B: ele segue tocando para o chaveamento redundante/SW8.
-            resetReceiverSession(true)
-          }
-          if (pendingProjectSyncPreflight &&
-              !pendingProjectSyncPreflight.completedResponse &&
-              Date.now() - pendingProjectSyncPreflight.createdAt >
-                PROJECT_SYNC_PREFLIGHT_TTL_MS) {
-            pendingProjectSyncPreflight = null
-          }
-          await maybeStartProjectSyncBundlePull(status)
-        } else {
-          // Versoes anteriores nao gravavam o papel A/B. Obriga o usuario a
-          // reabrir Project Sync e gerar/digitar o codigo uma unica vez.
-          if (transmitterPeer) resetTransmitterPeer(true)
-          if (receiverSession) resetReceiverSession(true)
-          clearProjectSyncTransientState()
         }
       } else {
         if (transmitterPeer) resetTransmitterPeer(true)
         if (receiverSession) resetReceiverSession(true)
         clearProjectSyncTransientState()
       }
-    } finally {
-      tickRunning = false
-    }
+    } finally { tickRunning = false }
   }
 
   function nextTickIntervalMs() {
@@ -4027,11 +1262,7 @@ function createTimecodeLanRelay(options = {}) {
     const playState = Math.max(0,
       Math.trunc(Number(status?.transport?.playState) || 0))
     const transportActive = playState !== 0 && (playState & 2) !== 2
-    const transferActive = !!projectSyncBundlePullPromise ||
-      !!projectSyncRoleHandoverPromise ||
-      projectSyncApplyIsActive(status,
-        safePreflightRequestId(status?.projectSyncApply?.requestId))
-    if (transportActive || transferActive) return TRANSMIT_INTERVAL_MS
+    if (transportActive || projectSyncRoleHandoverPromise) return TRANSMIT_INTERVAL_MS
     if (transmitterPeer?.connected) return CONNECTED_IDLE_INTERVAL_MS
     // O receptor recebe pacotes pelo servidor HTTP, sem depender deste tick.
     // Aqui basta manter timeout/estado com uma cadencia leve quando parado.
@@ -4052,159 +1283,6 @@ function createTimecodeLanRelay(options = {}) {
       scheduleNextTick()
     }, Math.max(1, Number(delayMs) || TRANSMIT_INTERVAL_MS))
     tickTimer.unref?.()
-  }
-
-  function pendingPreflightMatches(pending, payload, transmitterId,
-    remoteSessionId, manifestRevision, localSessionId,
-    remoteStructuralRevision,
-    localStructuralRevision) {
-    return !!pending &&
-      Date.now() - pending.createdAt < PROJECT_SYNC_PREFLIGHT_TTL_MS &&
-      pending.requestId === safePreflightRequestId(payload.requestId) &&
-      pending.code === String(payload.code || '') &&
-      pending.transmitterId === transmitterId &&
-      pending.remoteSessionId === remoteSessionId &&
-      pending.manifestRevision === manifestRevision &&
-      pending.localSessionId === localSessionId &&
-      pending.remoteStructuralRevision === remoteStructuralRevision &&
-      pending.localStructuralRevision === localStructuralRevision
-  }
-
-  async function completePendingProjectSyncPreflight(status, pending, result) {
-    const response = {
-      ok: true,
-      projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
-      completed: true,
-      pending: false,
-      requestId: pending.requestId,
-      receiverId: instanceId,
-      receiverName: deviceName(),
-      receiverSessionId: String(status.sessionId || '').trim(),
-      projectSyncRole: 'secondary',
-      ready: result.ready === true,
-      diff: result.diff || null,
-      manifestRevision: result.manifestRevision ||
-        String(status.manifestRevision || ''),
-      structuralManifestRevision:
-        projectSyncStructuralRevision(status),
-    }
-    if (response.ready) {
-      // O mesmo canal autenticado permanece disponível para reconciliações
-      // estruturais automáticas posteriores (por exemplo, mídia/FX novos).
-      // A conferência humana continua exclusiva deste primeiro pareamento.
-      response.applyToken = pending.token
-      lastProjectSyncApplyKey = ''
-      projectSyncAutomaticRetry = null
-      pending.completedResponse = null
-      receiverSession = {
-        token: pending.token,
-        code: pending.code,
-        transmitterId: pending.transmitterId,
-        remoteSessionId: pending.remoteSessionId,
-        remoteManifestRevision: pending.manifestRevision,
-        remoteStructuralRevision: pending.remoteStructuralRevision,
-        localSessionId: pending.localSessionId,
-        localManifestRevision: projectSyncManifestRevision(status),
-        localStructuralRevision: pending.localStructuralRevision,
-        name: pending.name,
-        address: normalizePeerAddress(pending.address),
-        lastSequence: pending.remoteEventBaseline,
-        lastTransportSequence: 0,
-        lastControlSequence: -1,
-        lastSourceTransport: null,
-        audioHealthy: true,
-        lastSeenAt: Date.now(),
-      }
-      // Project Sync e estritamente A -> B. B jamais cria o canal reverso.
-      transmitterPeer = null
-      response.token = pending.token
-      projectSyncApplySession = {
-        requestId: pending.requestId,
-        token: pending.token,
-        code: pending.code,
-        transmitterId: pending.transmitterId,
-        remoteSessionId: pending.remoteSessionId,
-        remoteManifestRevision: pending.manifestRevision,
-        remoteStructuralRevision: pending.remoteStructuralRevision,
-        localSessionId: pending.localSessionId,
-        localManifestRevision: projectSyncManifestRevision(status),
-        localStructuralRevision: pending.localStructuralRevision,
-        address: pending.address,
-        port: pending.port,
-        name: pending.name,
-        createdAt: Date.now(),
-      }
-      try {
-        onPeerConnectionChanged(
-          relayChannel, normalizePeerAddress(pending.address), true,
-          pending.transmitterId)
-      } catch (_) {}
-      await notifyLocalPeer(true, pending.name)
-    } else {
-      // O preflight bloqueado continua autorizado apenas para o fluxo de
-      // "Aplicar modificações". Este token forte não autoriza eventos nem
-      // transporte; serve exclusivamente para puxar o bundle A -> B.
-      response.applyToken = pending.token
-      projectSyncApplySession = {
-        requestId: pending.requestId,
-        token: pending.token,
-        code: pending.code,
-        transmitterId: pending.transmitterId,
-        remoteSessionId: pending.remoteSessionId,
-        remoteManifestRevision: pending.manifestRevision,
-        remoteStructuralRevision: pending.remoteStructuralRevision,
-        localSessionId: pending.localSessionId,
-        localManifestRevision: projectSyncManifestRevision(status),
-        localStructuralRevision: pending.localStructuralRevision,
-        address: pending.address,
-        port: pending.port,
-        name: pending.name,
-        createdAt: Date.now(),
-      }
-      // O resultado permanece consultável enquanto o modal está aberto; a
-      // autorização de transferência tem TTL próprio de 30 minutos.
-    }
-    if (!response.ready) {
-      pending.completedResponse = response
-      pending.completedAt = Date.now()
-    }
-    return response
-  }
-
-  async function currentPendingPreflightResult(pending) {
-    const status = await readLocalStatus(true)
-    if (!statusCanReceive(status) ||
-        projectSyncRole(status) !== 'secondary') return null
-    const currentLocalSessionId = String(status.sessionId || '').trim()
-    const currentLocalStructuralRevision =
-      projectSyncStructuralRevision(status)
-    if (currentLocalSessionId !== pending.localSessionId ||
-        currentLocalStructuralRevision !== pending.localStructuralRevision) {
-      // Mesmo uma resposta ja concluida deixa de ser valida se B mudou antes
-      // de A terminar o handshake. Sem esta checagem, o cache poderia anunciar
-      // "ready" por alguns milissegundos para um projeto estruturalmente novo.
-      if (receiverSession) resetReceiverSession(true)
-      return completePendingProjectSyncPreflight(status, pending, {
-        ready: false,
-        diff: projectSyncManifestChangedDiff(
-          'secondary', pending.localStructuralRevision,
-          currentLocalStructuralRevision),
-        manifestRevision: projectSyncManifestRevision(status),
-      })
-    }
-    if (pending.completedResponse) {
-      // Configuracoes podem ter sido aplicadas depois que o resultado ficou
-      // pronto. Atualiza somente a revisao completa; a estrutural ja foi
-      // validada acima e permanece sendo o gate do pareamento.
-      pending.completedResponse.manifestRevision =
-        projectSyncManifestRevision(status)
-      pending.completedResponse.structuralManifestRevision =
-        currentLocalStructuralRevision
-      return pending.completedResponse
-    }
-    const result = preflightResultFromStatus(status, pending.requestId)
-    if (!result) return null
-    return completePendingProjectSyncPreflight(status, pending, result)
   }
 
   async function handleAvailability(req, res) {
@@ -4239,355 +1317,67 @@ function createTimecodeLanRelay(options = {}) {
   }
 
   async function handlePair(req, res) {
-    if (!licenseIsActive()) {
-      sendJson(res, 403, { ok: false, error: 'Licença VS Hook inativa.' })
-      return
-    }
-    // O pareamento Project Sync tambem pode carregar o manifesto sanitizado do
-    // projeto. Usa o mesmo limite defensivo dos demais pacotes LAN.
-    const payload = await readJsonBody(req)
-    const incomingPeerAddress = normalizePeerAddress(
-      req.socket?.remoteAddress)
-    if (!peerAddressAllowed(req.socket?.remoteAddress)) {
-      sendJson(res, 409, { ok: false, error: 'A conexão redundante deve usar o cabo conectado.' })
-      return
-    }
-    const incomingTransmitterId = String(payload.transmitterId || '').trim()
-    if (!canUsePeerAddress(
-      relayChannel, incomingPeerAddress, incomingTransmitterId)) {
-      sendJson(res, 409, {
-        ok: false,
-        error: 'Este computador já está conectado no outro canal VS Hook.',
-      })
-      return
-    }
-    let status = await readLocalStatus(true)
-    if (String(payload.mode || '') === 'project_sync' &&
-        Number(payload.protocolVersion) !== PROJECT_SYNC_PROTOCOL_VERSION) {
-      sendJson(res, 426, {
-        ok: false,
-        error: 'Hook Center incompatível. Atualize a Hook Center nos dois PCs.',
-        projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
-      })
-      return
-    }
+    const payload = await readJsonBody(req, 32 * 1024)
+    const status = await readLocalStatus(true)
+    const address = normalizePeerAddress(req.socket?.remoteAddress)
+    const transmitterId = String(payload.transmitterId || '').trim().toLowerCase()
     const code = String(payload.code || '').trim()
-    if (!statusCanReceive(status) ||
-        !isPairCode(status.code) || code !== String(status.code)) {
-      sendJson(res, 403, { ok: false, error: 'Código de pareamento inválido.' })
-      return
+    const projectSync = payload.mode === 'project_sync'
+    if (stopped || !licenseIsActive() || !statusCanReceive(status) || !isPairCode(status?.code) ||
+        code !== String(status.code)) {
+      sendJson(res, 403, { ok: false, error: 'Código de pareamento inválido.' }); return
     }
-    const transmitterId = String(payload.transmitterId || '').trim()
-    if (!transmitterId || transmitterId === instanceId) {
-      sendJson(res, 400, { ok: false, error: 'Transmissor inválido.' })
-      return
+    if (!transmitterId || transmitterId === instanceId || !peerAddressAllowed(address) ||
+        !canUsePeerAddress(relayChannel, address, transmitterId)) {
+      sendJson(res, 409, { ok: false, error: 'Computador indisponível para este canal.' }); return
     }
-    if (status.mode === 'project_sync' &&
-        !projectSyncRolesMatch(
-          payload.projectSyncRole, projectSyncRole(status))) {
-      sendJson(res, 409, { ok: false, error: 'Somente o PC A pode iniciar o Project Sync.' })
-      return
+    if ((projectSync && (status.mode !== 'project_sync' ||
+        !projectSyncRolesMatch(payload.projectSyncRole, projectSyncRole(status)))) ||
+        (!projectSync && (payload.mode !== 'transmitter' || status.mode !== 'receive'))) {
+      sendJson(res, 409, { ok: false, error: 'Papéis de pareamento incompatíveis.' }); return
     }
-      const remoteSessionId = String(payload.sessionId || '').trim()
-    if (status.mode === 'project_sync' && !remoteSessionId) {
-      sendJson(res, 409, {
-        ok: false,
-        error: 'A sessão do PC A é inválida. Atualize a extensão VS Hook.',
-      })
-      return
+    if (projectSync && Number(payload.protocolVersion) !== PROJECT_SYNC_PROTOCOL_VERSION) {
+      sendJson(res, 426, { ok: false, projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
+        error: 'Atualize a Hook Center nos dois PCs para sincronizar somente controles.' }); return
     }
-    if (status.mode === 'project_sync') {
-      const proposedRequestId = safePreflightRequestId(payload.requestId)
-      if (!proposedRequestId) {
-        sendJson(res, 400, {
-          ok: false,
-          ready: false,
-          error: 'Identificador de preflight inválido.',
-        })
-        return
-      }
-      const activeApplyRequestId = safePreflightRequestId(
-        projectSyncApplySession?.requestId)
-      if (activeApplyRequestId &&
-          activeApplyRequestId !== proposedRequestId &&
-          projectSyncApplySession.transmitterId === transmitterId &&
-          projectSyncApplyIsActive(status, activeApplyRequestId)) {
-        // Nunca substitui token/requestId enquanto o usuario ja confirmou e o
-        // PC B esta verificando, baixando ou aplicando o snapshot anterior.
-        sendJson(res, 409, {
-          ok: false,
-          ready: false,
-          requestId: activeApplyRequestId,
-          error: 'A aplicacao Project Sync confirmada ainda esta em andamento.',
-        })
-        return
-      }
-      const manifestRevision = String(
-        payload.manifestRevision || '').trim().slice(0, 256)
-      const localSessionId = String(status.sessionId || '').trim()
-      const localManifestRevision = projectSyncManifestRevision(status)
-      const remoteStructuralRevision = String(
-        payload.structuralManifestRevision ||
-        payload.manifestRevision || '').trim().slice(0, 256)
-      const localStructuralRevision =
-        projectSyncStructuralRevision(status)
-      const incomingAddress = normalizePeerAddress(req.socket?.remoteAddress)
-      const sameLogicalApplySender = !!projectSyncApplySession &&
-        projectSyncApplySession.transmitterId === transmitterId &&
-        projectSyncApplySession.remoteSessionId === remoteSessionId
-      if (projectSyncApplySession &&
-          projectSyncApplySession.requestId === proposedRequestId &&
-          projectSyncApplySession.transmitterId === transmitterId &&
-          normalizePeerAddress(projectSyncApplySession.address) ===
-            incomingAddress &&
-          projectSyncApplyIsActive(status, proposedRequestId)) {
-        // Resposta idempotente durante a aplicacao. Nao recria pending/token
-        // mesmo se alguma revisao viva mudar enquanto o snapshot e transferido.
-        sendJson(res, 200, {
-          ok: true,
-          projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
-          completed: true,
-          pending: false,
-          requestId: proposedRequestId,
-          receiverId: instanceId,
-          receiverName: deviceName(),
-          receiverSessionId: localSessionId,
-          projectSyncRole: 'secondary',
-          ready: false,
-          diff: status?.projectSyncDiff || null,
-          manifestRevision: localManifestRevision,
-          structuralManifestRevision: localStructuralRevision,
-          applyToken: projectSyncApplySession.token,
-        })
-        return
-      }
-      if (projectSyncApplySession &&
-          Date.now() - projectSyncApplySession.createdAt <
-            PROJECT_SYNC_APPLY_TTL_MS &&
-          !sameLogicalApplySender) {
-        sendJson(res, 409, {
-          ok: false,
-          ready: false,
-          error: 'O PC B já aguarda aplicação do PC A pareado.',
-        })
-        return
-      }
-      if (pendingProjectSyncPreflight &&
-          Date.now() - pendingProjectSyncPreflight.createdAt <
-            PROJECT_SYNC_PREFLIGHT_TTL_MS &&
-          (pendingProjectSyncPreflight.transmitterId !== transmitterId ||
-           pendingProjectSyncPreflight.remoteSessionId !== remoteSessionId)) {
-        sendJson(res, 409, {
-          ok: false,
-          ready: false,
-          error: 'Já existe um preflight Project Sync em andamento.',
-        })
-        return
-      }
-      if (!localSessionId || !localManifestRevision || !manifestRevision ||
-          !remoteStructuralRevision || !localStructuralRevision) {
-        sendJson(res, 409, {
-          ok: false,
-          ready: false,
-          error: 'O manifesto estrutural do projeto ainda não está disponível.',
-        })
-        return
-      }
-      if (!pendingPreflightMatches(
-        pendingProjectSyncPreflight, payload, transmitterId,
-        remoteSessionId, manifestRevision, localSessionId,
-        remoteStructuralRevision,
-        localStructuralRevision)) {
-        pendingProjectSyncPreflight = {
-          requestId: proposedRequestId,
-          token: crypto.randomBytes(32).toString('hex'),
-          code,
-          transmitterId,
-          remoteSessionId,
-          manifestRevision,
-          remoteStructuralRevision,
-          localSessionId,
-          localManifestRevision,
-          localStructuralRevision,
-          name: safeName(payload.transmitterName, 'Transmitter'),
-          address: normalizePeerAddress(req.socket?.remoteAddress),
-          port: Math.max(1, Math.min(65535,
-            Number(payload.transmitterPort) || 47831)),
-          remoteEventBaseline: Math.max(0,
-            safeSequence(payload.eventSequence)),
-          createdAt: Date.now(),
-          completedResponse: null,
-        }
-        const preflightAccepted = await sendLocalCommand({
-          type: 'project_sync_preflight',
-          phase: 'pairing',
-          showConference: true,
-          role: 'secondary',
-          requestId: pendingProjectSyncPreflight.requestId,
-          manifest: payload.manifest || null,
-          manifestRevision,
-          transmitterId,
-        })
-        if (!preflightAccepted) {
-          if (pendingProjectSyncPreflight?.requestId === proposedRequestId) {
-            pendingProjectSyncPreflight = null
-          }
-          sendJson(res, 503, {
-            ok: false,
-            ready: false,
-            error: 'A extensão VS Hook não aceitou o manifesto do PC A.',
-          })
-          return
-        }
-      } else {
-        // Enquanto a janela de diferenças está aberta, as sondagens do mesmo
-        // PC A mantêm a autorização de aplicação viva sem trocar token.
-        pendingProjectSyncPreflight.createdAt = Date.now()
-      }
-
-      // Nao le projectSyncReady sem antes conferir o requestId. A extensao
-      // processa o comando na thread principal e normalmente termina depois
-      // desta requisicao HTTP; o PC A continuara pela rota /preflight.
-      const completed = await currentPendingPreflightResult(
-        pendingProjectSyncPreflight)
-      if (completed) {
-        sendJson(res, 200, completed)
-      } else {
-        sendJson(res, 202, {
-          ok: true,
-          projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
-          completed: false,
-          pending: true,
-          requestId: pendingProjectSyncPreflight.requestId,
-          receiverId: instanceId,
-          receiverName: deviceName(),
-          projectSyncRole: 'secondary',
-        })
-      }
-      return
+    const remoteSessionId = String(payload.sessionId || '').trim()
+    const localSessionId = String(status.sessionId || '').trim()
+    if (projectSync && (!remoteSessionId || !localSessionId)) {
+      sendJson(res, 409, { ok: false, error: 'Sessão VS Hook indisponível.' }); return
     }
-    const projectSyncReady = status.mode !== 'project_sync' ||
-      status.projectSyncReady === true
-    const sameTransmitter = receiverSession &&
-      receiverSession.code === code &&
-      receiverSession.transmitterId === transmitterId &&
-      receiverSession.remoteSessionId === remoteSessionId
-    const remoteEventBaseline = safeSequence(payload.eventSequence)
-    const localEventBaseline = safeSequence(status.eventSequence)
-    const token = sameTransmitter
-      ? receiverSession.token
-      : crypto.randomBytes(32).toString('hex')
+    if (receiverSession && Date.now()-receiverSession.lastSeenAt <= RECEIVER_TIMEOUT_MS &&
+        (receiverSession.transmitterId !== transmitterId || receiverSession.address !== address)) {
+      sendJson(res, 409, { ok: false, error: 'Este computador já está pareado.' }); return
+    }
+    if (receiverSession?.deliveryInFlight) {
+      sendJson(res, 503, { ok: false, error: 'Aguardando confirmação dos controles anteriores.' }); return
+    }
+    const same = receiverSession && receiverSession.code === code &&
+      receiverSession.transmitterId === transmitterId && receiverSession.address === address &&
+      receiverSession.remoteSessionId === remoteSessionId && receiverSession.localSessionId === localSessionId
+    const baseline = safeSequence(payload.eventSequence)
+    const token = same ? receiverSession.token : crypto.randomBytes(32).toString('hex')
     receiverSession = {
-      token,
-      code,
-      transmitterId,
-      remoteSessionId,
-      name: safeName(payload.transmitterName, 'Transmitter'),
-      address: incomingPeerAddress,
-      lastSequence: sameTransmitter
-        ? Math.max(receiverSession.lastSequence, remoteEventBaseline)
-        : remoteEventBaseline,
-      lastTransportSequence: sameTransmitter
-        ? Math.max(0, Math.trunc(Number(
-            receiverSession.lastTransportSequence) || 0))
-        : 0,
-      lastControlSequence: sameTransmitter
-        ? Math.max(-1, Math.trunc(Number(
-            receiverSession.lastControlSequence) || 0))
-        : -1,
-      lastSourceTransport: sameTransmitter
-        ? (receiverSession.lastSourceTransport || null)
-        : null,
-      audioHealthy: sameTransmitter
-        ? receiverSession.audioHealthy !== false
-        : true,
-      lastSeenAt: Date.now(),
+      token, code, transmitterId, remoteSessionId, localSessionId,
+      name: safeName(payload.transmitterName, 'Transmitter'), address, mode: status.mode,
+      lastSequence: same ? Math.max(receiverSession.lastSequence, baseline) : baseline,
+      lastTransportSequence: same ? receiverSession.lastTransportSequence : 0,
+      lastControlSequence: same ? receiverSession.lastControlSequence : -1,
+      lastSourceTransport: same ? receiverSession.lastSourceTransport : null,
+      audioHealthy: same ? receiverSession.audioHealthy : true, lastSeenAt: Date.now(),
     }
-    if (projectSyncReady) {
-      try {
-        onPeerConnectionChanged(
-          relayChannel, incomingPeerAddress, true, transmitterId)
-      } catch (_) {}
-      await notifyLocalPeer(true, receiverSession.name)
-    }
+    if (projectSync) transmitterPeer = null
+    try { onPeerConnectionChanged(relayChannel, address, true, transmitterId) } catch (_) {}
+    await notifyLocalPeer(true, receiverSession.name)
     sendJson(res, 200, {
-      ok: true,
-      token,
-      receiverId: instanceId,
-      receiverName: deviceName(),
-      receiverSessionId: String(status.sessionId || '').trim(),
-      projectSyncRole: projectSyncRole(status),
-      ready: projectSyncReady,
-      diff: status.mode === 'project_sync'
-        ? (status.projectSyncDiff || null)
-        : undefined,
-      manifestRevision: status.mode === 'project_sync'
-        ? String(status.manifestRevision || '')
-        : undefined,
+      ok: true, token, receiverId: instanceId, receiverName: deviceName(),
+      receiverSessionId: localSessionId, projectSyncRole: projectSyncRole(status), ready: true,
+      ...(projectSync ? { projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
+        projectSyncControlsOnly: true } : {}),
     })
   }
 
-  async function handleProjectSyncPreflight(req, res) {
-    if (!licenseIsActive()) {
-      sendJson(res, 403, { ok: false, error: 'Licença VS Hook inativa.' })
-      return
-    }
-    const payload = await readJsonBody(req, 64 * 1024)
-    if (!peerAddressAllowed(req.socket?.remoteAddress)) {
-      sendJson(res, 409, {
-        ok: false,
-        error: 'A conexão redundante deve usar o cabo conectado.',
-      })
-      return
-    }
-    const status = await readLocalStatus(false)
-    const requestId = safePreflightRequestId(payload.requestId)
-    const pending = pendingProjectSyncPreflight
-    if (!statusCanReceive(status) ||
-        projectSyncRole(status) !== 'secondary' ||
-        !projectSyncRolesMatch(payload.projectSyncRole, 'secondary')) {
-      sendJson(res, 409, {
-        ok: false,
-        error: 'O PC B não está disponível como receptor do Project Sync.',
-      })
-      return
-    }
-    if (!pending || !requestId || pending.requestId !== requestId ||
-        pending.code !== String(payload.code || '') ||
-        pending.transmitterId !== String(payload.transmitterId || '') ||
-        pending.remoteSessionId !== String(payload.sessionId || '')) {
-      sendJson(res, 404, {
-        ok: false,
-        error: 'Preflight não encontrado.',
-      })
-      return
-    }
-    if (Date.now() - pending.createdAt > PROJECT_SYNC_PREFLIGHT_TTL_MS) {
-      pendingProjectSyncPreflight = null
-      sendJson(res, 410, {
-        ok: false,
-        error: 'O preflight expirou.',
-      })
-      return
-    }
-    const completed = await currentPendingPreflightResult(pending)
-    if (completed) {
-      sendJson(res, 200, completed)
-      return
-    }
-    sendJson(res, 202, {
-      ok: true,
-      projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
-      completed: false,
-      pending: true,
-      requestId,
-      receiverId: instanceId,
-      receiverName: deviceName(),
-      projectSyncRole: 'secondary',
-    })
-  }
-
-function tokenMatches(left, right) {
+  function tokenMatches(left, right) {
     const a = Buffer.from(String(left || ''), 'utf8')
     const b = Buffer.from(String(right || ''), 'utf8')
     return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b)
@@ -4596,19 +1386,9 @@ function tokenMatches(left, right) {
   async function handleProjectSyncRoleHandover(req, res) {
     const payload = await readJsonBody(req)
     const status = await readLocalStatus(false)
-    const requestId = safePreflightRequestId(payload.requestId)
-    const connectedHandoverSession = receiverSession || null
-    const conferenceHandoverSession = !connectedHandoverSession &&
-      applyPeerIsCurrent(projectSyncApplySession) &&
-      projectSyncApplySession?.token &&
-      projectSyncApplySession?.remoteSessionId &&
-      projectSyncApplySession?.localSessionId &&
-      projectSyncApplySession.requestId === statusPreflightRequestId(status)
-      ? projectSyncApplySession
-      : null
-    const handoverSession = connectedHandoverSession ||
-      conferenceHandoverSession
-    if (!licenseIsActive() || !requestId ||
+    const requestId = safeRequestId(payload.requestId)
+    const handoverSession = receiverSession
+    if (stopped || !licenseIsActive() || !requestId ||
         status?.mode !== 'project_sync' ||
         projectSyncRole(status) !== 'secondary' ||
         !handoverSession ||
@@ -4616,20 +1396,16 @@ function tokenMatches(left, right) {
         String(payload.transmitterId || '') !== handoverSession.transmitterId ||
         String(payload.sourceSessionId || '') !== handoverSession.remoteSessionId ||
         String(payload.receiverSessionId || '') !== handoverSession.localSessionId ||
+        String(status.sessionId || '').trim() !== handoverSession.localSessionId ||
+        normalizePeerAddress(req.socket?.remoteAddress) !== handoverSession.address ||
+        !peerAddressAllowed(handoverSession.address) ||
         String(payload.projectSyncRole || '') !== 'primary' ||
         !tokenMatches(payload.token, handoverSession.token)) {
       sendJson(res, 403, { ok: false, error: 'Troca de mestre não autorizada.' })
       return
     }
-    const activeApplyRequestId = safePreflightRequestId(
-      projectSyncApplySession?.requestId)
-    if (activeApplyRequestId &&
-        projectSyncApplyIsActive(status, activeApplyRequestId)) {
-      sendJson(res, 409, {
-        ok: false,
-        error: 'A aplicação de modificações ainda está em andamento.'
-      })
-      return
+    if (handoverSession.deliveryInFlight) {
+      sendJson(res, 503, { ok: false, error: 'Aguardando confirmação dos controles anteriores.' }); return
     }
     const queued = await sendLocalCommand({
       type: 'project_sync_role_handover',
@@ -4642,17 +1418,19 @@ function tokenMatches(left, right) {
     }
     // Impede que o relay B aceite mais um pacote A -> B enquanto a extensão
     // troca o papel. A próxima descoberta nasce automaticamente como novo A.
-    if (connectedHandoverSession) resetReceiverSession(true)
-    projectSyncApplySession = null
-    pendingProjectSyncPreflight = null
+    resetReceiverSession(true)
     sendJson(res, 200, { ok: true, requestId })
   }
 
   async function handleEvents(req, res) {
     const payload = await readJsonBody(req)
     const status = await readLocalStatus(false)
-    if (!licenseIsActive() || !statusCanReceive(status) ||
+    if (stopped || !licenseIsActive() || !statusCanReceive(status) ||
         !receiverSession || String(payload.code || '') !== String(status.code) ||
+        receiverSession.code !== String(status.code || '') ||
+        receiverSession.mode !== status.mode ||
+        normalizePeerAddress(req.socket?.remoteAddress) !== receiverSession.address ||
+        !peerAddressAllowed(receiverSession.address) ||
         String(payload.transmitterId || '') !== receiverSession.transmitterId ||
         String(payload.sessionId || '') !== receiverSession.remoteSessionId ||
         !tokenMatches(payload.token, receiverSession.token)) {
@@ -4668,174 +1446,115 @@ function tokenMatches(left, right) {
       })
       return
     }
-    if (status.mode === 'project_sync') {
-      const currentLocalSessionId = String(status.sessionId || '').trim()
-      const currentLocalStructuralRevision =
-        projectSyncStructuralRevision(status)
-      const currentRemoteStructuralRevision = String(
-        payload.structuralRevision ||
-        payload.manifestRevision || '').trim().slice(0, 256)
-      // A identidade da conexao ativa e a sessao nativa, nao a revisao do
-      // projeto. Revisoes mudam enquanto A edita e B espelha; isso nunca deve
-      // reabrir a janela de conferencia. Se o REAPER reiniciar, sessionId muda
-      // e o pareamento e encerrado de verdade.
-      if (currentLocalSessionId !== receiverSession.localSessionId) {
-        resetReceiverSession(true)
+    if (status.mode === 'project_sync' &&
+        String(status.sessionId || '').trim() !== receiverSession.localSessionId) {
+      resetReceiverSession(true)
+      sendJson(res, 403, { ok: false, error: 'Pareamento expirado.' })
+      return
+    }
+    const session = receiverSession
+    if (session.deliveryInFlight) {
+      sendJson(res, 503, { ok: false, error: 'Aguardando confirmação dos controles anteriores.' })
+      return
+    }
+    session.deliveryInFlight = true
+    // Commit transport intent only after the native inbox accepts the batch.
+    // Otherwise a retry could lose an explicit Stop/Play during audio failure.
+    const transportState = { ...session }
+    try {
+      const commands = []
+      const incoming = Array.isArray(payload.events) ? payload.events.slice(0, 256) : []
+      let acceptedSequence = session.lastSequence
+      for (const event of incoming) {
+        const sequence = safeSequence(event?.sequence, -1)
+        if (sequence < 0) continue
+        if (sequence <= acceptedSequence || !event?.command || typeof event.command !== 'object') continue
+        if (!isRelayControlCommand(event.command, status.mode)) {
+          acceptedSequence = Math.max(acceptedSequence, sequence)
+          continue
+        }
+        commands.push(JSON.stringify({
+          ...event.command,
+          ...(relayChannel === 'parallel' ? { channel: 'parallel' } : {}),
+          __vshookLanRemote: true,
+        }))
+        acceptedSequence = Math.max(acceptedSequence, sequence)
+      }
+      const rawTransport = status.mode !== 'project_sync' &&
+          payload.transport && typeof payload.transport === 'object'
+        ? payload.transport
+        : null
+      // Mesmo quando A omite completamente o transporte congelado, conserva o
+      // estado de falha na sessao receptora. Assim um pacote atrasado nao pode
+      // reativar correcoes enquanto o link ainda declara audio indisponivel.
+      if (!transportAudioHealthy(payload, rawTransport)) {
+        transportState.audioHealthy = false
+      }
+      const transportSequence = safeSequence(rawTransport?.sequence)
+      const lastTransportSequence = safeSequence(
+        session.lastTransportSequence)
+      const transportIsFresh = !!rawTransport &&
+        (transportSequence > lastTransportSequence ||
+         status.mode !== 'project_sync' && transportSequence === 0)
+      const transport = transportIsFresh
+        ? timecodeTransportForReceive(
+            transportState, status, payload, rawTransport)
+        : null
+      const acceptTransport = !!transport
+      if (acceptTransport) {
+        commands.push(JSON.stringify({
+          type: 'timecode_transport_sync',
+          playState: Math.max(0, Math.trunc(Number(transport.playState) || 0)),
+          position: Math.max(0, Number(transport.position) || 0),
+          sequence: safeSequence(transport.sequence),
+          controlSequence: safeSequence(transport.controlSequence),
+          sampledAtMs: Math.trunc(Number(transport.sampledAtMs) || 0),
+          audioHealthy: transportAudioHealthy(payload, transport),
+          explicitControl: transport.explicitControl === true,
+          frameRate: Math.max(20, Math.min(60,
+            Number(transport.frameRate) || 30)),
+          dropFrame: transport.dropFrame === true,
+          mtcTransport: true,
+          mtcSource: 'PC A',
+          ...(relayChannel === 'parallel' ? { channel: 'parallel' } : {}),
+          __vshookLanRemote: true,
+        }))
+      }
+
+      if (commands.length > 0) {
+        const localResult = await requestRaw({
+          hostname: '127.0.0.1',
+          port: nativeBridgePort,
+          path: nativeInboxPath,
+          body: commands.join('\n'),
+          timeoutMs: 700,
+        })
+        if (!localResult.ok || !localResult.data?.ok ||
+            Number(localResult.data?.queued) !== commands.length) {
+          sendJson(res, 503, { ok: false, error: 'Extensão VS Hook local indisponível.' })
+          return
+        }
+      }
+      if (receiverSession !== session || stopped) {
         sendJson(res, 403, { ok: false, error: 'Pareamento expirado.' })
         return
       }
-      receiverSession.localManifestRevision =
-        projectSyncManifestRevision(status)
-      receiverSession.localStructuralRevision =
-        currentLocalStructuralRevision
-      const currentRemoteManifestRevision = String(
-        payload.manifestRevision || '').trim().slice(0, 256)
-      if (currentRemoteManifestRevision) {
-        receiverSession.remoteManifestRevision = currentRemoteManifestRevision
+      session.audioHealthy = transportState.audioHealthy
+      session.lastControlSequence = transportState.lastControlSequence
+      session.lastSourceTransport = transportState.lastSourceTransport
+      session.lastSequence = acceptedSequence
+      if (acceptTransport) {
+        session.lastTransportSequence = transportSequence
       }
-      if (currentRemoteStructuralRevision) {
-        receiverSession.remoteStructuralRevision =
-          currentRemoteStructuralRevision
-      }
-      if (projectSyncApplySession &&
-          projectSyncApplySession.transmitterId ===
-            receiverSession.transmitterId) {
-        projectSyncApplySession.localManifestRevision =
-          receiverSession.localManifestRevision
-        projectSyncApplySession.localStructuralRevision =
-          receiverSession.localStructuralRevision
-        projectSyncApplySession.remoteManifestRevision =
-          receiverSession.remoteManifestRevision
-        projectSyncApplySession.remoteStructuralRevision =
-          receiverSession.remoteStructuralRevision
-        projectSyncApplySession.createdAt = Date.now()
-      }
-    }
-
-    const commands = []
-    let manifestSnapshotRevision = ''
-    if (status.mode === 'project_sync' &&
-        payload.manifestSnapshot &&
-        typeof payload.manifestSnapshot === 'object') {
-      const snapshotManifest = String(
-        payload.manifestSnapshot.manifest || '')
-      const snapshotRevision = String(
-        payload.manifestSnapshot.manifestRevision || '').trim().slice(0, 256)
-      const snapshotStructuralRevision = String(
-        payload.manifestSnapshot.structuralManifestRevision || '').trim()
-        .slice(0, 256)
-      if (snapshotManifest && snapshotRevision &&
-          snapshotRevision === String(payload.manifestRevision || '').trim() &&
-          Buffer.byteLength(snapshotManifest, 'utf8') <=
-            PROJECT_SYNC_LIVE_MANIFEST_BYTES) {
-        commands.push(JSON.stringify({
-          type: 'project_sync_manifest_snapshot',
-          schemaVersion: 1,
-          manifest: snapshotManifest,
-          manifestRevision: snapshotRevision,
-          structuralManifestRevision: snapshotStructuralRevision,
-          __vshookLanRemote: true,
-        }))
-        manifestSnapshotRevision = snapshotRevision
-      }
-    }
-    const incoming = Array.isArray(payload.events) ? payload.events.slice(0, 256) : []
-    let acceptedSequence = receiverSession.lastSequence
-    for (const event of incoming) {
-      const sequence = safeSequence(event?.sequence, -1)
-      if (sequence < 0) continue
-      if (sequence <= acceptedSequence || !event?.command || typeof event.command !== 'object') continue
-      commands.push(JSON.stringify({
-        ...event.command,
-        ...(relayChannel === 'parallel' ? { channel: 'parallel' } : {}),
-        __vshookLanRemote: true,
-      }))
-      acceptedSequence = Math.max(acceptedSequence, sequence)
-    }
-    const rawTransport = payload.transport && typeof payload.transport === 'object'
-      ? payload.transport
-      : null
-    // Mesmo quando A omite completamente o transporte congelado, conserva o
-    // estado de falha na sessao receptora. Assim um pacote atrasado nao pode
-    // reativar correcoes enquanto o link ainda declara audio indisponivel.
-    if (!transportAudioHealthy(payload, rawTransport)) {
-      receiverSession.audioHealthy = false
-    }
-    const transportSequence = safeSequence(rawTransport?.sequence)
-    const lastTransportSequence = safeSequence(
-      receiverSession.lastTransportSequence)
-    const transportIsFresh = !!rawTransport &&
-      (transportSequence > lastTransportSequence ||
-       status.mode !== 'project_sync' && transportSequence === 0)
-    const transport = transportIsFresh
-      ? projectSyncTransportForReceive(
-          receiverSession, status, payload, rawTransport)
-      : null
-    const acceptTransport = !!transport
-    if (acceptTransport) {
-      commands.push(JSON.stringify({
-        type: 'timecode_transport_sync',
-        playState: Math.max(0, Math.trunc(Number(transport.playState) || 0)),
-        position: Math.max(0, Number(transport.position) || 0),
-        sequence: safeSequence(transport.sequence),
-        controlSequence: safeSequence(transport.controlSequence),
-        sampledAtMs: Math.trunc(Number(transport.sampledAtMs) || 0),
-        audioHealthy: transportAudioHealthy(payload, transport),
-        explicitControl: transport.explicitControl === true,
-        frameRate: Math.max(20, Math.min(60,
-          Number(transport.frameRate) || 30)),
-        dropFrame: transport.dropFrame === true,
-        mtcTransport: true,
-        mtcSource: 'PC A',
-        ...(relayChannel === 'parallel' ? { channel: 'parallel' } : {}),
-        __vshookLanRemote: true,
-      }))
-    }
-
-    if (commands.length > 0) {
-      const localResult = await requestRaw({
-        hostname: '127.0.0.1',
-        port: nativeBridgePort,
-        path: nativeInboxPath,
-        body: commands.join('\n'),
-        timeoutMs: 700,
+      session.lastSeenAt = Date.now()
+      sendJson(res, 200, {
+        ok: true,
+        acceptedSequence,
+        receiverSessionId: status.mode === 'project_sync'
+          ? String(status.sessionId || '').trim() : undefined,
+        projectSyncControlsOnly: status.mode === 'project_sync' ? true : undefined,
       })
-      if (!localResult.ok || !localResult.data?.ok ||
-          Number(localResult.data?.queued) !== commands.length) {
-        sendJson(res, 503, { ok: false, error: 'Extensão VS Hook local indisponível.' })
-        return
-      }
-    }
-    receiverSession.lastSequence = acceptedSequence
-    if (acceptTransport) {
-      receiverSession.lastTransportSequence = transportSequence
-    }
-    receiverSession.lastSeenAt = Date.now()
-    sendJson(res, 200, {
-      ok: true,
-      acceptedSequence,
-      manifestSnapshotRevision: manifestSnapshotRevision || undefined,
-      receiverSessionId: status.mode === 'project_sync'
-        ? String(status.sessionId || '').trim()
-        : undefined,
-      manifestRevision: status.mode === 'project_sync'
-        ? projectSyncManifestRevision(status)
-        : undefined,
-      structuralManifestRevision: status.mode === 'project_sync'
-        ? projectSyncStructuralRevision(status)
-        : undefined,
-      projectSyncReady: status.mode === 'project_sync'
-        ? status.projectSyncReady === true
-        : undefined,
-      projectSyncDiff: status.mode === 'project_sync' &&
-          status.projectSyncDiff && typeof status.projectSyncDiff === 'object'
-        ? status.projectSyncDiff
-        : undefined,
-      projectSyncPreflightRequestId: status.mode === 'project_sync'
-        ? String(status.projectSyncPreflightRequestId ||
-          status.projectSyncRequestId || '').trim()
-        : undefined,
-    })
+    } finally { session.deliveryInFlight = false }
   }
 
   async function handleHttp(req, res, parsedUrl) {
@@ -4849,7 +1568,9 @@ function tokenMatches(left, right) {
         sendJson(res, 200, {
           ok: true,
           projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION,
-          projectSyncPreflight: true,
+          projectSyncPreflight: false,
+          projectSyncControlsOnly: true,
+          projectSyncFileTransfer: false,
           projectSyncDirection: 'primary_to_secondary',
         })
       } else if (req.method === 'POST' &&
@@ -4857,17 +1578,10 @@ function tokenMatches(left, right) {
         await handleAvailability(req, res)
       } else if (req.method === 'POST' && pathname === `${linkPrefix}/pair`) {
         await handlePair(req, res)
-      } else if (req.method === 'POST' && pathname === `${linkPrefix}/preflight`) {
-        await handleProjectSyncPreflight(req, res)
-      } else if (req.method === 'POST' &&
-          pathname === `${linkPrefix}/project-sync/bundle/manifest`) {
-        await handleProjectSyncBundleManifest(req, res)
-      } else if (req.method === 'POST' &&
-          pathname === `${linkPrefix}/project-sync/bundle/file`) {
-        await handleProjectSyncBundleFile(req, res)
-      } else if (req.method === 'POST' &&
-          pathname === `${linkPrefix}/project-sync/bundle/consumed`) {
-        await handleProjectSyncBundleConsumed(req, res)
+      } else if (pathname === `${linkPrefix}/preflight` ||
+          pathname.startsWith(`${linkPrefix}/project-sync/bundle/`)) {
+        req.resume()
+        sendJson(res, 410, { ok: false, error: 'Project Sync sincroniza somente controles. Transferência de arquivos desativada.' })
       } else if (req.method === 'POST' &&
           pathname === `${linkPrefix}/project-sync/handover`) {
         await handleProjectSyncRoleHandover(req, res)
@@ -4888,7 +1602,6 @@ function tokenMatches(left, right) {
   async function start() {
     if (!stopped) return
     stopped = false
-    cleanupProjectSyncStaging(true).catch(() => {})
     socket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
     socket.on('message', (message, rinfo) => {
       handleUdpMessage(message, rinfo).catch(() => {})
@@ -4929,14 +1642,7 @@ function tokenMatches(left, right) {
     }
     resetTransmitterPeer(false)
     resetReceiverSession(false)
-    pendingProjectSyncPreflight = null
-    projectSyncPairAttempt = null
-    projectSyncApplyPeer = null
-    projectSyncApplySession = null
-    projectSyncExportBundle = null
-    lastProjectSyncApplyKey = ''
-    projectSyncAutomaticRetry = null
-    projectSyncProtocolNotices.clear()
+    clearProjectSyncTransientState()
     localStatus = null
     lastNotifiedPeer = ''
     mtcRedundantSources.clear()

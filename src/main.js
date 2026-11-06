@@ -3946,10 +3946,6 @@ async function restartBridgeServersNow() {
       return getDirectCableChannelIp(
         mode === 'project_sync' ? 'projectSync' : 'timecode');
     },
-    // A raiz é definida somente pela Hook Center. Nenhum caminho recebido da
-    // LAN pode escolher onde o bundle Project Sync será gravado.
-    getProjectSyncStagingDir: () => path.join(
-      app.getPath('userData'), 'project-sync-staging'),
     isLicenseActive: isVsHookLicenseActiveForBridge,
     canUsePeerAddress: relayCanUsePeerAddress,
     onPeerConnectionChanged: relayPeerConnectionChanged,
@@ -3970,8 +3966,6 @@ async function restartBridgeServersNow() {
     getDirectorPort: () => Number(bridgeConfig?.directorPort) || 47831,
     getDeviceName: getStoredDeviceName,
     getDirectCableIp: () => getDirectCableChannelIp('timecode'),
-    getProjectSyncStagingDir: () => path.join(
-      app.getPath('userData'), 'project-sync-staging'),
     isLicenseActive: isVsHookLicenseActiveForBridge,
     canUsePeerAddress: relayCanUsePeerAddress,
     onPeerConnectionChanged: relayPeerConnectionChanged,

@@ -6,7 +6,7 @@ const source = fs.readFileSync(path.join(__dirname, '../src/timecode-lan.js'), '
 const start=source.indexOf('  function nextTickIntervalMs('), end=source.indexOf('\n  function scheduleNextTick(',start);
 const scope=vm.createContext({localStatus:null,licenseIsActive:()=>true,isPairCode:c=>/^\d{6}$/.test(c),
  statusCanTransmit:s=>s.mode==='transmitter'||s.mode==='project_sync',statusCanReceive:s=>s.mode==='receive',
- projectSyncBundlePullPromise:null,projectSyncRoleHandoverPromise:null,projectSyncApplyIsActive:()=>false,safePreflightRequestId:()=>'',
+ projectSyncRoleHandoverPromise:null,
  transmitterPeer:null,receiverSession:null,
  TRANSMIT_INTERVAL_MS:20,CONNECTED_IDLE_INTERVAL_MS:40,RECEIVER_IDLE_INTERVAL_MS:80,PAIRING_IDLE_INTERVAL_MS:100,DISABLED_IDLE_INTERVAL_MS:500});
 vm.runInContext(source.slice(start,end),scope);
@@ -23,6 +23,7 @@ scope.localStatus.transport.playState=0;
 assert.equal(scope.nextTickIntervalMs(),100,'pairing remains responsive');
 scope.transmitterPeer={connected:true};assert.equal(scope.nextTickIntervalMs(),40);
 scope.transmitterPeer=null;scope.receiverSession={};scope.localStatus.mode='receive';assert.equal(scope.nextTickIntervalMs(),80);
-scope.localStatus.mode='project_sync';scope.projectSyncBundlePullPromise={};assert.equal(scope.nextTickIntervalMs(),20,'file transfer remains responsive');
+scope.localStatus.mode='project_sync';scope.projectSyncRoleHandoverPromise={};assert.equal(scope.nextTickIntervalMs(),20,'role handover remains responsive');
+scope.projectSyncRoleHandoverPromise=null;assert.equal(scope.nextTickIntervalMs(),80,'idle controls-only receiver does not run transfer polling');
 scope.licenseIsActive=()=>false;assert.equal(scope.nextTickIntervalMs(),500);
-console.log('RELAY_IDLE_PERFORMANCE_OK: disabled playback, pairing, active sync, transfer and license transitions');
+console.log('RELAY_IDLE_PERFORMANCE_OK: disabled playback, pairing, active sync, handover and license transitions');

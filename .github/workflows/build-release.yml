@@ -35,6 +35,9 @@ jobs:
           npm run test:apple-peer
           npm run test:license-offline
 
+      - name: Validate controls-only Project Sync
+        run: npm run test:project-sync
+
       - name: Build Teleprompt Settings companion
         shell: pwsh
         env:
@@ -75,7 +78,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $asarPath -PathType Leaf)) {
             throw 'Pacote final da Hook Center sem resources/app.asar.'
           }
-          node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); const preload=asar.extractFile(process.argv[1],'src/preload.js').toString(); if (!lan.includes('/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION') || !lan.includes('projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION')) throw new Error('Hook Center sem Project Sync v2'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador'); if (preload.includes('const os = require') || !preload.includes('process.getSystemVersion') || !preload.includes('hookUpdateCenter')) throw new Error('Hook Center com preload incompativel com o sandbox');" $asarPath
+          node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); const preload=asar.extractFile(process.argv[1],'src/preload.js').toString(); if (!lan.includes('/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION = 3') || !lan.includes('projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION') || !lan.includes('projectSyncControlsOnly: true') || !lan.includes('projectSyncFileTransfer: false') || !lan.includes('projectSyncPreflight: false')) throw new Error('Hook Center sem Project Sync v3 somente controles'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador'); if (preload.includes('const os = require') || !preload.includes('process.getSystemVersion') || !preload.includes('hookUpdateCenter')) throw new Error('Hook Center com preload incompativel com o sandbox');" $asarPath
 
       - name: Validate Windows installer payload
         shell: pwsh
@@ -163,6 +166,9 @@ jobs:
           node qr-app/scripts/test-director-state-loading.js
           node qr-app/scripts/test-director-parts-notices.js
 
+      - name: Validate controls-only Project Sync
+        run: npm run test:project-sync
+
       - name: Validate macOS signing secrets
         env:
           CSC_LINK: ${{ secrets.MACOS_CERT_P12_BASE64 }}
@@ -249,7 +255,7 @@ jobs:
           test -n "$APP" || (echo "Hook Center.app nao encontrado." && exit 1)
           ASAR="$APP/Contents/Resources/app.asar"
           test -f "$ASAR" || (echo "Pacote final da Hook Center sem resources/app.asar." && exit 1)
-          node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); const renderer=asar.extractFile(process.argv[1],'src/renderer.js').toString(); const preload=asar.extractFile(process.argv[1],'src/preload.js').toString(); if (!lan.includes('/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION') || !lan.includes('projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION')) throw new Error('Hook Center sem Project Sync v2'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador'); if (preload.includes('const os = require') || !preload.includes('process.getSystemVersion') || !preload.includes('hookUpdateCenter')) throw new Error('Hook Center com preload incompativel com o sandbox'); if (!main.includes('IAC Driver') || !main.includes('Audio MIDI Setup.app') || !renderer.includes('CoreMIDI — Driver IAC')) throw new Error('Hook MIDI do macOS sem integracao nativa com CoreMIDI/IAC');" "$ASAR"
+          node -e "const asar=require('@electron/asar'); const lan=asar.extractFile(process.argv[1],'src/timecode-lan.js').toString(); const main=asar.extractFile(process.argv[1],'src/main.js').toString(); const renderer=asar.extractFile(process.argv[1],'src/renderer.js').toString(); const preload=asar.extractFile(process.argv[1],'src/preload.js').toString(); if (!lan.includes('/capabilities') || !lan.includes('PROJECT_SYNC_PROTOCOL_VERSION = 3') || !lan.includes('projectSyncProtocolVersion: PROJECT_SYNC_PROTOCOL_VERSION') || !lan.includes('projectSyncControlsOnly: true') || !lan.includes('projectSyncFileTransfer: false') || !lan.includes('projectSyncPreflight: false')) throw new Error('Hook Center sem Project Sync v3 somente controles'); if (!main.includes('updateInstallerQuitWatchdog') || !main.includes('app.exit(0)')) throw new Error('Hook Center sem encerramento reforcado do atualizador'); if (preload.includes('const os = require') || !preload.includes('process.getSystemVersion') || !preload.includes('hookUpdateCenter')) throw new Error('Hook Center com preload incompativel com o sandbox'); if (!main.includes('IAC Driver') || !main.includes('Audio MIDI Setup.app') || !renderer.includes('CoreMIDI — Driver IAC')) throw new Error('Hook MIDI do macOS sem integracao nativa com CoreMIDI/IAC');" "$ASAR"
           PEER_HELPER="$APP/Contents/Resources/apple-peer-bridge/vshook-apple-peer-bridge"
           test -x "$PEER_HELPER" || (echo "Pacote final sem o auxiliar Apple peer-to-peer." && exit 1)
           lipo "$PEER_HELPER" -verify_arch arm64 x86_64
