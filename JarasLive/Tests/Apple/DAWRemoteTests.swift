@@ -21,6 +21,24 @@ var fixture = DAWRemoteState(project: project, projectName: "Remote native test"
     position: 0, duration: 10, bpm: 120, playing: false, paused: false, subPlaying: false, loop: false,
     masterVolume: 1, masterMute: false, masterSolo: false, masterMono: false,
     pendingSave: false, saving: false, message: "")
+for enabled in [true, false] {
+    let command = DAWRemoteCommand(project: project, song: song, action: .transportFadeout, enabled: enabled)
+    require(command.valid, "Explicit start/cancel Fadeout command is valid")
+    require(DAWRemoteAccessRules.allows(command, mode: .director), "Director can fade out")
+    require(!DAWRemoteAccessRules.allows(command, mode: .observer) && !DAWRemoteAccessRules.allows(command, mode: .notices), "Read-only roles cannot fade out")
+    if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(command)) {
+        require(decoded.enabled == enabled, "Fadeout desired state survives wire encoding")
+    } else { fatalError("Fadeout command round trip") }
+}
+require(!DAWRemoteCommand(project: project, song: song, action: .transportFadeout).valid, "Fadeout requires explicit desired state")
+var fading = fixture
+fading.fadeout = .init(runID: UUID(), duration: 3, remaining: 1.5)
+if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(fading)) {
+    require(decoded.fadeout == fading.fadeout, "Countdown state survives wire encoding")
+}
+fading.fadeout?.remaining = 4
+require(!fading.valid, "Reject countdown outside configured duration")
+print("REMOTE_FADEOUT_CAPABILITY_AND_PERMISSION_OK")
 fixture.tracks[0].nameColor = 0x000000
 fixture.tracks[0].emphasized = true
 fixture.tracks[0].silenced = true
@@ -180,12 +198,12 @@ var laneFixture = fixture
 laneFixture.tracks[0].laneCount = 2; laneFixture.tracks[0].clips[0].lane = 1
 require(abs(DAWRemoteItemLayout.rowHeight(laneFixture.tracks[0]) - 120.4) < 0.000001, "overlapping item lanes expand matching mixer/grid row height")
 require(DAWRemoteItemLayout.laneHeight(fixture.tracks[0]) == 86, "single item fills full track height")
-for scale in [0.35, 0.5, 1.0, 2.0, 3.0] {
+for scale in [0.1, 0.35, 0.5, 1.0, 2.0, 3.0] {
     let track = laneFixture.tracks[0]
-    require(DAWRemoteItemLayout.laneHeight(track, scale: scale) >= 28, "pinch keeps item mute/name header visible")
+    require(DAWRemoteItemLayout.laneHeight(track, scale: scale) >= 26, "pinch keeps the compact item mute/name header visible")
     require(abs(DAWRemoteItemLayout.rowHeight(track, scale: scale) - DAWRemoteItemLayout.laneHeight(track, scale: scale) * Double(track.laneCount ?? 1)) < 0.000001, "pinch scales every overlapping lane and mixer row together")
 }
-require(DAWRemoteItemLayout.heightScale(.nan) == 1 && DAWRemoteItemLayout.heightScale(0) == 0.35 && DAWRemoteItemLayout.heightScale(100) == 3, "pinch restores only finite bounded heights")
+require(DAWRemoteItemLayout.heightScale(.nan) == 1 && DAWRemoteItemLayout.heightScale(0) == 0.1 && DAWRemoteItemLayout.heightScale(100) == 3, "pinch restores only finite bounded heights")
 var programLaneFixture = fixture
 programLaneFixture.tracks[0].minimumHeight = 6 * 24 + 8
 require(programLaneFixture.valid, "native Program Change minimum lane height is valid")

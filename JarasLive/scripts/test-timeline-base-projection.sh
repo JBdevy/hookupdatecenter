@@ -58,5 +58,5 @@ fixture = fixture.replace('PRODUCTION_PROJECTION_STATE', key).replace('PRODUCTIO
 parts.append(fixture)
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PYTHON
-swiftc -swift-version 5 "$projection_test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$projection_test_dir/main.swift" -o "$projection_test_dir/test"
+swiftc -swift-version 5 Apple/Shared/TimelineGridInk.swift "$projection_test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$projection_test_dir/main.swift" -o "$projection_test_dir/test"
 "$projection_test_dir/test"

@@ -679,6 +679,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         guard !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window),
               event.window === window, window != nil, window?.attachedSheet == nil,
               visibleRect.contains(convert(event.locationInWindow, from: nil)) else { return false }
+        for scroll in scrollViews { (scroll as? GridNativeScrollView)?.pauseManualPlaybackFollow() }
         layoutProfile?.event("input-received", view: self, input: event)
         return handle(event, pressedMouseButtons: pressedMouseButtons)
     }

@@ -3,7 +3,9 @@ import UniformTypeIdentifiers
 import Combine
 import CoreText
 enum TimelineZoomLimits {
-    static let minimum = 0.001
+    // Lowest overview scale approved on the Mac with the dense project.
+    // Every zoom path and restored viewport must respect this same boundary.
+    static let minimum = 0.01014480497215081
     static let maximum = 8192.0
     static let preciseSensitivity = 0.0084
     static let maximumPreciseSensitivity = 0.035
@@ -3548,6 +3550,7 @@ private final class NativeTimelineBaseMountView: NSView {
     private(set) var pixelsPerSecond: CGFloat = 10 * TimelineViewportPreferences.zoom
 
     init() {
+        backdrop.moveInkToForeground()
         selectionPin.pinHorizontally = true; selectionPin.hostHandlesInput = true
         selectionPin.host = selection; selectionPin.addSubview(selection)
         needlePin.hostHandlesInput = true
@@ -3557,6 +3560,10 @@ private final class NativeTimelineBaseMountView: NSView {
         }
     }
     private func updateRecordingHeaders(_ takes: [UUID: RecordingPreviewTake]) {
+        guard !takes.isEmpty else {
+            if !selection.recordingHeaders.isEmpty { selection.recordingHeaders = [] }
+            return
+        }
         guard let value = configuration else { selection.recordingHeaders = []; return }
         let tracks = value.header.song.tracks
         let position = TrackRecording.shared.recordingDisplayPosition
@@ -3587,7 +3594,7 @@ private final class NativeTimelineBaseMountView: NSView {
             updateHeaderInteraction()
         case .foreground:
             foregroundMount = mount
-            mount.addSubview(selectionPin); mount.addSubview(automationLanes); mount.addSubview(needlePin)
+            mount.addSubview(backdrop.foregroundInk); mount.addSubview(selectionPin); mount.addSubview(automationLanes); mount.addSubview(needlePin)
         }
         return mount
     }
@@ -3710,6 +3717,9 @@ private final class NativeTimelineBaseMountView: NSView {
                     }
                 })
             }
+        }
+        for scroll in scrolls.compactMap({ $0 as? GridNativeScrollView }) {
+            scroll.manualNavigation = { [weak self] in self?.configuration?.show.pauseTimelineFollow(resumingAfter: 1.5) }
         }
         wheel.observeHorizontalScroll(); wheel.observeVerticalScroll()
         (horizontal?.superview as? GridNativeScrollView)?.prepareHostedHorizontalScroll = { [weak self] x in
@@ -3839,6 +3849,7 @@ private final class NativeTimelineBaseMountView: NSView {
         if !bypassBackdrop, lastBackdropProjection != backdropProjection {
             lastBackdropProjection = backdropProjection
             if backdrop.frame != tile { backdrop.frame = tile }
+            if backdrop.foregroundInk.frame != tile { backdrop.foregroundInk.frame = tile }
             let marks = style.gridlines ? TimelineTimeRuler.ticks(in: value.sections,
                 from: max(0, Double(tile.minX / pixelsPerSecond)), to: Double(tile.maxX / pixelsPerSecond),
                 pixelsPerSecond: pixelsPerSecond, divisions: value.divisions, labels: false) : []
@@ -5075,7 +5086,18 @@ private struct TimelineNativeGridBackdrop: NSViewRepresentable {
         view.update(self)
     }
 }
+private final class TimelineNativeGridForeground: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
 private final class TimelineNativeGridView: NSView {
+    let foregroundInk = TimelineNativeGridForeground()
+    func moveInkToForeground() {
+        foregroundInk.wantsLayer = true; foregroundInk.layer?.masksToBounds = true
+        for line in [primary, secondary] { foregroundInk.layer?.addSublayer(line) }
+    }
+    private let primaryInk = TimelineGridPathCache()
+    private let secondaryInk = TimelineGridPathCache()
     private let primary = CAShapeLayer()
     private let secondary = CAShapeLayer()
     private let rows = CAShapeLayer()
@@ -5127,27 +5149,19 @@ private final class TimelineNativeGridView: NSView {
             layers[index].frame = rect
             layers[index].backgroundColor = band.color
         }
-        func apply(_ layer: CAShapeLayer, positions: [CGFloat], color: CGColor) {
-            let path = CGMutablePath()
-            let top = max(0, content.rulerHeight - tile.minY)
-            for position in positions {
-                // Keep the line and fractional viewport in the same continuous
-                // coordinate space. Document-pixel snapping before scrolling
-                // made even the cursor's anchored beat drift by one pixel.
-                let x = position - tile.minX + pixel / 2
-                path.move(to: CGPoint(x: x, y: top))
-                path.addLine(to: CGPoint(x: x, y: tile.height))
-            }
+        func apply(_ layer: CAShapeLayer, ink: TimelineGridPathCache, positions: [CGFloat], color: CGColor) {
+            let path = ink.path(positions: positions, origin: tile.minX,
+                top: max(0, content.rulerHeight - tile.minY), bottom: tile.height, inset: pixel / 2)
             layer.frame = local
             layer.contentsScale = scale
             layer.lineWidth = pixel * 0.5
             layer.lineDashPattern = nil
             layer.lineDashPhase = 0
             layer.strokeColor = color
-            layer.path = path
+            if layer.path !== path { layer.path = path }
         }
-        apply(primary, positions: content.primary, color: content.primaryColor)
-        apply(secondary, positions: content.secondary, color: content.secondaryColor)
+        apply(primary, ink: primaryInk, positions: content.primary, color: content.primaryColor)
+        apply(secondary, ink: secondaryInk, positions: content.secondary, color: content.secondaryColor)
         rows.frame = local; rows.contentsScale = scale
         rows.strokeColor = content.rowColor; rows.lineWidth = 1
         // Horizontal zoom does not change track heights. Retain these paths
@@ -6422,7 +6436,7 @@ private struct TimelineHeader: View, Equatable {
 /// Persistent ruler primitives: zoom moves cached label images and paths instead
 /// of rasterizing a new SwiftUI Canvas and issuing its drawing commands per frame.
 private struct TimelineNativeRuler: NSViewRepresentable {
-    struct Tick { let x: CGFloat; let primary: Bool; let text: String }
+    struct Tick: Equatable { let x: CGFloat; let primary: Bool; let text: String }
     let viewport: CGRect
     let displayScale: CGFloat
     let barTop: CGFloat
@@ -6438,6 +6452,10 @@ private final class TimelineNativeRulerView: NSView {
     private let rowsLayer = CAShapeLayer()
     private var labels: [CALayer] = []
     private var labelImages: [CGImage] = []
+    private var previousTicks: [TimelineNativeRuler.Tick]?
+    private var previousViewport = CGRect.null
+    private var previousScale: CGFloat = 0
+    private var previousBarTop: CGFloat = 0
     private var oldRows: [CGFloat] = []
     private var oldRowSize = CGSize.zero
     private var oldRowOriginY = CGFloat.nan
@@ -6476,6 +6494,12 @@ private final class TimelineNativeRulerView: NSView {
             rowsLayer.path = path
             oldRows = value.rows; oldRowSize = rect.size; oldRowOriginY = value.viewport.minY
         }
+        // Transport and selection updates can revisit the same ruler. Keep its
+        // tick geometry and label layers until their actual projection changes.
+        if previousTicks == value.ticks && previousViewport == value.viewport &&
+            previousScale == scale && previousBarTop == value.barTop { return }
+        previousTicks = value.ticks; previousViewport = value.viewport
+        previousScale = scale; previousBarTop = value.barTop
         let path = CGMutablePath()
         var count = 0
         for tick in value.ticks {

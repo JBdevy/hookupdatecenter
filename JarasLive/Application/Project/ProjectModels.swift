@@ -188,6 +188,7 @@ public struct Part: Codable, Identifiable, Equatable, Sendable {
     public var subplayInitBars: Int? = nil
     public var subplayInitSelection: Int {
         if let bars = subplayInitBars { return min(5, max(1, bars)) * 2 }
+        if subplayInitSeconds == 0 { return 0 }
         return Int(min(5, max(1, subplayInitSeconds ?? 1))) * 2 - 1
     }
     public var semitones: Int { pitchSemitones ?? 0 }

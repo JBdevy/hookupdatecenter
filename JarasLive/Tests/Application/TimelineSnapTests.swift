@@ -8,7 +8,7 @@ final class TimelineSnapTests: XCTestCase {
         var settings = ProjectTimeSettings(); settings.divisions = 8; song.timeSettings = settings
         let marker = TimelineMarker(id: UUID(), name: "Cue", position: 70, color: 0xffffff)
         song.markers = [marker]
-        for (scale, target) in [(2.0, 8.0), (4, 12), (8, 10), (32, 10.5), (64, 10.75)] {
+        for (scale, target) in [(1.0, 8.0), (2, 12), (4, 10), (8, 10), (32, 10.5), (64, 10.75)] {
             XCTAssertEqual(TimelineTempo.snap(10.74, song: song, pixelsPerSecond: scale,
                 maximumDistancePixels: 8), target, accuracy: 1e-9)
             XCTAssertEqual(song.markerDragPosition(marker, to: 10.74, pixelsPerSecond: scale, free: false), target, accuracy: 1e-9)
@@ -21,9 +21,9 @@ final class TimelineSnapTests: XCTestCase {
     func testDistantGridDoesNotSnapToHiddenHalfStrideLines() {
         var song = Project.empty(name: "Visible bars").songs[0]
         song.bpm = 120; song.duration = 10000; song.parts = []; song.markers = []
-        XCTAssertEqual(TimelineTempo.snap(11.9, song: song, pixelsPerSecond: 2), 8)
-        XCTAssertEqual(TimelineTempo.snap(12.1, song: song, pixelsPerSecond: 2), 16)
-        XCTAssertEqual(TimelineTempo.snap(12.1, song: song, pixelsPerSecond: 4), 12)
+        XCTAssertEqual(TimelineTempo.snap(11.9, song: song, pixelsPerSecond: 1), 8)
+        XCTAssertEqual(TimelineTempo.snap(12.1, song: song, pixelsPerSecond: 1), 16)
+        XCTAssertEqual(TimelineTempo.snap(12.1, song: song, pixelsPerSecond: 2), 12)
     }
     func testFreeCursorPositionIgnoresGridAndEveryMagneticAnchor() {
         for scale in [0.16, 1, 100, 10_000] {
@@ -42,7 +42,7 @@ final class TimelineSnapTests: XCTestCase {
             let step = TimelineTempo.gridStep(bar: 2, beats: 4, pixelsPerSecond: scale)
             XCTAssertGreaterThanOrEqual(step * scale, 8)
             let major = 2 * Double(TimelineTempo.barStride(bar: 2, pixelsPerSecond: scale))
-            XCTAssertGreaterThanOrEqual(major * scale, 16)
+            XCTAssertGreaterThanOrEqual(major * scale, 8)
             let snapped = TimelineTempo.snap(123.456, bar: 2, beats: 4, pixelsPerSecond: scale)
             XCTAssertEqual(snapped / step, (snapped / step).rounded(), accuracy: 0.000001)
         }

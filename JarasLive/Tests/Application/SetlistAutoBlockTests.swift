@@ -95,6 +95,7 @@ final class SetlistAutoBlockTests: XCTestCase {
     @MainActor func testStopAndNaturalCompletionRevealPreparedSongInsteadOfRestoredCursor() throws {
         for manual in [false, true] {
             var project = fixture(); project.regionSetlist?.autoUntilBlockEnd = true
+            project.regionSetlist?.autoAdvance = true
             project.savedCursor = SavedProjectCursor(songID: project.songs[0].id, position: 4)
             let executor = AutoBlockExecutor()
             let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
@@ -112,6 +113,28 @@ final class SetlistAutoBlockTests: XCTestCase {
             XCTAssertNil(show.restoredCursorPosition)
             XCTAssertNotEqual(show.regionFocusRequest, oldFocus)
             XCTAssertFalse(show.snapshot.transport.playing)
+        }
+    }
+
+    @MainActor func testAutoOffDoesNotFocusNextBlockOnStopAndNaturalCompletion() throws {
+        for manual in [false, true] {
+            var project = fixture(); project.regionSetlist?.autoUntilBlockEnd = true
+            project.regionSetlist?.autoAdvance = false
+            let first = project.songs[0].parts[0]
+            let executor = AutoBlockExecutor()
+            let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+            show.send(.selectRegion, target: first.id); show.send(.play)
+            var stopped = executor.transport
+            stopped.playing = false; stopped.queuedRegionId = nil
+            stopped.position = manual ? first.startTime : first.endTime
+            if manual { executor.pendingStop = stopped; show.send(.stop) }
+            else { executor.pendingAdvance = stopped; show.tick() }
+            XCTAssertNotEqual(show.focusedRegion, project.songs[0].parts[1].id)
+            if manual { XCTAssertEqual(show.focusedRegion, first.id) }
+            else { XCTAssertNil(show.focusedRegion, "Ordinary completion still clears the finished row highlight") }
+            XCTAssertEqual(show.snapshot.transport.regionId, first.id)
+            XCTAssertFalse(show.snapshot.transport.playing)
+            XCTAssertTrue(show.regionSetlist.autoUntilBlockEnd == true, "AUTO off preserves the preference for later use")
         }
     }
 

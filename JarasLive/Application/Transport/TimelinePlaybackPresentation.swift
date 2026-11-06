@@ -26,6 +26,12 @@ public struct TimelinePlaybackPresentation: Equatable, Sendable {
                 mainBoundary: Double? = nil) {
         let delta = elapsed.isFinite ? min(Self.maximumExtrapolation, max(0, elapsed)) : 0
         var mainEnd = songDuration
+        if let edit = transport.editPosition, edit >= songDuration, transport.position >= songDuration,
+           transport.regionId == nil, mainBoundary == nil {
+            // Free playback started in the empty tail; interpolate its clock as
+            // smoothly as a head running over audio, without extending the song.
+            mainEnd = .greatestFiniteMagnitude
+        }
         // A loop owns its boundary even when a region ends earlier. Once the
         // engine releases it, the regular region/queue boundary applies again.
         if let loop = transport.multiLoop, !loop.released,

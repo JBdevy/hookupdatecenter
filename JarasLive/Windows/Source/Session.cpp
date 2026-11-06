@@ -810,7 +810,7 @@ void Session::reconcileSetlistSelectionAfterAdvance(const jaras::TransportState 
     const auto &after=transport();
     if(before.playing && !after.playing && !after.paused && !after.subPlay.playing && after.regionId &&
        (before.queuedRegionId == after.regionId ||
-        (project().regionSetlist && project().regionSetlist->autoUntilBlockEnd &&
+        (project().regionSetlist && project().regionSetlist->autoAdvance && project().regionSetlist->autoUntilBlockEnd &&
          (before.regionId != after.regionId || before.playlistEntryId != after.playlistEntryId)))) {
         focusSetlistRegion(after.playlistEntryId ? after.playlistEntryId : after.regionId, true);
         if(selectionChanged) selectionChanged();
@@ -952,7 +952,7 @@ void Session::toggleTransportFadeout(bool enabled, const std::set<ID> &tracks, d
         track.role.id != "timecode" && track.role.id != "chords") selected.insert(track.id);
     if (selected.empty()) { warnTransportFadeout("Escolha pelo menos uma pista para o Fadeout."); return; }
     audio.startTrackFadeout(selected, seconds);
-    fadeoutTracks = std::move(selected); fadeoutDuration = seconds; fadeoutRequested = true;
+    fadeoutTracks = std::move(selected); fadeoutDuration = seconds; fadeoutRunID = uuid(); fadeoutRequested = true;
     if (tick) tick();
 }
 void Session::cancelTransportFadeout() {

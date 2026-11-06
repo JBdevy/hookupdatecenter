@@ -25,17 +25,20 @@ struct TrackAutomation {
  var visibleEnvelopes: [Envelope] { !enabled || lanesVisible == false ? [] : envelopes.filter(\\.visible) }
  struct Envelope { var visible = true }
 }
-struct Track { var automation: TrackAutomation? = nil; var id = UUID(); var heightScale: Double? = nil; var clips: [AudioClip] = [] }
+enum TrackKind { case standard, programChange }
+struct Track { var kind: TrackKind = .standard; var programChangeLaneCount = 1; var automation: TrackAutomation? = nil; var id = UUID(); var heightScale: Double? = nil; var clips: [AudioClip] = [] }
 struct AudioClip: Equatable { var id = UUID(); var startTime: Double; var duration: Double; var recordingLane: Int? = nil }
 struct Part: Equatable { var id = UUID(); var parentRegionID: UUID? = nil; var startTime: Double; var endTime: Double }
-struct TimelineRenderKey: Equatable { let revision: Int }
+struct TimelineRenderKey: Equatable { let revision: Int; var recordingRevision: Int = 0 }
 enum LaneBuildCounter { static var count = 0 }
 final class RecordingLaneLayout {
+ struct Item { var track: UUID; var clip: AudioClip }
+ var items: [UUID: Item] = [:]
  static let shared = RecordingLaneLayout(); var counts: [UUID:Int] = [:]
  func count(for id: UUID, existing: Int) -> Int { max(existing, counts[id] ?? 1) }
 }
 '''
 Path(sys.argv[1]).write_text(stubs+geometry+lanes+cache+rows+mixer+Path('Application/Project/TeleprompterSettings.swift').read_text()+Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()+'\n'+Path('Tests/Apple/TrackHeightLayoutTests.swift').read_text())
 PY
-swiftc -O -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -Onone -g -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

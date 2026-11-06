@@ -9,6 +9,15 @@ final class TimelinePlaybackPresentationTests: XCTestCase {
                        subPlay: SubPlayState(playing: subPlaying, position: sub))
     }
 
+    func testFreeEmptyTailInterpolatesWithoutChangingTheEditCursor() {
+        var sample = transport(main: 1200)
+        sample.editPosition = 1200
+        let frame = TimelinePlaybackPresentation(transport: sample, elapsed: 0.02, songDuration: 10)
+        XCTAssertEqual(frame.mainPosition, 1200.02, accuracy: 1e-9)
+        XCTAssertEqual(frame.followPosition, frame.mainPosition)
+        sample.playing = false
+        XCTAssertEqual(TimelinePlaybackPresentation(transport: sample, elapsed: 0.02, songDuration: 10).mainPosition, 1200)
+    }
     func testZoomUsesSubPlayThenPlaybackThenEditingHead() {
         var sample = transport(main: 25, sub: 80, playing: false)
         sample.editPosition = 3

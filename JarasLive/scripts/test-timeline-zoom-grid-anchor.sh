@@ -22,5 +22,5 @@ for begin in ['private struct TimelineNativeGridBand {', 'private struct Timelin
 parts.append(Path('Tests/Apple/TimelineZoomGridAnchorTests.swift').read_text())
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PYTHON
-swiftc -swift-version 5 "$zoom_test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$zoom_test_dir/main.swift" -o "$zoom_test_dir/test"
+swiftc -swift-version 5 Apple/Shared/TimelineGridInk.swift "$zoom_test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$zoom_test_dir/main.swift" -o "$zoom_test_dir/test"
 "$zoom_test_dir/test" "${1:-current}"

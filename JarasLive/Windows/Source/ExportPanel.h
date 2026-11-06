@@ -84,13 +84,14 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         for (auto *box : {&source, &bounds, &format, &quality, &rate, &channels})
             addAndMakeVisible(box);
         source.addItemList({"Master", "Tracks", "Master + Tracks", "Stems"}, 1);
+        source.setComponentID("exportSource");
         source.setSelectedId(stems ? 4 : 1, dontSendNotification);
         bounds.addItemList({"Projeto completo", String::fromUTF8("Área selecionada"),
                             String::fromUTF8("Regiões selecionadas"),
                             String::fromUTF8("Todas as regiões")},
                            1);
         bounds.setSelectedId(1, dontSendNotification);
-        source.onChange = [this] { rebuild(); };
+        source.onChange = [this] { resized(); rebuild(); };
         bounds.onChange = [this] { rebuild(); };
         addAndMakeVisible(directory);
         addAndMakeVisible(pattern);
@@ -116,7 +117,22 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         addAndMakeVisible(files);
         files.setModel(this);
         files.setRowHeight(32);
-        files.setColour(ListBox::backgroundColourId, Colour(0xff121212));
+        files.setColour(ListBox::backgroundColourId, Colour(0xff101010));
+        addAndMakeVisible(trackViewport);
+        trackViewport.setViewedComponent(&trackList, false);
+        trackViewport.setScrollBarsShown(true, false);
+        if (const auto *song = session.song())
+            for (const auto &candidate : song->tracks) {
+                if (!jaras::fixedTrackName(candidate.role).empty()) continue;
+                auto *button = trackButtons.add(new ToggleButton(text(candidate.name)));
+                button->setComponentID("exportTrack:" + text(candidate.id));
+                trackList.addAndMakeVisible(button);
+                trackIDs.push_back(candidate.id);
+                button->onClick = [this, button, id = candidate.id] {
+                    if (button->getToggleState()) tracks.insert(id); else tracks.erase(id);
+                    rebuild();
+                };
+            }
         addAndMakeVisible(primary);
         addAndMakeVisible(secondary);
         addAndMakeVisible(enableSecondary);
@@ -179,7 +195,11 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
                 session.cancelExport();
                 return;
             }
-            if (renderScreen) { ModalSheet::dismiss(*this); return; }
+            if (renderScreen) {
+                if (findParentComponentOfClass<ModalSheet>()) ModalSheet::dismiss(*this);
+                else if (auto *window = findParentComponentOfClass<DocumentWindow>()) window->closeButtonPressed();
+                return;
+            }
             start();
         };
         restorePreferences(stems);
@@ -187,6 +207,18 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         rebuild();
         startTimerHz(20);
     }
+    // Follow actual mixer changes, without overwriting manual export choices
+    // on every workspace refresh. An export already in progress is immutable.
+    void setMixerTracks(const std::set<ID> &ids) {
+        if (regionMode || itemMode || renderScreen || rendering) return;
+        if (lastMixerTracks && *lastMixerTracks == ids) return;
+        lastMixerTracks = ids;
+        std::set<ID> valid;
+        for (const auto &id : trackIDs) if (ids.count(id)) valid.insert(id);
+        tracks = std::move(valid);
+        rebuild();
+    }
+    void savePreferences() { rememberPreferences(); }
     void selectRegions(std::set<ID> ids) {
         regions = std::move(ids); tracks.clear(); clips.clear();
         regionMode = true;
@@ -217,6 +249,9 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         put(value,"sampleRate",encodings[0].rate);put(value,"channels",encodings[0].channels);
         put(value,"outputTab",selectedOutput);put(value,"fileName",pattern.getText());put(value,"directory",directory.getText());
         put(value,"boundsEnabled",bounds.isEnabled());
+        Array<var> selected;
+        for (const auto &id : tracks) selected.add(text(id));
+        put(value,"selectedTracks",selected);
         Array<var> planned;
         for (const auto &job : jobs) {
             auto item=object();put(item,"name",job.name);put(item,"track",text(job.track));put(item,"clip",text(job.clip));
@@ -228,6 +263,10 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         if (renderScreen) { paintRender(g); return; }
+        if (trackViewport.isVisible()) {
+            g.setColour(Colour(0xff101010));
+            g.fillRoundedRectangle(trackViewport.getBounds().toFloat(), 6.f);
+        }
         g.setColour(Colours::white);
         g.setFont(theme::font(13));
         auto label = [&](String text, int x, int y, int width) {
@@ -278,7 +317,14 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
             button->setBounds(x, 170, 72, 23);
             x += 80;
         }
-        files.setBounds(20, 204, getWidth() - 40, std::max(40, getHeight() - 346));
+        const bool showTracks = !itemMode && !regionMode && (source.getSelectedId() == 2 || source.getSelectedId() == 3);
+        trackViewport.setVisible(showTracks);
+        const int listHeight = std::max(40, getHeight() - 346);
+        trackViewport.setBounds(20, 204, 230, listHeight);
+        trackList.setSize(216, trackButtons.size() * 30 + 16);
+        for (int i = 0; i < trackButtons.size(); ++i) trackButtons[i]->setBounds(8, 8 + i * 30, 200, 30);
+        const int filesLeft = showTracks ? 262 : 20;
+        files.setBounds(filesLeft, 204, getWidth() - filesLeft - 20, listHeight);
         primary.setBounds(30, getHeight() - 118, 198, 24);
         secondary.setBounds(228, getHeight() - 118, 202, 24);
         enableSecondary.setBounds(455, getHeight() - 118, 260, 24);
@@ -295,6 +341,11 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
     bool preProcessing = false, regionMode = false, itemMode = false;
     Appearance preferences;
     std::set<ID> tracks, clips, regions;
+    std::optional<std::set<ID>> lastMixerTracks;
+    Component trackList;
+    Viewport trackViewport;
+    OwnedArray<ToggleButton> trackButtons;
+    std::vector<ID> trackIDs;
     std::optional<std::pair<double, double>> area;
     ComboBox source, bounds, format, quality, rate, channels;
     TextEditor directory, pattern;
@@ -364,6 +415,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
         auto saved=diagnostics();
         saved.getDynamicObject()->removeProperty("plannedFiles");
         saved.getDynamicObject()->removeProperty("boundsEnabled");
+        saved.getDynamicObject()->removeProperty("selectedTracks");
         const auto previous=preferences.value("catlive.export.options");
         put(saved,"regionFileName",get(previous,"regionFileName","%region"));
         put(saved,"itemFileName",get(previous,"itemFileName","%stem"));
@@ -413,6 +465,8 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
     void rebuild() {
         if (rendering && session.busy)
             return;
+        for (int i = 0; i < trackButtons.size(); ++i)
+            trackButtons[i]->setToggleState(tracks.count(trackIDs[(size_t)i]) != 0, dontSendNotification);
         jobs.clear();
         if (const auto *song = session.song()) {
             jobs = audioExport::plan(session.project(), *song, source.getSelectedId() - 1,

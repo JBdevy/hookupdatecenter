@@ -40,7 +40,10 @@ try:
         'LSRequiresIPhoneOS':True, 'MinimumOSVersion':'16.0', 'UIDeviceFamily':[2],
         'UIApplicationSupportsIndirectInputEvents':production_info['UIApplicationSupportsIndirectInputEvents'],
         'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False}, 'UILaunchScreen':{}}))
-    sources = ['Application/Controls/ControlInput.swift', 'Application/Controls/HardwareKeyboardInput.swift',
+    mixer = pathlib.Path('Apple/Shared/TrackMixerRow.swift').read_text()
+    head = mixer[mixer.index('final class ProgramChangeHeadAnchorView:'):mixer.index('\n#endif', mixer.index('final class ProgramChangeHeadAnchorView:'))]
+    (folder/'ProgramHead.swift').write_text('import UIKit\n'+head)
+    sources = [str(folder/'ProgramHead.swift'), 'Application/Controls/ControlInput.swift', 'Application/Controls/HardwareKeyboardInput.swift',
                'Apple/Shared/IpadHardwareKeyboard.swift', 'Apple/Shared/IpadTimelinePointer.swift',
                'Application/Project/ItemFadeCurve.swift', 'Application/Project/TimelinePointerSelection.swift',
                'Apple/Shared/IpadItemHeader.swift', str(folder/'HeaderGeometry.swift'), str(folder/'ResizeControl.swift'), str(folder/'HeaderFixture.swift')]

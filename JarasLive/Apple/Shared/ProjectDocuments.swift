@@ -761,10 +761,10 @@ enum PortableProjectImportPrompt: String, Identifiable {
             try ProjectMediaCleanup.removeDeletedFiles(project: project, document: currentURL, knownPaths: known, protectedURLs: protectedURLs)
         }.value
     }
-    private func preloadTimelineWaveforms(_ project: Project, at url: URL) async {
+    private func preloadTimelineWaveforms(_ project: Project, at url: URL, unreadableAudioPaths: Set<String> = []) async {
         let directory = url.deletingLastPathComponent()
         let missing = await Task.detached(priority: .userInitiated) {
-            Set(ProjectAudioRecovery.missingPaths(in: project, directory: directory))
+            Set(ProjectAudioRecovery.missingPaths(in: project, directory: directory)).union(unreadableAudioPaths)
         }.value
         let files = project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap { track in
             track.clips.compactMap { clip -> URL? in
@@ -853,7 +853,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         await TimelineAudioWaveform.shared.closeProject()
     }
     #endif
-    private func activate(_ project: Project, at url: URL) async throws {
+    private func activate(_ project: Project, at url: URL, unreadableAudioPaths: Set<String> = []) async throws {
         var project = project
         for song in project.songs.indices {
             for track in project.songs[song].tracks.indices where project.songs[song].tracks[track].role.rawValue == "video" {
@@ -863,7 +863,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         if let global = GlobalProjectTiming.load() { global.applyOnOpen(to: &project) }
         else if let song = project.songs.first { GlobalProjectTiming(song: song).save() }
         try project.validate()
-        await preloadTimelineWaveforms(project, at: url)
+        await preloadTimelineWaveforms(project, at: url, unreadableAudioPaths: unreadableAudioPaths)
         #if os(macOS)
         // File reading and waveform preparation can overlap the startup sound;
         // resetting the hardware graph must wait until that sound has finished.
@@ -885,7 +885,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         try show.replaceProject(project)
         resetProjectSelections()
         await store.select(url: url, savedProject: project)
-        let missing = Set(ProjectAudioRecovery.missingPaths(in: project, directory: url.deletingLastPathComponent()))
+        let missing = Set(ProjectAudioRecovery.missingPaths(in: project, directory: url.deletingLastPathComponent())).union(unreadableAudioPaths)
         projectAudio.open(directory: url.deletingLastPathComponent())
         projectAudio.setMissingAudioPaths(missing)
         VideoPlayback.shared.open(directory: url.deletingLastPathComponent())
@@ -902,12 +902,18 @@ enum PortableProjectImportPrompt: String, Identifiable {
     }
     private func finishOpening(_ project: Project, at url: URL) async throws {
         status = "Preparing waveforms…"
-        var enriched = try await ProjectOpeningWork.run {
-            try StemProjectImporter.populateChannelOverviews(project, directory: url.deletingLastPathComponent())
+        let prepared = try await ProjectOpeningWork.run {
+            var ignored = Set<String>(), notices: [String] = []
+            let enriched = try StemProjectImporter.populateChannelOverviews(project, directory: url.deletingLastPathComponent(), onUnreadable: { path, error in
+                ignored.insert(path); notices.append(path + "\n" + error.localizedDescription)
+            })
+            return (enriched, ignored, notices)
         }
+        var enriched = prepared.0
         for index in enriched.songs.indices { enriched.songs[index].ensureInitialTempoMarker() }
         try Task.checkCancellation()
-        try await activate(enriched, at: url)
+        try await activate(enriched, at: url, unreadableAudioPaths: prepared.1)
+        warnings += prepared.2
         if enriched != project { try await ProjectStore(url: url).save(enriched) }
     }
     func open(_ url: URL) { open(url, remoteCommandID: nil) }
@@ -1276,9 +1282,10 @@ enum PortableProjectImportPrompt: String, Identifiable {
                 let result = try await Task.detached(priority: .userInitiated) {
                     if append { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
                     else { try ProjectDirectoryPolicy.prepareNewProjectDirectory(for: url) }
+                    var readWarnings: [String] = []
                     var project = try scan.map { try StemProjectImporter.build(scan: $0, remove: remove, base: base, destination: url, progress: { [weak self] current, total, name in
                         Task { @MainActor [weak self] in self?.status = "Importing \(current)/\(total): \(name)" }
-                    }) } ?? base
+                    }, onUnreadable: { path, error in readWarnings.append(path + "\n" + error.localizedDescription) }) } ?? base
                     if project.projectSyncID == nil { project.projectSyncID = UUID() }
                     var tempoWarnings: [String] = []
                     do {
@@ -1305,7 +1312,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
                     try project.validate()
                     let data = try ProjectDocumentCodec.encode(project)
                     try ProjectDocumentCodec.writeEncoded(data, to: url, exclusive: !append)
-                    return (project, tempoWarnings)
+                    return (project, readWarnings + tempoWarnings)
                     } catch {
                         let existing = Set(base.songs.flatMap(\.tracks).flatMap(\.clips).compactMap { $0.audioFile?.path })
                         let imported = project.songs.flatMap(\.tracks).flatMap(\.clips).compactMap { $0.audioFile?.path }.filter { !existing.contains($0) }
@@ -1640,6 +1647,12 @@ struct ProjectBrowserView: View {
             .onChange(of: documents.opened) { _ in
                 if !documents.ready { opening = false; creating = false; addingOptions = false }
                 completed()
+            }
+            // Recovery is presented by the session root. Release the browser
+            // sheet first so its missing-media sheet is not queued underneath
+            // Recent Projects while the old workspace is still open.
+            .onChange(of: documents.missingAudioPrompt?.id) { id in
+                if id != nil { completed() }
             }
             .onChange(of: creating) { _ in recordingSetup = false }
             .sheet(item: $documents.pendingDeletion) { deletion in

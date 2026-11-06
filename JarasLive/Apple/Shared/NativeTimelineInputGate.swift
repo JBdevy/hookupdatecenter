@@ -135,12 +135,24 @@ final class NativeTimelineInputGate {
         init(_ value: any NativeTimelineInputObserver) { self.value = value }
     }
     private var observers: [Observer] = []
+    // Zoom can mount hundreds of region heads together. Identity lookup must
+    // not scan all existing heads for every viewDidMoveToWindow callback.
+    // Keep registration order for cancellation and weak ownership for closing.
+    private let registered = NSHashTable<AnyObject>(options: [.weakMemory, .objectPointerPersonality])
+    private var registrationsSinceCleanup = 0
     func isBlocked(_ window: NSWindow?) -> Bool {
         window.map { blockedWindows.contains($0) } ?? false
     }
     func add(_ observer: any NativeTimelineInputObserver) {
-        observers.removeAll { $0.value == nil }
-        if !observers.contains(where: { $0.value === observer }) { observers.append(Observer(observer)) }
+        if !registered.contains(observer) {
+            registered.add(observer)
+            observers.append(Observer(observer))
+            registrationsSinceCleanup += 1
+            if registrationsSinceCleanup >= 256 {
+                observers.removeAll { $0.value == nil }
+                registrationsSinceCleanup = 0
+            }
+        }
         observer.timelineInputGateChanged(blocked: isBlocked(observer.window))
     }
     /// Wheel panning owns the pending click, without blocking input or

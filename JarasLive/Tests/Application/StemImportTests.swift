@@ -3,6 +3,52 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testImportAfterReviewSkipsUnreadableAudioAndKeepsValidStems() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Song", file: "Guitarra – João.wav")
+        _ = try fixture(root, folder: "Song", file: "Click.wav")
+        let scan = try StemProjectImporter.scan([folder])
+        let source = folder.appendingPathComponent("Guitarra – João.wav")
+        let damaged = Data("invalid audio after review".utf8)
+        try damaged.write(to: source)
+        let destination = root.appendingPathComponent("Project/Show.jl")
+        var skipped: [String] = []
+        let project = try StemProjectImporter.build(scan: scan, remove: "", base: .empty(name: "Import"), destination: destination,
+            onUnreadable: { path, _ in skipped.append(path) })
+        XCTAssertEqual(skipped.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath() }, [source.resolvingSymlinksInPath()])
+        let clips = project.songs.flatMap(\.tracks).flatMap(\.clips)
+        XCTAssertEqual(clips.count, 1)
+        XCTAssertEqual(clips.first?.name, "Click.wav")
+        XCTAssertEqual(try Data(contentsOf: source), damaged)
+        let copies = try FileManager.default.contentsOfDirectory(atPath: destination.deletingLastPathComponent().appendingPathComponent("Stems").path)
+        XCTAssertEqual(copies, ["Click.wav"])
+        try project.validate()
+    }
+    func testOpeningSkipsBadAudioKeepsReferencesAndRetriesAfterRepair() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Stems", file: "Valid.wav")
+        let broken = folder.appendingPathComponent("Broken.wav")
+        try Data("invalid audio".utf8).write(to: broken)
+        var project = Project.empty(name: "Read failure")
+        var track = Track(id: UUID(), name: "Guitar", role: .init(rawValue: "audio"))
+        track.clips = ["Valid.wav", "Broken.wav", "Broken.wav"].enumerated().map { index, name in
+            AudioClip(id: UUID(), name: name, startTime: Double(index), duration: 1, audioFile: AudioFile(path: "Stems/" + name))
+        }
+        project.songs[0].tracks = [track]
+        var ignored: [String] = []
+        let opened = try StemProjectImporter.populateChannelOverviews(project, directory: root, onUnreadable: { path, _ in ignored.append(path) })
+        XCTAssertEqual(ignored, ["Stems/Broken.wav"])
+        XCTAssertEqual(opened.songs[0].tracks[0].clips.map(\.audioFile), track.clips.map(\.audioFile))
+        XCTAssertFalse(try XCTUnwrap(opened.songs[0].tracks[0].clips[0].waveformChannels).isEmpty)
+        try FileManager.default.removeItem(at: broken)
+        try FileManager.default.copyItem(at: folder.appendingPathComponent("Valid.wav"), to: broken)
+        ignored.removeAll()
+        let repaired = try StemProjectImporter.populateChannelOverviews(opened, directory: root, onUnreadable: { path, _ in ignored.append(path) })
+        XCTAssertTrue(ignored.isEmpty)
+        XCTAssertTrue(repaired.songs[0].tracks[0].clips.allSatisfy { $0.waveformChannels != nil })
+    }
     func testAppendUsesExistingNumberedInternalTracksAndGroups() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -81,6 +127,34 @@ final class StemImportTests: XCTestCase {
         let corrupt = directory.appendingPathComponent("Damaged.mp3")
         try Data("invalid audio".utf8).write(to: corrupt)
         XCTAssertThrowsError(try StemProjectImporter.audioOverview(corrupt, duration: 1))
+    }
+    func testProjectOpeningIdentifiesUnreadableAudioWithoutChangingTheSource() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Stems", file: "Valid.wav")
+        let broken = folder.appendingPathComponent("Guitarra – João.wav")
+        let contents = Data("invalid audio".utf8)
+        try contents.write(to: broken)
+        var project = Project.empty(name: "Read failure")
+        var track = Track(id: UUID(), name: "Guitar", role: .init(rawValue: "audio"))
+        track.clips = ["Valid.wav", broken.lastPathComponent].map {
+            AudioClip(id: UUID(), name: $0, startTime: 0, duration: 1, audioFile: AudioFile(path: "Stems/" + $0))
+        }
+        project.songs[0].tracks = [track]
+        XCTAssertThrowsError(try StemProjectImporter.populateChannelOverviews(project, directory: root)) { error in
+            let failure = error as NSError
+            let underlying = failure.userInfo[NSUnderlyingErrorKey] as? NSError
+            XCTAssertNotNil(underlying)
+            XCTAssertEqual(failure.domain, underlying?.domain)
+            XCTAssertEqual(failure.code, underlying?.code)
+            XCTAssertEqual(failure.userInfo[NSFilePathErrorKey] as? String, broken.path)
+            XCTAssertTrue(failure.localizedDescription.contains("Stems/" + broken.lastPathComponent))
+        }
+        XCTAssertEqual(try Data(contentsOf: broken), contents)
+        XCTAssertTrue(project.songs[0].tracks[0].clips.allSatisfy { $0.waveformChannels == nil })
+        project.songs[0].tracks[0].clips.removeLast()
+        let opened = try StemProjectImporter.populateChannelOverviews(project, directory: root)
+        XCTAssertFalse(try XCTUnwrap(opened.songs[0].tracks[0].clips[0].waveformChannels).isEmpty)
     }
     func fixture(_ root: URL, folder: String, file: String, seconds: Double = 0.1) throws -> URL {
         let directory = root.appendingPathComponent(folder)

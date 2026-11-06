@@ -349,6 +349,7 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
     }
     for (const auto& s : p.setlists) { NSMutableArray* ids = [NSMutableArray new]; for (const auto& id : s.songIds) [ids addObject:text(id)]; [setlists addObject:@{@"id":text(s.id),@"name":text(s.name),@"songIds":ids}]; }
     NSMutableDictionary* result=[@{@"id":text(p.id),@"name":text(p.name),@"projectFormatVersion":@(p.projectFormatVersion),@"minimumJarasVersion":text(p.minimumJarasVersion),@"createdAt":text(p.createdAt),@"updatedAt":text(p.updatedAt),@"songs":songs,@"setlists":setlists} mutableCopy];
+    if(p.importedTimeline) result[@"importedTimeline"]=@(*p.importedTimeline);
     if(p.timelineMovementLocked) result[@"timelineMovementLocked"]=@(*p.timelineMovementLocked);
     if(p.savedCursor) result[@"savedCursor"]=@{@"songID":text(p.savedCursor->songID), @"position":@(p.savedCursor->position)};
     if(p.projectSyncID) result[@"projectSyncID"]=text(*p.projectSyncID);
@@ -406,6 +407,7 @@ static Track readTrack(NSDictionary* td) {
 static Project readProject(NSDictionary* d) {
     Project p; p.id=str(d[@"id"]); p.name=str(d[@"name"]); p.projectFormatVersion=number(d[@"projectFormatVersion"]); p.minimumJarasVersion=str(d[@"minimumJarasVersion"]); p.createdAt=str(d[@"createdAt"]); p.updatedAt=str(d[@"updatedAt"]);
     if(d[@"projectSyncID"] && d[@"projectSyncID"] != NSNull.null) p.projectSyncID=str(d[@"projectSyncID"]);
+    if(d[@"importedTimeline"] && d[@"importedTimeline"] != NSNull.null) p.importedTimeline=number(d[@"importedTimeline"])!=0;
     if(d[@"timelineMovementLocked"] && d[@"timelineMovementLocked"] != NSNull.null) p.timelineMovementLocked=number(d[@"timelineMovementLocked"])!=0;
     if(d[@"savedCursor"] && d[@"savedCursor"] != NSNull.null) {
         NSDictionary* cursor=object(d[@"savedCursor"]);

@@ -621,6 +621,7 @@ struct SongListView: View {
                 Text(verbatim: "Config Init").font(.jarasHeadline)
                 Text(verbatim: region.name).lineLimit(2)
                 Picker("Initial playback", selection: $configInitSelection) {
+                    Text(verbatim: "0s").tag(0)
                     ForEach(1...5, id: \.self) { count in
                         Text("\(count)s").tag(count * 2 - 1)
                         Text(verbatim: "\(count) " + JarasLocalization.string(count == 1 ? "bar" : "bars")).tag(count * 2)

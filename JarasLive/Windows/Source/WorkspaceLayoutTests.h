@@ -9,6 +9,52 @@
 #include "ExportPanel.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void exportMixerSelection(const File &directory) {
+        using floatingControlTests::require;
+        Session session; session.inspection=true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture())); session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("export-mixer-selection",".json"));
+        w.setSize(1366,900); w.projectOpened(false);
+        const auto &song=*session.song();
+        const ID first=song.tracks[0].id, second=song.tracks[1].id, third=song.tracks[2].id;
+        const ModifierKeys toggle(ModifierKeys::ctrlModifier);
+        w.selectMixerTrack(first,{},true,false);
+        w.selectMixerTrack(second,toggle,true,false);
+        w.chooseExport();
+        require(Component::getCurrentlyModalComponent()==nullptr,"Export still blocks mixer interaction");
+        auto &window=*w.floatingWindows.at("Exportar");
+        auto *panel=dynamic_cast<ExportPanel *>(window.getContentComponent());
+        require(panel,"Export window missing");
+        auto *source=dynamic_cast<ComboBox *>(uiFeatureTests::find(*panel,"exportSource"));
+        require(source,"Export source control missing");
+        source->setSelectedId(2,sendNotificationSync);
+        auto checked=[&](const ID &id) {
+            auto *button=dynamic_cast<ToggleButton *>(uiFeatureTests::find(*panel,"exportTrack:"+text(id)));
+            require(button && button->isShowing(),"Export track checkbox missing");
+            return button->getToggleState();
+        };
+        require(checked(first)&&checked(second)&&!checked(third),"Opening export lost part of mixer selection");
+        w.selectMixerTrack(first,toggle,true,false);
+        require(!checked(first)&&checked(second),"Track Mixer deselection did not reach export");
+        w.selectMixerTrack(third,toggle,true,true);
+        require(checked(second)&&checked(third),"Hoz Mixer selection did not reach export");
+        w.selectMixerTrack(second,toggle,true,true);
+        w.selectMixerTrack(third,toggle,true,true);
+        require(!checked(first)&&!checked(second)&&!checked(third),"Empty mixer selection did not clear export");
+        require((int)get(panel->diagnostics(),"jobs")==0,"Empty track selection exports unselected tracks");
+        auto *manual=dynamic_cast<ToggleButton *>(uiFeatureTests::find(*panel,"exportTrack:"+text(first)));
+        manual->setToggleState(true,dontSendNotification); manual->onClick();
+        w.updateState();
+        require(checked(first),"Unchanged workspace refresh erased manual export selection");
+        w.selectMixerTrack(second,{},true,false);
+        require(!checked(first)&&checked(second),"Changed mixer selection did not replace manual selection");
+        window.closeButtonPressed();
+        w.selectMixerTrack(third,toggle,true,true);
+        w.chooseExport();
+        panel=dynamic_cast<ExportPanel *>(w.floatingWindows.at("Exportar")->getContentComponent());
+        require(panel && checked(second)&&checked(third),"Reopening export restored stale mixer selection");
+    }
     static void splitSelection(const File &directory) {
         using floatingControlTests::require;
         for (int selectedCount : {0, 1, 2}) {
@@ -1008,6 +1054,7 @@ struct WorkspaceLayoutTests {
 };
 namespace workspaceLayoutTests {
 template<class Test> void registerTests(const File &directory,Test &test) {
+    test("Export selection follows Track Mixer and Hoz Mixer while the window stays open",[&]{WorkspaceLayoutTests::exportMixerSelection(directory);});
     if(SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{}).isNotEmpty())
         test("Overview zoom profile on an isolated real project",[&]{WorkspaceLayoutTests::overviewProfile(directory);});
     test("Project replacement saves edits before continuing and Cancel preserves them",[&]{WorkspaceLayoutTests::projectReplacement(directory);});

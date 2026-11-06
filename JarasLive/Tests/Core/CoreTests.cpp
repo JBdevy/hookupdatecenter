@@ -28,18 +28,23 @@ static void testAutoUntilBlockEnd() {
     expect(legacy.transport().playing && legacy.transport().regionId == "c", "default Auto crosses block headings");
 
     state.autoUntilBlockEnd = true; project.regionSetlist = state;
-    for (bool automatic : {false, true}) for (bool stop : {false, true}) {
+    // Keeping the block preference enabled must have no effect while AUTO is off,
+    // whether STOP is on or ordinary timeline playback continues past the boundary.
+    for (bool stop : {false, true}) for (bool switchedOff : {false, true}) {
         auto combination = project;
-        combination.regionSetlist->autoAdvance = automatic;
+        combination.regionSetlist->autoAdvance = switchedOff;
         combination.regionSetlist->stopAtRegionEnd = stop;
         Engine boundary; boundary.loadProject(combination); start(boundary, "b");
-        boundary.advance(10);
-        expect(!boundary.transport().playing && boundary.transport().regionId == "c" &&
-               boundary.transport().position == 20 && boundary.transport().editPosition == 20,
-               "block completion prepares the next block independently of AUTO and STOP");
-        boundary.execute({CommandKind::stop});
-        expect(boundary.transport().position == 20 && boundary.transport().regionId == "c",
-               "Stop after block completion must not restore the previous song's play start");
+        if(switchedOff) {auto next=*boundary.project().regionSetlist;next.autoAdvance=false;boundary.configureRegionSetlist(next);}
+        combination.regionSetlist->autoAdvance=false;combination.regionSetlist->autoUntilBlockEnd=false;
+        Engine ordinary;ordinary.loadProject(combination);start(ordinary,"b");
+        boundary.advance(10);ordinary.advance(10);
+        expect(boundary.transport().playing==ordinary.transport().playing && boundary.transport().regionId==ordinary.transport().regionId &&
+               boundary.transport().position==ordinary.transport().position && boundary.transport().editPosition==ordinary.transport().editPosition,
+               "AUTO off must ignore next-block preparation at natural completion, including after toggling AUTO off");
+        boundary.execute({CommandKind::stop});ordinary.execute({CommandKind::stop});
+        expect(boundary.transport().position==ordinary.transport().position && boundary.transport().regionId==ordinary.transport().regionId,
+               "AUTO off must preserve ordinary Stop after the boundary");
     }
     for (bool stop : {false, true}) {
         auto combination = project; combination.regionSetlist->stopAtRegionEnd = stop;
@@ -56,16 +61,17 @@ static void testAutoUntilBlockEnd() {
         Engine manualStop; manualStop.loadProject(manualProject); start(manualStop, "b"); manualStop.advance(2);
         if (paused) manualStop.execute({CommandKind::pause});
         manualStop.execute({all ? CommandKind::stopAll : CommandKind::stop});
+        const ID selected=automatic?"c":"b";const double position=automatic?60:10;
         expect(!manualStop.transport().playing && !manualStop.transport().paused &&
-               manualStop.transport().regionId == "c" && manualStop.transport().playlistEntryId == "c" &&
-               manualStop.transport().position == 60 && manualStop.transport().editPosition == 60,
-               "manual Stop prepares the next block and both cursors, also after Pause");
+               manualStop.transport().regionId == selected && manualStop.transport().playlistEntryId == selected &&
+               manualStop.transport().position == position && manualStop.transport().editPosition == position,
+               "Stop/Stop All after playback or Pause prepares the next block only while AUTO is enabled");
         manualStop.execute({CommandKind::stop});
-        expect(manualStop.transport().regionId == "c" && manualStop.transport().position == 60,
-               "repeated Stop cannot skip another song or restore the outgoing start");
+        expect(manualStop.transport().regionId == selected && manualStop.transport().position == position,
+               "repeated Stop must retain the selected song");
         manualStop.execute({CommandKind::play});
-        expect(manualStop.transport().playing && manualStop.transport().regionId == "c" && manualStop.transport().position == 60,
-               "Play starts the prepared next block at its start");
+        expect(manualStop.transport().playing && manualStop.transport().regionId == selected && manualStop.transport().position == position,
+               "Play must start the retained or automatically prepared song");
     }
     {
         Engine inside; inside.loadProject(project); start(inside, "a"); inside.advance(2); inside.execute({CommandKind::stop});
@@ -437,7 +443,79 @@ static void testAutomaticSubplayBars() {
         expect(rejected,"invalid bar counts must be rejected");
     }
 }
+static void testZeroConfigInitUsesOrdinaryQueue() {
+    const auto fixture=[] {
+        Project p;p.id="zero-init-project";p.name="Zero Init";
+        p.songs={{"zero-init-song","Timeline",240,120,{},{{"out","Outgoing",0,60},{"in","Incoming",80,200}}}};
+        p.regionSetlist=RegionSetlist{};p.regionSetlist->automaticSubplay=true;p.regionSetlist->automaticSubplayNext=true;
+        p.songs[0].parts[1].subplayInitSeconds=0;
+        return p;
+    };
+    for(bool automatic:{false,true}) for(bool stop:{false,true}) for(bool prepare:{false,true}) for(bool delayed:{false,true}) {
+        auto p=fixture();p.regionSetlist->autoAdvance=automatic;
+        p.regionSetlist->stopAtRegionEnd=stop;p.regionSetlist->prepareWithoutPlayback=prepare;
+        Engine zero,ordinary;zero.loadProject(p);
+        p.regionSetlist->automaticSubplay=false;ordinary.loadProject(p);
+        for(auto* engine:{&zero,&ordinary}) {
+            engine->execute({CommandKind::selectRegion,"out"});engine->execute({CommandKind::play});
+            if(!automatic)engine->execute({CommandKind::queueRegion,"in"});
+        }
+        expect(zero.transport().queuedRegionId=="in","0s fixture must queue the incoming song");
+        const auto intervals=delayed?std::vector<double>{60.25}:std::vector<double>{54,5.75,.25,.25};
+        for(double elapsed:intervals) {
+            zero.advance(elapsed);ordinary.advance(elapsed);
+            const auto& actual=zero.transport();const auto& expected=ordinary.transport();
+            expect(!actual.subPlay.playing && actual.subPlayPromotion==0 && !actual.subExclusivePlaybackRegionId,
+                   "Config Init 0s must never trigger or promote automatic Subplay");
+            expect(actual.playing==expected.playing && actual.regionId==expected.regionId &&
+                   actual.queuedRegionId==expected.queuedRegionId && std::abs(actual.position-expected.position)<1e-9,
+                   "Config Init 0s must behave exactly like an ordinary queue, including STOP and prepare-only");
+        }
+    }
+    {
+        auto p=fixture();p.regionSetlist->autoAdvance=true;p.songs[0].parts[1].subplayInitBars=3;
+        Engine e;e.loadProject(p);e.execute({CommandKind::selectRegion,"out"});e.execute({CommandKind::play});e.advance(10);
+        const auto before=e.transport();e.setRegionInit("in",0,false);
+        expect(!e.currentSong()->parts[1].subplayInitBars && e.currentSong()->parts[1].subplayInitSeconds==0,
+               "Saving 0s must replace bar mode and retain an explicit zero");
+        expect(e.transport().playing && e.transport().position==before.position && e.transport().queuedRegionId==before.queuedRegionId,
+               "Saving 0s must preserve the current playback and queue");
+        Engine restored;restored.loadProject(e.project());
+        expect(restored.currentSong()->parts[1].subplayInitSeconds==0,"Reloading a project must retain Config Init 0s");
+        for(auto invalid:{std::pair<int,bool>{0,true},{-1,false},{6,false}}) {
+            bool rejected=false;try {e.setRegionInit("in",invalid.first,invalid.second);}catch(const std::invalid_argument&){rejected=true;}
+            expect(rejected,"Zero bars and out-of-range Config Init values must remain invalid");
+        }
+        e.advance(49);e.execute({CommandKind::subSeek,"",80});e.execute({CommandKind::subPlay});e.advance(1.25);
+        expect(e.transport().subPlayPromotion==1 && std::abs(e.transport().position-81.25)<1e-9,
+               "Config Init 0s must not disable manually triggered Subplay");
+    }
+    std::cout<<"CONFIG_INIT_ZERO_ORDINARY_QUEUE_STOP_PREPARE_DELAYED_TICKS_AND_MANUAL_SUBPLAY_OK\n";
+}
+static void testPlayFromEmptyTimelineTail() {
+    Project project; project.id="tail-project"; project.name="Tail";
+    Song song; song.id="tail-song"; song.name="Tail"; song.duration=10; song.bpm=120;
+    song.parts={{"tail-region","Region",0,10,0}};
+    project.songs={song};
+    for (bool automatic : {false,true}) for (double cursor : {10.,15.,1200.}) {
+        project.regionSetlist=RegionSetlist{};
+        project.regionSetlist->autoAdvance=automatic;
+        Engine engine; engine.loadProject(project);
+        engine.execute({CommandKind::editSeek,"",cursor}); engine.execute({CommandKind::play});
+        expect(engine.transport().playing && engine.transport().position==cursor,"Play respects the cursor after all regions");
+        engine.advance(.5);
+        expect(engine.transport().playing && std::abs(engine.transport().position-cursor-.5)<1e-9,"Empty tail advances without returning to song start/end");
+        engine.execute({CommandKind::pause}); engine.execute({CommandKind::play}); engine.advance(.5);
+        expect(engine.transport().playing && std::abs(engine.transport().position-cursor-1)<1e-9,"Pause resumes in the empty tail");
+        engine.execute({CommandKind::stop});
+        expect(!engine.transport().playing && engine.transport().position==cursor,"Stop returns to the empty-tail starting point");
+        expect(engine.project().songs[0].duration==10,"Free tail playback does not change project length");
+    }
+}
+
 int main() {
+    testPlayFromEmptyTimelineTail();
+    testZeroConfigInitUsesOrdinaryQueue();
     testAutomaticSubplayBars();
     testFreeSecondaryCursor();
     testRegionStopRespectsQueue();

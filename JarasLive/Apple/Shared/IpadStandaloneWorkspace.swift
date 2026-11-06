@@ -159,6 +159,7 @@ import Combine
     @State private var remoteSettingsOpen = false
     @State private var remoteTeleprompter: Int?
     @State private var settingsOpen = false
+    @State private var settingsSection: SettingsView.Section = .general
     @State private var metronomeOpen = false
     @State private var regionActions: UUID?
     @State private var detectingRegion: UUID?
@@ -173,6 +174,7 @@ import Combine
     @State private var clickSoundTrack: UUID?
     @State private var trackEdit: TrackDetailsEditRequest?
     @State private var fx: FXTarget?
+    @State private var automationTrack: UUID?
     @State private var patch: PatchTarget?
     @State private var missingOutput: PatchTarget?
     init(show: ShowController, documents: ProjectDocuments, auth: AuthService,
@@ -182,7 +184,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || trackEdit != nil || fx != nil
+        clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || trackEdit != nil || fx != nil || automationTrack != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -201,6 +203,7 @@ import Combine
                     }, local: true, localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openTrackFX: { fx = .init(track: $0) },
                     openSelectedPatch: { patch = .init(track: $0.first, targets: $0.map { Optional($0) }) },
                     openSelectedFX: { fx = .init(track: $0.first, targets: $0.map { Optional($0) }) },
+                    openTrackAutomation: { automationTrack = $0 },
                     openTrackDetails: { presentTrackDetails($0) },
                     openTrackIcon: { presentTrackDetails($0, iconOnly: true) },
                     openClickSound: { clickSoundTrack = $0 },
@@ -219,7 +222,7 @@ import Combine
                     addBlock: { show.addSetlistBlock(namePrefix: JarasLocalization.string("Bloco")) },
                     toggleRegionStop: { show.toggleRegionStop() }, stopsAtRegionEnd: local.stopsAtRegionEnd,
                     exportProject: { exportingProject = true },
-                    groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, openSettings: { settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
+                    groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, openSettings: { settingsSection = .general; settingsOpen = true }, openAudioSettings: { settingsSection = .audio; settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
         .background(RemoteSurface.background).preferredColorScheme(.dark)
@@ -367,11 +370,15 @@ import Combine
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+        } else if let automationTrack {
+            IpadCompactModal(preferredSize: CGSize(width: 900, height: 540), onDismiss: { self.automationTrack = nil }) {
+                IpadAutomationEditor(show: show, track: automationTrack, close: { self.automationTrack = nil })
+            }
         } else if settingsOpen {
             IpadCompactModal(preferredSize: CGSize(width: 760, height: 540)) {
                 VStack(spacing: 0) {
                     IpadModalHeader(title: "Settings", close: { settingsOpen = false })
-                    SettingsView(auth: auth, show: show, backend: backend)
+                    SettingsView(auth: auth, show: show, backend: backend, selection: $settingsSection)
                 }
             }
         } else if exportingProject {
@@ -591,8 +598,10 @@ struct IpadTimelineFocus: Equatable {
 }
 
 struct IpadTimelineViewport: Equatable {
-    // Bound the amount of item/region geometry mounted on the iPad at once.
-    static let maximumSpan = 600.0
+    // Keep region names, boundaries and item controls readable on the iPad.
+    // The approved overview shows five minutes; the desktop scale would expose
+    // many hours and collapse the regions together on this smaller display.
+    static let maximumSpan = 300.0
     var start = 0.0
     var span = 60.0
     var end: Double { start + span }
@@ -625,6 +634,26 @@ struct IpadTimelineViewport: Equatable {
         let fraction = min(1, max(0, anchor)), position = start + fraction * span
         span = min(Self.maximumSpan, max(0.25, span / factor))
         start = min(604800 - span, max(0, position - fraction * span))
+    }
+}
+
+/// Keep a margin of already drawn timeline on both sides. Playback translates
+/// these retained pixels; it does not lay out clips or sample waveforms per frame.
+struct IpadTimelineRenderWindow: Equatable {
+    let start: Double
+    let span: Double
+    init(_ viewport: IpadTimelineViewport) {
+        span = viewport.span * 2
+        start = max(0, viewport.start - viewport.span / 2)
+    }
+    func needsRebase(_ viewport: IpadTimelineViewport) -> Bool {
+        let margin = viewport.span / 4
+        return span != viewport.span * 2 || viewport.start < start ||
+            (start > 0 && viewport.start < start + margin) ||
+            viewport.end > start + span - margin
+    }
+    func offset(for viewport: IpadTimelineViewport, width: Double) -> Double {
+        (viewport.start - start) / viewport.span * width
     }
 }
 
@@ -1404,7 +1433,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
         VStack(alignment: .leading, spacing: 16) {
             Text(verbatim: "Config Init").font(.jarasHeadline)
             Text(verbatim: show.current?.parts.first(where: { $0.id == id })?.name ?? "")
-            Picker("Initial playback", selection: $selection) { IpadLeadOptions() }.pickerStyle(.menu)
+            Picker("Initial playback", selection: $selection) { IpadLeadOptions(includeZero: true) }.pickerStyle(.menu)
             HStack {
                 Button("Cancel", action: close); Spacer()
                 Button("Save") { show.setRegionInit(id, selection: selection); close() }
@@ -1414,7 +1443,9 @@ struct IpadDialogButtonStyle: ButtonStyle {
     }
 }
 struct IpadLeadOptions: View {
+    var includeZero = false
     var body: some View {
+        if includeZero { Text(verbatim: "0s").tag(0) }
         ForEach(1...5, id: \.self) { count in
             Text("\(count)s").tag(count * 2 - 1)
             Text(verbatim: "\(count) " + JarasLocalization.string(count == 1 ? "bar" : "bars")).tag(count * 2)
@@ -1575,4 +1606,248 @@ private struct IpadClickSoundDesigner: View {
         }
     }
 }
+
+@MainActor final class IpadTimelinePlaybackControl {
+    weak var controller: IpadTimelinePlaybackController?
+    var visibleStart: Double? { controller?.visibleStart }
+}
+
+struct IpadTimelinePlaybackSurface<Content: View>: UIViewControllerRepresentable {
+    let control: IpadTimelinePlaybackControl
+    let show: ShowController
+    let viewport: IpadTimelineViewport
+    let window: IpadTimelineRenderWindow
+    let size: CGSize
+    let gridTop: CGFloat
+    let timeHeight: CGFloat
+    let follow: Bool
+    let colors: [UInt32]
+    let rebase: (IpadTimelineViewport) -> Void
+    let scrollingChanged: (Bool) -> Void
+    @ViewBuilder let content: () -> Content
+    func makeUIViewController(context: Context) -> IpadTimelinePlaybackController {
+        let result = IpadTimelinePlaybackController(); control.controller = result; return result
+    }
+    func updateUIViewController(_ controller: IpadTimelinePlaybackController, context: Context) {
+        controller.configure(show: show, viewport: viewport, window: window, size: size,
+            gridTop: gridTop, timeHeight: timeHeight, follow: follow, colors: colors,
+            rebase: rebase, scrollingChanged: scrollingChanged, content: AnyView(content().environment(\.self, context.environment)))
+    }
+    static func dismantleUIViewController(_ controller: IpadTimelinePlaybackController, coordinator: ()) { controller.stop() }
+}
+
+/// Only this view follows the display clock. The audio transport remains the
+/// authority, including Stop, seeks, loop boundaries and Sub Play promotion.
+@MainActor final class IpadTimelinePlaybackController: UIViewController {
+    private let scroll = IpadItemHeaderViewport()
+    private var headerViewport: CGRect?
+    private let host = UIHostingController(rootView: AnyView(EmptyView()))
+    private let needles = UIView()
+    private let main = IpadPlaybackNeedle(), sub = IpadPlaybackNeedle(), edit = IpadPlaybackNeedle()
+    private weak var show: ShowController?
+    private var subscription: AnyCancellable?
+    private var displayLink: CADisplayLink?
+    private var samplePending = false
+    private var transport: TransportState?
+    private var sampledAt = 0.0, duration = 0.0
+    private var boundary: Double?
+    private var followSource: TimelinePlaybackPresentation.Source?
+    private var configuredViewport: IpadTimelineViewport?
+    private var renderWindow: IpadTimelineRenderWindow?
+    private var project: UUID?, song: UUID?
+    private(set) var visibleStart = 0.0
+    private var viewportSize = CGSize.zero
+    private var presentationOffset = 0.0
+    private var gridTop: CGFloat = 0, timeHeight: CGFloat = 0
+    private var follow = false, rebasePending = false
+    private var colors: [UInt32] = []
+    private var rebase: (IpadTimelineViewport) -> Void = { _ in }
+    private var scrollingChanged: (Bool) -> Void = { _ in }
+    private var headersHidden = false
+    @MainActor private final class TickTarget: NSObject {
+        weak var owner: IpadTimelinePlaybackController?
+        init(_ owner: IpadTimelinePlaybackController) { self.owner = owner }
+        @objc func tick(_ link: CADisplayLink) { owner?.paint() }
+    }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear; view.clipsToBounds = true
+        scroll.backgroundColor = .clear; scroll.clipsToBounds = true
+        scroll.isScrollEnabled = false; scroll.showsHorizontalScrollIndicator = false
+        scroll.showsVerticalScrollIndicator = false; scroll.contentInsetAdjustmentBehavior = .never
+        view.addSubview(scroll)
+        addChild(host); scroll.addSubview(host.view); host.didMove(toParent: self)
+        host.view.backgroundColor = .clear
+        if #available(iOS 16.4, *) { host.safeAreaRegions = [] }
+        needles.isUserInteractionEnabled = false; needles.clipsToBounds = true
+        view.addSubview(needles)
+        for item in [edit, main, sub] { needles.layer.addSublayer(item.layer) }
+    }
+    func configure(show: ShowController, viewport: IpadTimelineViewport, window: IpadTimelineRenderWindow,
+                   size: CGSize, gridTop: CGFloat, timeHeight: CGFloat, follow: Bool, colors: [UInt32],
+                   rebase: @escaping (IpadTimelineViewport) -> Void, scrollingChanged: @escaping (Bool) -> Void, content: AnyView) {
+        loadViewIfNeeded()
+        let changedDocument = project != show.snapshot.project.id || song != show.current?.id
+        let geometryChanged = changedDocument || configuredViewport != viewport || renderWindow != window ||
+            viewportSize != size || self.gridTop != gridTop || self.timeHeight != timeHeight || self.colors != colors
+        if configuredViewport != viewport || changedDocument { visibleStart = viewport.start }
+        if renderWindow != window { rebasePending = false }
+        configuredViewport = viewport; renderWindow = window
+        project = show.snapshot.project.id; song = show.current?.id
+        viewportSize = size; self.gridTop = gridTop; self.timeHeight = timeHeight
+        self.follow = follow; self.colors = colors; self.rebase = rebase; self.scrollingChanged = scrollingChanged
+        host.rootView = content
+        layoutSurface()
+        if self.show !== show {
+            self.show = show
+            subscription = show.$snapshot.sink { [weak self] _ in self?.scheduleSample() }
+        }
+        sample(); if geometryChanged || displayLink == nil { paint() }
+    }
+    override func viewDidLayoutSubviews() { super.viewDidLayoutSubviews(); layoutSurface() }
+    private func layoutSurface() {
+        guard let viewport = configuredViewport, let window = renderWindow else { return }
+        let width = viewportSize.width * window.span / viewport.span
+        scroll.frame = CGRect(origin: .zero, size: viewportSize)
+        needles.frame = CGRect(origin: .zero, size: viewportSize)
+        let frame = CGRect(x: 0, y: 0, width: width, height: viewportSize.height)
+        // Keep layout independent of the fractional compositor translation.
+        if host.view.bounds.size != frame.size { host.view.bounds = frame }
+        let center = CGPoint(x: width / 2, y: viewportSize.height / 2)
+        if host.view.center != center { host.view.center = center }
+        if scroll.contentSize != frame.size { scroll.contentSize = frame.size }
+        updateOffset()
+    }
+    private func scheduleSample() {
+        guard !samplePending else { return }; samplePending = true
+        // @Published emits before storage changes. Capture time and position
+        // together only once the authoritative snapshot has been committed.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; self.samplePending = false
+            let previous = self.transport
+            self.sample()
+            if self.displayLink == nil || previous?.playing != self.transport?.playing ||
+                previous?.subPlay.playing != self.transport?.subPlay.playing ||
+                previous?.sectionJumpSerial != self.transport?.sectionJumpSerial ||
+                previous?.editPosition != self.transport?.editPosition { self.paint() }
+        }
+    }
+    private func sample() {
+        guard let show else { return }
+        transport = show.timelinePlaybackTransport; sampledAt = show.timelinePlaybackSampleTime
+        let song = show.current; duration = song?.duration ?? 0
+        let region = song?.parts.first { $0.id == transport?.regionId }
+        boundary = transport?.ignoreNextEnd ?? region?.parentRegionID.flatMap { id in song?.parts.first { $0.id == id }?.endTime } ?? region?.endTime
+        updateClock()
+    }
+    private func updateClock() {
+        let active = view.window != nil && (transport?.playing == true || transport?.subPlay.playing == true)
+        if !active { displayLink?.invalidate(); displayLink = nil; return }
+        guard displayLink == nil else { return }
+        let link = CADisplayLink(target: TickTarget(self), selector: #selector(TickTarget.tick(_:)))
+        link.preferredFramesPerSecond = 60
+        link.add(to: .main, forMode: .common); displayLink = link
+    }
+    override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); sample(); paint() }
+    override func viewDidDisappear(_ animated: Bool) { super.viewDidDisappear(animated); displayLink?.invalidate(); displayLink = nil }
+    private func updateOffset() {
+        guard let viewport = configuredViewport, let window = renderWindow else { return }
+        let x = window.offset(for: .init(start: visibleStart, span: viewport.span), width: viewportSize.width)
+        let offset = CGPoint(x: min(max(0, scroll.contentSize.width - viewportSize.width), max(0, x)), y: 0)
+        if scroll.contentOffset != offset { scroll.setContentOffset(offset, animated: false) }
+        presentationOffset = offset.x
+        // UIScrollView rounds its bounds to physical pixels. Preserve the
+        // remainder in the compositor, including hit-testing, so wide zooms
+        // still move smoothly between those rounded offsets.
+        let transform = CGAffineTransform(translationX: scroll.contentOffset.x - offset.x, y: 0)
+        if host.view.transform != transform { host.view.transform = transform }
+        let visible = CGRect(origin: offset, size: viewportSize)
+        if headerViewport != visible { headerViewport = visible; scroll.refreshHeaders() }
+    }
+    private func paint() {
+        guard let viewport = configuredViewport, let window = renderWindow, let transport,
+              viewportSize.width > 0, viewportSize.height > 0, colors.count == 3 else { return }
+        let frame = TimelinePlaybackPresentation(transport: transport,
+            elapsed: ProcessInfo.processInfo.systemUptime - sampledAt, songDuration: duration, mainBoundary: boundary)
+        var visible = IpadTimelineViewport(start: visibleStart, span: viewport.span)
+        if follow, show?.timelineFollowPaused != true, let position = frame.followPosition {
+            if let previous = followSource, previous != frame.followSource { visible.center(on: position) }
+            else { visible.follow(position) }
+        }
+        followSource = frame.followSource
+        let moving = follow && show?.timelineFollowPaused != true && frame.followPosition != nil && visible.start > 0
+        if moving != headersHidden {
+            headersHidden = moving
+            DispatchQueue.main.async { [weak self] in self?.scrollingChanged(moving) }
+        }
+        if window.needsRebase(visible), !rebasePending {
+            rebasePending = true
+            DispatchQueue.main.async { [weak self] in self?.rebase(visible) }
+        }
+        visibleStart = visible.start
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        updateOffset()
+        // Use the actual viewport offset while a distant seek waits for its
+        // replacement drawing. Cursor and content always share one projection.
+        let drawnStart = window.start + presentationOffset / viewportSize.width * viewport.span
+        let editPosition = transport.editPosition ?? transport.position
+        draw(edit, time: editPosition, running: false, visible: true, color: colors[1], start: drawnStart)
+        draw(main, time: frame.mainPosition, running: true, visible: transport.playing, color: colors[0], start: drawnStart)
+        draw(sub, time: frame.subPosition, running: true, visible: transport.subPlay.playing, color: colors[2], start: drawnStart)
+        CATransaction.commit()
+    }
+    private func draw(_ needle: IpadPlaybackNeedle, time: Double, running: Bool, visible: Bool, color: UInt32, start: Double) {
+        guard let viewport = configuredViewport else { return }
+        let x = (time - start) / viewport.span * viewportSize.width
+        needle.update(x: x, top: running ? gridTop : gridTop - timeHeight,
+            height: viewportSize.height, color: color, running: running,
+            visible: visible && time.isFinite && x >= 0 && x <= viewportSize.width)
+    }
+    func navigate(to viewport: IpadTimelineViewport) {
+        visibleStart = viewport.start; configuredViewport = viewport
+        paint()
+    }
+    func stop() {
+        displayLink?.invalidate(); displayLink = nil; subscription = nil; show = nil
+        rebase = { _ in }; scrollingChanged = { _ in }; samplePending = false
+    }
+    deinit { displayLink?.invalidate() }
+}
+
+private final class IpadPlaybackNeedle {
+    let layer = CALayer()
+    private let line = CALayer(), head = CAShapeLayer(), core = CALayer(), trail = CAGradientLayer()
+    private struct Appearance: Equatable { let top: CGFloat; let height: CGFloat; let color: UInt32; let running: Bool }
+    private var signature: Appearance?
+    init() {
+        layer.anchorPoint = .zero
+        for child in [trail, line, core, head] { layer.addSublayer(child) }
+        trail.startPoint = CGPoint(x: 0, y: 0.5); trail.endPoint = CGPoint(x: 1, y: 0.5)
+    }
+    func update(x: CGFloat, top: CGFloat, height: CGFloat, color: UInt32, running: Bool, visible: Bool) {
+        layer.isHidden = !visible
+        guard visible else { return }
+        layer.position = CGPoint(x: x, y: top)
+        let next = Appearance(top: top, height: height, color: color, running: running)
+        guard signature != next else { return }; signature = next
+        let ink = UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
+                          blue: CGFloat(color & 255) / 255, alpha: 1)
+        let h = max(0, height - top), w: CGFloat = running ? 3 : 2
+        layer.bounds = CGRect(x: 0, y: 0, width: 1, height: h)
+        line.frame = CGRect(x: 0, y: 0, width: w, height: h); line.backgroundColor = ink.cgColor
+        line.shadowColor = ink.cgColor; line.shadowOpacity = running ? 1 : 0.55
+        line.shadowRadius = running ? 4 : 3; line.shadowOffset = .zero
+        line.shadowPath = CGPath(rect: line.bounds, transform: nil)
+        core.isHidden = !running; core.frame = CGRect(x: 1, y: 0, width: 1, height: h)
+        core.backgroundColor = UIColor.white.withAlphaComponent(0.8).cgColor
+        trail.isHidden = !running; trail.frame = CGRect(x: -38, y: 0, width: 38, height: h)
+        trail.colors = [ink.withAlphaComponent(0).cgColor, ink.withAlphaComponent(0.16).cgColor, ink.withAlphaComponent(0.65).cgColor]
+        let path = CGMutablePath(); path.move(to: CGPoint(x: w / 2 - 7, y: 0))
+        path.addLine(to: CGPoint(x: w / 2 + 7, y: 0)); path.addLine(to: CGPoint(x: w / 2, y: 9)); path.closeSubpath()
+        head.path = path; head.fillColor = ink.cgColor; head.shadowPath = path
+        head.shadowColor = ink.cgColor; head.shadowOpacity = running ? 0.9 : 0.4
+        head.shadowRadius = running ? 4 : 2; head.shadowOffset = .zero
+    }
+}
+
 #endif

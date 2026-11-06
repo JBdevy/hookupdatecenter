@@ -3,12 +3,13 @@ import Combine
 
 struct TransportFadeoutSettings: View {
     let show: ShowController
+    var closeRequested: (() -> Void)?
     @ObservedObject private var fadeout: TransportFadeout
     @ObservedObject private var mappings = ControlMappings.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.workspaceEditorDismiss) private var closeEditor
     @State private var mappingKind = "keyboard"
-    init(show: ShowController) { self.show = show; _fadeout = ObservedObject(wrappedValue: show.transportFadeout) }
+    init(show: ShowController, close: (() -> Void)? = nil) { self.show = show; self.closeRequested = close; _fadeout = ObservedObject(wrappedValue: show.transportFadeout) }
     private func update(enabled: Bool? = nil, duration: Double? = nil, tracks: Set<UUID>? = nil) {
         show.configureTransportFadeout(enabled: enabled ?? fadeout.enabled, duration: duration ?? fadeout.duration, tracks: tracks ?? fadeout.trackIDs)
     }
@@ -63,7 +64,7 @@ struct TransportFadeoutSettings: View {
                     .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 Text("Use the same key or MIDI control again to cancel Fadeout and restore the volumes.")
                     .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
-                HStack { Spacer(); Button("Close") { (closeEditor ?? { dismiss() })() }.keyboardShortcut(.cancelAction) }
+                HStack { Spacer(); Button("Close") { (closeRequested ?? closeEditor ?? { dismiss() })() }.keyboardShortcut(.cancelAction) }
             }.padding(22).frame(width: 400).background(JarasTheme.panel)
                 .disabled(mappings.editing != nil || fadeout.run != nil)
             if mappings.editing?.action == .transportFadeout { ControlMappingEditor() }
@@ -103,7 +104,7 @@ struct TransportFadeoutSettings: View {
             HStack {
                 Text(verbatim: "Fadeout").font(.jarasSystem(size: 13, weight: .semibold))
                 Spacer()
-                Button { (closeEditor ?? { dismiss() })() } label: {
+                Button { (closeRequested ?? closeEditor ?? { dismiss() })() } label: {
                     Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel("Close").keyboardShortcut(.cancelAction)
             }.padding(.horizontal, 16).frame(height: 44)
@@ -299,3 +300,22 @@ private struct FadeoutCountdown: View {
     }
 }
 #endif
+
+/// A compact, nonblocking card: the toolbar button remains available to cancel.
+struct TransportFadeoutProgress: View {
+    let duration: Double
+    let remaining: Double
+    var body: some View {
+        VStack(spacing: 12) {
+            Text(verbatim: "Fadeout").font(.jarasHeadline)
+            Text(String(format: "%.1f s", max(0, remaining))).monospacedDigit().font(.jarasSystem(size: 24, weight: .semibold))
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.12))
+                    Capsule().fill(JarasTheme.green).frame(width: geometry.size.width * min(1, max(0, remaining / max(1, duration))))
+                }
+            }.frame(height: 4)
+        }.padding(20).frame(width: 230).background(JarasTheme.panel, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(JarasTheme.line, lineWidth: 1))
+    }
+}

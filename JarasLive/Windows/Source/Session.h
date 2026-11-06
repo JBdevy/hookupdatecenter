@@ -39,6 +39,7 @@ class Session final : private Timer {
     bool transportFadeoutActive() const { return fadeoutRequested; }
     double transportFadeoutRemaining() const { return audio.trackFadeoutRemainingSeconds(); }
     double transportFadeoutDuration() const { return fadeoutDuration; }
+    const ID &transportFadeoutRunID() const { return fadeoutRunID; }
     double trackDisplayVolume(const ID &id, double volume) const { return fadeoutRequested ? volume * audio.trackFadeoutGain(id) : volume; }
     bool trackFaderLocked(const ID &id) const;
     std::function<bool()> canPlay;
@@ -231,6 +232,7 @@ class Session final : private Timer {
     std::set<std::string> observedMedia;
     bool fadeoutRequested = false, completingFadeout = false;
     double fadeoutDuration = 3;
+    ID fadeoutRunID;
     std::set<ID> fadeoutTracks;
     void warnTransportFadeout(String);
     struct ProjectSave;

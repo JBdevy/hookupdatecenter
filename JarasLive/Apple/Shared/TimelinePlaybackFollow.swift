@@ -100,6 +100,7 @@ final class TimelinePlaybackFollowView: NSView {
         guard sample != next || needsApply else { return }
         sample = next
         guard position != nil else {
+            horizontalScroll?.setPlaybackFollowing(false)
             TimelineFollowCadenceDiagnostics.stopped()
             pending = nil
             needsApply = false
@@ -148,12 +149,14 @@ final class TimelinePlaybackFollowView: NSView {
     }
 
     private func applyLatestSample() {
+        if horizontalScroll?.permitsPlaybackFollow != true { horizontalScroll?.setPlaybackFollowing(false) }
         guard needsApply, let sample, sample.position != nil, let window,
               window.attachedSheet == nil, !NativeTimelineInputGate.shared.isBlocked(window),
               let scroll = horizontalScroll, scroll.permitsPlaybackFollow,
               scroll.documentView != nil, geometryMatches(sample, clip: scroll.contentView) else { return }
         let clip = scroll.contentView
         let viewport = clip.bounds
+        if viewport.minX >= sample.contentWidth - viewport.width { scroll.setPlaybackFollowing(false) }
         var nextPolicy = policy
         guard let x = nextPolicy.destination(position: sample.position, pixelsPerSecond: sample.pixelsPerSecond,
                                              contentWidth: sample.contentWidth, viewport: viewport, source: sample.source,
@@ -172,6 +175,7 @@ final class TimelinePlaybackFollowView: NSView {
               geometryMatches(sample, clip: clip), clip.bounds == viewport else { return }
         policy = nextPolicy
         needsApply = false
+        scroll.setPlaybackFollowing(x > 0 && x < sample.contentWidth - viewport.width)
         clip.scroll(to: CGPoint(x: x, y: viewport.minY))
         scroll.reflectScrolledClipView(clip)
         TimelineFollowCadenceDiagnostics.applied()

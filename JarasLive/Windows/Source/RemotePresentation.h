@@ -12,6 +12,8 @@ class Presentation final {
   public:
     Presentation(Session &value, StageState &stageValue) : session(value), stage(stageValue) {}
     std::function<void()> save;
+    std::function<void(bool)> fadeout;
+    ID fadeoutCommand;
     var snapshot(int panel) {
         const auto &p = session.project();
         const auto *song = session.song();
@@ -213,6 +215,12 @@ class Presentation final {
                     blocks.add(v);
                 }
         put(result, "setlistBlocks", blocks);
+        auto fade = object();
+        if (session.transportFadeoutActive()) put(fade, "runID", wireID(session.transportFadeoutRunID()));
+        put(fade, "duration", session.transportFadeoutDuration());
+        put(fade, "remaining", session.transportFadeoutActive() ? std::clamp(session.transportFadeoutRemaining(), 0., session.transportFadeoutDuration()) : 0.);
+        if (!fadeoutCommand.empty()) put(fade, "lastCommandID", wireID(fadeoutCommand));
+        put(result, "fadeout", fade);
         put(result, "previewActive", stage.preview);
         put(result, "previewPage", stage.previewPage);
         if (timerTarget != stage.target || timerRunning != stage.running ||
@@ -309,6 +317,10 @@ class Presentation final {
         const auto *song = session.song();
         if (session.busy || !song || wireID(c.song) != wireID(song->id))
             return false;
+        if (a == "transportFadeout") {
+            if (fadeoutCommand != c.id && fadeout) { fadeoutCommand = c.id; fadeout(c.enabled.value_or(false)); }
+            return true;
+        }
         const auto track =
             std::find_if(song->tracks.begin(), song->tracks.end(),
                          [&](const auto &v) { return wireID(v.id) == wireID(c.target); });

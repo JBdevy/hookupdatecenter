@@ -180,6 +180,23 @@ MainActor.assumeIsolated {
     update(2000, scale: 8, width: 8000, source: "song/logical"); flush()
     precondition(close(scroll.contentView.bounds.minX, 6800) && document.frame.width == retainedCapacity,
                  "follow reaches logical end without exposing the unused physical tail")
+    precondition(!scroll.isPlaybackFollowing, "At the end, the grid is stationary and item controls must show")
+    var manualNavigations = 0
+    scroll.manualNavigation = { manualNavigations += 1 }
+    update(600, scale: 8, width: 8000, source: "song/logical"); flush()
+    precondition(scroll.isPlaybackFollowing, "Advancing the viewport hides item headers")
+    scroll.pauseManualPlaybackFollow()
+    precondition(!scroll.isPlaybackFollowing && !scroll.permitsPlaybackFollow && manualNavigations == 1,
+                 "Manual navigation immediately reveals headers and pauses the shared controller")
+    let firstDeadline = scroll.playbackFollowSuspendedUntil
+    precondition(firstDeadline - ProcessInfo.processInfo.systemUptime > 1.45)
+    scroll.pauseManualPlaybackFollow()
+    precondition(scroll.playbackFollowSuspendedUntil >= firstDeadline && manualNavigations == 2)
+    scroll.playbackFollowSuspendedUntil = ProcessInfo.processInfo.systemUptime - 0.01
+    update(601, scale: 8, width: 8000, source: "song/logical"); flush()
+    precondition(scroll.isPlaybackFollowing, "After the idle period, scrolling resumes and hides headers")
+    update(nil)
+    precondition(!scroll.isPlaybackFollowing, "Stop reveals item headers")
     print("PLAYBACK_FOLLOW_RETAINED_CAPACITY_LOGICAL_READINESS_AND_END_OK")
     window.orderOut(nil)
     print("PLAYBACK_FOLLOW_NATIVE_CLIP_PREPARATION_COALESCING_ZOOM_GATE_AND_RESIZE_OK")

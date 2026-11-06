@@ -79,7 +79,7 @@ struct Command {
                 *entry.second = (bool)field;
             }
         }
-        require(!c.enabled || a == "noticeDestination" || a == "noticePinStopped" || a == "vinhetasGate");
+        require(!c.enabled || a == "noticeDestination" || a == "noticePinStopped" || a == "vinhetasGate" || a == "transportFadeout");
         require(!c.receipt || a == "noticeSend");
         const bool target = !c.target.empty(), zero = c.value == 0,
                    integral = std::floor(c.value) == c.value;
@@ -91,6 +91,8 @@ struct Command {
             valid = target && zero && !c.enabled.has_value();
         else if (a == "vinhetasVolume")
             valid = !target && range(0, 2) && !c.enabled.has_value();
+        else if (a == "transportFadeout")
+            valid = !target && zero && c.enabled.has_value();
         else if (a == "vinhetasGate")
             valid = !target && zero && c.enabled.has_value();
         else if (a == "vinhetasPreset")

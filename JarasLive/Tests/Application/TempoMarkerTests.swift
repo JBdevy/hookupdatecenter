@@ -286,7 +286,7 @@ final class TempoMarkerTests: XCTestCase {
     }
     func testRulerAndGridShowFourTwoOneBarsBeforeBeatLines() {
         let sections = [TimelineTempoSection(start: 0, end: 120, bpm: 120, beats: 4, unit: 4, timebase: .free)]
-        for (scale, interval) in [(2.0, 8.0), (4, 4), (8, 2), (16, 2)] {
+        for (scale, interval) in [(1.0, 8.0), (2, 4), (4, 2), (8, 2), (16, 2)] {
             let marks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 16, pixelsPerSecond: scale)
             XCTAssertEqual(marks.map(\.time), Array(stride(from: 0.0, through: 16, by: interval)))
             XCTAssertTrue(marks.allSatisfy(\.primary), "Only whole-bar references precede the beat stage")

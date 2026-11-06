@@ -126,12 +126,12 @@ struct ItemHeader {
     juce::Rectangle<float> item, visible, muteRect, fxRect, phaseRect, panRect, panLabel, gainRect, gainLabel;
     float titleLeft = 0;
     bool editable = false, midi = false;
-    ItemHeader(juce::Rectangle<float> bounds, float viewportWidth, const jaras::Track &track, const jaras::AudioClip &clip, const String &title = {})
+    ItemHeader(juce::Rectangle<float> bounds, float viewportWidth, const jaras::Track &track, const jaras::AudioClip &clip, const String &title = {}, bool hidden = false)
         : item(bounds), editable(jaras::fixedTrackName(track.role).empty() || (clip.audioFile && clip.audioFile->path.rfind("Videos/",0)==0)), midi(bool(clip.midi)) {
         visible = bounds.getIntersection({0, bounds.getY(), viewportWidth, std::min(17.f,bounds.getHeight())});
         const float x = visible.getX() + 2.6f, y = bounds.getY(), width = visible.getWidth();
         titleLeft = visible.getX() + 6;
-        if (!editable) return;
+        if (!editable || hidden) return;
         if (width < 23.7f) { titleLeft = visible.getRight(); return; }
         float next = x;
         auto append = [&](juce::Rectangle<float>& target, float w, float gap = 1.f) {

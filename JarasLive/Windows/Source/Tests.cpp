@@ -1023,6 +1023,14 @@ int runTests(const File &directory) {
         std::vector<clickTempo::Transient> quiet;for(int beat=0;beat<40;++beat)quiet.push_back({beat*.375,beat%4==0?1.:.07,{}});quiet[17].peak=.001;
         expect(clickTempo::primaryTransients(quiet).size()==quiet.size(),"A bar accent erased quiet quarter notes");
     });
+    test("Config Init zero seconds survives Windows project serialization", [&] {
+        auto p=projectFixture();p.regionSetlist=jaras::RegionSetlist{};
+        p.regionSetlist->automaticSubplay=true;p.regionSetlist->automaticSubplayNext=true;
+        p.songs[0].parts[1].subplayInitSeconds=0;
+        const auto restored=ProjectCodec::decode(ProjectCodec::encode(p,{}));
+        expect(restored.songs[0].parts[1].subplayInitSeconds==0 && !restored.songs[0].parts[1].subplayInitBars,
+               "Windows codec must retain an explicit 0s instead of the default one-second lead");
+    });
     test("Automatic Subplay seconds and bars survive Windows project serialization", [&] {
         auto p=projectFixture();p.regionSetlist=jaras::RegionSetlist{};p.regionSetlist->automaticSubplay=true;
         for(int count=1;count<=5;++count) {
@@ -1347,6 +1355,17 @@ int runTests(const File &directory) {
             }
             expect(tall>0,"A short transient disappeared in the physical-pixel overview");
         }
+    });
+    test("Manual grid scroll resumes after one and a half idle seconds", [&] {
+        TimelinePlaybackFollowPolicy policy;jaras::TransportState state;state.playing=true;
+        policy.pause(state,1.5,100);
+        expect(policy.isPaused(state,101.49),"Follow resumed before the idle deadline");
+        policy.pause(state,1.5,101);
+        expect(policy.isPaused(state,102),"More scrolling did not extend the pause");
+        expect(!policy.isPaused(state,102.5),"Follow failed to resume after 1.5 idle seconds");
+        jaras::Track track;jaras::AudioClip clip;clip.name="Title";clip.duration=60;
+        ItemHeader header({0,0,800,80},800,track,clip,"Title",true);
+        expect(header.gainRect.isEmpty() && header.muteRect.isEmpty() && header.fxRect.isEmpty(),"Hidden header still has clickable controls");
     });
     test("Marquee follow pause survives mouse release and cursor edits until playback changes", [&] {
         TimelinePlaybackFollowPolicy policy;jaras::TransportState state;
@@ -2030,7 +2049,7 @@ int runTests(const File &directory) {
         jaras::Song song; song.duration=120; song.bpm=120;
         song.beatsPerBar=4; song.beatUnit=4;
         song.timeSettings=jaras::ProjectTimeSettings{};
-        const std::array<std::pair<double, double>, 4> cases{{{2.,8.}, {4.,4.}, {8.,2.}, {16.,2.}}};
+        const std::array<std::pair<double, double>, 5> cases{{{1.,8.}, {2.,4.}, {4.,2.}, {8.,2.}, {16.,2.}}};
         for (const auto &sample : cases) {
             const double scale = sample.first, interval = sample.second;
             const auto ticks=timelineGrid::ticks(song,0,16,scale);

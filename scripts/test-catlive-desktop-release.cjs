@@ -92,8 +92,8 @@ if (yaml) {
                       {id: 2, name: 'Catlive-1.07.exe', state: 'uploaded', size: 100},
                       {id: 3, name: 'Catlive-1.07.pkg.sha256', state: 'uploaded', size: 64},
                       {id: 4, name: 'old-preview.zip', state: 'uploaded', size: 200},
-                      {id: 5, name: 'CatLive-Integration-1.27-Mac.pkg', state: 'uploaded', size: 100},
-                      {id: 6, name: 'CatLive-Integration-1.27-Windows.exe', state: 'uploaded', size: 100}];
+                      {id: 5, name: 'CatLive-Integration-1.28-Mac.pkg', state: 'uploaded', size: 100},
+                      {id: 6, name: 'CatLive-Integration-1.28-Windows.exe', state: 'uploaded', size: 100}];
         const github = {rest: {repos: {
             getReleaseByTag: async ({tag}) => {assert.equal(tag, 'catlive-v1.07');return {data: {id: 7, target_commitish: 'old'}};},
             listReleaseAssets: () => {},

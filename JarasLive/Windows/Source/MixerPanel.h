@@ -253,6 +253,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 lastVolume = volume; lastLocked = mixer.session.trackFaderLocked(id); meterPaint.update(levels);
                 fader.setValue(id.empty()?t->volume:mixer.session.trackDisplayVolume(id,t->volume),dontSendNotification);
                 fader.setEnabled(!mixer.session.trackFaderLocked(id));
+                fader.setMonitorOff(!id.empty() && !t->inputMonitoring.value_or(true));
                 pan.setValue(t->pan, dontSendNotification);
                 mute.setToggleState(t->mute, dontSendNotification);
                 solo.setToggleState(t->solo, dontSendNotification);

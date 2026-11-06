@@ -4,6 +4,7 @@ import Combine
 /// A performance gesture, never a project edit or an automation envelope.
 @MainActor public final class TransportFadeout: ObservableObject {
     public struct Run: Equatable {
+        public let id = UUID()
         public let project: UUID
         public let song: UUID
         public let startedAt: Double
@@ -42,8 +43,8 @@ import Combine
         }
     }
     public static func validDuration(_ value: Double) -> Double { value.isFinite ? min(5, max(1, value)) : 3 }
-    @discardableResult public func start(project: UUID, song: UUID, volumes: [UUID: Double], at time: Double) -> Bool {
-        guard enabled, run == nil, !volumes.isEmpty, time.isFinite,
+    @discardableResult public func start(project: UUID, song: UUID, volumes: [UUID: Double], at time: Double, explicit: Bool = false) -> Bool {
+        guard (enabled || explicit), run == nil, !volumes.isEmpty, time.isFinite,
               volumes.values.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return false }
         notice = nil
         run = Run(project: project, song: song, startedAt: time, duration: duration, originalVolumes: volumes, elapsed: 0)
@@ -78,15 +79,15 @@ extension ShowController {
         transportFadeout.configure(enabled: enabled, duration: duration,
             tracks: tracks.intersection(fadeoutTracks.map(\.id)))
     }
-    public func triggerTransportFadeout() {
+    public func triggerTransportFadeout(explicit: Bool = false) {
         if transportFadeout.active { cancelTransportFadeout(); return }
-        guard transportFadeoutCanStart, transportFadeout.enabled else { return }
+        guard transportFadeoutCanStart, (explicit || transportFadeout.enabled) else { return }
         guard snapshot.transport.playing else { return }
         guard !snapshot.transport.subPlay.playing else { transportFadeout.warn("Stop Sub Play before starting Fadeout."); return }
         guard let song = current else { return }
         let volumes = Dictionary(uniqueKeysWithValues: fadeoutTracks.filter { transportFadeout.trackIDs.contains($0.id) }.map { ($0.id, $0.volume) })
         guard !volumes.isEmpty else { transportFadeout.warn("Select tracks in the Fadeout settings."); return }
-        if transportFadeout.start(project: snapshot.project.id, song: song.id, volumes: volumes, at: timelinePlaybackNow) {
+        if transportFadeout.start(project: snapshot.project.id, song: song.id, volumes: volumes, at: timelinePlaybackNow, explicit: explicit) {
             audioStartTransportFade(Set(volumes.keys), transportFadeout.duration)
             audioTransportFade(transportFadeout.run!.gains)
             startClock()

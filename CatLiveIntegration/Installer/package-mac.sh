@@ -52,8 +52,8 @@ with open(sys.argv[1],'wb') as out:
 PYCOMPONENT
 mkdir -p "$BUILD_DIRECTORY/pkg-root/Applications"
 ditto "$APP" "$BUILD_DIRECTORY/pkg-root/Applications/CatLive Integration.app"
-pkgbuild --root "$BUILD_DIRECTORY/pkg-root" --component-plist "$BUILD_DIRECTORY/component.plist" --identifier com.hookdeveloper.catlive.integration.pkg --version 1.27 --install-location / "$BUILD_DIRECTORY/unsigned.pkg"
-PKG="$BUILD_DIRECTORY/installer/CatLive-Integration-1.27-Mac.pkg"
+pkgbuild --root "$BUILD_DIRECTORY/pkg-root" --component-plist "$BUILD_DIRECTORY/component.plist" --identifier com.hookdeveloper.catlive.integration.pkg --version 1.28 --install-location / "$BUILD_DIRECTORY/unsigned.pkg"
+PKG="$BUILD_DIRECTORY/installer/CatLive-Integration-1.28-Mac.pkg"
 python3 JarasLive/scripts/sign-catlive-pkg.py "$BUILD_DIRECTORY/unsigned.pkg" "$PKG" "$INSTALLER_ID" "$KEYCHAIN"
 python3 JarasLive/scripts/notarize-catlive-pkg.py "$PKG" --result "$BUILD_DIRECTORY/notary-result.json"
 xcrun stapler staple "$PKG"

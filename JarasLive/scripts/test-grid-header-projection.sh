@@ -12,6 +12,8 @@ from pathlib import Path
 import sys
 out = Path(sys.argv[1])
 source = Path('Apple/Shared/GridSelectionInput.swift').read_text()
+source = source.replace('init(_ text: NSAttributedString, prepareTitle: Bool = false) {', 'init(_ text: NSAttributedString, prepareTitle: Bool = false) {\n            if prepareTitle { HeaderProjectionProbe.titleBuilds += 1 }')
+source = source.replace('if let preparedHeaderProjection, preparedHeaderProjection.key == key { return preparedHeaderProjection }', 'if let preparedHeaderProjection, preparedHeaderProjection.key == key { return preparedHeaderProjection }\n        HeaderProjectionProbe.projections += 1')
 source = source.replace('private func invalidateHeaderProjectionIfNeeded()', 'private func invalidateHeaderProjectionImplementation()')
 needle = '    @discardableResult private func invalidateHeaderProjectionImplementation()'
 wrapper = '''    @discardableResult func invalidateHeaderProjectionIfNeeded() -> Bool {

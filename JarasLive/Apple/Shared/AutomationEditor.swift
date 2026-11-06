@@ -339,3 +339,211 @@ private struct AutomationCurveEditor: NSViewRepresentable {
     }
 }
 #endif
+
+#if os(iOS)
+import SwiftUI
+import UIKit
+
+/// Uses the same persisted envelopes and playback engine as the desktop.
+/// External-plugin envelopes remain in the project but are not offered on iPad.
+@MainActor struct IpadAutomationEditor: View {
+    let show: ShowController
+    let track: UUID
+    let close: () -> Void
+    @ObservedObject private var updates: ShowPresentationObserver
+    @State private var search = ""
+    @State private var selected: String?
+    @State private var zoom = 1.0
+    @State private var offset = 0.0
+    private struct Choice: Identifiable {
+        let target: AutomationTarget
+        let name: String
+        let value: Double
+        var id: String { target.key }
+    }
+    init(show: ShowController, track: UUID, close: @escaping () -> Void) {
+        self.show = show; self.track = track; self.close = close
+        _updates = ObservedObject(wrappedValue: show.presentationObserver)
+    }
+    private var settings: TrackAutomation { show.automation(track) }
+    private var duration: Double { max(30, show.current?.duration ?? 30) }
+    private var choices: [Choice] {
+        guard let row = show.current?.tracks.first(where: { $0.id == track }) else { return [] }
+        let fx = show.fxSettings(track)
+        var values = [Choice(target: .init(.volume), name: JarasLocalization.string("Volume"), value: TrackEnvelope.normalizedGain(row.volume)),
+            Choice(target: .init(.pan), name: "Pan", value: (row.pan + 1) / 2),
+            Choice(target: .init(.mute), name: "Mute", value: row.mute ? 1 : 0)]
+        values += NativeFXParameter.automationParameters(in: fx).map {
+            Choice(target: .init(.nativeFX, native: $0), name: fx.kind(of: $0.effect) + " · " + $0.name,
+                value: $0.normalized($0.currentValue(in: fx)))
+        }
+        for envelope in settings.envelopes where envelope.target.kind != .externalFX && !values.contains(where: { $0.target == envelope.target }) {
+            values.append(Choice(target: envelope.target, name: envelope.name, value: envelope.defaultValue))
+        }
+        return values
+    }
+    private func edit(_ action: (inout TrackAutomation) -> Void) {
+        var next = settings; action(&next); show.setAutomation(track, settings: next)
+    }
+    private func enable(_ choice: Choice, _ enabled: Bool) {
+        edit { next in
+            if let index = next.envelopes.firstIndex(where: { $0.target == choice.target }) {
+                next.envelopes[index].enabled = enabled; next.envelopes[index].visible = enabled
+            } else if enabled {
+                next.envelopes.append(TrackEnvelope(target: choice.target, name: choice.name, defaultValue: choice.value))
+            }
+            if enabled { next.enabled = true; next.lanesVisible = true; selected = choice.id }
+        }
+    }
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("Envelopes").font(.jarasHeadline).foregroundStyle(.orange)
+                Text(verbatim: show.current?.tracks.first(where: { $0.id == track })?.name ?? "").lineLimit(1)
+                Spacer(); Button("Close", action: close)
+            }
+            HStack {
+                Toggle("Automation enabled", isOn: Binding(get: { settings.enabled }, set: { value in edit { $0.enabled = value } }))
+                Picker("Mode", selection: Binding(get: { settings.mode }, set: { value in edit { $0.mode = value } })) {
+                    ForEach(AutomationMode.allCases, id: \.self) { Text(verbatim: $0.title).tag($0) }
+                }.frame(width: 190)
+            }
+            HStack(spacing: 14) {
+                VStack {
+                    TextField("Search parameters", text: $search).textFieldStyle(.roundedBorder)
+                    ScrollView {
+                        LazyVStack(spacing: 6) {
+                            ForEach(choices.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }) { choice in
+                                HStack {
+                                    Toggle("Enabled", isOn: Binding(get: { settings.envelopes.contains { $0.target == choice.target && $0.enabled } }, set: { enable(choice, $0) }))
+                                        .labelsHidden().scaleEffect(0.8).frame(width: 44)
+                                    Button { selected = choice.id } label: {
+                                        Text(verbatim: choice.name).font(.jarasSystem(size: 12)).frame(maxWidth: .infinity, alignment: .leading)
+                                    }.buttonStyle(.plain)
+                                }.padding(5).background(selected == choice.id ? Color.orange.opacity(0.2) : Color.clear).cornerRadius(5)
+                            }
+                        }
+                    }
+                }.frame(width: 240)
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
+                    if let envelope = settings.envelopes.first(where: { $0.target.key == selected && $0.target.kind != .externalFX }) {
+                        HStack {
+                            Text(verbatim: envelope.name).font(.jarasHeadline).lineLimit(2)
+                            Spacer()
+                            Toggle("Arm", isOn: Binding(get: { envelope.armed }, set: { armed in edit { next in
+                                if let index = next.envelopes.firstIndex(where: { $0.id == envelope.id }) { next.envelopes[index].armed = armed }
+                            } })).frame(width: 100)
+                        }
+                        IpadAutomationCurve(show: show, track: track, envelope: envelope, start: offset, span: duration / zoom)
+                            .frame(minHeight: 180).clipShape(RoundedRectangle(cornerRadius: 6))
+                        HStack { Text("Zoom"); Slider(value: $zoom, in: 1...64) }
+                        Slider(value: $offset, in: 0...max(0.001, duration - duration / zoom))
+                        Text("Double-click to add a point. Drag to move. Shift disables snap. Delete removes selected points. Right-click changes the curve.")
+                            .font(.jarasCaption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Select parameters to create envelopes.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+        }.padding(18).background(JarasTheme.background)
+            .onAppear { selected = settings.envelopes.first(where: { $0.target.kind != .externalFX })?.target.key }
+            .onChange(of: zoom) { _ in offset = min(offset, max(0, duration - duration / zoom)) }
+    }
+}
+
+private struct IpadAutomationCurve: UIViewRepresentable {
+    let show: ShowController
+    let track: UUID
+    let envelope: TrackEnvelope
+    let start: Double
+    let span: Double
+    func makeUIView(context: Context) -> IpadAutomationCurveView { IpadAutomationCurveView() }
+    func updateUIView(_ view: IpadAutomationCurveView, context: Context) {
+        view.show = show; view.track = track; view.start = start; view.span = span
+        if view.dragOriginal == nil { view.envelope = envelope }
+        view.setNeedsDisplay()
+    }
+}
+private final class IpadAutomationCurveView: UIView, UIContextMenuInteractionDelegate {
+    weak var show: ShowController?
+    var track: UUID?
+    var envelope: TrackEnvelope?
+    var start = 0.0, span = 30.0
+    var selected: UUID?
+    var dragOriginal: TrackEnvelope?
+    override var canBecomeFirstResponder: Bool { true }
+    override init(frame: CGRect) {
+        super.init(frame: frame); backgroundColor = UIColor(white: 0.06, alpha: 1); isMultipleTouchEnabled = false
+        let double = UITapGestureRecognizer(target: self, action: #selector(addPoint(_:))); double.numberOfTapsRequired = 2
+        let single = UITapGestureRecognizer(target: self, action: #selector(selectPoint(_:))); single.require(toFail: double)
+        addGestureRecognizer(double); addGestureRecognizer(single)
+        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(movePoint(_:))))
+        addInteraction(UIContextMenuInteraction(delegate: self))
+        accessibilityLabel = JarasLocalization.string("Envelopes")
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    private var scale: Double { Double(max(1, bounds.width)) / max(0.001, span) }
+    private func location(_ point: EnvelopePoint) -> CGPoint {
+        CGPoint(x: (point.time - start) * scale, y: 10 + (1 - point.value) * Double(max(1, bounds.height - 20)))
+    }
+    private func nearest(_ position: CGPoint) -> EnvelopePoint? {
+        envelope?.points.min { hypot(location($0).x-position.x, location($0).y-position.y) < hypot(location($1).x-position.x, location($1).y-position.y) }
+            .flatMap { hypot(location($0).x-position.x, location($0).y-position.y) <= 18 ? $0 : nil }
+    }
+    private func value(_ position: CGPoint, snap: Bool) -> EnvelopePoint {
+        var time = max(0, start + Double(position.x) / scale)
+        if snap, let song = show?.current { time = TimelineTempo.snap(time, song: song, pixelsPerSecond: scale) }
+        return .init(time: time, value: min(1, max(0, 1-Double(position.y-10)/Double(max(1,bounds.height-20)))))
+    }
+    override func draw(_ rect: CGRect) {
+        guard let envelope, let context = UIGraphicsGetCurrentContext() else { return }
+        context.setStrokeColor(UIColor.darkGray.cgColor); context.setLineWidth(0.5)
+        for line in 0...4 { let y = 10 + CGFloat(line) * (bounds.height-20)/4; context.move(to: CGPoint(x: 0, y: y)); context.addLine(to: CGPoint(x: bounds.width,y: y)) }; context.strokePath()
+        context.setStrokeColor(UIColor.systemOrange.cgColor); context.setLineWidth(1.5)
+        for x in stride(from: 0.0, through: Double(bounds.width), by: 1) {
+            let p = CGPoint(x: x, y: 10 + (1-envelope.value(at: start+x/scale))*Double(max(1,bounds.height-20)))
+            if x == 0 { context.move(to: p) } else { context.addLine(to: p) }
+        }; context.strokePath()
+        for point in envelope.points where point.time >= start && point.time <= start+span {
+            let p = location(point); context.setFillColor((point.id == selected ? UIColor.white : UIColor.systemOrange).cgColor)
+            context.fillEllipse(in: CGRect(x:p.x-5,y:p.y-5,width:10,height:10))
+        }
+    }
+    @objc private func selectPoint(_ gesture: UITapGestureRecognizer) { becomeFirstResponder(); selected = nearest(gesture.location(in: self))?.id; setNeedsDisplay() }
+    @objc private func addPoint(_ gesture: UITapGestureRecognizer) {
+        becomeFirstResponder(); let point = value(gesture.location(in: self), snap: !gesture.modifierFlags.contains(.shift))
+        envelope?.insert(point); selected = point.id; commit()
+    }
+    @objc private func movePoint(_ gesture: UIPanGestureRecognizer) {
+        let position = gesture.location(in: self)
+        if gesture.state == .began {
+            let origin = CGPoint(x: position.x - gesture.translation(in:self).x, y: position.y - gesture.translation(in:self).y)
+            selected = nearest(origin)?.id; dragOriginal = selected == nil ? nil : envelope; becomeFirstResponder()
+        }
+        guard let selected, let original = dragOriginal, let old = original.points.first(where: { $0.id == selected }) else { return }
+        if gesture.state == .cancelled || gesture.state == .failed { envelope = original; dragOriginal = nil; setNeedsDisplay(); return }
+        var next = value(position, snap: !gesture.modifierFlags.contains(.shift)); next.id = old.id; next.shape = old.shape
+        envelope = original; envelope?.insert(next); setNeedsDisplay()
+        if gesture.state == .ended { dragOriginal = nil; commit() }
+    }
+    override var keyCommands: [UIKeyCommand]? { [UIKeyCommand(input: "\u{8}", modifierFlags: [], action: #selector(removePoint))] }
+    @objc private func removePoint() { envelope?.points.removeAll { $0.id == selected }; selected = nil; commit() }
+    private func commit() {
+        guard let show, let track, let envelope else { return }
+        var settings = show.automation(track)
+        guard let index = settings.envelopes.firstIndex(where: { $0.id == envelope.id }) else { return }
+        settings.envelopes[index] = envelope; show.setAutomation(track, settings: settings); setNeedsDisplay()
+    }
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+        guard let point = nearest(location) else { return nil }; selected = point.id; setNeedsDisplay()
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            let curves = EnvelopeShape.allCases.map { shape in UIAction(title: JarasLocalization.string(shape.title), state: point.shape == shape ? .on : .off) { _ in
+                guard let self, let index = self.envelope?.points.firstIndex(where: { $0.id == point.id }) else { return }
+                self.envelope?.points[index].shape = shape; self.commit()
+            } }
+            return UIMenu(children: curves + [UIAction(title: JarasLocalization.string("Delete"), attributes: .destructive) { _ in self?.removePoint() }])
+        }
+    }
+}
+#endif

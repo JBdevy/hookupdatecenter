@@ -18,9 +18,12 @@ struct TimelinePlaybackFollowPolicy {
     std::optional<double> previousPosition;
     String previousSource;
     std::optional<jaras::TransportState> manualPause;
-    void pause(const jaras::TransportState &state) { manualPause=state;reset(); }
-    bool isPaused(const jaras::TransportState &state) {
+    double resumeAt = std::numeric_limits<double>::infinity();
+    void pause(const jaras::TransportState &state, double seconds = std::numeric_limits<double>::infinity(),
+               double now = Time::getMillisecondCounterHiRes()/1000) { manualPause=state;resumeAt=now+seconds;reset(); }
+    bool isPaused(const jaras::TransportState &state, double now = Time::getMillisecondCounterHiRes()/1000) {
         if(!manualPause)return false;
+        if(now>=resumeAt){manualPause.reset();return false;}
         const auto &before=*manualPause;
         if(before.playing!=state.playing || before.subPlay.playing!=state.subPlay.playing || before.songId!=state.songId ||
            (state.playing && before.regionId!=state.regionId) ||

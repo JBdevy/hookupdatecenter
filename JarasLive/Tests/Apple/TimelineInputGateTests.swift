@@ -19,6 +19,34 @@ wheel.focus(request: restoration, x: 2400)
 precondition(scroll.contentView.bounds.minX == 0, "a consumed restoration cannot pull back later manual scrolling")
 print("NATIVE_CURSOR_RESTORATION_WAIT_FOR_VIEWPORT_AND_CONSUME_ONCE_OK")
 let gate = NativeTimelineInputGate.shared
+// Dense region heads are registered repeatedly while zooming. Registration
+// remains weak and unique; modal cancellation is delivered once, in order.
+do {
+    final class RegionObserver: NativeTimelineInputObserver {
+        weak var window: NSWindow?
+        var blocks: [Bool] = []
+        var cancelled = 0
+        init(_ window: NSWindow) { self.window = window }
+        func timelineInputGateChanged(blocked: Bool) { blocks.append(blocked) }
+        func timelinePendingClickCancelled() { cancelled += 1 }
+    }
+    let denseGate = NativeTimelineInputGate()
+    let heads = (0..<4000).map { _ in RegionObserver(window) }
+    for _ in 0..<4 { for head in heads { denseGate.add(head) } }
+    denseGate.setBlocked(true, for: window)
+    denseGate.cancelPendingClicks(for: window)
+    precondition(heads.allSatisfy { $0.blocks == [false, false, false, false, true] && $0.cancelled == 1 })
+    denseGate.setBlocked(false, for: window)
+    weak var released: RegionObserver?
+    do {
+        let temporary = RegionObserver(window); released = temporary
+        denseGate.add(temporary)
+    }
+    precondition(released == nil, "closing a region must release its input observer")
+    denseGate.cancelPendingClicks(for: window)
+    precondition(heads.allSatisfy { $0.cancelled == 2 && $0.blocks.last == false })
+    print("DENSE_REGION_INPUT_IDENTITY_WEAK_LIFETIME_AND_SINGLE_CANCEL_OK")
+}
 let previousZoom = TimelineViewportPreferences.storage.object(forKey: "jaras.timelineZoom")
 let legacyZoomBeforeTest = UserDefaults.standard.object(forKey: "jaras.timelineZoom") as? NSObject
 defer {

@@ -2,6 +2,17 @@
 import SwiftUI
 import UIKit
 
+/// Weakly registered headers follow the exact native viewport without
+/// rebuilding the waveform or publishing scroll positions through SwiftUI.
+final class IpadItemHeaderViewport: UIScrollView {
+    private let headers = NSHashTable<UIView>.weakObjects()
+    func registerHeader(_ header: UIView) { headers.add(header) }
+    func unregisterHeader(_ header: UIView) { headers.remove(header) }
+    func refreshHeaders() {
+        for header in headers.allObjects { header.setNeedsDisplay() }
+    }
+}
+
 enum IpadItemMixParameter { case gain, pan }
 
 /// Uses the desktop header geometry, including name priority when zooming out.
@@ -29,7 +40,7 @@ struct IpadItemHeader: UIViewRepresentable {
 final class IpadItemHeaderControl: UIControl {
     static let itemBackgroundColor = UIColor(white: 0.19, alpha: 1)
     var clip = AudioClip(id: UUID(), name: "", startTime: 0, duration: 0) {
-        didSet { if oldValue.id != clip.id { cancelTracking(with: nil) } }
+        didSet { if oldValue.id != clip.id { cancelTracking(with: nil) }; refreshTooltip() }
     }
     var interactionID: UUID? {
         didSet { if oldValue != interactionID { cancelTracking(with: nil) } }
@@ -47,20 +58,74 @@ final class IpadItemHeaderControl: UIControl {
     var fx: () -> Void = {}
     var menu: () -> Void = {}
     private enum Hit { case gain, pan, mute, phase, fx, edit }
+    private var hovered: Hit?
+    private var tooltip: UILabel?
     private var activeGesture: (hit: Hit, point: CGPoint, geometry: GridSelectionItem)?
+    private weak var viewport: IpadItemHeaderViewport?
     private var geometry: GridSelectionItem {
-        GridSelectionItem(id: clip.id, rect: bounds, gain: clip.gain ?? 1,
+        let item = GridSelectionItem(id: clip.id, rect: bounds, gain: clip.gain ?? 1,
             phaseInverted: clip.phaseInverted == true, pan: clip.pan ?? 0,
             editable: editable, midiEditable: clip.midi != nil, textEditable: textEditable,
             name: clip.name, muted: clip.muted == true, hasFX: !(clip.fx?.inserted.isEmpty ?? true),
             fxBypassed: clip.fxBypassed == true)
+        guard let viewport else { return item }
+        let visible = convert(viewport.bounds, from: viewport)
+        let titleWidth = (clip.name as NSString).size(withAttributes: [
+            .font: UIFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)
+        ]).width
+        return item.visibleLeftHeader(in: visible, titleWidth: titleWidth)
+    }
+    private func bindViewport() {
+        var ancestor = superview
+        while let view = ancestor, !(view is IpadItemHeaderViewport) { ancestor = view.superview }
+        let next = ancestor as? IpadItemHeaderViewport
+        guard viewport !== next else { return }
+        viewport?.unregisterHeader(self)
+        viewport = next; next?.registerHeader(self)
+        setNeedsDisplay()
     }
     override init(frame: CGRect) {
         super.init(frame: frame); isOpaque = true; backgroundColor = Self.itemBackgroundColor
         isMultipleTouchEnabled = false
+        addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:))))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func layoutSubviews() { super.layoutSubviews(); setNeedsDisplay() }
+    override func layoutSubviews() { super.layoutSubviews(); bindViewport(); setNeedsDisplay() }
+    override func didMoveToWindow() {
+        super.didMoveToWindow(); bindViewport()
+        if window == nil { hovered = nil; hideTooltip() }
+    }
+    @objc private func hovered(_ recognizer: UIHoverGestureRecognizer) {
+        hovered = recognizer.state == .ended || recognizer.state == .cancelled ? nil : hit(recognizer.location(in: self))
+        if activeGesture == nil { refreshTooltip() }
+    }
+    private func hideTooltip() { tooltip?.removeFromSuperview(); tooltip = nil }
+    private func refreshTooltip() {
+        guard isEnabled, editable, let target = activeGesture?.hit ?? hovered else { hideTooltip(); return }
+        showTooltip(target, geometry: geometry)
+    }
+    private func showTooltip(_ target: Hit, geometry g: GridSelectionItem) {
+        guard target == .gain || target == .pan, let window else { hideTooltip(); return }
+        let rect = target == .gain ? g.gainKnobRect : g.panKnobRect
+        guard let rect else { hideTooltip(); return }
+        let label = tooltip ?? UILabel()
+        if tooltip == nil {
+            label.accessibilityIdentifier = "itemMixTooltip"
+            label.isUserInteractionEnabled = false
+            label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+            label.textColor = .white; label.backgroundColor = UIColor(white: 0.06, alpha: 0.96)
+            label.textAlignment = .center; label.layer.cornerRadius = 4; label.clipsToBounds = true
+            tooltip = label; window.addSubview(label)
+        }
+        label.text = target == .gain ? g.gainLabel : g.panLabel
+        let size = label.sizeThatFits(CGSize(width: 180, height: 28))
+        let width = size.width + 14, height: CGFloat = 26
+        let anchor = convert(rect, to: window)
+        let y = anchor.minY >= height + window.safeAreaInsets.top + 6 ? anchor.minY - height - 5 : anchor.maxY + 5
+        label.frame = CGRect(x: min(max(window.safeAreaInsets.left + 4, anchor.midX - width / 2), window.bounds.maxX - width - window.safeAreaInsets.right - 4),
+                             y: min(y, window.bounds.maxY - height - window.safeAreaInsets.bottom - 4), width: width, height: height)
+        window.bringSubviewToFront(label)
+    }
     private func hit(_ point: CGPoint) -> Hit? {
         let g = geometry
         if g.gainKnobRect?.contains(point) == true || g.gainLabelRect?.contains(point) == true { return .gain }
@@ -82,6 +147,7 @@ final class IpadItemHeaderControl: UIControl {
             return false
         }
         activeGesture = (hit, touch.location(in: self), geometry)
+        refreshTooltip()
         return true
     }
     override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
@@ -93,8 +159,12 @@ final class IpadItemHeaderControl: UIControl {
         guard let activeGesture else { return }
         let delta = point.y - activeGesture.point.y
         switch activeGesture.hit {
-        case .gain: mix(.gain, activeGesture.geometry.draggingGain(by: delta), finished, false)
-        case .pan: mix(.pan, activeGesture.geometry.draggingPan(by: delta), finished, false)
+        case .gain:
+            var preview = activeGesture.geometry; preview.gain = preview.draggingGain(by: delta)
+            mix(.gain, preview.gain, finished, false); showTooltip(.gain, geometry: preview)
+        case .pan:
+            var preview = activeGesture.geometry; preview.pan = preview.draggingPan(by: delta)
+            mix(.pan, preview.pan, finished, false); showTooltip(.pan, geometry: preview)
         default: break
         }
     }
@@ -103,6 +173,7 @@ final class IpadItemHeaderControl: UIControl {
         let point = touch?.location(in: self) ?? activeGesture.point
         updateMix(at: point, finished: true)
         self.activeGesture = nil
+        refreshTooltip()
         guard hit(point) == activeGesture.hit else { return }
         switch activeGesture.hit {
         case .mute: mute()
@@ -114,6 +185,7 @@ final class IpadItemHeaderControl: UIControl {
     }
     override func cancelTracking(with event: UIEvent?) {
         let previous = activeGesture; activeGesture = nil
+        hovered = nil; hideTooltip()
         if let activeGesture = previous {
             if activeGesture.hit == .gain { mix(.gain, activeGesture.geometry.gain, true, true) }
             if activeGesture.hit == .pan { mix(.pan, activeGesture.geometry.pan, true, true) }
@@ -161,7 +233,7 @@ final class IpadItemHeaderControl: UIControl {
         }
         knob(g.panKnobRect, position: g.panPosition); label(g.panLabel, g.panLabelRect)
         button(g.editRect, active: false, text: JarasLocalization.string("Edit"))
-        label(clip.name, CGRect(x: g.titleInset, y: 0, width: max(0, bounds.width - g.titleInset - 2), height: bounds.height), centered: false)
+        label(clip.name, CGRect(x: g.headerRect.minX + g.titleInset, y: 0, width: max(0, g.headerRect.width - g.titleInset - 2), height: bounds.height), centered: false)
     }
 }
 #endif

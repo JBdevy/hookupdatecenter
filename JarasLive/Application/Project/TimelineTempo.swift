@@ -58,7 +58,7 @@ public enum TimelineTempo {
     public static let beatUnits = [1, 2, 4, 8, 16, 32, 64]
     public static let minimumGridSpacing = 16.0
     public static func barStride(bar: Double, pixelsPerSecond: Double) -> Int {
-        Int(pow(2, max(0, ceil(log2(minimumGridSpacing / max(0.001, bar * pixelsPerSecond))))))
+        Int(pow(2, max(0, ceil(log2((minimumGridSpacing / 2) / max(0.001, bar * pixelsPerSecond))))))
     }
     /// Number the same bar starts used by the timeline grid, continuing across
     /// tempo and meter changes. A marker starts a new bar even mid-measure.
@@ -803,8 +803,8 @@ public enum TimelineTimeRuler {
             let first = max(0, Int(floor((densityStart - section.start) / bar)) / strideBars * strideBars)
             let last = max(first, Int(ceil((min(section.end, densityEnd) - section.start) / bar)))
             let beat = bar / Double(section.beats)
-            // Show whole-bar groups first (4 -> 2 -> 1), without inserting
-            // half-stride lines between them. Beats appear together only once
+            // Whole-bar lines use eight-point spacing at distant zoom.
+            // Beats appear together only once
             // each has room, including in odd meters. Finer configured divisions
             // follow at closer zoom. Snapping uses this same spacing.
             let showBeats = beat * scale >= TimelineTempo.minimumGridSpacing

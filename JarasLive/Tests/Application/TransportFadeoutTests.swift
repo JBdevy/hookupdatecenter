@@ -36,6 +36,27 @@ final class TransportFadeoutTests: XCTestCase {
         show.configureTransportFadeout(enabled: true, duration: 5, tracks: [p.songs[0].tracks[0].id])
         return (show, executor, { now = $0 })
     }
+    @MainActor func testExplicitButtonWorksWithoutShortcutEnablementAndCancelsWithoutStopping() throws {
+        let (show, executor, clock) = try fixture()
+        let before = show.snapshot.project
+        let ids = Set(show.fadeoutTracks.map(\.id))
+        show.configureTransportFadeout(enabled: false, duration: 2, tracks: ids)
+        show.triggerTransportFadeout(explicit: true)
+        XCTAssertFalse(show.transportFadeout.active, "Fadeout never starts playback")
+        show.send(.play); show.triggerTransportFadeout()
+        XCTAssertFalse(show.transportFadeout.active, "Disabled legacy shortcut remains disabled")
+        show.triggerTransportFadeout(explicit: true)
+        XCTAssertTrue(show.transportFadeout.active)
+        clock(101); show.tick()
+        XCTAssertEqual(show.transportFadeout.run?.remaining, 1)
+        show.triggerTransportFadeout(explicit: true)
+        XCTAssertFalse(show.transportFadeout.active)
+        XCTAssertTrue(show.snapshot.transport.playing)
+        XCTAssertFalse(executor.commands.contains(.stop))
+        XCTAssertEqual(show.snapshot.project, before)
+        XCTAssertFalse(show.transportFadeout.enabled, "Explicit button does not rewrite shortcut preferences")
+        show.send(.stop)
+    }
     @MainActor func testFadeStopsAfterSilentEndpointThenRestoresWithoutEditingProject() throws {
         let (show, executor, clock) = try fixture()
         let before = show.snapshot.project, selected = before.songs[0].tracks[0].id, other = before.songs[0].tracks[1].id

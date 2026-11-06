@@ -967,11 +967,38 @@ private final class GridHostingView<Content: View>: NSHostingView<Content> {
     override var fittingSize: NSSize { frame.size }
 }
 final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, NativeTimelineSelectionScrollHost {
+    var manualNavigation: (() -> Void)?
+    private var manualScrollMonitor: Any?
+    private(set) var isPlaybackFollowing = false
+    func setPlaybackFollowing(_ active: Bool) {
+        guard active != isPlaybackFollowing else { return }
+        isPlaybackFollowing = active
+        NotificationCenter.default.post(name: Notification.Name("CatLiveTimelineFollowPresentation"), object: window,
+                                        userInfo: ["active": active])
+    }
+    func pauseManualPlaybackFollow() {
+        playbackFollowSuspendedUntil = ProcessInfo.processInfo.systemUptime + 1.5
+        setPlaybackFollowing(false)
+        manualNavigation?()
+    }
+    deinit { if let manualScrollMonitor { NSEvent.removeMonitor(manualScrollMonitor) } }
     /// Nil keeps ordinary, unbridged scroll views tied to their document frame.
     var logicalDocumentWidth: CGFloat?
     weak var timelineBodyInput: (NSView & NativeTimelineBodyInput)?
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let manualScrollMonitor { NSEvent.removeMonitor(manualScrollMonitor); self.manualScrollMonitor = nil }
+        if window == nil { setPlaybackFollowing(false) }
+        else {
+            manualScrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+                guard let self, event.window === self.window, !self.isHiddenOrHasHiddenAncestor,
+                      self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+                if event.type == .scrollWheel || self.horizontalScroller?.isHighlighted == true || self.verticalScroller?.isHighlighted == true {
+                    self.pauseManualPlaybackFollow()
+                }
+                return event
+            }
+        }
         TimelineViewTreeDiagnostics.schedule(from: self)
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -1072,7 +1099,7 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
         if horizontal { prepareHorizontalViewport(at: origin.x) }
         else { prepareVerticalViewport(at: origin.y) }
     }
-    func prioritizeZoom() { playbackFollowSuspendedUntil = ProcessInfo.processInfo.systemUptime + 0.18 }
+    func prioritizeZoom() { pauseManualPlaybackFollow() }
     var zoomAnchor: (fraction: Double, screenX: CGFloat, width: CGFloat)?
     func applyZoomAnchor() {
         guard let anchor = zoomAnchor, documentView != nil else { return }

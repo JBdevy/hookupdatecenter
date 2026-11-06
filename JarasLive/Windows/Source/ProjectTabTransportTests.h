@@ -66,10 +66,11 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                     "Block boundary stopped without the next song ready and selected blue");
         }
     });
-    test("Manual Stop prepares the next block and reveals it through the selection callback", [&] {
+    test("Manual Stop prepares and reveals the next block only with AUTO on", [&] {
+        for (bool automatic : {false, true}) {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
         auto project=fixture(0,0);auto &list=*project.regionSetlist;
-        list.autoUntilBlockEnd=true;list.autoAdvance=false;
+        list.autoUntilBlockEnd=true;list.autoAdvance=automatic;
         list.blocks=std::vector<jaras::SetlistBlock>{{"block-next",project.songs[0].id,"playlist","Next block",0,"second"}};
         session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
         session.command(jaras::CommandKind::selectRegion,"first");session.command(jaras::CommandKind::play);
@@ -82,11 +83,25 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
             }
         };
         session.command(jaras::CommandKind::stop);
-        require(revealed==1 && session.focusedRegion=="second" && !session.transport().playing,
-                "Manual Stop did not select and reveal the next block");
+        const ID expected=automatic?"second":"first";
+        require(revealed==(automatic?1:0) && session.focusedRegion==expected && !session.transport().playing,
+                "Manual Stop must reveal the next block only with AUTO on");
         session.command(jaras::CommandKind::stop);
-        require(session.focusedRegion=="second","Repeated Stop changed the prepared selection");
+        require(session.focusedRegion==expected,"Repeated Stop changed the retained selection");
         session.selectionChanged={};
+        }
+    });
+    test("AUTO off does not select the next block at natural completion", [&] {
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        auto project=fixture(0,0);auto &list=*project.regionSetlist;
+        list.autoUntilBlockEnd=true;list.autoAdvance=false;
+        list.blocks=std::vector<jaras::SetlistBlock>{{"block-next",project.songs[0].id,"playlist","Next block",0,"second"}};
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        session.command(jaras::CommandKind::selectRegion,"first");session.command(jaras::CommandKind::play);
+        const auto before=session.transport();session.core.advance(.25);
+        session.reconcileSetlistSelectionAfterAdvance(before);
+        require(!session.transport().playing && session.transport().regionId=="first" && session.focusedRegion!="second",
+                "AUTO off selected the next block after the final song ended");
     });
     test("Project tabs return to idle timer cadence after an automatic region stop", [&] {
         Session session; session.inspection=true; session.audio.prepareOffline(48000);

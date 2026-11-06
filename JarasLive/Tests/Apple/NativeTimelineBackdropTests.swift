@@ -65,3 +65,28 @@ rowFrame.horizontal = [70, 130]
 view.update(rowFrame)
 precondition(rowLayer.path !== oldPath, "individual track resizing updates divider geometry")
 print("NATIVE_GRID_RETINA_PIXEL_ALIGNMENT_SCROLL_ZOOM_LAYER_REUSE_SELECTION_AND_CLEAR_OK")
+
+// Repeated transport/presentation updates retain the actual CGPath objects.
+view.update(content())
+private let verticalLayers = view.layer!.sublayers!.compactMap { $0 as? CAShapeLayer }
+private let initialPrimary = verticalLayers[0].path!
+private let initialSecondary = verticalLayers[1].path!
+for _ in 0..<600 { view.update(content()) }
+precondition(verticalLayers[0].path === initialPrimary && verticalLayers[1].path === initialSecondary,
+             "Unchanged playback frames must reuse grid geometry")
+// Selection colours are independent from the grid's retained paths.
+view.update(content(bands: [band]))
+precondition(verticalLayers[0].path === initialPrimary, "Selecting a track must not rebuild grid lines")
+view.update(content(displayScale: 3))
+precondition(verticalLayers[0].path !== initialPrimary, "A different backing scale must reproject pixel offsets")
+print("GRID_GEOMETRY_REUSED_FOR_600_UPDATES_SELECTION_AND_DPI_OK")
+
+// The same vertical ink is mounted above item bodies by the timeline controller.
+view.moveInkToForeground()
+precondition(view.foregroundInk.layer?.sublayers?.count == 2)
+precondition(verticalLayers[0].superlayer === view.foregroundInk.layer && verticalLayers[1].superlayer === view.foregroundInk.layer)
+let foregroundPath = verticalLayers[0].path
+for _ in 0..<600 { view.update(content(displayScale: 3)) }
+precondition(verticalLayers[0].path === foregroundPath, "Foreground grid retains its paths during playback")
+precondition(view.foregroundInk.hitTest(.zero) == nil, "Foreground grid must not block item input")
+print("GRID_FOREGROUND_REUSES_VERTICAL_INK_WITHOUT_INTERCEPTING_INPUT_OK")

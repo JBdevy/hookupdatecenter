@@ -235,8 +235,8 @@ final class IpadRulerTouchView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     @objc private func panned(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
-        case .began, .changed: drag?(gesture.translation(in: self).x, gesture.location(in: self).x, false, false)
-        case .ended: drag?(gesture.translation(in: self).x, gesture.location(in: self).x, true, false)
+        case .began, .changed: drag?(gesture.translation(in: window).x, gesture.location(in: self).x, false, false)
+        case .ended: drag?(gesture.translation(in: window).x, gesture.location(in: self).x, true, false)
         case .cancelled, .failed: drag?(0, 0, true, true)
         default: break
         }

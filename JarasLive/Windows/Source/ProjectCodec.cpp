@@ -566,6 +566,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
     optionalJSON(root, "reductionDraft", p.reductionDraftJSON);
     p.id = s(root, "id");
     p.name = s(root, "name");
+    if (get(root, "importedTimeline").isBool()) p.importedTimeline = flag(root, "importedTimeline");
     if (get(root, "projectSyncID").isString()) p.projectSyncID = s(root, "projectSyncID");
     if (get(root, "timelineMovementLocked").isBool())
         p.timelineMovementLocked = flag(root, "timelineMovementLocked");
@@ -864,6 +865,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
     if (p.reductionDraftJSON) put(root, "reductionDraft", JSON::parse(text(*p.reductionDraftJSON)));
     else root.getDynamicObject()->removeProperty("reductionDraft");
     emit(root, "timelineMovementLocked", p.timelineMovementLocked);
+    emit(root, "importedTimeline", p.importedTimeline);
     if (p.projectSyncID) put(root, "projectSyncID", text(*p.projectSyncID));
     else root.getDynamicObject()->removeProperty("projectSyncID");
     put(root, "projectFormatVersion", p.projectFormatVersion);

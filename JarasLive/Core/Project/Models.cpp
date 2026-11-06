@@ -443,7 +443,7 @@ void validate(const Project& p) {
                 require(parent != s.parts.end() && !parent->parentRegionID && parent->id != part.id && part.startTime >= parent->startTime && part.endTime <= parent->endTime, "Invalid unified region");
             }
             require(!part.color || *part.color <= 0xFFFFFF, "Invalid region color");
-            require(!part.subplayInitSeconds || (finite(*part.subplayInitSeconds) && *part.subplayInitSeconds >= 1 && *part.subplayInitSeconds <= 5), "Invalid Config Init seconds");
+            require(!part.subplayInitSeconds || (finite(*part.subplayInitSeconds) && *part.subplayInitSeconds >= 0 && *part.subplayInitSeconds <= 5), "Invalid Config Init seconds");
             require(!part.subplayInitBars || (*part.subplayInitBars >= 1 && *part.subplayInitBars <= 5), "Invalid Config Init bars");
             require(finite(part.startTime) && finite(part.endTime) && part.startTime >= 0 && part.endTime > part.startTime && part.endTime <= s.duration, "Invalid part interval");
         }

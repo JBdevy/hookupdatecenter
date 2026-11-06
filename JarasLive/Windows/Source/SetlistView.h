@@ -1321,11 +1321,12 @@ class Workspace::Setlist final : public Component,
         ConfigInitPanel(const jaras::Part& part,std::function<void(int)> save,std::function<void()> close) {
             name.setText(String::fromUTF8(part.name.c_str()),dontSendNotification);
             label.setText(localization::translate("Initial playback"),dontSendNotification);
+            lead.addItem("0s",11); // ComboBox reserves ID 0 for no selection.
             for(int i=1;i<=5;++i) {
                 lead.addItem(String(i)+"s",i*2-1);
                 lead.addItem(String(i)+" "+localization::translate(i==1?"bar":"bars"),i*2);
             }
-            lead.setSelectedId(part.subplayInitBars ? jlimit(1,5,*part.subplayInitBars)*2 : jlimit(1,5,(int)part.subplayInitSeconds.value_or(1))*2-1,dontSendNotification);
+            lead.setSelectedId(part.subplayInitBars ? jlimit(1,5,*part.subplayInitBars)*2 : part.subplayInitSeconds==0 ? 11 : jlimit(1,5,(int)part.subplayInitSeconds.value_or(1))*2-1,dontSendNotification);
             apply.setButtonText(localization::translate("Save"));cancel.setButtonText(localization::translate("Cancel"));
             apply.onClick=[this,save]{save(lead.getSelectedId());};cancel.onClick=std::move(close);
             for(Component* child:std::initializer_list<Component*>{&name,&label,&lead,&apply,&cancel}) addAndMakeVisible(child);
@@ -1344,12 +1345,12 @@ class Workspace::Setlist final : public Component,
         auto self=SafePointer<Setlist>(this);
         auto close=[self]{if(self)for(auto* child:self->w.getChildren())if(auto* sheet=dynamic_cast<ModalSheet*>(child);sheet&&sheet->getName()=="Config Init"){sheet->exitModalState(0);break;}};
         auto save=[self,entry,close](int selection){
-            if(!self || selection<1 || selection>10)return;
+            if(!self || selection<1 || selection>11)return;
             try {
                 self->w.session.edit([&](jaras::Project& project){
                     for(auto& song:project.songs)for(auto& part:song.parts)if(part.id==entry.sourceId){
                         if(selection%2==0)part.subplayInitBars=(selection+1)/2;
-                        else {part.subplayInitBars.reset();part.subplayInitSeconds=(selection+1)/2;}
+                        else {part.subplayInitBars.reset();part.subplayInitSeconds=selection==11?0:(selection+1)/2;}
                     }
                 },false);
                 close();

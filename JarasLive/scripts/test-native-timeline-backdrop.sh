@@ -11,5 +11,5 @@ start = source.index('private struct TimelineNativeGridBand {')
 end = source.index('\n#endif', start)
 Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\n' + source[start:end] + '\n' + Path('Tests/Apple/NativeTimelineBackdropTests.swift').read_text())
 PY
-swiftc -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -swift-version 5 Apple/Shared/TimelineGridInk.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

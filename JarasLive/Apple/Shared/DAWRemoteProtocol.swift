@@ -129,7 +129,7 @@ struct DAWRemoteCommand: Codable {
         case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, openRecentProjectInNewTab, selectProjectTab, closeProjectTab
         case remotePanel, noticeSend, noticeClear, noticePin, noticePinStopped, noticeDestination, noticeSaveTemplate
         case requestImage
-        case timerStart, timerStop
+        case timerStart, timerStop, transportFadeout
         case togglePreview, selectPreviewPage
         case vinhetasDown, vinhetasUp, vinhetasPreset, vinhetasVolume, vinhetasGate, vinhetasPanic
         case editRegion, deleteRegion, duplicateRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
@@ -157,7 +157,7 @@ struct DAWRemoteCommand: Codable {
         if padActions.contains(action) {
             guard let pad, (0..<16).contains(pad), let preset, (0..<6).contains(preset) else { return false }
         } else if pad != nil || preset != nil { return false }
-        if enabled != nil && action != .noticeDestination && action != .noticePinStopped && action != .vinhetasGate { return false }
+        if enabled != nil && action != .noticeDestination && action != .noticePinStopped && action != .vinhetasGate && action != .transportFadeout { return false }
         if noticeReceiptRequested != nil && action != .noticeSend { return false }
         switch action {
         case .vinhetasDown: return target != nil && value == 0 && enabled == nil
@@ -173,6 +173,7 @@ struct DAWRemoteCommand: Codable {
         case .toggleMultiLoopBypass, .toggleSetlistLive, .cancelSection: return target == nil && value == 0
         case .resetMeterPeak: return value == 0
         case .timerStart: return target == nil && (0...359999).contains(value) && value.rounded() == value
+        case .transportFadeout: return target == nil && value == 0 && enabled != nil
         case .timerStop: return target == nil && value == 0
         case .togglePreview: return target == nil && value == 0
         case .selectPreviewPage: return target == nil && (0...5).contains(value) && value.rounded() == value
@@ -380,6 +381,7 @@ struct DAWRemoteState: Codable, Equatable {
     var teleprompters: [DAWRemoteTeleprompter]? = nil
     var notices: DAWRemoteNotices? = nil
     var timer: DAWRemoteTimerState? = nil
+    var fadeout: DAWRemoteFadeoutState? = nil
     var gridTempo: [GridTempo]? = nil
     var gridDivisions: Int? = nil
     var gridLines: Bool? = nil
@@ -409,7 +411,7 @@ struct DAWRemoteState: Codable, Equatable {
     var setlistQueuedEntryId: UUID? { queuedPlaylistEntryId ?? queuedRegion }
     static func validPeak(_ value: Double?) -> Bool { value.map { $0.isFinite && $0 >= -24 } ?? true }
     var valid: Bool {
-        position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite && Self.validPeak(masterPeakDB) &&
+        (fadeout?.valid ?? true) && position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite && Self.validPeak(masterPeakDB) &&
         (masterPan == nil || (masterPan!.isFinite && (-1...1).contains(masterPan!))) &&
         (loopStart == nil || (loopStart!.isFinite && loopStart! >= 0)) &&
         (loopEnd == nil || (loopEnd!.isFinite && loopEnd! >= (loopStart ?? 0))) &&
@@ -759,9 +761,9 @@ struct DAWRemotePanelWidths: Equatable {
 
 /// Match desktop lane heights while retaining alignment between mixer and grid.
 enum DAWRemoteItemLayout {
-    static func heightScale(_ value: Double) -> Double { value.isFinite ? min(3, max(0.35, value)) : 1 }
+    static func heightScale(_ value: Double) -> Double { value.isFinite ? min(3, max(0.1, value)) : 1 }
     static func laneHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
-        max(28, ((track.laneCount ?? 1) > 1 ? 86 * 0.7 : 86) * heightScale(scale) * (track.heightScale ?? 1))
+        max((track.laneCount ?? 1) > 1 ? 26 : 24, ((track.laneCount ?? 1) > 1 ? 86 * 0.7 : 86) * heightScale(scale) * (track.heightScale ?? 1))
     }
     static func rowHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
         max(track.minimumHeight ?? 0, laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1)))
@@ -1095,4 +1097,14 @@ extension DAWRemoteState {
         }
         return songDisplays?.current ?? (timelineRegions + regions).first(where: { $0.id == (focusedRegion ?? currentRegion) })?.name ?? songName
     }
+}
+
+/// Optional capability for older hosts; remaining time is relative, never wall-clock dependent.
+struct DAWRemoteFadeoutState: Codable, Equatable {
+    var runID: UUID?
+    var duration: Double
+    var remaining: Double
+    var lastCommandID: UUID? = nil
+    var active: Bool { runID != nil }
+    var valid: Bool { duration.isFinite && (1...5).contains(duration) && remaining.isFinite && (0...duration).contains(remaining) && (active || remaining == 0) }
 }

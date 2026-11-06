@@ -1,8 +1,22 @@
 #pragma once
 #include "Common.h"
+#include <map>
 namespace catlive {
 // Small line icons drawn at logical resolution; no platform symbol-font dependency.
 inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<float> bounds) {
+    // Reuse each icon's unit geometry across tracks and controls. Keep native
+    // stroking at the current size/DPI so caching cannot change its appearance.
+    static thread_local std::map<String, std::pair<Path, bool>> ink;
+    const auto draw = [&](Path path, bool fill) {
+        const float side = std::min(bounds.getWidth(), bounds.getHeight());
+        path.applyTransform(AffineTransform::scale(side / 24).translated(bounds.getCentreX() - side / 2,
+                                                                       bounds.getCentreY() - side / 2));
+        if (fill) g.fillPath(path);
+        else g.strokePath(path, PathStrokeType(1.35f, PathStrokeType::curved, PathStrokeType::rounded));
+    };
+    if (const auto found = ink.find(name); found != ink.end()) {
+        draw(found->second.first, found->second.second); return true;
+    }
     Path p;
     bool fill = false;
     auto line = [&](float x1, float y1, float x2, float y2) {
@@ -247,13 +261,9 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         p.lineTo(16, 15);
     } else
         return false;
-    const float side = std::min(bounds.getWidth(), bounds.getHeight());
-    p.applyTransform(AffineTransform::scale(side / 24).translated(bounds.getCentreX() - side / 2,
-                                                                  bounds.getCentreY() - side / 2));
-    if (fill)
-        g.fillPath(p);
-    else
-        g.strokePath(p, PathStrokeType(1.35f, PathStrokeType::curved, PathStrokeType::rounded));
+    if (ink.size() >= 256) ink.clear();
+    const auto saved = ink.emplace(name, std::make_pair(std::move(p), fill)).first;
+    draw(saved->second.first, saved->second.second);
     return true;
 }
 } // namespace catlive

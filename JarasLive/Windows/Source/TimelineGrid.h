@@ -5,8 +5,9 @@
 #include "TimelineMovementLock.h"
 #include "TimelineSnapping.h"
 namespace catlive::timelineGrid {
-// Mac stores a zoom factor from .001 to 8192, at ten points per second.
-inline constexpr double minimumZoom = .01, maximumZoom = 81920.;
+// Minimum overview captured from the approved Windows viewport (points/second).
+// Keep wheel, shortcuts, fit-to-project and gesture targets on the same limit.
+inline constexpr double minimumZoom = .244728532641664, maximumZoom = 81920.;
 struct Tick { double time; bool primary; String label; };
 // ClickTrackProgram.visibleBeats: bounded by the visible pixels, preserving tempo origin.
 inline std::vector<double> clickBeats(const jaras::Song &song,const jaras::AudioClip &clip,double from,double to,double scale) {
@@ -49,7 +50,7 @@ inline std::vector<Tick> ticks(const jaras::Song &song, double start, double end
         const double bar = 60 / section.bpm * section.beats * 4 / section.unit;
         if (!std::isfinite(bar) || bar <= 0 || section.end <= section.start) continue;
         const double boundaryEnd=sectionIndex+1<parts.size()?section.end:std::numeric_limits<double>::infinity();
-        const double stride = std::pow(2., std::max(0., std::ceil(std::log2(16 / std::max(.001, bar * scale)))));
+        const double stride = std::pow(2., std::max(0., std::ceil(std::log2(8 / std::max(.001, bar * scale)))));
         const double first = std::max(0., std::floor(std::floor((densityStart - section.start) / bar) / stride) * stride);
         const double last = std::max(first, std::ceil((std::min(section.end, densityEnd) - section.start) / bar));
         const double beat = bar / section.beats;

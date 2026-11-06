@@ -226,9 +226,11 @@ enum StemProjectImporter {
         return (waveform, Double(peak), channelPeaks)
     }
     /// Enrich older imported items once; the saved overview avoids decoding on redraw.
-    public static func populateChannelOverviews(_ source: Project, directory: URL) throws -> Project {
+    public static func populateChannelOverviews(_ source: Project, directory: URL,
+                                                onUnreadable: ((String, Error) -> Void)? = nil) throws -> Project {
         var project = source
         var cache: [String: [[Double]]] = [:]
+        var unreadable = Set<String>()
         for song in project.songs.indices {
             for track in project.songs[song].tracks.indices {
                 guard project.songs[song].tracks[track].kind == .standard else { continue }
@@ -236,10 +238,28 @@ enum StemProjectImporter {
                     try Task.checkCancellation()
                     let clip = project.songs[song].tracks[track].clips[item]
                     guard !clip.isProjectionMedia, clip.waveformChannels == nil, let file = clip.audioFile else { continue }
+                    if unreadable.contains(file.path) { continue }
                     if cache[file.path] == nil {
                         let url = directory.appendingPathComponent(file.path)
                         guard FileManager.default.fileExists(atPath: url.path) else { continue }
-                        cache[file.path] = try audioOverview(url, duration: clip.duration).channels
+                        do { cache[file.path] = try audioOverview(url, duration: clip.duration).channels }
+                        catch is CancellationError { throw CancellationError() }
+                        catch {
+                            if let onUnreadable {
+                                unreadable.insert(file.path)
+                                onUnreadable(file.path, error)
+                                continue
+                            }
+                            // CoreAudio errors omit the source name. Preserve its
+                            // domain/code while identifying the failing project asset.
+                            let underlying = error as NSError
+                            var info = underlying.userInfo
+                            info[NSUnderlyingErrorKey] = underlying
+                            info[NSFilePathErrorKey] = url.path
+                            info[NSURLErrorKey] = url
+                            info[NSLocalizedDescriptionKey] = file.path + "\n" + underlying.localizedDescription
+                            throw NSError(domain: underlying.domain, code: underlying.code, userInfo: info)
+                        }
                     }
                     project.songs[song].tracks[track].clips[item].waveformChannels = cache[file.path]
                 }
@@ -257,11 +277,11 @@ enum StemProjectImporter {
     }
     /// Only a few bounded decode buffers exist at once. The result slots retain
     /// input order even when a shorter file finishes before an earlier file.
-    private static func prepareMedia(_ jobs: [MediaImportJob], progress: (@Sendable (Int, Int, String) -> Void)?) throws -> [MediaOverview] {
+    private static func prepareMedia(_ jobs: [MediaImportJob], progress: (@Sendable (Int, Int, String) -> Void)?) throws -> [Result<MediaOverview, Error>] {
         try Task.checkCancellation()
         let lock = NSLock()
         var next = 0, completed = 0, failure: Error?
-        var results = Array<MediaOverview?>(repeating: nil, count: jobs.count)
+        var results = Array<Result<MediaOverview, Error>?>(repeating: nil, count: jobs.count)
         var lastProgress = 0.0
         DispatchQueue.concurrentPerform(iterations: min(4, max(1, ProcessInfo.processInfo.activeProcessorCount - 1), jobs.count)) { _ in
             while true {
@@ -273,21 +293,42 @@ enum StemProjectImporter {
                     let scoped = job.source.startAccessingSecurityScopedResource()
                     defer { if scoped { job.source.stopAccessingSecurityScopedResource() } }
                     try FileManager.default.copyItem(at: job.source, to: job.copied)
-                    let overview = try audioOverview(job.copied, duration: job.stem.duration)
+                    let overview = Result { try audioOverview(job.copied, duration: job.stem.duration) }
+                    if case .failure(let error) = overview {
+                        if error is CancellationError { throw error }
+                        try FileManager.default.removeItem(at: job.copied)
+                    }
                     lock.lock(); results[index] = overview; completed += 1
                     let now = ProcessInfo.processInfo.systemUptime
                     if completed == jobs.count || now - lastProgress >= 0.1 {
                         lastProgress = now; progress?(completed, jobs.count, job.stem.fileName)
                     }
                     lock.unlock()
-                } catch { lock.lock(); if failure == nil { failure = error }; lock.unlock(); return }
+                } catch {
+                    let reported: Error
+                    if error is CancellationError { reported = error }
+                    else {
+                        // Review already read the container header. Decoding its
+                        // samples can still fail; retain the original source path
+                        // because the incomplete destination is removed on rollback.
+                        let underlying = error as NSError
+                        var info = underlying.userInfo
+                        info[NSUnderlyingErrorKey] = underlying
+                        info[NSFilePathErrorKey] = job.source.path
+                        info[NSURLErrorKey] = job.source
+                        info[NSLocalizedDescriptionKey] = job.source.path + "\n" + underlying.localizedDescription
+                        reported = NSError(domain: underlying.domain, code: underlying.code, userInfo: info)
+                    }
+                    lock.lock(); if failure == nil { failure = reported }; lock.unlock(); return
+                }
             }
         }
         if let failure { throw failure }
         try Task.checkCancellation()
         return try results.map { guard let result = $0 else { throw ProjectError.invalid("Missing imported audio") }; return result }
     }
-    static func build(scan: StemScan, remove: String, base: Project, destination: URL, progress: (@Sendable (Int, Int, String) -> Void)? = nil) throws -> Project {
+    static func build(scan: StemScan, remove: String, base: Project, destination: URL, progress: (@Sendable (Int, Int, String) -> Void)? = nil,
+                      onUnreadable: ((String, Error) -> Void)? = nil) throws -> Project {
         try ProjectDirectoryPolicy.validate(destination)
         let js = try context(), fm = FileManager.default
         func clean(_ value: String, directory: Bool) throws -> String {
@@ -355,7 +396,11 @@ enum StemProjectImporter {
                 }
             }
             let prepared = try prepareMedia(jobs, progress: progress)
-            for (job, overview) in zip(jobs, prepared) {
+            for (job, result) in zip(jobs, prepared) {
+                guard case .success(let overview) = result else {
+                    if case .failure(let error) = result { onUnreadable?(job.source.path, error) }
+                    continue
+                }
                 let stem = job.stem
                 let internalTrack = stem.trackName == "Click" || stem.trackName.hasPrefix("Click ") || stem.trackName == "Regência" || stem.trackName.hasPrefix("Regência ")
                 let gain = internalTrack && overview.peak > 0 ? pow(10, -1.0 / 20) / overview.peak : 1

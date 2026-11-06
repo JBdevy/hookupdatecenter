@@ -7,7 +7,7 @@ python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys, uuid
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
-helpers = source[source.index('enum TimelineZoomLimits'):source.index('private let markerLaneHeight')]
+helpers = source[source.index('enum TimelineZoomLimits'):source.index('enum TimelineSnapPreference')]
 helpers = helpers.replace('com.hookdeveloper.catlive.viewport', 'catlive.test.viewport.' + uuid.uuid4().hex)
 Path(sys.argv[1]).write_text('import SwiftUI\n' + helpers + '\n' + Path('Tests/Apple/TimelineViewportPreferencesTests.swift').read_text())
 PY

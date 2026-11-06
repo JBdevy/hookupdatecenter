@@ -38,3 +38,15 @@ precondition(view.layer!.sublayers!.count == 2, "stale labels are removed")
 let empty = bitmap()
 precondition(green(empty, 80, 152) < 0.1 && green(empty, 400, 155) < 0.1, "stale ticks disappear")
 print("NATIVE_RULER_RETINA_TICKS_LABEL_CACHE_LAYER_REUSE_LARGE_COORDINATES_AND_CLEAR_OK")
+
+private let retainedFrame = content(ticks: [.init(x: 25, primary: true, text: "2.1")])
+view.update(retainedFrame)
+let retainedTickLayer = view.layer!.sublayers![1] as! CAShapeLayer
+let retainedTickPath = retainedTickLayer.path!
+let retainedLabel = view.layer!.sublayers!.last!
+for _ in 0..<600 { view.update(retainedFrame) }
+precondition(retainedTickLayer.path === retainedTickPath, "Playback updates must retain ruler geometry")
+precondition(view.layer!.sublayers!.last === retainedLabel, "Playback updates must retain ruler labels")
+view.update(content(ticks: [.init(x: 25, primary: false, text: "2.2")]))
+precondition(retainedTickLayer.path !== retainedTickPath, "Tempo/subdivision changes must replace tick geometry")
+print("RULER_GEOMETRY_REUSED_FOR_600_UPDATES_AND_INVALIDATED_FOR_EDITS_OK")

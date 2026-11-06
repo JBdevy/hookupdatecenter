@@ -52,6 +52,15 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const auto &song = result.project.songs.front();
         require(song.parts.empty() && (!song.markers || song.markers->empty()), "Importer invented regions or markers");
         require(song.duration == 13 && song.tracks.front().clips.size() == 1, "Region-free item timing changed");
+        require(result.project.importedTimeline == true, "Importer lost the imported timing flag");
+        auto project = result.project;
+        project.songs.front().bpm = 140;
+        for (int pass = 0; pass < 3; ++pass) {
+            project = ProjectCodec::decode(ProjectCodec::encode(project, object()));
+            require(project.importedTimeline == true, "Saving/reopening lost imported timing protection");
+            require(project.songs.front().bpm == 140 && project.songs.front().tracks.front().clips.front().playbackRate == 1,
+                    "Saving/reopening changed the imported BPM or item rate");
+        }
     });
     test("REAPER special overlaps recover compatible items and independent projection layers", [&] {
         const auto item = [](double start, double duration, const String &content = {}) {

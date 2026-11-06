@@ -32,7 +32,8 @@ inline double visibleGridStep(double bar, int beats, int unit, int divisions, do
     if (divisions <= 0 || bar <= 0 || beats <= 0 || scale <= 0) return 0;
     const double beat=bar/beats;
     const double base=beat*scale>=16 ? std::min(beat,beat*unit/divisions) : bar;
-    return base*std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,base*scale)))));
+    const double spacing = beat*scale>=16 ? 16 : 8;
+    return base*std::pow(2.,std::max(0.,std::ceil(std::log2(spacing/std::max(.001,base*scale)))));
 }
 // Match TimelineTempo.snap: visible divisions plus region/marker/cursor anchors.
 inline double snap(double time, const jaras::Song &song, double scale, bool free,

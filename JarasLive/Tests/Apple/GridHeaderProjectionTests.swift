@@ -1,6 +1,6 @@
 import AppKit
 
-enum HeaderProjectionProbe { static var invalidations = 0 }
+enum HeaderProjectionProbe { static var invalidations = 0; static var titleBuilds = 0; static var projections = 0 }
 _ = NSApplication.shared
 let grid = GridSelectionView(frame: CGRect(x: 0, y: 0, width: 700, height: 300))
 let window = NSWindow(contentRect: grid.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -117,3 +117,50 @@ let recordingPixels = pixels()
 grid.recordingHeaders = []
 precondition(pixels() != recordingPixels, "finishing a take clears its temporary title")
 print("RECORDING_HEADER_2000_GROWING_SCROLL_FRAMES_STABLE")
+
+// More simultaneously visible names than the shared bitmap cache can retain.
+// Keep their positions inside the viewport throughout rapid zoom reversals.
+grid.frame = CGRect(x: 0, y: 0, width: 2048, height: 800)
+grid.timelineOrigin = .zero; grid.headerHeight = 40
+grid.updateSelection([])
+let denseItems = (0..<512).map { index in
+    GridSelectionItem(id: UUID(), rect: CGRect(x: CGFloat(index % 32) * 60, y: 50 + CGFloat(index / 32) * 42, width: 59, height: 38),
+        name: "\(index) – Nome de stem longo e único para o show completo 🎸 – gravação original")
+}
+let denseLayout = GridSelectionLayout(items: denseItems)
+grid.updateLayout(denseLayout, pixelsPerSecond: 1)
+let denseBitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2048, pixelsHigh: 800,
+    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+    colorSpaceName: .deviceRGB, bytesPerRow: 2048 * 4, bitsPerPixel: 32)!
+func drawDenseHeaders() {
+    NSGraphicsContext.saveGraphicsState()
+    let context = NSGraphicsContext(bitmapImageRep: denseBitmap)!.cgContext
+    context.translateBy(x: 0, y: 800); context.scaleBy(x: 1, y: -1)
+    NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+    grid.draw(grid.bounds)
+    NSGraphicsContext.restoreGraphicsState()
+    grid.needsDisplay = false
+}
+drawDenseHeaders()
+let initialShapes = HeaderProjectionProbe.titleBuilds
+let initialProjections = HeaderProjectionProbe.projections
+// Stopped transport sends no live recording headers, including on zoom frames.
+for _ in 0..<20 { grid.recordingHeaders = [] }
+precondition(HeaderProjectionProbe.projections == initialProjections,
+    "Empty recording updates must not rebuild every visible header")
+let beganDenseZoom = ProcessInfo.processInfo.systemUptime
+for frame in 0..<30 {
+    let before = HeaderProjectionProbe.projections
+    for sample in 0..<3 {
+        grid.updateLayout(denseLayout, pixelsPerSecond: 1 + CGFloat((frame * 3 + sample) % 17) * 0.001)
+    }
+    precondition(HeaderProjectionProbe.projections == before,
+        "Zoom geometry and anchor updates must coalesce before preparing header pixels")
+    drawDenseHeaders()
+    precondition(HeaderProjectionProbe.projections == before + 1, "One header projection per painted frame")
+}
+let denseZoomElapsed = (ProcessInfo.processInfo.systemUptime - beganDenseZoom) * 1000
+precondition(HeaderProjectionProbe.titleBuilds == initialShapes,
+    "Visible titles must retain their shaped text even when they exceed the global bitmap cache budget")
+print("DENSE_ZOOM_512_TITLES_30_FRAMES_NO_RESHAPING_SINGLE_PROJECTION_OK \(Int(denseZoomElapsed))ms")
+grid.items = []; drawDenseHeaders()

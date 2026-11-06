@@ -602,6 +602,34 @@ final class ReaperProjectImportTests: XCTestCase {
         XCTAssertEqual(song.tracks.flatMap(\.clips).count, 1)
         try result.project.validate()
     }
+    func testClientUnityRateProjectWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["JARAS_REAPER_UNITY_RATE_FIXTURE"] else { return }
+        let source = URL(fileURLWithPath: path)
+        let original = try Data(contentsOf: source)
+        let imported = try ReaperProjectImporter.read(source).project
+        var opened = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(imported))
+        for index in opened.songs.indices { opened.songs[index].ensureInitialTempoMarker() }
+        GlobalProjectTiming(bpm: 120).applyOnOpen(to: &opened)
+        let song = try XCTUnwrap(opened.songs.first)
+        let clips = song.tracks.flatMap(\.clips).filter { $0.audioFile != nil }
+        XCTAssertFalse(clips.isEmpty)
+        XCTAssertEqual(song.bpm, 140)
+        XCTAssertEqual(clips.count, imported.songs[0].tracks.flatMap(\.clips).filter { $0.audioFile != nil }.count)
+        var rates = Set<Double>()
+        let sections = song.tempoSections(until: song.duration)
+        for clip in clips {
+            XCTAssertEqual(clip.audioRate, 1, accuracy: 1e-9, clip.name)
+            let fragments = song.tempoAudioSegments(clip, sections: sections)
+            XCTAssertFalse(fragments.isEmpty, clip.name)
+            for fragment in fragments {
+                rates.insert(fragment.audioRate)
+                XCTAssertEqual(fragment.audioRate, 1, accuracy: 1e-9, clip.name)
+            }
+        }
+        XCTAssertEqual(opened, imported, "Opening must not rescale positions, lengths, offsets or the tempo map")
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        print("RPP rate check: \(clips.count) audio items; base BPM \(song.bpm); effective rates \(rates.sorted())")
+    }
     func testRealProjectsWhenProvided() throws {
         guard let files = ProcessInfo.processInfo.environment["JARAS_REAPER_FIXTURES"] else { return }
         for path in files.components(separatedBy: "\n") where !path.isEmpty {

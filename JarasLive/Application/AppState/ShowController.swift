@@ -178,9 +178,16 @@ public struct ShowTimelinePresentationState: Equatable {
         selectedTimelineRegion = id
         pauseTimelineFollow()
     }
-    public func pauseTimelineFollow() {
+    private var timelineFollowResume: DispatchWorkItem?
+    public func pauseTimelineFollow(resumingAfter delay: TimeInterval? = nil) {
         guard current != nil else { return }
+        timelineFollowResume?.cancel(); timelineFollowResume = nil
         timelineFollowPaused = true
+        if let delay {
+            let resume = DispatchWorkItem { [weak self] in self?.timelineFollowPaused = false }
+            timelineFollowResume = resume
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: resume)
+        }
     }
     private var selectedSetlistBlock: UUID?
     /// Blocks prepare the next Play without starting or queueing a song on click.
@@ -528,7 +535,7 @@ public struct ShowTimelinePresentationState: Equatable {
         guard previous.playing || previous.paused == true,
               !snapshot.transport.playing, snapshot.transport.paused != true,
               !snapshot.transport.subPlay.playing, let queued = snapshot.transport.regionId,
-              previous.queuedRegionId == queued || (regionSetlist.autoUntilBlockEnd == true &&
+              previous.queuedRegionId == queued || (regionSetlist.autoAdvance && regionSetlist.autoUntilBlockEnd == true &&
                 (previous.regionId != queued || previous.playlistEntryId != snapshot.transport.playlistEntryId)) else { return }
         regionNavigationTask?.cancel(); regionNavigationTask = nil
         // A restored cursor belongs to project opening, not this new selection.
@@ -1544,7 +1551,7 @@ public struct ShowTimelinePresentationState: Equatable {
             if previous.playing, !update.transport.playing, update.transport.paused != true,
                !update.transport.subPlay.playing, previous.queuedRegionId == nil, update.transport.queuedRegionId == nil,
                previous.songId == update.transport.songId,
-               !(regionSetlist.autoUntilBlockEnd == true && (previous.regionId != update.transport.regionId || previous.playlistEntryId != update.transport.playlistEntryId)),
+               !(regionSetlist.autoAdvance && regionSetlist.autoUntilBlockEnd == true && (previous.regionId != update.transport.regionId || previous.playlistEntryId != update.transport.playlistEntryId)),
                let id = focusedRegion, let song = current,
                playlistRegion(id) != nil,
                !FinishedSetlistSelection.shouldClear(id, song: song, playlist: selectedRegionPlaylist,
@@ -3172,10 +3179,10 @@ public struct ShowTimelinePresentationState: Equatable {
         return song.parts.filter { $0.parentRegionID == selected.id }.min { $0.startTime < $1.startTime } ?? selected
     }
     public func setRegionInit(_ id: UUID, selection: Int) {
-        guard canControl(), !finishing, (1...10).contains(selection),
+        guard canControl(), !finishing, (0...10).contains(selection),
               let song = snapshot.project.songs.firstIndex(where: { $0.id == snapshot.transport.songId }),
               let region = snapshot.project.songs[song].parts.firstIndex(where: { $0.id == id }) else { return }
-        let count = (selection + 1) / 2, bars = selection % 2 == 0
+        let count = (selection + 1) / 2, bars = selection > 0 && selection % 2 == 0
         do {
             try executor.setRegionInit(id, count: count, bars: bars)
             if bars { snapshot.project.songs[song].parts[region].subplayInitBars = count }

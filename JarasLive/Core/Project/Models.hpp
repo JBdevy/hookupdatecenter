@@ -47,6 +47,8 @@ struct Project {
     std::optional<bool> masterPhaseInverted;
     std::optional<unsigned> masterColor;
     std::optional<bool> timelineMovementLocked;
+    // Preserve imported timing through engine snapshots and project saves.
+    std::optional<bool> importedTimeline;
 };
 // Control-thread validation; never called from an audio callback.
 void validateRegionSetlist(const Project& project, const RegionSetlist& state);

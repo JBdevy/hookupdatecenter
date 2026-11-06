@@ -28,6 +28,7 @@ MainActor.assumeIsolated {
     }
     var recording = Track()
     RecordingLaneLayout.shared.counts[recording.id] = 3
+    RecordingLaneLayout.shared.items[UUID()] = .init(track: recording.id, clip: AudioClip(startTime: 0, duration: 1))
     recording.heightScale = 1.5
     let activeTake = TrackRowLayout(tracks: [recording], baseHeight: 64)
     precondition(activeTake.lanes[0].count == 3 && abs(activeTake.laneHeights[0] - 67.2) < 1e-9)
@@ -35,6 +36,8 @@ MainActor.assumeIsolated {
     let remoteFirst = DAWRemoteState.Track(id: UUID(), name: "Short", color: 0x828282, volume: 1, pan: 0, mute: false, solo: false, clips: [], heightScale: 0.5)
     let remoteSecond = DAWRemoteState.Track(id: UUID(), name: "Tall", color: 0x828282, volume: 1, pan: 0, mute: false, solo: false, clips: [], laneCount: 2, heightScale: 1.5)
     precondition(DAWRemoteItemLayout.laneHeight(remoteFirst) == 43)
+    precondition(DAWRemoteItemLayout.laneHeight(remoteFirst, scale: 0.1) == 24, "Native and Remote single lanes collapse to desktop height")
+    precondition(DAWRemoteItemLayout.laneHeight(remoteSecond, scale: 0.1) == 26, "Multi-lane minimum matches desktop")
     precondition(abs(DAWRemoteItemLayout.rowHeight(remoteSecond) - 180.6) < 1e-9)
     let region = DAWRemoteState.Region(id: UUID(), name: "Region", start: 0, end: 10, color: 0)
     let compact = DAWRemoteItemLayout.tracks([remoteSecond], within: region)[0]

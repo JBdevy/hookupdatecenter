@@ -67,7 +67,7 @@ private struct TrackEnvelopeButton: View {
     var body: some View {
         Button("Env") {
             show.toggleAutomationLanes(track)
-        }.buttonStyle(CompactTrackButtonStyle(activeColor: visible ? JarasTheme.green : JarasTheme.yellow, width: 28))
+        }.buttonStyle(CompactTrackButtonStyle(activeColor: Color.orange, width: 28))
             .jarasHelp("Envelopes")
             .contextMenu {
                 #if os(macOS)
@@ -869,7 +869,7 @@ struct TrackMixerRow: View, Equatable {
                 }.frame(height: compactHeight ? 21 : 24)
                 HStack(spacing: 3) {
                     if showsFader && (track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click) {
-                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
+                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, monitorOff: track.inputMonitoring == false, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
                     }
                 }.buttonStyle(TrackControlButtonStyle()).frame(height: track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click ? 20 : 4)
                 if track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click {
@@ -1050,7 +1050,7 @@ struct TrackMixerRow: View, Equatable {
                     .modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
                 Group {
                     if showsFader && lowerTitle {
-                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
+                        TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, monitorOff: track.inputMonitoring == false, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
                     } else { Color.clear }
                 }.clipped().jarasPlaced(at: 4)
                 Group {
@@ -1455,16 +1455,17 @@ private struct TrackVolumeFader: View {
     let track: UUID?
     let volume: Double
     let phaseInverted: Bool
+    let monitorOff: Bool
     var compact = false
     var showsPhase = true
     // The Master can keep the same gain/pan across documents. Store its
     // project identity as a view input so SwiftUI rebinds the native callbacks
     // even when the ShowController reference and those scalar values match.
     private let controlIdentity: TrackControlIdentity
-    init(show: ShowController, track: UUID?, volume: Double, phaseInverted: Bool, compact: Bool = false, showsPhase: Bool = true) {
+    init(show: ShowController, track: UUID?, volume: Double, phaseInverted: Bool, monitorOff: Bool = false, compact: Bool = false, showsPhase: Bool = true) {
         self.show = show; self.track = track; self.volume = volume
         _fadeout = ObservedObject(wrappedValue: show.transportFadeout)
-        self.phaseInverted = phaseInverted; self.compact = compact; self.showsPhase = showsPhase
+        self.phaseInverted = phaseInverted; self.monitorOff = monitorOff; self.compact = compact; self.showsPhase = showsPhase
         controlIdentity = TrackControlIdentity(project: show.snapshot.project.id, track: track)
     }
     @State private var decibels = 0.0
@@ -1513,7 +1514,7 @@ private struct TrackVolumeFader: View {
         #if os(macOS)
         let identity = controlIdentity
         let session = UUID()
-        DirectVolumeSlider(show: show, groupValues: { show.mixerPreviewValues }, identity: identity, value: volume <= 0 ? -60 : min(12, max(-59.9, 20 * log10(volume))), linkedTrack: show.current?.tracks.first(where: { $0.id == track })?.stereoLink?.partner, changed: { value in
+        DirectVolumeSlider(show: show, groupValues: { show.mixerPreviewValues }, identity: identity, value: volume <= 0 ? -60 : min(12, max(-59.9, 20 * log10(volume))), linkedTrack: show.current?.tracks.first(where: { $0.id == track })?.stereoLink?.partner, monitorOff: monitorOff, changed: { value in
             guard show.snapshot.project.id == identity.project else { return }
             if editingSession == session { decibels = value }
             show.sendMixerControl(.volume, target: track, value: value <= -60 ? 0 : pow(10, value / 20), preview: true)
@@ -1528,13 +1529,44 @@ private struct TrackVolumeFader: View {
             }
         })
         #else
-        Slider(value: volumeBinding, in: -60...12, onEditingChanged: editingChanged)
-            .tint(JarasTheme.green)
+        NativeTrackVolumeSlider(value: volumeBinding, monitorOff: monitorOff, editingChanged: editingChanged)
             .simultaneousGesture(TapGesture(count: 2).onEnded { decibels = 0; show.sendMixerControl(.volume, target: track, value: 1) })
         #endif
     }
     private func synchronize() { decibels = volume <= 0 ? -60 : min(12, max(-59.9, 20 * log10(volume))) }
 }
+
+#if os(iOS)
+/// Colour both halves of the rail: Monitor Off remains visible at any gain.
+private struct NativeTrackVolumeSlider: UIViewRepresentable {
+    @Binding var value: Double
+    let monitorOff: Bool
+    let editingChanged: (Bool) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeUIView(context: Context) -> UISlider {
+        let slider = UISlider()
+        slider.minimumValue = -60; slider.maximumValue = 12
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.begin), for: .touchDown)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.end), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        slider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return slider
+    }
+    func updateUIView(_ slider: UISlider, context: Context) {
+        context.coordinator.parent = self
+        if !slider.isTracking { slider.value = Float(value) }
+        slider.minimumTrackTintColor = monitorOff ? .red : UIColor(JarasTheme.green)
+        slider.maximumTrackTintColor = monitorOff ? .red : .systemGray4
+    }
+    final class Coordinator: NSObject {
+        var parent: NativeTrackVolumeSlider
+        init(_ parent: NativeTrackVolumeSlider) { self.parent = parent }
+        @objc func begin() { parent.editingChanged(true) }
+        @objc func changed(_ slider: UISlider) { parent.value = Double(slider.value) }
+        @objc func end() { parent.editingChanged(false) }
+    }
+}
+#endif
 
 #if os(macOS)
 import AppKit
@@ -1549,6 +1581,7 @@ private struct DirectVolumeSlider: NSViewRepresentable {
     var vertical = false
     var rotary = false
     var linkedTrack: UUID? = nil
+    var monitorOff = false
     let changed: (Double) -> Void
     let editingChanged: (Bool, Double) -> Void
     func makeNSView(context: Context) -> DirectVolumeSliderView {
@@ -1563,6 +1596,7 @@ private struct DirectVolumeSlider: NSViewRepresentable {
         slider.minValue = minimum; slider.maxValue = maximum; slider.mini = mini
         slider.vertical = vertical; slider.rotary = rotary
         slider.linkedTrack = linkedTrack
+        slider.monitorOff = monitorOff
         slider.groupValues = groupValues
         slider.synchronizeModel(value)
         slider.changed = { value in
@@ -1741,6 +1775,7 @@ private final class DirectVolumeSliderView: NSView {
     fileprivate var boundTrack: UUID?
     fileprivate var boundSession: UUID?
     var linkedTrack: UUID? { didSet { if oldValue != linkedTrack { needsDisplay = true } } }
+    var monitorOff = false { didSet { if oldValue != monitorOff { needsDisplay = true } } }
     fileprivate weak var mirroredSource: DirectVolumeSliderView?
     func rebind(project: UUID, track: UUID?, session: UUID? = nil) {
         guard boundProject != project || boundTrack != track || boundSession != session else { return }
@@ -1792,7 +1827,7 @@ private final class DirectVolumeSliderView: NSView {
         }
         if vertical {
             let rail = NSRect(x: bounds.midX - 3, y: 8, width: 6, height: max(1, bounds.height - 16))
-            (linkedTrack != nil ? NSColor(JarasTheme.yellow) : NSColor.white.withAlphaComponent(0.22)).setFill()
+            (monitorOff ? NSColor.red : linkedTrack != nil ? NSColor(JarasTheme.yellow) : NSColor.white.withAlphaComponent(0.22)).setFill()
             NSBezierPath(roundedRect: rail, xRadius: 3, yRadius: 3).fill()
             let y = 8 + (1 - normalized) * max(1, bounds.height - 16)
             (linkedTrack != nil ? NSColor(JarasTheme.green) : NSColor(white: 0.88, alpha: 1)).setFill()
@@ -1802,7 +1837,7 @@ private final class DirectVolumeSliderView: NSView {
         let radius: CGFloat = mini ? 5 : 8
         let railHeight: CGFloat = mini ? 3 : 6
         let rail = NSRect(x: radius, y: bounds.midY - railHeight / 2, width: max(1, bounds.width - radius * 2), height: railHeight)
-        (linkedTrack != nil && !mini ? NSColor(JarasTheme.yellow) : NSColor.white.withAlphaComponent(0.22)).setFill()
+        (monitorOff && !mini ? NSColor.red : linkedTrack != nil && !mini ? NSColor(JarasTheme.yellow) : NSColor.white.withAlphaComponent(0.22)).setFill()
         NSBezierPath(roundedRect: rail, xRadius: 3, yRadius: 3).fill()
         let fraction = min(1, max(0, (doubleValue - minValue) / (maxValue - minValue)))
         let x = radius + CGFloat(fraction) * max(1, bounds.width - radius * 2)
@@ -3410,7 +3445,7 @@ private struct FooterMixerStrip: View, Equatable {
                 .frame(width: 50, height: 12)
             #endif
             HStack(spacing: 2) {
-                FooterMixerControl(show: show, track: id, value: track?.volume ?? show.snapshot.project.masterVolume ?? 1, pan: false, linked: track?.stereoLink?.partner)
+                FooterMixerControl(show: show, track: id, value: track?.volume ?? show.snapshot.project.masterVolume ?? 1, pan: false, linked: track?.stereoLink?.partner, monitorOff: track?.inputMonitoring == false)
                     .frame(width: 27).jarasHelp("Double-click to reset to 0 dB")
                 if active {
                     VerticalTrackMeter(meter: id.map { StemAudioPlayback.shared.meter(for: $0) } ?? StemAudioPlayback.shared.masterMeter, showScale: false)
@@ -3714,13 +3749,14 @@ private struct FooterMixerControl: View {
     let value: Double
     let pan: Bool
     let linked: UUID?
+    var monitorOff = false
     private var position: Double { pan ? value : (value <= 0 ? -60 : min(12, max(-60, 20 * log10(value)))) }
     private func gain(_ value: Double) -> Double { value <= -60 ? 0 : pow(10, value / 20) }
     var body: some View {
         #if os(macOS)
         let identity = TrackControlIdentity(project: show.snapshot.project.id, track: track)
         DirectVolumeSlider(show: show, groupValues: { show.mixerPreviewValues }, identity: identity, value: position, minimum: pan ? -1 : -60, maximum: pan ? 1 : 12,
-            mini: pan, vertical: !pan, rotary: pan, linkedTrack: linked,
+            mini: pan, vertical: !pan, rotary: pan, linkedTrack: linked, monitorOff: monitorOff && !pan,
             changed: { newValue in
                 guard show.snapshot.project.id == identity.project else { return }
                 if pan { show.sendMixerControl(.pan, target: track, value: newValue, preview: true) }
@@ -3735,7 +3771,7 @@ private struct FooterMixerControl: View {
         GeometryReader { geometry in
             let fraction = (position - (pan ? -1 : -60)) / (pan ? 2 : 72)
             ZStack {
-                Capsule().fill(.white.opacity(0.2)).frame(width: 5)
+                Capsule().fill(monitorOff && !pan ? Color.red : .white.opacity(0.2)).frame(width: 5)
                 RoundedRectangle(cornerRadius: 2).fill(.white).frame(width: 24, height: 10)
                     .position(x: geometry.size.width / 2, y: (1 - fraction) * max(1, geometry.size.height - 10) + 5)
             }.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())

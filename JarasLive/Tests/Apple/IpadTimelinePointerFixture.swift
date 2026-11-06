@@ -2,6 +2,12 @@
 // UITouch/UIEvent subclasses supply device inputs; this is not a hardware E2E test.
 import UIKit
 
+// This pointer fixture mounts no Program Change heads; their context menu has
+// its own tests. Supply the dependency introduced by the production recognizer.
+enum ProgramChangeHeadAnchorView {
+    static func contains(_ touch: UITouch) -> Bool { false }
+}
+
 @MainActor final class ControlMappings {
     static let shared = ControlMappings()
     var editing: Int?

@@ -109,6 +109,7 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         control.frame.size.width = 600
         let g = geometry(), gain = HeaderTouch(control,center(geometry().gainKnobRect!))
         expect(control.beginTracking(gain, with: HeaderEvent()), "Gain knob refused primary press")
+        expect(window!.subviews.contains { $0.accessibilityIdentifier == "itemMixTooltip" }, "Touch did not reveal gain tooltip")
         gain.point.y -= 15; _ = control.continueTracking(gain, with: HeaderEvent())
         expect(show.commits == 0 && show.gains[first.id] == show.gains[second.id] && show.gains[first.id]! > 1, "Selected gains do not preview together before release")
         expect(show.gains[other.id] == nil && harness.scrolling.selectionScope == .grid, "Gain touched unselected item or kept track focus")
@@ -119,6 +120,7 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         expect(abs(show.gains[first.id]! - g.draggingGain(by: -20)) < 0.0001, "Live redraw changed knob drag baseline")
         control.cancelTracking(with: nil)
         expect(show.commits == 0 && harness.scrolling.itemMix == nil && show.gains[first.id] == 1 && show.gains[second.id] == 0.5, "Cancelled gain failed to restore individual original values")
+        expect(!window!.subviews.contains { $0.accessibilityIdentifier == "itemMixTooltip" }, "Cancelled gesture leaked tooltip")
         control.clip = first
         let pan = HeaderTouch(control,center(geometry().panKnobRect!))
         expect(control.beginTracking(pan, with: HeaderEvent()), "Pan refused primary press")
@@ -130,9 +132,7 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         _ = control.beginTracking(button, with: HeaderEvent()); control.endTracking(button, with: HeaderEvent())
         expect(mutes == 1, "Mute did not trigger on release")
         expect(!control.beginTracking(button, with: HeaderEvent(.secondary)) && menus == 1 && mutes == 1, "Right click activated mute")
-        let phase = HeaderTouch(control,center(geometry().phaseRect!))
-        _ = control.beginTracking(phase, with: HeaderEvent()); control.endTracking(phase, with: HeaderEvent())
-        expect(phases == 1, "Phase control did not fire")
+        expect(geometry().phaseRect == nil && geometry().gainLabelRect == nil && geometry().panLabelRect == nil && phases == 0, "Removed item readouts or phase still occupy the header")
         let fx = HeaderTouch(control,center(geometry().fxRect!))
         _ = control.beginTracking(fx, with: HeaderEvent()); control.endTracking(fx, with: HeaderEvent())
         expect(effects == 1, "FX control did not fire")
@@ -214,6 +214,46 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         let beforeText = resized.count; drag(.began); drag(.ended, 80)
         expect(resized.count == beforeText, "Resize changed item during text editing")
         field.resignFirstResponder(); field.removeFromSuperview(); resize.removeFromSuperview()
+        // A retained waveform extends outside the screen. Names and controls
+        // must use the visible viewport, including fractional scroll offsets.
+        let viewport = IpadItemHeaderViewport(frame: CGRect(x: 20, y: 240, width: 500, height: 70))
+        viewport.isScrollEnabled = false; viewport.clipsToBounds = true
+        viewport.contentInsetAdjustmentBehavior = .never
+        let retained = UIView(frame: CGRect(x: 0, y: 0, width: 2400, height: 70))
+        let pinned = IpadItemHeaderControl(frame: CGRect(x: 100, y: 0, width: 1800, height: GridSelectionItem.headerHeight))
+        pinned.clip = first
+        window!.rootViewController!.view.addSubview(viewport)
+        viewport.addSubview(retained); retained.addSubview(pinned)
+        viewport.contentSize = retained.bounds.size
+        var pinnedMutes = 0
+        pinned.mute = { pinnedMutes += 1 }
+        for width in [1800.0, 900, 260, 70] {
+            pinned.bounds.size.width = width; pinned.center.x = 100 + width / 2
+            pinned.setNeedsLayout(); pinned.layoutIfNeeded()
+            for offset in [0.0, 140.25, 600.75] {
+                viewport.setContentOffset(CGPoint(x: offset, y: 0), animated: false)
+                retained.transform = CGAffineTransform(translationX: viewport.contentOffset.x - offset, y: 0)
+                viewport.refreshHeaders()
+                let visible = pinned.convert(viewport.bounds, from: viewport)
+                let titleWidth = (first.name as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)]).width
+                let expected = GridSelectionItem(id: first.id, rect: pinned.bounds, name: first.name).visibleLeftHeader(in: visible, titleWidth: titleWidth)
+                for rect in [expected.muteRect, expected.gainKnobRect, expected.fxRect, expected.panKnobRect].compactMap({ $0 }) {
+                    expect(pinned.point(inside: center(rect), with: nil), "Pinned control lost hit target after scroll/zoom: \(width), \(offset)")
+                    expect(visible.contains(center(rect)), "Pinned control outside visible screen")
+                }
+                if let mute = expected.muteRect {
+                    let before = pinnedMutes
+                    let touch = HeaderTouch(pinned, center(mute))
+                    _ = pinned.beginTracking(touch, with: HeaderEvent()); pinned.endTracking(touch, with: HeaderEvent())
+                    expect(pinnedMutes == before + 1, "Visible M button does not match drawn position")
+                }
+                if visible.minX > 10 { expect(!pinned.point(inside: CGPoint(x: 4, y: 8), with: nil), "Offscreen original header still accepts input") }
+                if expected.headerRect.width > expected.titleInset + 4 {
+                    expect(!pinned.point(inside: CGPoint(x: expected.headerRect.minX + expected.titleInset + 3, y: 8), with: nil), "Pinned item name blocks grid selection/drag")
+                }
+            }
+        }
+        viewport.removeFromSuperview(); pinned.removeFromSuperview()
         let output = failures.isEmpty ? "IPAD_ITEM_HEADER_UIKIT_OK assertions=\(count)" : "FAIL: " + failures.joined(separator: "; ")
         try! output.write(to: FileManager.default.urls(for: .documentDirectory,in: .userDomainMask)[0].appendingPathComponent("result.txt"),atomically:true,encoding:.utf8)
         print(output)

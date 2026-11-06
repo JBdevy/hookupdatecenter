@@ -16,6 +16,7 @@ jaras::Project emptyProject(const String &name) {
     project.id = uuid();
     project.masterColor = 0x414141;
     project.name = utf8(name);
+    project.importedTimeline = true;
     project.createdAt = project.updatedAt = utf8(Time::getCurrentTime().toISO8601(true));
     jaras::Song song;
     song.id = uuid();

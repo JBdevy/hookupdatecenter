@@ -17,7 +17,7 @@ require(viewport == previous, "Invalid gestures cannot corrupt grid geometry")
 viewport.zoom(factor: 1e12, anchor: 0.5)
 require(viewport.span == 0.25, "Close zoom has a bounded readable scale")
 viewport.zoom(factor: 1e-12, anchor: 0.5)
-require(viewport.span == 600 && viewport.start >= 0, "Wide zoom stops at ten minutes on iPad")
+require(viewport.span == 300 && viewport.start >= 0, "Wide zoom stops at the approved five-minute iPad overview")
 viewport.pan(pixels: 1e12, width: 1)
 require(viewport.start == 0, "Left scroll stops at timeline origin")
 viewport.pan(pixels: -1e12, width: 1)
@@ -74,8 +74,40 @@ require(viewport.start == 105, "Next ruler drag uses the new viewport origin")
 ruler.reset()
 print("IPAD_RULER_PAN_CLICK_THRESHOLD_REVERSAL_AND_REPEAT_OK")
 
-viewport = IpadTimelineViewport(start: 1200, span: 600)
+viewport = IpadTimelineViewport(start: 1200, span: 300)
+let overview = viewport
 for _ in 0..<100 { viewport.zoom(factor: 0.5, anchor: 0.5) }
-require(viewport.span == 600 && viewport.start == 1200, "Repeated zoom out at the limit does not drift")
-viewport.zoom(factor: 0.001, centeredOn: 1500)
-require(viewport.span == 600 && viewport.start == 1200, "Cursor-centered zoom uses the same iPad limit")
+require(viewport == overview, "Repeated zoom out at the readable limit does not drift")
+viewport.zoom(factor: 0.001, centeredOn: 1350)
+require(viewport == overview, "Cursor-centered zoom uses the same five-minute limit")
+viewport.zoom(factor: 2, centeredOn: 1350)
+require(viewport.span == 150 && viewport.start + viewport.span / 2 == 1350, "Zoom in responds immediately after reaching the overview limit")
+viewport.zoom(factor: 0.001, centeredOn: 1350)
+require(viewport == overview, "Zooming back out returns to the same approved overview")
+viewport.pan(pixels: -400, width: 400)
+require(viewport.start == 1500 && viewport.span == 300, "The zoom limit still allows scrolling to the rest of a long project")
+print("IPAD_READABLE_OVERVIEW_LIMIT_AND_ANCHOR_STABILITY_OK")
+
+// Playback can advance at display cadence while the item drawing remains
+// unchanged for many frames; rebasing must preserve every world coordinate.
+for visibleSpan in [0.25, 5.0, 60.0, 300.0] {
+    for width in [360.0, 800.0, 1366.0] {
+        var visible = IpadTimelineViewport(start: 1000, span: visibleSpan)
+        var drawing = IpadTimelineRenderWindow(visible)
+        var redraws = 0
+        for frame in 0...600 {
+            let time = 1000 + visibleSpan / 2 + Double(frame) / 60
+            visible.follow(time)
+            if drawing.needsRebase(visible) { drawing = IpadTimelineRenderWindow(visible); redraws += 1 }
+            let offset = drawing.offset(for: visible, width: width)
+            require(offset >= -1e-8 && offset <= width + 1e-8, "Retained drawing covers the complete viewport")
+            let screenX = (time - drawing.start) / visible.span * width - offset
+            require(abs(screenX - width / 2) < 1e-6, "Needle, item and ruler share the same projection after rebasing")
+            let clickX = width * 0.25
+            let clickedTime = drawing.start + (clickX + offset) / width * visible.span
+            require(abs(clickedTime - (visible.start + visible.span * 0.25)) < 1e-8, "Hit-testing converts through the actual retained offset")
+        }
+        if visibleSpan >= 60 { require(redraws < 3, "A wide overview does not rebuild waveforms on each display frame") }
+    }
+}
+print("IPAD_RETAINED_SCROLL_CONTINUOUS_PROJECTION_REBASE_AND_HIT_TEST_OK")

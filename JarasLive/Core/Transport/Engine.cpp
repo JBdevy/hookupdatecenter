@@ -168,7 +168,7 @@ std::optional<ID> Engine::automaticRegionQueueTarget(bool ignoreBlockBoundary) c
     return target;
 }
 std::optional<ID> Engine::nextBlockPreparationTarget() const {
-    if (!project_.regionSetlist || !project_.regionSetlist->autoUntilBlockEnd) return {};
+    if (!project_.regionSetlist || !project_.regionSetlist->autoAdvance || !project_.regionSetlist->autoUntilBlockEnd) return {};
     const auto& state = *project_.regionSetlist;
     const auto* song = currentSong();
     const auto target = automaticRegionQueueTarget(true);
@@ -391,7 +391,7 @@ void Engine::moveRegion(const ID& id, double start) {
 }
 void Engine::setRegionInit(const ID& id, int count, bool bars) {
     projectSync::requireWritable();
-    if(count<1 || count>5) throw std::invalid_argument("Invalid Config Init count");
+    if(count<(bars?1:0) || count>5) throw std::invalid_argument("Invalid Config Init count");
     for(auto& song:project_.songs) if(song.id==transport_.songId)
         for(auto& part:song.parts) if(part.id==id) {
             if(bars) part.subplayInitBars=count;
@@ -1250,7 +1250,6 @@ void Engine::execute(const Command& c) {
         if (currentSong()) {
             if (!transport_.playing && !transport_.paused) {
                 transport_.position = transport_.editPosition;
-                if (transport_.position >= currentSong()->duration) transport_.position = 0;
                 transport_.exclusivePlaybackRegionId.reset();
                 playStart_ = transport_.position;
                 transport_.playbackStartRegionId = playbackEntryRegion(*currentSong(), transport_.position);
@@ -1624,7 +1623,7 @@ void Engine::advanceWithoutLiveTracking(double elapsed) {
 // song's tempo. Integrate tempo/meter changes inside that initial passage.
 static double automaticSubplayInitDuration(const Song& song, const Part& queued, std::optional<int> barsOverride = std::nullopt) {
     const auto bars=barsOverride ? barsOverride : queued.subplayInitBars;
-    if(!bars) return std::clamp(queued.subplayInitSeconds.value_or(1),1.0,5.0);
+    if(!bars) return std::clamp(queued.subplayInitSeconds.value_or(1),0.0,5.0);
     double cursor=queued.startTime, remaining=std::clamp(*bars,1,5);
     while(remaining>0) {
         const TimelineMarker* active=nullptr;
@@ -1655,13 +1654,15 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
         const auto* queued = region(transport_.queuedRegionId);
         if (active && queued && automaticSubplayQueue_ != transport_.queuedRegionId) {
             const double end = transport_.ignoreNextEnd.value_or(active->endTime);
-            const double lead = std::clamp(project_.regionSetlist->automaticSubplaySeconds.value_or(1), 1.0, 5.0);
-            const double trigger = project_.regionSetlist->automaticSubplayNext.value_or(false) && currentSong()
-                ? end - automaticSubplayInitDuration(*currentSong(), *queued)
+            const double lead = project_.regionSetlist->automaticSubplayNext.value_or(false) && currentSong()
+                ? automaticSubplayInitDuration(*currentSong(), *queued)
                 : project_.regionSetlist->automaticSubplayBars && currentSong()
-                    ? end - automaticSubplayInitDuration(*currentSong(), *queued, project_.regionSetlist->automaticSubplayBars)
-                    : end - lead;
-            if (transport_.position < end && transport_.position + elapsed >= trigger) {
+                    ? automaticSubplayInitDuration(*currentSong(), *queued, project_.regionSetlist->automaticSubplayBars)
+                    : std::clamp(project_.regionSetlist->automaticSubplaySeconds.value_or(1), 1.0, 5.0);
+            const double trigger = end - lead;
+            // Config Init 0s uses the ordinary queue handoff below, without
+            // creating or promoting an automatic secondary playback head.
+            if (lead > 0 && transport_.position < end && transport_.position + elapsed >= trigger) {
                 transport_.subPlay.position = queued->startTime; manualSubCursor_ = false;
                 execute({CommandKind::subPlay});
                 automaticSubplayQueue_ = queued->id;
@@ -1730,8 +1731,8 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
                 return;
             }
         }
-        // Preparing the next block is independent of AUTO. A manually queued
-        // block must leave its next heading ready too, without starting it.
+        // With AUTO enabled, reaching the block boundary prepares its next
+        // heading without starting it. AUTO off keeps ordinary playback/STOP.
         if (!ignoring && !queued && !finishCurrent_) if (auto prepared = nextBlockPreparationTarget()) {
             transport_.playing = false; transport_.paused = false; playStart_.reset();
             execute({CommandKind::subStop});
@@ -1785,6 +1786,9 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
     }
     refreshMultiLoop();
     syncRegion();
+    // Starting explicitly in the empty tail is free timeline playback. The
+    // saved song length still ends ordinary playback that started inside it.
+    if (playStart_ && *playStart_ >= song->duration && !transport_.playbackStartRegionId && !finishCurrent_) return;
     if (transport_.position < song->duration) return;
     if (transport_.subPlay.playing) { promoteSubPlay(); return; }
     if (finishCurrent_) { transport_.position = song->duration; transport_.playing = false; execute({CommandKind::subStop}); return; }
