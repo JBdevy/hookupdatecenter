@@ -99,6 +99,15 @@ for scale: CGFloat in [1, 2] {
                      "ruler ticks, labels and rows match an uncached projection: \(label)")
     }
     matchesFresh("continuous scroll")
+    let gridBeforeVertical = controller.backdrop.fixtureUpdates
+    for y: CGFloat in [8, 20, 5, 0] {
+        viewport.origin.y = y; controller.project(viewport)
+        let ink = controller.backdrop.foregroundInk
+        precondition(ink.layer!.mask!.frame.minY + ink.frame.minY == y + controller.value.rulerHeight,
+                     "The foreground clip follows the pinned ruler inside retained tile coverage")
+        precondition(controller.backdrop.fixtureUpdates == gridBeforeVertical,
+                     "Clipping the foreground must retain the prepared grid tile")
+    }
     let beforeCursor = (controller.backdrop.fixtureUpdates, controller.ruler.fixtureUpdates, TimelineTimeRuler.fixtureTickBuilds)
     for position in [20.0, 4, 35, 0] {
         var value = controller.value; value.editPosition = position

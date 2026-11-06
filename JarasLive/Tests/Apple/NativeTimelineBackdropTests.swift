@@ -7,12 +7,12 @@ private func content(origin: CGPoint = .zero, primary: [CGFloat] = [40, 120], se
         displayScale: displayScale, primary: primary, secondary: secondary, bands: bands,
         background: black, primaryColor: white, secondaryColor: CGColor(gray: 0.5, alpha: 1))
 }
-private func bitmap() -> NSBitmapImageRep {
+private func bitmap(_ target: NSView = view) -> NSBitmapImageRep {
     let context = CGContext(data: nil, width: 640, height: 360, bitsPerComponent: 8, bytesPerRow: 640 * 4,
         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     context.translateBy(x: 0, y: 360)
     context.scaleBy(x: 2, y: -2)
-    view.layer!.render(in: context)
+    target.layer!.render(in: context)
     return NSBitmapImageRep(cgImage: context.makeImage()!)
 }
 private func brightness(_ image: NSBitmapImageRep, x: Int, y: Int) -> CGFloat {
@@ -90,3 +90,20 @@ for _ in 0..<600 { view.update(content(displayScale: 3)) }
 precondition(verticalLayers[0].path === foregroundPath, "Foreground grid retains its paths during playback")
 precondition(view.foregroundInk.hitTest(.zero) == nil, "Foreground grid must not block item input")
 print("GRID_FOREGROUND_REUSES_VERTICAL_INK_WITHOUT_INTERCEPTING_INPUT_OK")
+
+// Foreground lines cross item bodies, never the pinned ruler/region headers.
+view.foregroundInk.frame = view.frame
+view.update(content())
+let retainedForegroundPath = verticalLayers[0].path
+for top: CGFloat in [30, 70, 110, 30] {
+    view.foregroundInk.clipBelowRuler(documentY: top)
+    let image = bitmap(view.foregroundInk)
+    precondition(brightness(image, x: 80, y: Int((top - 4) * 2)) < 0.1,
+                 "Grid ink must not cover the pinned headers after vertical scrolling")
+    precondition(brightness(image, x: 80, y: Int((top + 4) * 2)) > 0.45,
+                 "Grid ink remains visible over the items below the ruler")
+    precondition(verticalLayers[0].path === retainedForegroundPath,
+                 "Moving the pinned boundary must not rebuild the grid geometry")
+    precondition(view.foregroundInk.layer?.mask?.animationKeys()?.isEmpty != false)
+}
+print("GRID_FOREGROUND_STARTS_BELOW_PINNED_RULER_WITHOUT_REBUILD_OR_ANIMATION_OK")

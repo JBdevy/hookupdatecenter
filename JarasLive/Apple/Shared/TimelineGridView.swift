@@ -3873,6 +3873,9 @@ private final class NativeTimelineBaseMountView: NSView {
                 bands: bands, background: style.background, primaryColor: style.primary, secondaryColor: style.secondary,
                 horizontal: rowLines, rowColor: style.row))
         }
+        // The ruler is pinned while the prepared grid tile scrolls. Keep the
+        // foreground ink below its live screen position, even within one tile.
+        backdrop.foregroundInk.clipBelowRuler(documentY: viewport.minY + value.rulerHeight)
         let headerViewport = TimelineHeaderViewport.covering(offset: left, width: nativeBounds.width, height: value.rulerHeight)
         header.project(scale: pixelsPerSecond,
             viewport: CGRect(x: left, y: 0, width: nativeBounds.width, height: value.viewportSize.height),
@@ -5087,8 +5090,22 @@ private struct TimelineNativeGridBackdrop: NSViewRepresentable {
     }
 }
 private final class TimelineNativeGridForeground: NSView {
+    private let bodyMask = CALayer()
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    func clipBelowRuler(documentY: CGFloat) {
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
+        wantsLayer = true
+        if layer?.mask !== bodyMask {
+            bodyMask.backgroundColor = CGColor(gray: 1, alpha: 1)
+            layer?.mask = bodyMask
+        }
+        let top = min(bounds.maxY, max(bounds.minY, documentY - frame.minY + bounds.minY))
+        let visible = CGRect(x: bounds.minX, y: top, width: bounds.width, height: max(0, bounds.maxY - top))
+        if bodyMask.frame != visible { bodyMask.frame = visible }
+    }
 }
 private final class TimelineNativeGridView: NSView {
     let foregroundInk = TimelineNativeGridForeground()

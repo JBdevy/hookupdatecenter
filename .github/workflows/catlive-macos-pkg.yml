@@ -166,6 +166,8 @@ jobs:
           bash scripts/test-ipad-setlist-blocks.sh
           bash scripts/test-empty-track-mixer-selection.sh
           bash scripts/test-matrix-patch-canvas.sh
+          bash scripts/test-native-timeline-backdrop.sh
+          bash scripts/test-timeline-base-projection.sh
           bash scripts/test-plugin-catalog.sh
           bash scripts/test-daw-remote.sh
           bash scripts/test-show-mode.sh
