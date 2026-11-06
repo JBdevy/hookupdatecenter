@@ -54,8 +54,11 @@ private final class PatchTestEngine: AVAudioEngine {
 // Captured during the real "Pense em Jesus" failure: the Click and Voz
 // Guia had current sample counters, but the latter retained a host epoch
 // 1.869 seconds behind. A sample-valid timestamp alone is not safe to reuse.
-let clickClock = AVAudioTime(hostTime: 1174177059980, sampleTime: 29201918, atRate: 44100)
-let voiceClock = AVAudioTime(hostTime: 1174132199066, sampleTime: 29201920, atRate: 44100)
+// The capture used Apple Silicon's 24 MHz host ticks. Convert through seconds
+// so Intel's different host timebase reproduces the same stale-clock interval.
+let captureTicksPerSecond = 24_000_000.0
+let clickClock = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1174177059980.0 / captureTicksPerSecond), sampleTime: 29201918, atRate: 44100)
+let voiceClock = AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: 1174132199066.0 / captureTicksPerSecond), sampleTime: 29201920, atRate: 44100)
 precondition(StemAudioPlayback.requiresSourceClockRenewal(source: voiceClock, reference: clickClock, latency: 0.09396825396825396), "Obsolete source epoch would delay a current stem")
 precondition(!StemAudioPlayback.requiresSourceClockRenewal(source: clickClock, reference: clickClock, latency: 0.09396825396825396), "Healthy source clocks must remain reusable")
 let shortPrefetch = AVAudioTime(hostTime: clickClock.hostTime - AVAudioTime.hostTime(forSeconds: 0.04), sampleTime: 29201918, atRate: 48000)
