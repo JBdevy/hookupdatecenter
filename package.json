@@ -14,7 +14,7 @@
     "test:hook-marker": "node tests/hook-marker.test.js && node tests/resolume-add-songs.test.js && node tests/resolume-reset.test.js && node tests/resolume-deck-add.test.js && node tests/resolume-mutation-retry.test.js",
     "test:hook-rename": "node tests/hook-rename-removal.test.js && node tests/hook-rename-ui.test.js",
     "test:relay-performance": "node tests/relay-idle-performance.test.js && node tests/relay-idle-integration.test.js",
-    "test:project-sync": "node tests/project-sync-controls-only.test.js && node tests/relay-idle-performance.test.js",
+    "test:project-sync": "node tests/timecode-discovery.test.js && node tests/project-sync-controls-only.test.js && node tests/relay-idle-performance.test.js",
     "test:bridge-network": "node tests/bridge-network.test.js",
     "test:bridge-native-response": "node tests/bridge-native-response.test.js",
     "test:bridge-native-demand": "node tests/bridge-native-demand.test.js",
