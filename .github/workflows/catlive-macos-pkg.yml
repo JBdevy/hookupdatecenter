@@ -28,7 +28,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: catlive-desktop-${{ inputs.version }}-${{ inputs.windows_only && 'windows-validation' || 'release' }}
+  group: catlive-desktop-${{ inputs.version }}-${{ inputs.audio_only && 'audio-validation' || inputs.windows_only && 'windows-validation' || 'release' }}
   cancel-in-progress: false
 
 jobs:
