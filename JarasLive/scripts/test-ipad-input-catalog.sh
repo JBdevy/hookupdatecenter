@@ -9,6 +9,8 @@ import sys
 source = Path('Apple/Shared/AudioDeviceSettings.swift').read_text()
 begin = source.index('    private func configureMobileSession(')
 methods = source[begin:source.index('    private func observeMobileSession()', begin)]
+begin = source.index('    private func selectMobileOutput(')
+methods += source[begin:source.index('    #endif', begin)]
 fixture = Path('Tests/Apple/IpadAudioInputCatalogTests.swift').read_text()
 Path(sys.argv[1]).write_text(fixture.replace('// PRODUCTION_SESSION_METHODS', methods))
 PY

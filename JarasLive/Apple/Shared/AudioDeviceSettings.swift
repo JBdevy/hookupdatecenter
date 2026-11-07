@@ -439,9 +439,15 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     }
     private func configureMobileSession(input: String) throws {
         let session = AVAudioSession.sharedInstance()
+        // Both System default and a named output use the iPad's current route.
+        // Selecting the Bluetooth device by name must not switch it to HFP:
+        // that renegotiates the music route into a low-bandwidth call profile.
+        // Keep stereo output and mixing enabled for both selections, while the
+        // duplex category keeps USB inputs discoverable even with input None.
+        let options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .allowAirPlay, .mixWithOthers]
         if session.category != .playAndRecord || session.mode != .default ||
-            session.categoryOptions != [.defaultToSpeaker, .allowBluetooth, .mixWithOthers] {
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
+            session.categoryOptions != options {
+            try session.setCategory(.playAndRecord, mode: .default, options: options)
         }
         try session.setActive(true)
         if input.isEmpty || input == Self.defaultMobileInput {
@@ -518,9 +524,37 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         UserDefaults.standard.set(followsSystemOutput, forKey: "catlive.followSystemOutput")
         bindOutput(followsSystemOutput ? (systemDefaultDevice(input: false)?.id ?? "none") : uid)
         #else
-        bindOutput(uid)
+        selectMobileOutput(uid)
         #endif
     }
+    #if os(iOS)
+    private func selectMobileOutput(_ uid: String) {
+        guard uid == "none" || uid == Self.systemDefaultUID || devices.contains(where: { $0.id == uid }) else { return }
+        let previous = followsSystemOutput
+        followsSystemOutput = uid == Self.systemDefaultUID
+        if localSessionEnabled && uid != "none" {
+            do { try configureMobileSession(input: inputUID) }
+            catch {
+                followsSystemOutput = previous
+                self.error = error.localizedDescription
+                do { try configureMobileSession(input: inputUID) }
+                catch { self.error += "\n" + error.localizedDescription }
+                return
+            }
+        }
+        UserDefaults.standard.set(followsSystemOutput, forKey: "catlive.followSystemOutput")
+        if uid == "none" { bindOutput(uid); return }
+        // AVAudioSession owns the current output; a category change may already
+        // have replaced its UID. Store the choice separately from that route.
+        selectedUID = ""
+        refresh()
+        if let output = devices.first { bindOutput(output.id); return }
+        refreshSampleRate(); refreshBuffer()
+        UserDefaults.standard.set(selectedUID, forKey: "jaras.audioOutputUID")
+        error = ""
+        deviceChanged?()
+    }
+    #endif
     // Recovery rebinds the existing UID even while the transport is active.
     // It must never use the public, user-initiated device-change path.
     private func bindOutput(_ uid: String) {

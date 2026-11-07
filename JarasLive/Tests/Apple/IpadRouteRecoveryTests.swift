@@ -50,6 +50,8 @@ enum Command { case stopAll }
     func preparePlayback() { precondition(!playing, "Reconnect must not resume removed-device playback"); Events.values.append("prepare") }
 }
 @MainActor final class RecoveryProbe {
+    let projectAudio = StemAudioPlayback.shared
+    let projectRecorder = TrackRecording.shared
     var localPlaybackEnabled = true
     var localPlaybackTransition: UInt64 = 0, mobileRouteRevision: UInt64 = 0
     var mobileRouteRecovery: Task<Void, Never>?

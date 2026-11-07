@@ -93,9 +93,7 @@ struct SettingsView: View {
                         Text("Audio device — Input").font(.jarasHeadline)
                         Picker("Audio device — Input", selection: Binding(get: { audio.inputSelection }, set: { if !audioConfigurationLocked { audio.selectInput($0) } })) {
                             Text(verbatim: "None").tag("")
-                            #if os(macOS)
                             Text("System default").tag(AudioDeviceSettings.systemDefaultUID)
-                            #endif
                             if !audio.inputUID.isEmpty && audio.inputDevice == nil { Text("Disconnected").tag(audio.inputUID) }
                             ForEach(audio.inputDevices) { device in Text(device.name).tag(device.id) }
                         }.labelsHidden().frame(maxWidth: .infinity).disabled(audioConfigurationLocked)

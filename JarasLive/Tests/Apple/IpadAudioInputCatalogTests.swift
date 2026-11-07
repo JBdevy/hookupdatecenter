@@ -1,6 +1,11 @@
 import Foundation
 enum JarasLocalization { static func string(_ key: String) -> String { key } }
 enum ProjectError: Error { case invalid(String) }
+final class UserDefaults {
+    static let standard = UserDefaults()
+    var values: [String: Any] = [:]
+    func set(_ value: Any, forKey key: String) { values[key] = value }
+}
 final class AVAudioSession {
     enum Category { case playback, playAndRecord }
     enum Mode { case `default` }
@@ -9,6 +14,8 @@ final class AVAudioSession {
         static let defaultToSpeaker = Self(rawValue: 1)
         static let allowBluetooth = Self(rawValue: 2)
         static let mixWithOthers = Self(rawValue: 4)
+        static let allowBluetoothA2DP = Self(rawValue: 8)
+        static let allowAirPlay = Self(rawValue: 16)
     }
     struct Port { let uid: String }
     struct Route { var inputs: [Port] }
@@ -24,10 +31,13 @@ final class AVAudioSession {
     var maximumOutputNumberOfChannels = 8, outputNumberOfChannels = 8, preferredOutputNumberOfChannels = 8
     var maximumInputNumberOfChannels = 8, preferredInputNumberOfChannels = 1
     var inputChannelChanges = 0
+    var rejectNextActivation = false
     func setCategory(_ category: Category, mode: Mode, options: CategoryOptions) throws {
         self.category = category; self.mode = mode; categoryOptions = options; categoryChanges += 1
     }
-    func setActive(_ active: Bool) throws { }
+    func setActive(_ active: Bool) throws {
+        if rejectNextActivation { rejectNextActivation = false; throw ProjectError.invalid("Route unavailable") }
+    }
     func setPreferredInput(_ port: Port?) throws {
         preferredInput = port; currentRoute.inputs = port.map { [$0] } ?? []
     }
@@ -38,8 +48,25 @@ final class AVAudioSession {
 }
 final class InputCatalogProbe {
     static let defaultMobileInput = "system"
+    static let systemDefaultUID = "catlive.system-default"
     var localSessionEnabled = true, localSessionInterrupted = false, localSessionReconfiguring = false
     var inputUID = "", error = ""
+    var followsSystemOutput = false
+    struct Device { var id: String }
+    var routeUID = "speaker", selectedUID = "speaker"
+    var devices = [Device(id: "speaker")]
+    var deviceChanged: (() -> Void)?
+    func refresh() {
+        devices = routeUID.isEmpty ? [] : [Device(id: routeUID)]
+        if selectedUID != "none" { selectedUID = devices.first?.id ?? "" }
+    }
+    func refreshSampleRate() { }
+    func refreshBuffer() { }
+    func bindOutput(_ uid: String) {
+        selectedUID = uid; UserDefaults.standard.set(uid, forKey: "jaras.audioOutputUID")
+        error = ""; deviceChanged?()
+    }
+    func select(_ uid: String) { selectMobileOutput(uid) }
     func configure() throws { try configureMobileSession(input: inputUID) }
     // PRODUCTION_SESSION_METHODS
 }
@@ -66,4 +93,54 @@ rejected { try probe.requireLocalInput() }
 probe.inputUID = "builtin"; probe.localSessionReconfiguring = true
 rejected { try probe.requireLocalInput() }
 probe.localSessionReconfiguring = false; try probe.configure(); try probe.requireLocalInput(expectedUID: "builtin")
+// Following the system route keeps the input catalog, USB recording and other
+// apps' audio available without making Bluetooth prefer its call profile.
+probe.followsSystemOutput = true; probe.inputUID = ""
+try probe.configure()
+precondition(session.categoryOptions.contains(.mixWithOthers), "Never interrupt other apps in system-default mode")
+precondition(session.categoryOptions.contains(.allowBluetoothA2DP) && session.categoryOptions.contains(.allowAirPlay))
+precondition(!session.categoryOptions.contains(.allowBluetooth) && !session.categoryOptions.contains(.defaultToSpeaker),
+             "Do not force a call profile or override the default output")
+precondition(session.availableInputs?.map(\.uid) == ["builtin"] && session.preferredInput == nil)
+let configuredCategoryChanges = session.categoryChanges
+try probe.configure()
+precondition(session.categoryChanges == configuredCategoryChanges, "Repeated route recovery must not switch categories")
+session.ports = [.init(uid: "usb"), .init(uid: "builtin")]
+probe.inputUID = "usb"; try probe.configure(); try probe.requireLocalInput(expectedUID: "usb")
+precondition(session.preferredInput?.uid == "usb" && session.categoryOptions.contains(.mixWithOthers))
+probe.inputUID = ""
+probe.select(InputCatalogProbe.systemDefaultUID)
+precondition(probe.followsSystemOutput && probe.selectedUID == "speaker")
+precondition(UserDefaults.standard.values["catlive.followSystemOutput"] as? Bool == true)
+probe.routeUID = "bluetooth-stereo"; probe.refresh(); try probe.configure()
+precondition(probe.followsSystemOutput && probe.selectedUID == "bluetooth-stereo", "System choice survives hardware UID changes")
+let stereoCategoryChanges = session.categoryChanges
+probe.select("bluetooth-stereo")
+precondition(!probe.followsSystemOutput && probe.selectedUID == "bluetooth-stereo")
+precondition(session.categoryOptions.contains(.allowBluetoothA2DP) && !session.categoryOptions.contains(.allowBluetooth),
+             "Selecting Bluetooth by name must preserve stereo output, never enable the call profile")
+precondition(session.categoryOptions.contains(.mixWithOthers), "Direct Bluetooth selection must keep other apps playing")
+precondition(session.categoryChanges == stereoCategoryChanges,
+             "Changing the output label must not renegotiate the Bluetooth profile or sample rate")
+probe.select(InputCatalogProbe.systemDefaultUID)
+precondition(session.categoryChanges == stereoCategoryChanges, "Returning to system default keeps the same audio route")
+session.rejectNextActivation = true
+probe.select("bluetooth-stereo")
+precondition(probe.followsSystemOutput && !probe.error.isEmpty, "Rejected session changes roll back the visible selection")
+precondition(UserDefaults.standard.values["catlive.followSystemOutput"] as? Bool == true)
+probe.select("bluetooth-stereo")
+precondition(!probe.followsSystemOutput && probe.error.isEmpty)
+probe.select("none")
+precondition(probe.selectedUID == "none" && !probe.followsSystemOutput)
+probe.routeUID = ""; probe.refresh()
+probe.select(InputCatalogProbe.systemDefaultUID)
+precondition(probe.followsSystemOutput && probe.selectedUID.isEmpty, "System default is selectable even while no output is available")
+probe.routeUID = "usb"; probe.refresh(); try probe.configure()
+precondition(probe.followsSystemOutput && probe.selectedUID == "usb")
+probe.localSessionEnabled = false
+let changesBeforeRemote = session.categoryChanges
+probe.select("usb")
+precondition(session.categoryChanges == changesBeforeRemote, "The Remote UI must never activate a local audio session")
+print("IPAD_SYSTEM_DEFAULT_STEREO_BLUETOOTH_MIXING_USB_CAPTURE_AND_RECOVERY_OPTIONS_OK")
+print("IPAD_NAMED_BLUETOOTH_SELECTION_PRESERVES_STEREO_MIXING_AND_SESSION_CATEGORY_OK")
 print("IPAD_USB_INPUT_CATALOG_WITH_NONE_CAPTURE_GATING_DISCONNECTION_AND_NO_IMPLICIT_MIC_SWITCH_OK")
