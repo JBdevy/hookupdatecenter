@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdlib>
 #include <vector>
+#include <CoreFoundation/CoreFoundation.h>
 #if defined(CATLIVE_CAPTURE_STATE_DIAGNOSTICS) || defined(CATLIVE_STATE_RESTORE_DIAGNOSTICS)
 #include <chrono>
 #include <thread>
@@ -300,7 +301,7 @@ if(FUnknownPrivate::iidEqual(uid,controllerID)){auto controller=new GainControll
 if(!FUnknownPrivate::iidEqual(uid,cid))return kResultFalse;auto gain=new Gain;auto result=gain->queryInterface(iid,out);gain->release();return result;}
 };
 extern "C" __attribute__((visibility("default"))) IPluginFactory *GetPluginFactory(){static Factory factory;return &factory;}
-extern "C" __attribute__((visibility("default"))) bool bundleEntry(void*){
+extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef){
 #ifdef CATLIVE_MODULE_LIFECYCLE_DIAGNOSTICS
     if(moduleExiting.load())++overlappingModuleEntries;
 #endif

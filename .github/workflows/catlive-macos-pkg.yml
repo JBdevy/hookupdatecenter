@@ -23,11 +23,14 @@ on:
         description: 'Executar também a bateria completa dos FX em 44,1 e 48 kHz (1.29 altera áudio/FX)'
         type: boolean
         default: true
+      audio_tail_from_run:
+        description: 'Opcional: validar VST3/metrônomo/MIDI após conferir as etapas Intel já aprovadas desta execução'
+        default: ''
       reuse_build_run:
         description: 'Opcional: build concluída com os pacotes e a troca de projetos aprovados'
         default: ''
       reuse_audio_run:
-        description: 'Opcional: auditoria aprovada após corrigir apenas o teste de relógio'
+        description: 'Opcional: auditoria aprovada após corrigir somente fixtures de teste'
         default: ''
 
 permissions:
@@ -35,21 +38,56 @@ permissions:
   actions: read
 
 concurrency:
-  group: catlive-desktop-${{ inputs.version }}-${{ inputs.reuse_build_run && 'validated-publication' || inputs.audio_only && 'audio-validation' || inputs.windows_only && 'windows-validation' || 'release' }}
+  group: catlive-desktop-${{ inputs.version }}-${{ inputs.reuse_build_run && 'validated-publication' || inputs.audio_tail_from_run && 'audio-tail-validation' || inputs.audio_only && 'audio-validation' || inputs.windows_only && 'windows-validation' || 'release' }}
   cancel-in-progress: false
 
 jobs:
+  validate-prior-audio:
+    if: ${{ inputs.audio_tail_from_run != '' && !inputs.reuse_build_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify prior Intel results and unchanged application code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CATLIVE_AUDIO_TAIL_FROM_RUN: ${{ inputs.audio_tail_from_run }}
+        run: |
+          python3 scripts/test-catlive-build-reuse.py
+          python3 scripts/validate-catlive-build-reuse.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CatLive-Audio-Tail-Evidence
+          path: catlive-audio-tail-evidence.json
+          if-no-files-found: error
+
+  audio-tail:
+    needs: validate-prior-audio
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate VST3 state and metronome publication
+        working-directory: JarasLive
+        run: |
+          test "$(uname -m)" = x86_64
+          bash scripts/test-vst3-state-stream.sh
+          bash scripts/test-metronome.sh
+          bash scripts/test-midi-sequence.sh
+
   audio-audit:
-    if: ${{ !inputs.reuse_build_run && !inputs.windows_only && (inputs.audio_only || inputs.audio_tests || inputs.full_fx_tests) }}
+    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.windows_only && (inputs.audio_only || inputs.audio_tests || inputs.full_fx_tests) }}
     uses: ./.github/workflows/catlive-audio-audit.yml
 
   integration:
-    if: ${{ !inputs.reuse_build_run && !inputs.audio_only && !inputs.windows_only }}
+    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.audio_only && !inputs.windows_only }}
     uses: ./.github/workflows/catlive-integration.yml
     secrets: inherit
 
   audio-validation:
-    if: ${{ !inputs.reuse_build_run && inputs.audio_only }}
+    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && inputs.audio_only }}
     runs-on: macos-26
     timeout-minutes: 15
     steps:
@@ -61,7 +99,7 @@ jobs:
         run: bash scripts/test-audio.sh
 
   windows:
-    if: ${{ !inputs.reuse_build_run && !inputs.audio_only }}
+    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.audio_only }}
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -127,7 +165,7 @@ jobs:
           if-no-files-found: error
 
   macos-pkg:
-    if: ${{ !inputs.reuse_build_run && !inputs.audio_only && !inputs.windows_only }}
+    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.audio_only && !inputs.windows_only }}
     runs-on: macos-26
     timeout-minutes: 180
     env:
@@ -490,7 +528,7 @@ jobs:
           Instalador macOS assinado e notarizado. Inclui os instaladores gratuitos do CatLive Integration, sem login/licença.
           O instalador Windows não possui assinatura Authenticode nesta configuração.
 
-          Todos os testes de build, transporte e troca de projetos passaram na [build dos instaladores](https://github.com/$GH_REPO/actions/runs/$REUSE_BUILD_RUN). A [auditoria de áudio](https://github.com/$GH_REPO/actions/runs/$REUSE_AUDIO_RUN) valida Intel e Apple Silicon após corrigir a unidade dos valores de relógio usados no teste.
+          Os testes de build, transporte, áudio Apple Silicon e troca de projetos passaram na [build dos instaladores](https://github.com/$GH_REPO/actions/runs/$REUSE_BUILD_RUN). A [validação complementar](https://github.com/$GH_REPO/actions/runs/$REUSE_AUDIO_RUN) conclui a auditoria Intel após corrigir somente fixtures de teste. Quando a auditoria é retomada, cada etapa anterior precisa estar aprovada e o código do aplicativo e dos scripts de teste precisa permanecer idêntico.
 
           O código do aplicativo é idêntico nas duas execuções. Os pacotes foram reaproveitados somente após conferir os commits, os resultados obrigatórios e os hashes dos instaladores.
           EOF
