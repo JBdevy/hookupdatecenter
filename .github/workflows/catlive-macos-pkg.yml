@@ -488,6 +488,7 @@ jobs:
           CatLive $VERSION para macOS universal e Windows 10/11 x64.
 
           Instalador macOS assinado e notarizado. Inclui os instaladores gratuitos do CatLive Integration, sem login/licença.
+          O instalador Windows não possui assinatura Authenticode nesta configuração.
 
           Todos os testes de build, transporte e troca de projetos passaram na [build dos instaladores](https://github.com/$GH_REPO/actions/runs/$REUSE_BUILD_RUN). A [auditoria de áudio](https://github.com/$GH_REPO/actions/runs/$REUSE_AUDIO_RUN) valida Intel e Apple Silicon após corrigir a unidade dos valores de relógio usados no teste.
 
