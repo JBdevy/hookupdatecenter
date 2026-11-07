@@ -21,6 +21,43 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         let file = try AVAudioFile(forWriting: directory.appendingPathComponent("continuity.wav"), settings: format.settings)
         try file.write(from: pcm)
     }
+    // EQ gain before compression and after compression must sound different.
+    // This verifies actual DSP order, not merely the list shown in the manager.
+    func level(_ settings: NativeFXSettings) throws -> Double {
+        let engine = AVAudioEngine(), player = AVAudioPlayerNode()
+        let chain = NativeEffectsChain(reorderable: false)
+        engine.attach(player)
+        chain.attach(to: engine, input: player, format: format, destinations: [AVAudioConnectionPoint(node: engine.mainMixerNode, bus: 0)])
+        chain.apply(settings)
+        let tone = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate))!
+        tone.frameLength = tone.frameCapacity
+        for channel in 0..<2 { for frame in 0..<Int(tone.frameLength) {
+            tone.floatChannelData![channel][frame] = 0.2 * Float(sin(Double(frame) * 2 * .pi * 440 / rate))
+        } }
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+        player.scheduleBuffer(tone, at: nil, options: .loops, completionHandler: nil)
+        try engine.start(); player.play()
+        defer { engine.stop(); chain.detach(from: engine) }
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+        var sum = 0.0, count = 0
+        for block in 0..<80 {
+            let status = try engine.renderOffline(512, to: buffer)
+            precondition(status == .success)
+            if block > 40 { for frame in 0..<512 {
+                let value = Double(buffer.floatChannelData![0][frame]); sum += value * value; count += 1
+            } }
+        }
+        return sqrt(sum / Double(count))
+    }
+    var orderedFX = NativeFXSettings(); orderedFX.appendNative("EQ"); orderedFX.appendNative("Compressor")
+    for index in orderedFX.bands.indices { orderedFX.bands[index].enabled = false }
+    orderedFX.bands[1].enabled = true; orderedFX.bands[1].frequency = 440; orderedFX.bands[1].gain = 12
+    orderedFX.threshold = -30; orderedFX.ratio = 20; orderedFX.attack = 0.001
+    let compressedBoost = try level(orderedFX)
+    precondition(orderedFX.reorderClipEffect("EQ", before: nil) != nil)
+    let boostedCompression = try level(orderedFX)
+    precondition(boostedCompression > compressedBoost * 2, "Moved EQ must process after the compressor")
+    print("ITEM_FX_REORDER_CHANGES_ACTUAL_DSP_ORDER_OK rate=\(rate)")
     for looping in [false, true] {
         var project = Project.empty(name: "Item FX continuity")
         var track = Track(id: UUID(), name: "Track", role: .other)
@@ -60,12 +97,22 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
                 for channel in 0..<2 { for frame in 0..<512 {
                     let expected = Float((expectedIndex + frame) % period + 1) / 65536
                     precondition(abs(output.floatChannelData![channel][frame] - expected) < 0.00001,
-                        "\(label), loop=\(looping), block=\(block), sample=\(frame): source position/PCM changed")
+                        "\(label), loop=\(looping), block=\(block), sample=\(frame): expected=\(expected) actual=\(output.floatChannelData![channel][frame])")
                 } }
                 lastSample = output.floatChannelData![0][511]
             }
         }
         try verifyPCM("Before editing")
+        var legacy = NativeFXSettings()
+        legacy.appendNative("EQ"); legacy.appendNative("Delay"); legacy.delayMix = 0
+        for index in legacy.bands.indices { legacy.bands[index].type = "bell"; legacy.bands[index].gain = 0 }
+        audio.previewClipFX(clip.id, settings: legacy)
+        try verifyPCM("Legacy fixed native chain")
+        precondition(legacy.reorderClipEffect("EQ", before: nil) != nil)
+        audio.previewClipFX(clip.id, settings: legacy)
+        try verifyPCM("Promote and reorder legacy native stages")
+        audio.previewClipFX(clip.id, settings: NativeFXSettings())
+        try verifyPCM("Remove promoted native stages")
         var dryDelay = NativeFXSettings()
         dryDelay.inserted = ["Delay"]; dryDelay.delayEnabled = true; dryDelay.delayMix = 0
         let first = NativeFXInstance(kind: "Delay", settings: dryDelay)

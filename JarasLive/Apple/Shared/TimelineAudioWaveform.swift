@@ -647,6 +647,17 @@ final class TimelineAudioWaveform: ObservableObject {
         projectHeaders = headers; projectOverviews = overviews
         projectSources = sources
     }
+    private func retainPreparedSource(_ source: WaveformSource, header: Header, overview: VertexOverview) {
+        guard let path = header.sourcePath, let identity = header.vertexSource else { return }
+        projectCacheLock.lock(); defer { projectCacheLock.unlock() }
+        if let previous = projectHeaders[path]?.vertexSource, previous != identity {
+            projectSources.removeValue(forKey: previous)
+            projectOverviews.removeValue(forKey: previous)
+        }
+        projectHeaders[path] = header
+        projectSources[identity] = source
+        projectOverviews[identity] = overview
+    }
     /// Map compact .waveform peak levels and prepare a complete small overview.
     /// Detailed pages remain reclaimable file-backed memory; only visible GPU
     /// blocks occupy the bounded drawing cache.
@@ -841,7 +852,8 @@ final class TimelineAudioWaveform: ObservableObject {
         let key = "\(rawKey):\(step)" as NSString
         if let value = geometries.object(forKey: key) { return value }
         let sourceKey = prefix as NSString
-        let prepared = step >= WaveformSource.baseStep ? sources.object(forKey: sourceKey) : nil
+        let prepared = step >= WaveformSource.baseStep
+            ? (header.vertexSource.flatMap { pinnedSource($0) } ?? sources.object(forKey: sourceKey)) : nil
         if step >= WaveformSource.baseStep, prepared == nil {
             prepareSource(url, header: header)
             return nil
@@ -1577,7 +1589,13 @@ final class TimelineAudioWaveform: ObservableObject {
         enqueue("source:\(sourceKey)", url: url, queue: sourceWorker, preparingSource: true) { [self] in
             do {
                 let source = try WaveformSource.loadOrBuild(url, header: header, cancelled: { !self.acceptsProjectWork() })
-                _ = prepareZoomOutVertices(source, header: header, prefix: sourceKey as String)
+                if let overview = prepareZoomOutVertices(source, header: header, prefix: sourceKey as String) {
+                    // Unify/import/recording can add media after preload. Give
+                    // its mapped peaks the same project lifetime as opened
+                    // media: NSCache may evict a new entry before the native
+                    // readiness callback, causing an endless prepare/redraw loop.
+                    retainPreparedSource(source, header: header, overview: overview)
+                }
                 sources.setObject(source, forKey: sourceKey, cost: source.cost)
                 return true
             } catch {

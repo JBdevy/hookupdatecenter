@@ -546,3 +546,54 @@
 }
 setbuf(stdout, nil)
 try MainActor.assumeIsolated { try testNativeTimelineBody() }
+
+// Unify creates a new file after project preload. Its peaks must reach the
+// native view even when the reclaimable caches cannot retain another entry.
+try MainActor.assumeIsolated {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("catlive-glued-body-\(UUID())")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+    let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48_000)!
+    pcm.frameLength = 48_000
+    for sample in 0..<Int(pcm.frameLength) {
+        pcm.floatChannelData![0][sample] = Float(sin(Double(sample) * 0.031) * 0.5)
+        pcm.floatChannelData![1][sample] = -pcm.floatChannelData![0][sample]
+    }
+    do {
+        let file = try AVAudioFile(forWriting: directory.appendingPathComponent("unified.wav"), settings: format.settings)
+        for _ in 0..<40 { try file.write(from: pcm) }
+    }
+    let cache = TimelineAudioWaveform.shared
+    cache.constrainNativeBodyTestCaches(true)
+    defer { cache.constrainNativeBodyTestCaches(false) }
+    let clip = AudioClip(id: UUID(), name: "Unified", startTime: 56_750, duration: 40,
+        audioFile: AudioFile(path: "unified.wav"), renderedTiming: true)
+    var track = Track(id: UUID(), name: "Percussion", role: TrackRole(rawValue: "standard"))
+    track.clips = [clip]
+    let song = Song(id: UUID(), name: "Late song", duration: 57_000, bpm: 145, tracks: [track], parts: [])
+    let configuration = NativeTimelineAudioBodyConfiguration.make(song: song,
+        key: TimelineRenderKey(revision: 2, songID: song.id, movingClip: nil, movingStart: 0, movingTrack: nil,
+            movingRegion: nil, regionDelta: 0, resizingRegion: nil, resizedStart: 0, resizedEnd: 0),
+        rows: TrackRowLayout(tracks: song.tracks, baseHeight: 90), metadata: TimelineRenderMetadata(song: song),
+        rulerHeight: 55, selectedClips: [clip.id], mediaDirectory: directory, missingAudioPaths: [])!
+    let body = NativeTimelineAudioBodyView(), scale = 23.47981560587109
+    body.configure(configuration)
+    body.project(viewport: CGRect(x: 56_755 * scale, y: 0, width: 700, height: 200),
+        documentSize: CGSize(width: 57_000 * scale, height: 200), scale: scale)
+    @MainActor func hasPeaks() -> Bool {
+        body.waveformsForTest?.strokes.contains { stroke in
+            stroke.block.key != "timeline-centerline-unit" &&
+                stroke.block.channels[stroke.channel].contains { abs($0.y) > 0.25 }
+        } == true
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while !hasPeaks(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    precondition(hasPeaks(), "Newly unified audio must acquire real peaks after cache eviction without another zoom or project update")
+    let submissions = body.waveformSubmissionsForTest
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    precondition(body.waveformSubmissionsForTest <= submissions + 1,
+        "Generated media must settle instead of repeatedly rebuilding evicted peak pyramids")
+    body.configure(nil)
+    print("NATIVE_BODY_NEW_UNIFIED_MEDIA_LATE_TIMELINE_CACHE_PRESSURE_READINESS_AND_SETTLING_OK")
+}

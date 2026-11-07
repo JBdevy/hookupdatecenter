@@ -77,6 +77,8 @@ jobs:
             Tests/Apple/AudioPhaseTests.swift \
             Tests/Apple/AudioMediaPreparationTests.swift \
             Tests/Apple/AutomationAudioTests.swift \
+            Tests/Apple/ItemGainOrderTests.swift \
+            Tests/Apple/ItemFXContinuityTests.swift \
             Tests/Apple/TrackEQPlaybackTests.swift \
             Tests/Apple/NativeFXPlaybackTests.swift \
             Tests/Apple/EQIntelStabilityTests.swift \
@@ -89,6 +91,8 @@ jobs:
           bash scripts/test-instrument-behavior.sh
       - name: Validate failed media without stopping healthy stems
         run: CATLIVE_EXPORT_TEST_SOURCE=Tests/Apple/PlaybackMediaIsolationTests.swift bash scripts/test-offline-export.sh
+      - name: Validate item FX rendering and limiter gain order
+        run: CATLIVE_EXPORT_TEST_SOURCE=Tests/Apple/ItemPluginRenderTests.swift bash scripts/test-offline-plugin-latency.sh
       - name: Validate VST3 state and metronome publication
         run: |
           bash scripts/test-vst3-state-stream.sh

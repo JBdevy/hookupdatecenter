@@ -598,10 +598,8 @@ struct IpadTimelineFocus: Equatable {
 }
 
 struct IpadTimelineViewport: Equatable {
-    // Keep region names, boundaries and item controls readable on the iPad.
-    // The approved overview shows five minutes; the desktop scale would expose
-    // many hours and collapse the regions together on this smaller display.
-    static let maximumSpan = 300.0
+    // Allow a ten-hour overview while retaining the useful initial song scale.
+    static let maximumSpan = 10.0 * 60 * 60
     var start = 0.0
     var span = 60.0
     var end: Double { start + span }
@@ -1775,7 +1773,9 @@ struct IpadTimelinePlaybackSurface<Content: View>: UIViewControllerRepresentable
             else { visible.follow(position) }
         }
         followSource = frame.followSource
-        let moving = follow && show?.timelineFollowPaused != true && frame.followPosition != nil && visible.start > 0
+        let centered = frame.followPosition.map { abs($0 - (visible.start + visible.span / 2)) <= visible.span / viewportSize.width } ?? false
+        let moving = follow && show?.timelineFollowPaused != true && frame.followPosition != nil && visible.start > 0 &&
+            (visible.start != visibleStart || (headersHidden && centered))
         if moving != headersHidden {
             headersHidden = moving
             DispatchQueue.main.async { [weak self] in self?.scrollingChanged(moving) }

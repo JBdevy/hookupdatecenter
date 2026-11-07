@@ -27,6 +27,12 @@ enum TimelineRenderDiagnosticBypass {
 }
 
 struct GridSelectionItem {
+    // Mac reference zoom chosen in the timeline (10 * 2.347981560587109).
+    // Use the same screen density on desktop and native touch timelines.
+    static let followingHeaderMinimumScale: CGFloat = 23.47981560587109
+    static func pinsHeader(pixelsPerSecond: CGFloat) -> Bool {
+        pixelsPerSecond.isFinite && pixelsPerSecond >= followingHeaderMinimumScale
+    }
     #if os(macOS)
     static let headerScale: CGFloat = 1.1
     #else
@@ -159,10 +165,11 @@ struct GridSelectionItem {
         return rightEdge - headerRect.minX + 1
     }
 
-    func visibleLeftHeader(in viewport: CGRect, titleWidth: CGFloat, gainLabel: String? = nil) -> Self {
+    func visibleLeftHeader(in viewport: CGRect, titleWidth: CGFloat, gainLabel: String? = nil, pinned: Bool = true) -> Self {
         var item = self
         item.headerNameWidth = titleWidth
-        let left = max(rect.minX, viewport.minX), right = min(rect.maxX, viewport.maxX)
+        let left = pinned ? max(rect.minX, viewport.minX) : rect.minX
+        let right = min(rect.maxX, viewport.maxX)
         let visibleWidth = max(0, right - left)
         // Measure the packed header at a local origin. Subtracting large,
         // scrolling document coordinates introduced fractional-width jitter.
@@ -729,7 +736,15 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         itemLayout.item(id: id, pixelsPerSecond: pixelsPerSecond)
     }
     private var followPresentationObserver: NSObjectProtocol?
-    private var headersHidden = false
+    private var followingPlayback = false {
+        didSet {
+            guard followingPlayback != oldValue else { return }
+            preparedHeaderProjection = nil
+            hoverValueTooltip = nil; valueTooltipPoint = nil; needsDisplay = true
+        }
+    }
+    private var headersPinned: Bool { GridSelectionItem.pinsHeader(pixelsPerSecond: pixelsPerSecond) }
+    private var headersHidden: Bool { followingPlayback && headersPinned }
     private var headerScrolls: [NSClipView] = []
     private var headerScrollObservers: [NSObjectProtocol] = []
     /// Scrolling a long item moves its audio, but its left-pinned controls can
@@ -741,6 +756,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     private struct HeaderPixels: Equatable {
         let id: UUID
+        let hidden: Bool
         let rect: CGRect
         let name: String
         let selected: Bool
@@ -761,6 +777,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let viewport: CGRect
         let origin: CGPoint
         let height: CGFloat
+        let pinned: Bool
+        let hidden: Bool
         let gainID: UUID?
         let gain: Double?
         let panID: UUID?
@@ -881,12 +899,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         midiStart = nil; activeButton = nil; anchor = nil; selectionRect = nil; draggedItem = nil; hasDragged = false
         pressedHeader = nil; headerPressCancelled = false
         if let followPresentationObserver { NotificationCenter.default.removeObserver(followPresentationObserver); self.followPresentationObserver = nil }
-        headersHidden = false
+        followingPlayback = false
         guard let window else { return }
         followPresentationObserver = NotificationCenter.default.addObserver(forName: Notification.Name("CatLiveTimelineFollowPresentation"), object: window, queue: .main) { [weak self] note in
-            guard let self, let active = note.userInfo?["active"] as? Bool, self.headersHidden != active else { return }
-            self.headersHidden = active; self.preparedHeaderProjection = nil
-            self.hoverValueTooltip = nil; self.valueTooltipPoint = nil; self.needsDisplay = true
+            guard let self, let active = note.userInfo?["active"] as? Bool, self.followingPlayback != active else { return }
+            self.followingPlayback = active
         }
         window.acceptsMouseMovedEvents = true
         observeHeaderScroll()
@@ -905,6 +922,9 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         var clips: [NSClipView] = [], parent = superview
         while let view = parent {
             if let timeline = view as? NativeTimelineBodyInputHost { timeline.timelineBodyInput = self }
+            if let follow = view as? NativeTimelineFollowPresentation {
+                followingPlayback = follow.isPlaybackFollowing
+            }
             if let scroll = view as? NSScrollView { clips.append(scroll.contentView) }
             parent = view.superview
         }
@@ -937,7 +957,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 else { if sCurve { item.fadeOutSCurve = liveFade.seconds } else { item.fadeOutCurve = liveFade.seconds } }
             } else if liveFade.left { item.fadeIn = liveFade.seconds } else { item.fadeOut = liveFade.seconds }
         }
-        return item.visibleLeftHeader(in: CGRect(origin: origin, size: viewport.size), titleWidth: GridSelectionHeaderText.width(name), gainLabel: gainLabel)
+        return item.visibleLeftHeader(in: CGRect(origin: origin, size: viewport.size), titleWidth: GridSelectionHeaderText.width(name), gainLabel: gainLabel, pinned: headersPinned)
     }
     // Use native scroll bounds, not the delayed SwiftUI offset from its last render.
     private var coordinates: (viewport: CGRect, origin: CGPoint) {
@@ -960,6 +980,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     /// changed layout, scale, viewport, or an in-progress control edit.
     private func prepareHeaderProjection(viewport: CGRect, origin: CGPoint) -> PreparedHeaderProjection {
         let key = HeaderProjectionKey(viewport: viewport, origin: origin, height: headerHeight,
+            pinned: headersPinned, hidden: headersHidden,
             gainID: liveHeaderGain?.id, gain: liveHeaderGain?.value,
             panID: liveHeaderPan?.id, pan: liveHeaderPan?.value,
             fadeID: liveFade?.id, fadeLeft: liveFade?.left, fadeSeconds: liveFade?.seconds, fadeSCurve: liveFade?.sCurve)
@@ -990,7 +1011,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             if let liveHeaderPan, liveHeaderPan.id == item.id || (selected.contains(liveHeaderPan.id) && selected.contains(item.id)) { item.pan = liveHeaderPan.value }
             let fadeRects = item.fadeDrawingRects(in: body)
             drawings.append(HeaderDrawing(item: item, gainLabel: gainLabel))
-            return HeaderPixels(id: item.id, rect: item.headerRect, name: item.name!, selected: selected.contains(item.id), gain: item.gain, pan: item.pan,
+            return HeaderPixels(id: item.id, hidden: item.headerHidden, rect: item.headerRect, name: item.name!, selected: selected.contains(item.id), gain: item.gain, pan: item.pan,
                 phase: item.phaseInverted, muted: item.muted, hasFX: item.hasFX, bypass: item.fxBypassed,
                 editable: item.editable, midi: item.midiEditable, text: item.textEditable, fadeRects: fadeRects, fadeCurves: [item.fadeInCurve, item.fadeInSCurve, item.fadeOutCurve, item.fadeOutSCurve])
         }

@@ -403,6 +403,9 @@ struct EQKernel {
     bool coefficientsSettled=false;
     std::atomic<bool> enabled{false}, resetRequested{false};
     std::atomic<double> inputGain{1};
+    // Item fader precedes every insert, independently of normalization. Keep
+    // their ranges separate: two +18 dB controls must still produce +36 dB.
+    std::atomic<double> itemGain{1};
     std::atomic<double> inputPan{0};
     std::atomic<bool> inverted{false};
     std::atomic<int> channelMode{0};
@@ -451,7 +454,7 @@ struct EQKernel {
                 right[frame]=float(l*channelMatrix[2]+r*channelMatrix[3]);
             }
         }
-        const double gain=inputGain.load(std::memory_order_relaxed)*(inverted.load(std::memory_order_relaxed)?-1:1);
+        const double gain=inputGain.load(std::memory_order_relaxed)*itemGain.load(std::memory_order_relaxed)*(inverted.load(std::memory_order_relaxed)?-1:1);
         const double pan=inputPan.load(std::memory_order_relaxed);
         if(!inputGainInitialized) {
             currentInputGain=inputGainTarget=gain;
@@ -660,6 +663,9 @@ struct EQKernel {
 }
 + (void)setInputGain:(AVAudioUnitEffect *)node gain:(double)gain {
     if(std::isfinite(gain)) ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.inputGain.store(std::clamp(gain,0.0,std::pow(10.0,24.0/20.0)),std::memory_order_relaxed);
+}
++ (void)setItemGain:(AVAudioUnitEffect *)node gain:(double)gain {
+    if(std::isfinite(gain)) ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.itemGain.store(gain<=0?0:std::clamp(gain,std::pow(10.0,-96.0/20.0),std::pow(10.0,24.0/20.0)),std::memory_order_relaxed);
 }
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     auto &kernel=((JarasEQAudioUnit *)node.AUAudioUnit)->kernel;

@@ -161,6 +161,14 @@ final class TimelinePlaybackFollowView: NSView {
         guard let x = nextPolicy.destination(position: sample.position, pixelsPerSecond: sample.pixelsPerSecond,
                                              contentWidth: sample.contentWidth, viewport: viewport, source: sample.source,
                                              backingScale: window.backingScaleFactor) else {
+            // A seek/head handoff can leave playback before the midpoint.
+            // Preserve hiding only while still centered, including rounded
+            // subpixel frames at distant zoom; stopping follow restores names.
+            let tolerance = 0.5 / max(1, window.backingScaleFactor) + 0.000001
+            if let position = sample.position,
+               abs(CGFloat(position) * sample.pixelsPerSecond - viewport.midX) > tolerance {
+                scroll.setPlaybackFollowing(false)
+            }
             policy = nextPolicy
             needsApply = false
             return

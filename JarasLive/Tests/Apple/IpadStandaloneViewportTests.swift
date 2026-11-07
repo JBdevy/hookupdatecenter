@@ -17,7 +17,7 @@ require(viewport == previous, "Invalid gestures cannot corrupt grid geometry")
 viewport.zoom(factor: 1e12, anchor: 0.5)
 require(viewport.span == 0.25, "Close zoom has a bounded readable scale")
 viewport.zoom(factor: 1e-12, anchor: 0.5)
-require(viewport.span == 300 && viewport.start >= 0, "Wide zoom stops at the approved five-minute iPad overview")
+require(viewport.span == 36000 && viewport.start >= 0, "Wide zoom stops at the ten-hour iPad overview")
 viewport.pan(pixels: 1e12, width: 1)
 require(viewport.start == 0, "Left scroll stops at timeline origin")
 viewport.pan(pixels: -1e12, width: 1)
@@ -74,23 +74,24 @@ require(viewport.start == 105, "Next ruler drag uses the new viewport origin")
 ruler.reset()
 print("IPAD_RULER_PAN_CLICK_THRESHOLD_REVERSAL_AND_REPEAT_OK")
 
-viewport = IpadTimelineViewport(start: 1200, span: 300)
+viewport = IpadTimelineViewport(start: 1200, span: 36000)
 let overview = viewport
+let overviewCenter = overview.start + overview.span / 2
 for _ in 0..<100 { viewport.zoom(factor: 0.5, anchor: 0.5) }
-require(viewport == overview, "Repeated zoom out at the readable limit does not drift")
-viewport.zoom(factor: 0.001, centeredOn: 1350)
-require(viewport == overview, "Cursor-centered zoom uses the same five-minute limit")
-viewport.zoom(factor: 2, centeredOn: 1350)
-require(viewport.span == 150 && viewport.start + viewport.span / 2 == 1350, "Zoom in responds immediately after reaching the overview limit")
-viewport.zoom(factor: 0.001, centeredOn: 1350)
-require(viewport == overview, "Zooming back out returns to the same approved overview")
+require(viewport == overview, "Repeated zoom out at the ten-hour limit does not drift")
+viewport.zoom(factor: 0.001, centeredOn: overviewCenter)
+require(viewport == overview, "Cursor-centered zoom uses the same ten-hour limit")
+viewport.zoom(factor: 2, centeredOn: overviewCenter)
+require(viewport.span == 18000 && viewport.start + viewport.span / 2 == overviewCenter, "Zoom in responds immediately after reaching the overview limit")
+viewport.zoom(factor: 0.001, centeredOn: overviewCenter)
+require(viewport == overview, "Zooming back out returns to the same ten-hour overview")
 viewport.pan(pixels: -400, width: 400)
-require(viewport.start == 1500 && viewport.span == 300, "The zoom limit still allows scrolling to the rest of a long project")
-print("IPAD_READABLE_OVERVIEW_LIMIT_AND_ANCHOR_STABILITY_OK")
+require(viewport.start == 37200 && viewport.span == 36000, "The zoom limit still allows scrolling to the rest of a long project")
+print("IPAD_TEN_HOUR_OVERVIEW_LIMIT_AND_ANCHOR_STABILITY_OK")
 
 // Playback can advance at display cadence while the item drawing remains
 // unchanged for many frames; rebasing must preserve every world coordinate.
-for visibleSpan in [0.25, 5.0, 60.0, 300.0] {
+for visibleSpan in [0.25, 5.0, 60.0, 300.0, 36000.0] {
     for width in [360.0, 800.0, 1366.0] {
         var visible = IpadTimelineViewport(start: 1000, span: visibleSpan)
         var drawing = IpadTimelineRenderWindow(visible)

@@ -419,6 +419,48 @@ final class ProjectSaveTests: XCTestCase {
         show.toggleClipFXBypass(clip.id,effect: "EQ"); XCTAssertFalse(show.clipFXSettings(clip.id).eqEnabled)
         show.removeClipFX(clip.id,effect: "EQ"); XCTAssertEqual(show.clipFXSettings(clip.id).inserted,["Compressor"])
     }
+    @MainActor func testItemFXReorderCommitsAudioOrderAndUndoWithoutMovingTransportOrTrackFX() throws {
+        var project = Project.empty(name: "Item order")
+        var track = Track(id: UUID(), name: "Stem", role: .other)
+        var clip = AudioClip(id: UUID(), name: "Audio", startTime: 30, duration: 10)
+        var fx = NativeFXSettings(); fx.appendNative("EQ"); fx.appendNative("Compressor")
+        fx.bands[1].gain = 6; fx.threshold = -32
+        clip.fx = fx; track.clips = [clip]; track.fx = fx; project.songs[0].tracks = [track]
+        let executor = SaveTestExecutor(); executor.playing = true
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        defer { show.send(.stopAll) }
+        let transport = show.snapshot.transport
+        var audible: NativeFXSettings?
+        show.audioClipFX = { id, value in XCTAssertEqual(id, clip.id); audible = value }
+        let moved = try XCTUnwrap(show.reorderClipFX(clip.id, effect: "EQ", before: nil))
+        let ordered = show.clipFXSettings(clip.id)
+        XCTAssertEqual(ordered.clipEffectKeys.map { ordered.kind(of: $0) }, ["Compressor", "EQ"])
+        XCTAssertEqual(ordered.clipEffectKeys.last, moved); XCTAssertEqual(audible, ordered)
+        XCTAssertEqual(ordered.settings(for: moved).bands, fx.bands)
+        XCTAssertEqual(show.fxSettings(track.id), fx); XCTAssertEqual(show.snapshot.transport, transport)
+        show.undo(); XCTAssertEqual(show.clipFXSettings(clip.id), fx)
+        show.redo(); XCTAssertEqual(show.clipFXSettings(clip.id), ordered)
+        let delay = try XCTUnwrap(show.insertClipFX(clip.id, effect: "Delay"))
+        XCTAssertEqual(show.clipFXSettings(clip.id).clipEffectKeys.last, delay,
+            "New inserts append after an explicitly ordered chain")
+        XCTAssertEqual(show.snapshot.transport, transport)
+    }
+    @MainActor func testReorderedOriginalItemFXKeepsItsAutomationTargetAndUndo() throws {
+        var fx = NativeFXSettings(); fx.appendNative("EQ"); fx.appendNative("Compressor")
+        var automation = TrackAutomation()
+        let parameter = NativeFXParameter(effect: "Compressor", key: .threshold, name: "Threshold", range: -60...0)
+        automation.envelopes = [TrackEnvelope(target: AutomationTarget(.nativeFX, native: parameter), name: "Threshold", defaultValue: 0.5)]
+        let clip = AudioClip(id: UUID(), name: "Audio", startTime: 0, duration: 10, fx: fx, automation: automation)
+        var project = Project.empty(name: "Reorder automated insert")
+        project.songs[0].tracks = [Track(id: UUID(), name: "Stem", role: .other, clips: [clip])]
+        let show = try ShowController(executor: SaveTestExecutor(), persistence: SaveTestStore(), initialProject: project)
+        let moved = try XCTUnwrap(show.reorderClipFX(clip.id, effect: "Compressor", before: "EQ"))
+        let ordered = try XCTUnwrap(show.current?.tracks[0].clips[0])
+        XCTAssertEqual(ordered.automation?.envelopes[0].target.native?.effect, moved)
+        XCTAssertEqual(ordered.automatedValues(at: 1).fx.settings(for: moved).threshold, -30)
+        show.undo(); XCTAssertEqual(show.current?.tracks[0].clips[0], clip)
+        show.redo(); XCTAssertEqual(show.current?.tracks[0].clips[0], ordered)
+    }
     @MainActor func testItemFXManagerAddsIndependentInstancesAndRemovesThemWithoutChangingTrackFX() throws {
         var project = Project.empty(name: "Item FX manager")
         var track = Track(id: UUID(), name: "Stem", role: .other)
@@ -481,6 +523,42 @@ final class ProjectSaveTests: XCTestCase {
         show.undo()
         XCTAssertEqual(show.clipFXSettings(clip.id).externalPlugins, [plugin])
         XCTAssertEqual(show.current?.tracks[0].clips[0].midi, midi)
+    }
+    @MainActor func testItemRenderCapturesLivePresetsAndUndoRestoresRemovedPlugin() throws {
+        var project = Project.empty(name: "Live item preset")
+        var plugin = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "Gain", path: "/Gain.vst3")
+        plugin.componentState = "old"; plugin.controllerState = "old-controller"; plugin.bypassed = true
+        var fx = NativeFXSettings(); fx.externalPlugins = [plugin]; fx.inserted = [plugin.effectKey]
+        let clip = AudioClip(id: UUID(), name: "Audio", startTime: 30, duration: 10, fx: fx)
+        project.songs[0].tracks = [Track(id: UUID(), name: "Stem", role: .other, clips: [clip])]
+        let executor = SaveTestExecutor(); executor.playing = true
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        defer { show.send(.stopAll) }
+        let transport = show.snapshot.transport
+        var captures = 0, audioReloads = 0
+        show.audioUpdate = { _, _ in audioReloads += 1 }
+        show.prepareForFXChange = { track, item, effects in
+            XCTAssertNil(track); XCTAssertEqual(item, clip.id); XCTAssertEqual(effects, [plugin.effectKey])
+            captures += 1
+            try show.storeCapturedPluginState(nil, clip: clip.id, identifier: plugin.id,
+                componentState: "live", controllerState: "live-controller")
+        }
+        try show.prepareItemsForRendering([clip.id])
+        XCTAssertEqual(captures, 1); XCTAssertEqual(audioReloads, 0)
+        let captured = show.clipFXSettings(clip.id)
+        XCTAssertEqual(captured.externalPlugins?.first?.componentState, "live")
+        XCTAssertEqual(captured.externalPlugins?.first?.controllerState, "live-controller")
+        show.removeClipFX(clip.id, effect: plugin.effectKey)
+        XCTAssertTrue(show.clipFXSettings(clip.id).effectKeys.isEmpty)
+        show.undo(); XCTAssertEqual(show.clipFXSettings(clip.id), captured)
+        show.redo(); XCTAssertTrue(show.clipFXSettings(clip.id).effectKeys.isEmpty)
+        show.undo()
+        show.prepareForFXChange = { _, _, _ in throw ProjectError.invalid("Capture failed") }
+        XCTAssertThrowsError(try show.prepareItemsForRendering([clip.id]))
+        show.removeClipFX(clip.id, effect: plugin.effectKey)
+        XCTAssertEqual(show.clipFXSettings(clip.id), captured)
+        XCTAssertEqual(show.snapshot.transport, transport)
+        show.prepareForFXChange = { _, _, _ in }
     }
     @MainActor func testItemFXRejectsInstrumentsSpecialTracksAndFailedWrites() throws {
         var project = Project.empty(name: "Restricted item effects")

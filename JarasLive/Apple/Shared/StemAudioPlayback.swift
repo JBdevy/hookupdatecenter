@@ -853,9 +853,8 @@ struct TimecodePlaybackSpan {
             if values.nativeActive || voice.automationNativeApplied { applyClipFX(values.fx, to: &voice) }
             voice.automationNativeApplied = values.nativeActive
             voice.automationApplied = clip.automation?.enabled == true
-            voice.volume = values.muted || values.gain <= 0 ? 0 : 1
             voice.pan = Float(values.pan)
-            JarasVoiceGain.setDecibels(voice.gain, decibels: values.muted || values.gain <= 0 ? -96 : min(24, max(-96, 20 * log10(values.gain))))
+            applyItemGain(voice, gain: values.gain, muted: values.muted)
             setVoice(voice, for: key)
         }
     }
@@ -2224,9 +2223,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         for voice in voices {
             capturePlayerClock(voice)
             guard restoringLevels else { continue }
-            let gain = voice.clip.gain ?? 1
-            voice.volume = voice.clip.muted == true || gain <= 0 ? 0 : 1
-            JarasVoiceGain.setDecibels(voice.gain, decibels: voice.clip.muted == true || gain <= 0 ? -96 : min(24, max(-96, 20 * log10(max(0.0000001, gain)))))
+            applyItemGain(voice)
         }
     }
     private func detach(_ voice: Voice) {
@@ -2298,6 +2295,16 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         voice.effects?.setSourceChannelMode(voice.clip.channelMode ?? 0)
         voice.effects?.setSourcePolarity(voice.clip.phaseInverted == true)
         voice.pan = Float(voice.clip.pan ?? 0)
+    }
+    private func applyItemGain(_ voice: Voice, gain: Double? = nil, muted: Bool? = nil) {
+        let linear = gain ?? voice.clip.gain ?? 1
+        let silent = (muted ?? (voice.clip.muted == true)) || linear <= 0
+        // Use the stable source stage, before every item insert. The final
+        // voice node remains a unity/mute render gate; it must not amplify a
+        // limiter's output or reconnect a player that already has queued PCM.
+        voice.effects?.setItemGain(linear)
+        voice.volume = silent ? 0 : 1
+        JarasVoiceGain.setDecibels(voice.gain, decibels: silent ? -96 : 0)
     }
     func previewItemPhase(_ id: UUID, inverted: Bool) { previewItemMix(id, inverted: inverted, pan: nil) }
     func previewItemPan(_ id: UUID, pan: Double) {
@@ -2542,20 +2549,18 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     private func previewItemGainFragment(_ id: UUID, gain: Double) {
         guard gain.isFinite, gain >= 0 else { return }
         if let index = clipIndices[id], clips[index].1.gain != gain { clips[index].1.gain = gain }
-        let decibels = Float(min(24, max(-96, 20 * log10(max(0.0000001, gain)))))
         // Include the prepared jump voice as well as Play and Sub Play. Lookup keeps each
         // pointer motion independent of the number of other playing tracks.
         for head in 0...2 {
             let key = VoiceKey(clip: id, head: head)
             if var voice = voices[key], voice.clip.gain != gain {
                 voice.clip.gain = gain
-                voice.volume = gain <= 0 || voice.clip.muted == true ? 0 : 1
-                JarasVoiceGain.setDecibels(voice.gain, decibels: Double(voice.clip.muted == true || gain <= 0 ? -96 : decibels))
+                applyItemGain(voice)
                 setVoice(voice, for: key)
             }
             if var tail = effectTails[key], tail.voice.clip.gain != gain {
                 tail.voice.clip.gain = gain
-                JarasVoiceGain.setDecibels(tail.voice.gain, decibels: Double(tail.voice.clip.muted == true || gain <= 0 ? -96 : decibels))
+                applyItemGain(tail.voice)
                 effectTails[key] = tail
             }
         }
@@ -2638,15 +2643,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             let key = VoiceKey(clip: id, head: head)
             if var voice = voices[key], voice.clip.muted != muted {
                 voice.clip.muted = muted
-                let gain = voice.clip.gain ?? 1
-                voice.volume = muted || gain <= 0 ? 0 : 1
-                JarasVoiceGain.setDecibels(voice.gain, decibels: Double(muted || gain <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, gain)))))))
+                applyItemGain(voice)
                 setVoice(voice, for: key)
             }
             if var tail = effectTails[key], tail.voice.clip.muted != muted {
                 tail.voice.clip.muted = muted
-                let gain = tail.voice.clip.gain ?? 1
-                JarasVoiceGain.setDecibels(tail.voice.gain, decibels: Double(muted || gain <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, gain)))))))
+                applyItemGain(tail.voice)
                 effectTails[key] = tail
             }
         }
@@ -2813,11 +2815,8 @@ for (key, sampler) in samplers where key.track == id {
         applyInstrumentLevels()
 
         for voice in voices.values {
-            let muted = voice.clip.muted == true
-            let linear = voice.clip.gain ?? 1
-            voice.volume = muted || linear <= 0 ? 0 : 1
             voice.pan = Float(voice.clip.pan ?? 0)
-            JarasVoiceGain.setDecibels(voice.gain, decibels: Double(muted || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))))
+            applyItemGain(voice)
         }
     }
     private func syncInstruments(only target: UUID? = nil) {
@@ -3895,8 +3894,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                     if let tail = effectTails.removeValue(forKey: key) { recycle(tail.voice) }; continue
                 }
                 tail.voice.clip = current.1; applyClipFX(current.1.fx ?? emptyFX, to: &tail.voice)
-                let linear = current.1.gain ?? 1
-                JarasVoiceGain.setDecibels(tail.voice.gain, decibels: Double(current.1.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))))
+                applyItemGain(tail.voice)
                 effectTails[key] = tail
             }
             discardRetiredVoicesForDeletedTracks()
@@ -4190,10 +4188,8 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 // Set only this new item's levels before its scheduled start.
                 // Reapplying every track/FX after scheduling could consume the
                 // start deadline and mute the first samples of later voices.
-                let linear = clip.gain ?? 1
-                voice.volume = clip.muted == true || linear <= 0 ? 0 : 1
                 voice.pan = Float(clip.pan ?? 0)
-                JarasVoiceGain.setDecibels(voice.gain, decibels: Double(clip.muted == true || linear <= 0 ? -96 : Float(min(24, max(-96, 20 * log10(max(0.0000001, linear)))))))
+                applyItemGain(voice)
                 // Register the reserved bus before preparing another overlapping item.
                 setVoice(voice, for: key)
                 scheduled.append((key, voice, first, AVAudioFrameCount(max(0, min(Int64(UInt32.max), count))), max(0, clip.startTime - schedulingPosition)))
@@ -4241,8 +4237,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                     fresh.continuousSource = old.continuousSource
                     fresh.player.volume = old.player.volume
                     fresh.player.pan = old.player.pan
-                    let gain = old.clip.gain ?? 1
-                    JarasVoiceGain.setDecibels(fresh.gain, decibels: old.clip.muted == true || gain <= 0 ? -96 : min(24, max(-96, 20 * log10(max(0.0000001, gain)))))
+                    applyItemGain(fresh)
                     setVoice(fresh, for: key)
                     scheduled[index] = (key, fresh, first, count, delay)
                     try warmPlayer(fresh)

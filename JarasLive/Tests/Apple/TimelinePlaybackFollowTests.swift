@@ -195,6 +195,17 @@ MainActor.assumeIsolated {
     scroll.playbackFollowSuspendedUntil = ProcessInfo.processInfo.systemUptime - 0.01
     update(601, scale: 8, width: 8000, source: "song/logical"); flush()
     precondition(scroll.isPlaybackFollowing, "After the idle period, scrolling resumes and hides headers")
+    let heldOrigin = scroll.contentView.bounds.minX
+    TimelineFollowPointerProbe.buttons = 1
+    scroll.playbackFollowSuspendedUntil = 0
+    update(602, scale: 8, width: 8000, source: "song/logical"); flush()
+    update(603, scale: 8, width: 8000, source: "song/logical"); flush()
+    precondition(scroll.contentView.bounds.minX == heldOrigin && !scroll.isPlaybackFollowing,
+        "A stationary held mouse press suspends follow after the idle timer expires and reveals item controls")
+    TimelineFollowPointerProbe.buttons = 0
+    update(604, scale: 8, width: 8000, source: "song/logical"); flush()
+    precondition(scroll.contentView.bounds.minX > heldOrigin && scroll.isPlaybackFollowing,
+        "Releasing the mouse lets continuous follow resume")
     update(nil)
     precondition(!scroll.isPlaybackFollowing, "Stop reveals item headers")
     print("PLAYBACK_FOLLOW_RETAINED_CAPACITY_LOGICAL_READINESS_AND_END_OK")

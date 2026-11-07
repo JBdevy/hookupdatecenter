@@ -1375,6 +1375,24 @@ public struct ShowTimelinePresentationState: Equatable {
         } catch { message = error.localizedDescription; return [] }
     }
     public func deleteItems(_ ids: Set<UUID>) { editProject { $0.deleteItems(ids) } }
+    /// Read live plugin presets before taking the immutable offline-render snapshot.
+    /// A failed capture leaves the original items intact and aborts the operation.
+    public func prepareItemsForRendering(_ ids: Set<UUID>, includeMIDITrackFX: Bool = false) throws {
+        commitFX()
+        guard let song = current else { return }
+        for track in song.tracks {
+            let clips = track.clips.filter { ids.contains($0.id) }
+            if includeMIDITrackFX, clips.contains(where: { $0.midi != nil }),
+               let effects = track.fx?.inserted, !effects.isEmpty {
+                try prepareForFXChange(track.id, nil, effects)
+            }
+            for clip in clips {
+                if let effects = clip.fx?.inserted, !effects.isEmpty {
+                    try prepareForFXChange(nil, clip.id, effects)
+                }
+            }
+        }
+    }
     @discardableResult public func duplicateTracks(_ ids: Set<UUID>) -> Set<UUID> {
         guard canControl(), !finishing, let song = current else { return [] }
         let targets = song.trackDuplicationTargets(ids)
@@ -2083,7 +2101,8 @@ public struct ShowTimelinePresentationState: Equatable {
     @discardableResult public func insertClipFX(_ clip: UUID, effect: String) -> String? {
         guard NativeFXSettings.order.dropFirst().contains(effect) else { return nil }
         var value = clipFXSettings(clip)
-        let key = value.appendNative(effect)
+        let orderedInserts = !value.effectKeys.isEmpty && value.effectKeys.allSatisfy { !NativeFXSettings.order.contains($0) }
+        let key = value.appendNative(effect, asInstance: orderedInserts)
         do { value = try FXPresetStore.shared.applyingDefault(to: value, effect: key) }
         catch { message = error.localizedDescription; return nil }
         previewClipFX(clip, settings: value); commitFX()
@@ -2104,6 +2123,39 @@ public struct ShowTimelinePresentationState: Equatable {
         guard value.inserted.contains(effect) else { return }
         value.removeEffect(effect)
         previewClipFX(clip, settings: value); commitFX(); onProjectEdited()
+    }
+    @discardableResult public func reorderClipFX(_ clip: UUID, effect: String, before target: String?) -> String? {
+        guard canControl(), !finishing else { return nil }
+        commitFX()
+        var value = clipFXSettings(clip)
+        let previousInstances = Set((value.instances ?? []).map(\.effectKey))
+        guard let moved = value.reorderClipEffect(effect, before: target) else { return nil }
+        let promoted = Dictionary(uniqueKeysWithValues: (value.instances ?? []).filter {
+            !previousInstances.contains($0.effectKey)
+        }.map { ($0.kind, $0.effectKey) })
+        // Native envelopes address the original stage by name. Move those
+        // references with the promoted processor in the same undoable edit.
+        if !promoted.isEmpty, let item = current?.tracks.lazy.flatMap(\.clips).first(where: { $0.id == clip }),
+           var automation = item.automation {
+            for index in automation.envelopes.indices {
+                if let original = automation.envelopes[index].target.native?.effect, let key = promoted[original] {
+                    automation.envelopes[index].target.native?.effect = key
+                }
+            }
+            if automation != item.automation {
+                editProject { project in
+                    for song in project.songs.indices { for track in project.songs[song].tracks.indices {
+                        if let index = project.songs[song].tracks[track].clips.firstIndex(where: { $0.id == clip }) {
+                            project.songs[song].tracks[track].clips[index].fx = value
+                            project.songs[song].tracks[track].clips[index].automation = automation
+                        }
+                    } }
+                }
+                return clipFXSettings(clip) == value ? moved : nil
+            }
+        }
+        previewClipFX(clip, settings: value); commitFX(); onProjectEdited()
+        return clipFXSettings(clip) == value ? moved : nil
     }
     public func updateClipFX(_ clip: UUID, effect: String, settings: NativeFXSettings) {
         let current = clipFXSettings(clip)

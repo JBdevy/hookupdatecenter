@@ -22,7 +22,12 @@ enum JarasLocalization { static func string(_ value: String) -> String { value }
 @MainActor final class ShowController {
     var current: Song?; var snapshot = Snapshot(); var message = "Changed project"
     var accepts = true; var installed: [UUID] = []; var glued = false
+    var prepared: Set<UUID> = []; var preparationFails = false
     func canControl() -> Bool { true }
+    func prepareItemsForRendering(_ ids: Set<UUID>, includeMIDITrackFX: Bool) throws {
+        if preparationFails { throw NSError(domain: "Preparation failure", code: 1) }
+        prepared = ids
+    }
     func replaceRenderedItem(_ result: AudioClip, original: AudioClip, track: UUID, project: UUID) -> Bool {
         guard accepts else { return false }; installed.append(original.id); return true
     }
@@ -95,6 +100,7 @@ enum ItemReRender {
         let success = IpadItemProcessingSession()
         success.start(show: show, documents: documents, ids: [first.id, second.id], operation: .render)
         assert(documents.busy && success.running)
+        assert(show.prepared == [first.id, second.id])
         try await complete(success)
         assert(success.finished && !documents.busy && show.installed == [first.id, second.id])
         assert(!show.installed.contains(unselected.id)); cleanResults()
@@ -122,8 +128,12 @@ enum ItemReRender {
         failure.start(show: show, documents: documents, ids: [first.id], operation: .render)
         try await complete(failure)
         assert(!failure.finished && !failure.error.isEmpty && !documents.busy && noNewFiles())
+        show.preparationFails = true
+        let preparationFailure = IpadItemProcessingSession()
+        preparationFailure.start(show: show, documents: documents, ids: [first.id], operation: .glue)
+        assert(!preparationFailure.running && !preparationFailure.error.isEmpty && !documents.busy && noNewFiles())
         let preserved = try Data(contentsOf: original)
         assert(preserved == Data("original audio".utf8))
-        print("IPAD_ITEM_PROCESSING_SELECTION_CANCEL_STALE_MIDI_FAILURE_OK scenarios=6")
+        print("IPAD_ITEM_PROCESSING_SELECTION_CANCEL_STALE_MIDI_CAPTURE_FAILURE_OK scenarios=7")
     }
 }

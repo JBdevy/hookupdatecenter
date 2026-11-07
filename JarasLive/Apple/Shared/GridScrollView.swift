@@ -966,7 +966,7 @@ private final class GridHostingView<Content: View>: NSHostingView<Content> {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
 }
-final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, NativeTimelineSelectionScrollHost {
+final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, NativeTimelineSelectionScrollHost, NativeTimelineFollowPresentation {
     var manualNavigation: (() -> Void)?
     private var manualScrollMonitor: Any?
     private(set) var isPlaybackFollowing = false
@@ -1092,7 +1092,8 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     // still owns the viewport until its animation and quiet period finish.
     var playbackFollowSuspendedUntil: TimeInterval = 0
     var permitsPlaybackFollow: Bool {
-        zoomAnchor == nil && ProcessInfo.processInfo.systemUptime >= playbackFollowSuspendedUntil
+        zoomAnchor == nil && NSEvent.pressedMouseButtons == 0 &&
+            ProcessInfo.processInfo.systemUptime >= playbackFollowSuspendedUntil
     }
     func prepareSelectionScroll(to origin: CGPoint, horizontal: Bool) {
         prioritizeZoom()

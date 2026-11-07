@@ -122,13 +122,16 @@ inline Path itemOutline(const jaras::AudioClip &clip, juce::Rectangle<float> r, 
 }
 // GridSelectionItem geometry is shared by drawing and hit testing.
 struct ItemHeader {
+    // Same screen density as GridSelectionItem on Apple platforms.
+    static bool pinsAtScale(double pixelsPerSecond) { return pixelsPerSecond >= 23.47981560587109; }
     enum Control { none, mute, fx, phase, pan, gain, fadeIn, fadeOut, fadeInCurve, fadeInSCurve, fadeOutCurve, fadeOutSCurve };
     juce::Rectangle<float> item, visible, muteRect, fxRect, phaseRect, panRect, panLabel, gainRect, gainLabel;
     float titleLeft = 0;
     bool editable = false, midi = false;
-    ItemHeader(juce::Rectangle<float> bounds, float viewportWidth, const jaras::Track &track, const jaras::AudioClip &clip, const String &title = {}, bool hidden = false)
+    ItemHeader(juce::Rectangle<float> bounds, float viewportWidth, const jaras::Track &track, const jaras::AudioClip &clip, const String &title = {}, bool hidden = false, bool pinned = true)
         : item(bounds), editable(jaras::fixedTrackName(track.role).empty() || (clip.audioFile && clip.audioFile->path.rfind("Videos/",0)==0)), midi(bool(clip.midi)) {
         visible = bounds.getIntersection({0, bounds.getY(), viewportWidth, std::min(17.f,bounds.getHeight())});
+        if (!pinned) visible = {bounds.getX(), bounds.getY(), std::max(0.f, std::min(bounds.getRight(), viewportWidth)-bounds.getX()), std::min(17.f,bounds.getHeight())};
         const float x = visible.getX() + 2.6f, y = bounds.getY(), width = visible.getWidth();
         titleLeft = visible.getX() + 6;
         if (!editable || hidden) return;

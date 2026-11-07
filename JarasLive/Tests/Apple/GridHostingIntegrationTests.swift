@@ -712,11 +712,12 @@ let resizeExtents = (513...1024).map { TimelineZoomLimits.minimumExtent(viewport
 precondition(Set(resizeExtents).count == 1, "Minimum-zoom document capacity must not change for every resize pixel")
 for width: CGFloat in [0, 1, 511, 512, 513, 1024, 1025, 3840, 7680] {
     let extent = TimelineZoomLimits.minimumExtent(viewportWidth: width)
-    precondition((extent - 120) * (10 * TimelineZoomLimits.minimum) >= width,
+    let minimum = TimelineZoomLimits.minimumZoom(viewportWidth: width)
+    precondition((extent - 120) * (10 * minimum) >= width - 0.00001,
         "Reserved extent must cover the entire viewport even at the farthest zoom")
-    precondition((extent - 120) * (10 * TimelineZoomLimits.minimum) < width + 512.01,
-        "Blank-space reserve remains bounded to one screen-width bucket")
+    precondition(abs(max(1, Double(width)) / (10 * minimum) - 45 * 3600) < 0.00001,
+        "Maximum overview shows 45 hours regardless of viewport width")
     precondition(max(240, 200_000 + 120, extent) >= 200_120,
         "Viewport capacity cannot truncate a long project or its trailing blank area")
 }
-print("WINDOW_RESIZE_BUCKETED_TIMELINE_EXTENT_MINIMUM_ZOOM_AND_LONG_PROJECT_COVERAGE_OK")
+print("WINDOW_RESIZE_45_HOUR_OVERVIEW_AND_LONG_PROJECT_COVERAGE_OK")

@@ -4851,16 +4851,20 @@ private struct RemoteNativeGridItem: View, Equatable {
     }
     var body: some View {
         let headerHeight = min(local ? GridSelectionItem.headerHeight : 28 * GridSelectionItem.headerScale, height)
+        let headerScale = width / max(0.001, clip.duration * visibleFraction)
+        let pinnedHeader = GridSelectionItem.pinsHeader(pixelsPerSecond: headerScale)
+        let headerSourceOffset = pinnedHeader ? 0 : max(0, sourceFraction * clip.duration * headerScale)
         let silenced = trackSilenced || clip.muted == true
         let itemColor = silenced ? Color(white: 0.55) : remoteColor(color)
         let waveformColor = invertedWaveformColors ? remoteColor(color).opacity(silenced ? 0.55 : 1) : nil
         VStack(spacing: 0) {
-            if headersHidden {
+            if headersHidden && pinnedHeader {
                 Color(white: 0.19).frame(width: width, height: headerHeight).allowsHitTesting(false)
             } else if local, let nativeClip {
                 IpadItemHeader(clip: nativeClip, editable: nativeKind == .standard || nativeClip.isProjectionMedia,
                     textEditable: nativeKind?.isText == true && !nativeClip.isProjectionMedia,
                     interactionID: scrolling.pointerReset,
+                    pinsToViewport: pinnedHeader, sourceStartOffset: headerSourceOffset,
                     mix: { itemMix?($0, $1, $2, $3) }, mute: mute, phase: { itemPhase?() },
                     fx: { openFX?() }, menu: { openMenu?() })
                     .frame(width: width, height: headerHeight)
@@ -4876,7 +4880,8 @@ private struct RemoteNativeGridItem: View, Equatable {
                 }
                 Text(verbatim: clip.name).font(.jarasSystem(size: local ? GridSelectionItem.headerFontSize : 10 * GridSelectionItem.headerScale, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(remoteColor(nameColor)).frame(maxWidth: .infinity, alignment: .leading)
-            }.padding(.horizontal, 3).frame(width: width, height: headerHeight, alignment: .leading).clipped()
+            }.padding(.horizontal, 3).frame(width: width + headerSourceOffset, height: headerHeight, alignment: .leading)
+                .offset(x: -headerSourceOffset).frame(width: width, alignment: .leading).clipped()
                 .background(Color.black.opacity(0.16))
             }
             Canvas { context, size in

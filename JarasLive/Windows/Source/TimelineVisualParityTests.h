@@ -1,6 +1,7 @@
 #pragma once
 #include "FloatingControlTests.h"
 #include "ItemLayout.h"
+#include "TimelineGrid.h"
 
 namespace catlive::timelineVisualParityTests {
 using floatingControlTests::require;
@@ -53,6 +54,25 @@ inline void fit(Workspace &workspace) {
 }
 
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Minimum zoom displays 45 hours on every viewport", [&] {
+        for (const double width : {320., 800., 1440., 3840., 7680.}) {
+            const double scale = timelineGrid::minimumZoom(width);
+            require(std::abs(width / scale - 45 * 3600) < .00001,
+                    "Maximum overview must use the drawable grid width");
+            jaras::Song song; song.bpm=120;
+            const auto ticks = timelineGrid::ticks(song,0,45*3600,scale);
+            require(ticks.size() < size_t(width), "Distant grid must retain bounded tick density");
+        }
+    });
+    test("Item headers keep their original start below the continuous-follow zoom threshold", [&] {
+        jaras::Track track; track.id=uuid(); track.name="Track";
+        jaras::AudioClip clip; clip.id=uuid(); clip.name="Item"; clip.duration=100;
+        const juce::Rectangle<float> bounds(-200,100,1000,70);
+        const ItemHeader fixed(bounds,700,track,clip,{},false,false), pinned(bounds,700,track,clip,{},false,true);
+        require(fixed.visible.getX()==-200 && pinned.visible.getX()==0,"Header origin must follow the selected zoom policy");
+        require(fixed.gainRect.getRight()<0 && pinned.gainRect.getX()>=0,"Offscreen item controls must not retain a pinned hit target");
+        require(!ItemHeader::pinsAtScale(23.47) && ItemHeader::pinsAtScale(23.48),"Windows and Apple must use the same reference zoom");
+    });
     test("Timeline marker and item drags snap to the existing edit cursor", [&] {
         for (const bool tempo : {false,true}) {
             auto project=floatingControlTests::fixture();auto &song=project.songs[0];

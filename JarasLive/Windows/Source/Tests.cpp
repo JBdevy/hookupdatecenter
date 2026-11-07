@@ -4999,6 +4999,19 @@ int runTests(const File &directory) {
             }
         }
     });
+    test("Offline processing refuses missing item plugins instead of publishing dry audio", [&] {
+        auto settings=fxschema::defaults(),plugin=object();
+        put(plugin,"id","missing-render-plugin");put(plugin,"name","Missing render plugin");
+        put(plugin,"path",directory.getChildFile("missing-render-plugin.vst3").getFullPathName());
+        put(plugin,"classID",String::repeatedString("A",32));
+        put(settings,"inserted",Array<var>{"External:missing-render-plugin"});
+        put(settings,"externalPlugins",Array<var>{plugin});
+        NativeFX live;live.prepare(settings,48000,nullptr,false);
+        NativeFX offline;bool failed=false;
+        try{offline.prepare(settings,48000,nullptr,true);}
+        catch(const std::exception &){failed=true;}
+        expect(failed,"Missing VST3 must abort offline item processing");
+    });
     test("Failed batch FX restores live audio and preserves the existing redo transaction", [&] {
         // Reject malformed plugin state before a module is loaded.
         Session session;

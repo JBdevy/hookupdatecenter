@@ -280,7 +280,10 @@ import UniformTypeIdentifiers
     func cancel() { cancellation?.cancel() }
     func start(show: ShowController, documents: ProjectDocuments, ids: Set<UUID>, operation: Operation) {
         guard !running, show.canControl(), !documents.busy, !ids.isEmpty,
-              let song = show.current, let directory = documents.currentURL?.deletingLastPathComponent() else { return }
+              let directory = documents.currentURL?.deletingLastPathComponent() else { return }
+        do { try show.prepareItemsForRendering(ids, includeMIDITrackFX: true) }
+        catch { self.error = error.localizedDescription; return }
+        guard let song = show.current else { return }
         let entries = song.tracks.flatMap { track in track.clips.filter { ids.contains($0.id) }.map { (track, $0) } }
         guard !entries.isEmpty else { return }
         let token = AudioExportCancellation(), project = show.snapshot.project

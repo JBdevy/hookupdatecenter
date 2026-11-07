@@ -217,6 +217,17 @@ struct ExternalPluginEditor: View {
 
 #if os(macOS)
 import Combine
+@MainActor enum FXHistoryShortcut {
+    static func handle(_ event: NSEvent, in window: NSWindow, undo: () -> Void, redo: () -> Void) -> Bool {
+        guard event.window === window, window.attachedSheet == nil,
+              !(window.firstResponder is NSTextView), !(window.firstResponder is NSTextField),
+              event.charactersIgnoringModifiers?.lowercased() == "z" else { return false }
+        let flags = event.modifierFlags.intersection([.shift, .command, .control, .option])
+        guard flags == .command || flags == .control || flags == [.command, .shift] || flags == [.control, .shift] else { return false }
+        if !event.isARepeat { if flags.contains(.shift) { redo() } else { undo() } }
+        return true
+    }
+}
 @MainActor private final class FXChainTableView: NSTableView {
     var bypassRow: ((Int) -> Void)?
     var removeRow: ((Int) -> Void)?
@@ -256,6 +267,7 @@ import Combine
     private var rows: [Row] = []
     private var selection: String?
     private var observation: AnyCancellable?
+    private var historyMonitor: Any?
     private var refreshing = false
     private let sidebarWidth: CGFloat = 190
     private static let dragType = NSPasteboard.PasteboardType("com.jaras.fx-order")
@@ -287,9 +299,7 @@ import Combine
             guard let self, self.rows.indices.contains(row) else { return }
             self.removeEffect(self.rows[row].effect)
         }
-        if clip == nil {
-            list.registerForDraggedTypes([Self.dragType]); list.setDraggingSourceOperationMask(.move, forLocal: true)
-        }
+        list.registerForDraggedTypes([Self.dragType]); list.setDraggingSourceOperationMask(.move, forLocal: true)
         scroll.documentView = list; scroll.hasVerticalScroller = false; scroll.hasHorizontalScroller = false
         scroll.drawsBackground = false; scroll.automaticallyAdjustsContentInsets = false
         addButton.title = JarasLocalization.string("Add"); addButton.bezelStyle = .rounded; addButton.target = self; addButton.action = #selector(addEffect)
@@ -327,6 +337,17 @@ import Combine
         }.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] settings in self?.refresh(settings) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let historyMonitor { NSEvent.removeMonitor(historyMonitor); self.historyMonitor = nil }
+        guard window != nil, !closed else { return }
+        historyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.targetIsCurrent, let window = self.window, window.isKeyWindow,
+                  ControlMappings.shared.editing == nil, !NativeTimelineInputGate.shared.isBlocked(window) else { return event }
+            return FXHistoryShortcut.handle(event, in: window, undo: self.show.undo, redo: self.show.redo) ? nil : event
+        }
+    }
+    deinit { if let historyMonitor { NSEvent.removeMonitor(historyMonitor) } }
     override func layout() {
         super.layout()
         scroll.frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: max(0, bounds.height - 40))
@@ -346,7 +367,7 @@ import Combine
         }
         let removedEffect = rows.contains { old in !next.contains(where: { $0.effect == old.effect }) }
         if next != rows { rows = next; refreshing = true; list.reloadData(); refreshing = false }
-        let selected = (removedEffect ? rows.last?.effect : nil) ?? preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect }
+        let selected = preferred.flatMap { value in rows.first(where: { $0.effect == value })?.effect } ?? (removedEffect ? rows.last?.effect : nil)
             ?? selection.flatMap { value in rows.first(where: { $0.effect == value })?.effect } ?? rows.first?.effect
         removeButton.isEnabled = selected != nil
         presetBar.refresh(effect: selected, settings: settings)
@@ -434,6 +455,7 @@ import Combine
     }
     func closeEditors() {
         closed = true
+        if let historyMonitor { NSEvent.removeMonitor(historyMonitor); self.historyMonitor = nil }
         observation = nil
         if let insertionPanel { insertionPanel.parent?.removeChildWindow(insertionPanel); insertionPanel.close() }
         insertionPanel = nil
@@ -529,16 +551,21 @@ import Combine
         select(rows[list.selectedRow].effect)
     }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
-        guard clip == nil, rows.indices.contains(row) else { return nil }
+        guard targetIsCurrent, rows.indices.contains(row) else { return nil }
         let item = NSPasteboardItem(); item.setString(rows[row].effect, forType: Self.dragType); return item
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
-        guard clip == nil, info.draggingSource as? NSTableView === list, info.draggingPasteboard.string(forType: Self.dragType) != nil else { return [] }
+        guard targetIsCurrent, info.draggingSource as? NSTableView === list, info.draggingPasteboard.string(forType: Self.dragType) != nil else { return [] }
         tableView.setDropRow(row, dropOperation: .above); return .move
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        guard clip == nil, let effect = info.draggingPasteboard.string(forType: Self.dragType), rows.contains(where: { $0.effect == effect }) else { return false }
-        show.reorderFX(track, effect: effect, before: rows.indices.contains(row) ? rows[row].effect : nil)
+        guard targetIsCurrent, info.draggingSource as? NSTableView === list, (0...rows.count).contains(row),
+              let effect = info.draggingPasteboard.string(forType: Self.dragType), rows.contains(where: { $0.effect == effect }) else { return false }
+        let target = rows.indices.contains(row) ? rows[row].effect : nil
+        if let clip {
+            guard let moved = show.reorderClipFX(clip, effect: effect, before: target) else { return false }
+            refresh(settings, preferred: moved)
+        } else { show.reorderFX(track, effect: effect, before: target) }
         return true
     }
 }

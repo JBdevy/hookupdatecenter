@@ -5,9 +5,11 @@
 #include "TimelineMovementLock.h"
 #include "TimelineSnapping.h"
 namespace catlive::timelineGrid {
-// Minimum overview captured from the approved Windows viewport (points/second).
-// Keep wheel, shortcuts, fit-to-project and gesture targets on the same limit.
-inline constexpr double minimumZoom = .244728532641664, maximumZoom = 81920.;
+inline constexpr double maximumVisibleDuration = 45. * 60 * 60, maximumZoom = 81920.;
+// Points/second: the complete grid viewport can display 45 hours at any size.
+inline double minimumZoom(double viewportWidth) {
+    return std::max(1., viewportWidth) / maximumVisibleDuration;
+}
 struct Tick { double time; bool primary; String label; };
 // ClickTrackProgram.visibleBeats: bounded by the visible pixels, preserving tempo origin.
 inline std::vector<double> clickBeats(const jaras::Song &song,const jaras::AudioClip &clip,double from,double to,double scale) {

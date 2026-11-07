@@ -12,6 +12,10 @@ protocol NativeTimelineSelectionScrollHost: AnyObject {
     func prepareSelectionScroll(to origin: CGPoint, horizontal: Bool)
 }
 
+protocol NativeTimelineFollowPresentation: AnyObject {
+    var isPlaybackFollowing: Bool { get }
+}
+
 /// Input covering the timeline body can answer directly. AppKit otherwise
 /// traverses every nested hosting graph on cursor updates during zoom.
 protocol NativeTimelineBodyInput: AnyObject {

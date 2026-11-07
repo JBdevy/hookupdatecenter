@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão pública do CatLive (ex.: 1.25)'
         required: true
-        default: '1.29'
+        default: '1.30'
       audio_only:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
@@ -16,11 +16,11 @@ on:
         type: boolean
         default: false
       audio_tests:
-        description: 'Executar testes de renderização, Dynamics e Trigger/Gate (1.29 altera áudio)'
+        description: 'Executar testes de renderização, Dynamics e Trigger/Gate (1.30 altera áudio)'
         type: boolean
         default: true
       full_fx_tests:
-        description: 'Executar também a bateria completa dos FX em 44,1 e 48 kHz (1.29 altera áudio/FX)'
+        description: 'Executar também a bateria completa dos FX em 44,1 e 48 kHz (1.30 altera áudio/FX)'
         type: boolean
         default: true
       audio_tail_from_run:
@@ -213,6 +213,7 @@ jobs:
           bash scripts/test-control-mappings.sh
           bash scripts/test-remote-midi-actions.sh
           bash scripts/test-ipad-setlist-blocks.sh
+          bash scripts/test-ipad-standalone-viewport.sh
           bash scripts/test-empty-track-mixer-selection.sh
           bash scripts/test-matrix-patch-canvas.sh
           bash scripts/test-native-timeline-backdrop.sh
@@ -232,7 +233,7 @@ jobs:
         run: |
           python3 scripts/prepare-catstem.py
 
-      # Audio suites default ON for the 1.29 engine corrections. Turn them off
+      # Audio suites default ON for the 1.30 item gain and FX corrections. Turn them off
       # again only for releases that do not alter engine, DSP, recording or export.
       # Requesting the full FX matrix also includes the base rendering suites.
       - name: Validate audio rendering and unified song entry

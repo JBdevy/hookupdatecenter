@@ -311,6 +311,7 @@ final class NativeEffectsChain {
     func setPlaybackBoundary(_ host: UInt64 = 0) { JarasEqualizer.setPlaybackBoundary(equalizer, hostTime: host) }
     func setSourcePolarity(_ inverted: Bool) { JarasEqualizer.setPolarity(equalizer, inverted: inverted) }
     func setSourceGain(_ gain: Double) { JarasEqualizer.setInputGain(equalizer, gain: gain) }
+    func setItemGain(_ gain: Double) { JarasEqualizer.setItemGain(equalizer, gain: gain) }
     var instrumentInput: AVAudioMixerNode {
         if let instrumentMix { return instrumentMix }
         let mixer = AVAudioMixerNode(); instrumentMix = mixer

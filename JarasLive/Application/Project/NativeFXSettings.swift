@@ -260,17 +260,43 @@ extension NativeFXSettings {
     }
     /// Item audio keeps the original native stages before repeated inserts
     /// and external plugins. Show that execution order without rewriting the
-    /// persisted insertion order or enabling unsupported item reordering.
+    /// persisted insertion order. Explicit reordering promotes these legacy
+    /// stages to ordinary independent inserts before changing their order.
     public var clipEffectKeys: [String] {
         let originals = Self.order.dropFirst().filter { inserted.contains($0) }
         return originals + effectKeys.filter { !originals.contains($0) }
     }
+    /// Keep the existing document/audio format: independent native instances
+    /// already execute in insertion order on every platform. Promote only on
+    /// an actual move, leaving unopened/unchanged legacy chains untouched.
+    @discardableResult public mutating func reorderClipEffect(_ effect: String, before target: String?) -> String? {
+        let current = clipEffectKeys
+        guard effect != target, current.contains(effect), target == nil || current.contains(target!) else { return nil }
+        var ordered = current.filter { $0 != effect }
+        ordered.insert(effect, at: target.flatMap { ordered.firstIndex(of: $0) } ?? ordered.count)
+        guard ordered != current else { return nil }
+        var replacements: [String: String] = [:]
+        var promoted: [NativeFXInstance] = []
+        for key in Self.order.dropFirst() where inserted.contains(key) {
+            var value = Self().merging(effect: key, from: self)
+            value.inserted = [key]
+            let instance = NativeFXInstance(kind: key, settings: value)
+            replacements[key] = instance.effectKey; promoted.append(instance)
+        }
+        // Bypass the old stages without resetting their coefficients while
+        // their audio graph is still live. Resetting an EQ to default cuts
+        // during its bypass ramp would briefly filter the signal twice.
+        for key in replacements.keys { setEnabled(key, enabled: false) }
+        instances = (instances ?? []) + promoted
+        inserted = ordered.map { replacements[$0] ?? $0 }
+        return replacements[effect] ?? effect
+    }
     public func kind(of key: String) -> String { instances?.first { $0.effectKey == key }?.kind ?? key }
     public func settings(for key: String) -> Self { instances?.first { $0.effectKey == key }?.settings ?? self }
     public var instrumentKeys: [String] { inserted.filter { kind(of: $0) == "Instruments" && settings(for: $0).instrumentID != nil } }
-    @discardableResult public mutating func appendNative(_ kind: String, instrument: String? = nil, parameters: InstrumentParameters? = nil) -> String {
+    @discardableResult public mutating func appendNative(_ kind: String, instrument: String? = nil, parameters: InstrumentParameters? = nil, asInstance: Bool = false) -> String {
         if kind == Self.stemSeparator { return kind } // Removed: separation is an offline item action.
-        if !inserted.contains(kind) {
+        if !asInstance && !inserted.contains(kind) {
             // A new insertion owns fresh parameters, including legacy projects
             // that retained values after removing their original native stage.
             self = merging(effect: kind, from: Self())

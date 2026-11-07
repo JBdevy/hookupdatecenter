@@ -1543,6 +1543,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         vertical.setBounds({});
         canvas.setBounds(area);
         heads.setBounds(area);
+        w.zoom.setRange(minimumZoom(), timelineGrid::maximumZoom);
+        w.zoom.setSkewFactorFromMidPoint(5);
+        w.pixelsPerSecond = std::max(minimumZoom(), w.pixelsPerSecond);
+        w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
         updateRanges();
     }
     void mouseDown(const MouseEvent&) override { stopGesture(); }
@@ -1680,6 +1684,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     }
     bool itemHeadersHidden = false;
     void setItemHeadersHidden(bool hidden) {
+        hidden = hidden && ItemHeader::pinsAtScale(w.pixelsPerSecond);
         if(itemHeadersHidden==hidden)return;
         itemHeadersHidden=hidden;canvas.repaint();
     }
@@ -1707,7 +1712,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         if(next) {
             setItemHeadersHidden(*next>0 && *next<horizontal.getMaximumRangeLimit()-canvas.getWidth());
             horizontal.setCurrentRangeStart(*next,sendNotificationSync);
-        } else if(horizontal.getCurrentRangeStart()>=horizontal.getMaximumRangeLimit()-canvas.getWidth())setItemHeadersHidden(false);
+        } else if(horizontal.getCurrentRangeStart()>=horizontal.getMaximumRangeLimit()-canvas.getWidth() ||
+                  std::abs(position*w.pixelsPerSecond-horizontal.getCurrentRangeStart()-canvas.getWidth()/2.)>0.500001)setItemHeadersHidden(false);
     }
     void animate() {
         if(!followFramePending) playbackFrame = w.session.presentationTransport();
@@ -1758,6 +1764,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         horizontal.setCurrentRange(horizontal.getCurrentRangeStart(), canvas.getWidth(), dontSendNotification);
     }
     void repaintZoom() {
+        if (!ItemHeader::pinsAtScale(w.pixelsPerSecond)) setItemHeadersHidden(false);
         // Horizontal scale never changes track heights or automation row bounds.
         // Avoid rebuilding vertical ranges and walking the track tree per frame.
         for (auto *lane : lanes) if (lane->isVisible()) lane->repaint();
@@ -1767,9 +1774,10 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         const auto state = w.session.presentationTransport();
         return timelineZoomPosition(state, followPolicy.isPaused(state));
     }
+    double minimumZoom() const { return timelineGrid::minimumZoom(canvas.getWidth()); }
     void applyCursorZoom(double scale, std::optional<double> screenAnchor = {}) {
         const double cursor = gestureZoomPosition.value_or(zoomPosition());
-        w.pixelsPerSecond = jlimit(timelineGrid::minimumZoom, timelineGrid::maximumZoom, scale);
+        w.pixelsPerSecond = jlimit(minimumZoom(), timelineGrid::maximumZoom, scale);
         w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
         updateZoomRange();
         horizontal.setCurrentRangeStart(timelineAnchoredZoomOffset(cursor, w.pixelsPerSecond,
@@ -1778,7 +1786,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     }
     void applyZoom(double scale, float anchor) {
         auto old = timeAt(anchor);
-        w.pixelsPerSecond = jlimit(timelineGrid::minimumZoom, timelineGrid::maximumZoom, scale);
+        w.pixelsPerSecond = jlimit(minimumZoom(), timelineGrid::maximumZoom, scale);
         w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
         updateZoomRange();
         horizontal.setCurrentRangeStart(old * w.pixelsPerSecond - anchor, dontSendNotification);
@@ -1788,7 +1796,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         stopGesture();
         if (auto *s = w.session.song()) {
             w.pixelsPerSecond = jlimit(
-                timelineGrid::minimumZoom, timelineGrid::maximumZoom, std::max(1, canvas.getWidth() - 40) / std::max(1., s->duration));
+                minimumZoom(), timelineGrid::maximumZoom, std::max(1, canvas.getWidth() - 40) / std::max(1., s->duration));
             w.zoom.setValue(w.pixelsPerSecond, dontSendNotification);
             horizontal.setCurrentRangeStart(0);
             updateRanges();
@@ -1883,7 +1891,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 const auto geometry=w.itemGeometry((int)row,clip.id);
                 const juce::Rectangle<float> r(xAt(clip.startTime),headerHeight()+w.rowTop((int)row)-w.verticalOffset+geometry.top+3,std::max(2.f,(float)(clip.duration*w.pixelsPerSecond)-2),geometry.height-6);
                 if(!r.intersects(canvas.getLocalBounds().toFloat().withTrimmedTop((float)headerHeight()))) continue;
-                const ItemHeader header(r,(float)canvas.getWidth(),track,clip,w.itemTitle(clip),itemHeadersHidden);
+                const ItemHeader header(r,(float)canvas.getWidth(),track,clip,w.itemTitle(clip),itemHeadersHidden,ItemHeader::pinsAtScale(w.pixelsPerSecond));
                 auto item=object(); put(item,"id",text(clip.id));put(item,"track",text(track.id));put(item,"name",text(clip.name));put(item,"title",w.itemTitle(clip));put(item,"lane",w.itemLanes((int)row).lane(clip.id));
                 auto rect=[&](const char *key,juce::Rectangle<float> b){auto data=object();put(data,"x",b.getX()+getX());put(data,"y",b.getY()+getY());put(data,"width",b.getWidth());put(data,"height",b.getHeight());put(item,Identifier(key),data);};
                 rect("bounds",r);rect("gain",header.gainRect);rect("pan",header.panRect);rect("fx",header.fxRect);rect("fadeIn",header.fadeRect(clip,true));rect("fadeOut",header.fadeRect(clip,false));
@@ -1928,7 +1936,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
 
         gestureTarget = pan
             ? jlimit(0., std::max(0., horizontal.getMaximumRangeLimit() - horizontal.getCurrentRangeSize()), gestureTarget + delta)
-            : jlimit(std::log(timelineGrid::minimumZoom), std::log(timelineGrid::maximumZoom), gestureTarget + delta);
+            : jlimit(std::log(minimumZoom()), std::log(timelineGrid::maximumZoom), gestureTarget + delta);
         gestureOrigin = pan ? horizontal.getCurrentRangeStart() : std::log(w.pixelsPerSecond);
         if(!pan) gestureZoomScreenX=*gestureZoomPosition*w.pixelsPerSecond-horizontal.getCurrentRangeStart();
         lastGestureInput = now;
@@ -2508,7 +2516,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if(!selected && !compact) {g.setColour(colour.withAlpha(.75f));g.strokePath(outline,PathStrokeType(.6f));}
                     g.saveState();
                     if(simpleOverview)g.reduceClipRegion(rect.getSmallestIntegerContainer());else g.reduceClipRegion(outline);
-                    const ItemHeader header(rect,(float)getWidth(),track,clip,t.w.itemTitle(clip),t.itemHeadersHidden);
+                    const ItemHeader header(rect,(float)getWidth(),track,clip,t.w.itemTitle(clip),t.itemHeadersHidden,ItemHeader::pinsAtScale(t.w.pixelsPerSecond));
                     if(!compact) {
                         g.setColour(Colour(0xff484848));g.fillRect(rect.withHeight(std::min(17.f,rect.getHeight())));
                     }
@@ -2779,7 +2787,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 if (e.y>=headerHeight() && row>=0 && row<(int)song->tracks.size()) {
                     const auto &track=song->tracks[(size_t)row];
                     for (const auto &clip:track.clips) if (itemRect(row,clip).contains(e.position)) {
-                        const ItemHeader header(itemRect(row,clip),(float)getWidth(),track,clip,t.w.itemTitle(clip),t.itemHeadersHidden);
+                        const ItemHeader header(itemRect(row,clip),(float)getWidth(),track,clip,t.w.itemTitle(clip),t.itemHeadersHidden,ItemHeader::pinsAtScale(t.w.pixelsPerSecond));
                         if (!timelineGrid::movementLocked(t.w.session.project()) && header.hit(e.position,clip)==ItemHeader::none && header.resizeSide(e.position)) cursor=MouseCursor::LeftRightResizeCursor;
                         const auto hit = header.hit(e.position,clip);
                         if(hit==ItemHeader::gain) tooltip="Volume: " + ItemHeader::gainText(clip.gain.value_or(1));
@@ -2923,7 +2931,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                 } else collapseSelectionOnRelease=c.id;
                             }
                             t.w.selectedClip = t.w.selectedClips.count(c.id) ? c.id : t.w.selectedClips.empty() ? ID{} : *t.w.selectedClips.begin();
-                            if (const auto control=ItemHeader(itemRect(row,c),(float)getWidth(),track,c,t.w.itemTitle(c),t.itemHeadersHidden).hit(e.position,c); control!=ItemHeader::none) {
+                            if (const auto control=ItemHeader(itemRect(row,c),(float)getWidth(),track,c,t.w.itemTitle(c),t.itemHeadersHidden,ItemHeader::pinsAtScale(t.w.pixelsPerSecond)).hit(e.position,c); control!=ItemHeader::none) {
                                 controlKind=control;
                                 controlPointer=e.position;
                                 controlSelection=t.w.selectedClips.count(c.id)?t.w.selectedClips:std::set<ID>{c.id};
@@ -2958,7 +2966,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                 originalStart = c.startTime;
                                 clipLength = c.duration;
                                 sourceRow = row;
-                                resizeEdge = ItemHeader(itemRect(row,c),(float)getWidth(),track,c,t.w.itemTitle(c),t.itemHeadersHidden).resizeSide(e.position);
+                                resizeEdge = ItemHeader(itemRect(row,c),(float)getWidth(),track,c,t.w.itemTitle(c),t.itemHeadersHidden,ItemHeader::pinsAtScale(t.w.pixelsPerSecond)).resizeSide(e.position);
                                 clipMoveBlocked = clipEditing::generatedClick(track, c);
                                 if (!resizeEdge && t.w.selectedClips.count(c.id))
                                     for (const auto &selectedTrack : s->tracks) for (const auto &selectedClip : selectedTrack.clips)
@@ -3131,7 +3139,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     const auto *song=t.w.session.song();
                     const bool activate=song && controlRow>=0 && controlRow<(int)song->tracks.size() &&
                         song->tracks[(size_t)controlRow].id==controlTrack && e.getDistanceFromDragStart()<3 &&
-                        ItemHeader(itemRect(controlRow,*controlClip),(float)getWidth(),song->tracks[(size_t)controlRow],*controlClip,t.w.itemTitle(*controlClip),t.itemHeadersHidden).hit(e.position,*controlClip)==kind;
+                        ItemHeader(itemRect(controlRow,*controlClip),(float)getWidth(),song->tracks[(size_t)controlRow],*controlClip,t.w.itemTitle(*controlClip),t.itemHeadersHidden,ItemHeader::pinsAtScale(t.w.pixelsPerSecond)).hit(e.position,*controlClip)==kind;
                     if(activate) {
                         if(kind==ItemHeader::fx && !e.mods.isAltDown()) {const auto id=controlClip->id; controlClip.reset();controlKind=ItemHeader::none;t.w.openItemFX(id);return;}
                         if(kind==ItemHeader::mute) controlClip->muted=!controlClip->muted;
@@ -3188,7 +3196,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             if (const auto *song=t.w.session.song()) {
                 const int row=t.w.rowAt(e.y-headerHeight()+t.w.verticalOffset);
                 if (row>=0 && row<(int)song->tracks.size()) for (const auto &clip:song->tracks[(size_t)row].clips) {
-                    const auto hit=ItemHeader(itemRect(row,clip),(float)getWidth(),song->tracks[(size_t)row],clip,t.w.itemTitle(clip),t.itemHeadersHidden).hit(e.position,clip);
+                    const auto hit=ItemHeader(itemRect(row,clip),(float)getWidth(),song->tracks[(size_t)row],clip,t.w.itemTitle(clip),t.itemHeadersHidden,ItemHeader::pinsAtScale(t.w.pixelsPerSecond)).hit(e.position,clip);
                     if (hit==ItemHeader::gain || hit==ItemHeader::pan || hit==ItemHeader::fadeIn || hit==ItemHeader::fadeOut || ItemHeader::isShape(hit)) {
                         controlClip=controlSnapshot(clip); controlOriginal=controlSnapshot(clip); controlKind=hit;
                         if (hit==ItemHeader::gain) controlClip->gain=1;
@@ -4033,7 +4041,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     masterPan.onValueChange = [this] {
         perform([&] { session.command(jaras::CommandKind::pan, {}, masterPan.getValue()); });
     };
-    zoom.setRange(timelineGrid::minimumZoom, timelineGrid::maximumZoom);
+    zoom.setRange(timeline->minimumZoom(), timelineGrid::maximumZoom);
     zoom.setSkewFactorFromMidPoint(5);
     zoom.setValue(pixelsPerSecond, dontSendNotification);
     zoom.setTooltip(String::fromUTF8("Zoom: rolagem · Altura das pistas: Ctrl+rolagem · Deslocar: Shift+rolagem"));

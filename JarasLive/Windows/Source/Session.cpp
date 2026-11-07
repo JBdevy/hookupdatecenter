@@ -2289,7 +2289,10 @@ void Session::renderItems(std::set<ID> ids,bool glue,int midiChannels,std::funct
     if(audio.isRecording())throw std::runtime_error("Conclua a gravação antes de renderizar itens.");
     if(canPlay && !canPlay())throw std::runtime_error("Valide sua licença para renderizar áudio.");
     if(!mediaDirectory.isDirectory() || document==File{})throw std::runtime_error("Salve o projeto antes de renderizar itens.");
-    const auto source=project();const auto sourceSong=*song();const auto directory=mediaDirectory;
+    auto source=project();captureExternalProjectState(audio,source);
+    const auto selectedSong=song()->id;
+    const auto sourceSong=*std::find_if(source.songs.begin(),source.songs.end(),[&](const auto &s){return s.id==selectedSong;});
+    const auto directory=mediaDirectory;
     exportCancelled=false;busy=true;importProgress=0;message=String::fromUTF8(glue?"Unificando itens…":"Renderizando itens…");notify();
     auto weak=std::weak_ptr<int>(alive);
     worker.addJob([this,weak,source,sourceSong,directory,ids,glue,midiChannels,completed] {

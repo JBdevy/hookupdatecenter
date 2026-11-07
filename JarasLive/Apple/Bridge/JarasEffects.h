@@ -62,6 +62,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)configure:(AVAudioUnitEffect *)node coefficients:(NSArray<NSArray<NSNumber *> *> *)coefficients enabled:(BOOL)enabled;
 + (void)setPolarity:(AVAudioUnitEffect *)node inverted:(BOOL)inverted;
 + (void)setInputGain:(AVAudioUnitEffect *)node gain:(double)gain;
++ (void)setItemGain:(AVAudioUnitEffect *)node gain:(double)gain;
 + (void)setInputPan:(AVAudioUnitEffect *)node pan:(double)pan;
 + (void)beginPadRelease:(AVAudioUnitEffect *)node;
 + (BOOL)isPadReleaseComplete:(AVAudioUnitEffect *)node;

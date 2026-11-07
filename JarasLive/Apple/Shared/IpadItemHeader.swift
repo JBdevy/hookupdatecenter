@@ -21,6 +21,8 @@ struct IpadItemHeader: UIViewRepresentable {
     let editable: Bool
     let textEditable: Bool
     let interactionID: UUID
+    var pinsToViewport = true
+    var sourceStartOffset: CGFloat = 0
     let mix: (IpadItemMixParameter, Double, Bool, Bool) -> Void
     let mute: () -> Void
     let phase: () -> Void
@@ -31,6 +33,7 @@ struct IpadItemHeader: UIViewRepresentable {
     func updateUIView(_ view: IpadItemHeaderControl, context: Context) {
         view.interactionID = interactionID
         view.clip = clip; view.editable = editable; view.textEditable = textEditable
+        view.pinsToViewport = pinsToViewport; view.sourceStartOffset = sourceStartOffset
         view.mix = mix; view.mute = mute; view.phase = phase; view.fx = fx; view.menu = menu
         view.isEnabled = enabled; view.setNeedsDisplay()
     }
@@ -52,6 +55,8 @@ final class IpadItemHeaderControl: UIControl {
         didSet { if !editable && oldValue { cancelTracking(with: nil) } }
     }
     var textEditable = false
+    var pinsToViewport = true
+    var sourceStartOffset: CGFloat = 0
     var mix: (IpadItemMixParameter, Double, Bool, Bool) -> Void = { _, _, _, _ in }
     var mute: () -> Void = {}
     var phase: () -> Void = {}
@@ -63,7 +68,9 @@ final class IpadItemHeaderControl: UIControl {
     private var activeGesture: (hit: Hit, point: CGPoint, geometry: GridSelectionItem)?
     private weak var viewport: IpadItemHeaderViewport?
     private var geometry: GridSelectionItem {
-        let item = GridSelectionItem(id: clip.id, rect: bounds, gain: clip.gain ?? 1,
+        let sourceRect = pinsToViewport ? bounds : CGRect(x: -sourceStartOffset, y: bounds.minY,
+            width: bounds.width + sourceStartOffset, height: bounds.height)
+        let item = GridSelectionItem(id: clip.id, rect: sourceRect, gain: clip.gain ?? 1,
             phaseInverted: clip.phaseInverted == true, pan: clip.pan ?? 0,
             editable: editable, midiEditable: clip.midi != nil, textEditable: textEditable,
             name: clip.name, muted: clip.muted == true, hasFX: !(clip.fx?.inserted.isEmpty ?? true),
@@ -73,7 +80,7 @@ final class IpadItemHeaderControl: UIControl {
         let titleWidth = (clip.name as NSString).size(withAttributes: [
             .font: UIFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)
         ]).width
-        return item.visibleLeftHeader(in: visible, titleWidth: titleWidth)
+        return item.visibleLeftHeader(in: visible, titleWidth: titleWidth, pinned: pinsToViewport)
     }
     private func bindViewport() {
         var ancestor = superview

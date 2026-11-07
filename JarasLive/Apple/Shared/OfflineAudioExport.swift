@@ -317,9 +317,13 @@ final class OfflineAudioExport {
         var itemFades: [(NativeEffectsChain, AudioClip, Double, Double, Double)] = []
         var automationClocks: [(AVAudioNode, Double, (Double) -> Void)] = []
         var transportClocks: [(NativeEffectsChain, Double)] = []
-        func applyAutomatedFX(_ values: AutomationPlaybackValues, to effects: NativeEffectsChain?) {
+        func applyAutomatedFX(_ values: AutomationPlaybackValues, to effects: NativeEffectsChain?, item: Bool = false) {
             guard let effects else { return }
-            if values.nativeActive { effects.apply(values.fx) }
+            if values.nativeActive {
+                var fx = values.fx
+                if item { fx.inserted = fx.clipEffectKeys }
+                effects.apply(fx)
+            }
             #if os(macOS)
             for entry in values.external {
                 guard let plugin = entry.target.plugin, let parameter = entry.target.parameter,
@@ -431,32 +435,41 @@ final class OfflineAudioExport {
             }
             gain.globalGain = Float(max(-96,min(24,20*log10(max(0.00000001,clip.gain ?? 1)))))
             if (clip.gain ?? 1) <= 0 { player.volume = 0 }
-            let fx = clip.fxBypassed == true ? NativeFXSettings() : (clip.fx ?? NativeFXSettings())
+            // Match playback: the item fader feeds its inserts. A limiter's
+            // ceiling must survive export, unification and re-rendering.
+            engine.connect(source, to: gain, format: sourceFormat)
+            let destination = clip.frozenMIDI == true ? bus.processedMix : bus.mix
+            let destinationBus = destination.nextAvailableInputBus
+            var fx = clip.fxBypassed == true ? NativeFXSettings() : (clip.fx ?? NativeFXSettings())
+            // Match the live item chain, including legacy fixed native stages.
+            fx.inserted = fx.clipEffectKeys
             var itemEffects: NativeEffectsChain?
             if clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || fx.isEnabled(NativeFXSettings.stemSeparator) {
                 let effects = NativeEffectsChain()
                 itemEffects = effects
                 effectChains.append(effects)
                 effects.mediaDirectory = mediaDirectory
-                effects.attach(to: engine,input: source,format: sourceFormat,destinations: [AVAudioConnectionPoint(node: gain,bus: 0)])
-                effects.apply(fx); effects.setSourcePolarity(clip.phaseInverted == true); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
+                effects.attach(to: engine,input: gain,format: sourceFormat,destinations: [AVAudioConnectionPoint(node: destination,bus: destinationBus)])
+                effects.apply(fx)
+                #if os(macOS)
+                if let error = effects.externalError { throw error }
+                #endif
+                effects.setSourcePolarity(clip.phaseInverted == true); effects.setSourceGain(clip.normalizationGain ?? 1); effects.setSourceChannelMode(clip.channelMode ?? 0)
                 transportClocks.append((effects, start))
                 effects.configureItemFade(clip, position: begin, sampleTime: (begin - start + Double(preroll) / format.sampleRate) * sourceFormat.sampleRate)
                 itemFades.append((effects, clip, begin, start, sourceFormat.sampleRate))
-            } else { engine.connect(source,to: gain,format: sourceFormat) }
+            } else { engine.connect(gain,to: destination,fromBus: 0,toBus: destinationBus,format: sourceFormat) }
             if let automation = clip.automation, automation.enabled, !automation.active.isEmpty {
                 automationClocks.append((gain, start, { position in
                     let values = clip.automatedValues(at: min(finish, max(begin, position)))
                     gain.globalGain = Float(max(-96, min(24, 20 * log10(max(0.00000001, values.gain)))))
                     player.volume = values.muted || values.gain <= 0 ? 0 : 1
                     player.pan = Float(values.pan)
-                    applyAutomatedFX(values, to: itemEffects)
+                    applyAutomatedFX(values, to: itemEffects, item: true)
                 }))
             }
             // Frozen MIDI already contains the ordered track FX; item FX and
             // the track fader/pan still operate on this editable audio item.
-            let destination = clip.frozenMIDI == true ? bus.processedMix : bus.mix
-            engine.connect(gain,to: destination,fromBus: 0,toBus: destination.nextAvailableInputBus,format: sourceFormat)
             let voice = Voice(player: player,file: file,clip: clip,start: begin,end: finish,origin: start)
             voice.schedule(until: clip.loopLength == nil ? finish : begin+0.25)
             let delay = begin-start + Double(preroll)/format.sampleRate
@@ -508,7 +521,7 @@ final class OfflineAudioExport {
                     gain.globalGain = Float(values.muted || values.gain <= 0 ? -96 : max(-96, min(24, 20 * log10(values.gain))))
                     JarasEqualizer.setInputPan(controls, pan: values.pan)
                     JarasEqualizer.setInputGain(controls, gain: values.muted ? 0 : clip.normalizationGain ?? 1)
-                    applyAutomatedFX(values, to: itemEffects)
+                    applyAutomatedFX(values, to: itemEffects, item: true)
                 }
                 applyTake(clip.startTime)
                 JarasEqualizer.setPolarity(controls, inverted: clip.phaseInverted == true)

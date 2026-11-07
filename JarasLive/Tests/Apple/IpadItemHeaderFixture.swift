@@ -253,6 +253,26 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
                 }
             }
         }
+        pinned.bounds.size.width = 1800; pinned.center.x = 100 + 900
+        pinned.pinsToViewport = false
+        viewport.setContentOffset(CGPoint(x: 500, y: 0), animated: false)
+        retained.transform = .identity
+        pinned.setNeedsLayout(); pinned.layoutIfNeeded()
+        let distantVisible = pinned.convert(viewport.bounds, from: viewport)
+        for x in stride(from: 5.0, to: 120, by: 10) {
+            expect(!pinned.point(inside: CGPoint(x: distantVisible.minX + x, y: 8), with: nil),
+                "Distant zoom must not leave pinned controls at the viewport edge")
+        }
+        viewport.setContentOffset(.zero, animated: false)
+        let fixedHeader = GridSelectionItem(id: first.id, rect: pinned.bounds, name: first.name)
+        if let mute = fixedHeader.muteRect {
+            expect(pinned.point(inside: center(mute), with: nil), "Original item start keeps its controls at distant zoom")
+        }
+        pinned.sourceStartOffset = 2000
+        for x in stride(from: 5.0, to: 120, by: 10) {
+            expect(!pinned.point(inside: CGPoint(x: x, y: 8), with: nil),
+                "A render-window crop must not move the original header to the crop edge")
+        }
         viewport.removeFromSuperview(); pinned.removeFromSuperview()
         let output = failures.isEmpty ? "IPAD_ITEM_HEADER_UIKIT_OK assertions=\(count)" : "FAIL: " + failures.joined(separator: "; ")
         try! output.write(to: FileManager.default.urls(for: .documentDirectory,in: .userDomainMask)[0].appendingPathComponent("result.txt"),atomically:true,encoding:.utf8)

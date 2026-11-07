@@ -95,6 +95,11 @@ extension TimelineAudioWaveform {
     func pauseNativeBodyTestDecoding() { worker.suspend() }
     func resumeNativeBodyTestDecoding() { worker.resume() }
     func publishNativeBodyTestReadiness() { revision &+= 1 }
+    func constrainNativeBodyTestCaches(_ constrained: Bool) {
+        sources.totalCostLimit = constrained ? 1 : 48 * 1024 * 1024
+        vertexBlocks.totalCostLimit = constrained ? 1 : 64 * 1024 * 1024
+        vertexOverviews.totalCostLimit = constrained ? 1 : 32 * 1024 * 1024
+    }
 }
 '''
 out.joinpath('TimelineAudioWaveform.swift').write_text(cache)

@@ -356,6 +356,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                 // Keep opaque states editable/undoable when a project arrives
                 // from a computer where this plug-in was installed elsewhere.
                 if(!File(str(plugin,"path")).exists()) {
+                    if(offline)throw std::runtime_error(utf8(str(plugin,"name",key)+": plugin VST3 ausente"));
                     unsupported.addIfNotAlreadyThere(str(plugin,"name",key)+": plugin VST3 ausente");
                     break;
                 }
@@ -401,7 +402,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                 break;
             }
             }catch(const PreparationCancelled &){throw;}
-            catch(const std::exception &e){if(previous)throw;unsupported.addIfNotAlreadyThere(key+": "+String::fromUTF8(e.what()));}
+            catch(const std::exception &e){if(previous || offline)throw;unsupported.addIfNotAlreadyThere(key+": "+String::fromUTF8(e.what()));}
             continue;
         }
         auto value = settings;

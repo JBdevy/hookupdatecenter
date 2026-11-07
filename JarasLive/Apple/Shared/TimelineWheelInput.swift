@@ -805,7 +805,8 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         // Keep the input burst alive even at a zoom limit.
         lastZoomInput = ProcessInfo.processInfo.systemUptime
         let base = pendingZoom ?? zoom
-        let next = min(TimelineZoomLimits.maximum, max(TimelineZoomLimits.minimum, base * exp(amount)))
+        let minimum = TimelineZoomLimits.minimumZoom(viewportWidth: horizontal.contentView.bounds.width)
+        let next = min(TimelineZoomLimits.maximum, max(minimum, base * exp(amount)))
         if !zoomRunning {
             // Native geometry may lag a newer scale, especially after a fast
             // reversal. Derive the document target from the model, not that
