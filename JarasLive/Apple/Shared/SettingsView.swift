@@ -99,6 +99,12 @@ struct SettingsView: View {
                             if !audio.inputUID.isEmpty && audio.inputDevice == nil { Text("Disconnected").tag(audio.inputUID) }
                             ForEach(audio.inputDevices) { device in Text(device.name).tag(device.id) }
                         }.labelsHidden().frame(maxWidth: .infinity).disabled(audioConfigurationLocked)
+                        #if os(iOS)
+                        if audio.inputUID == AudioDeviceSettings.bluetoothMobileInput {
+                            Text("Using the Bluetooth microphone may reduce headset playback quality.")
+                                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                        }
+                        #endif
                         if audio.usesSystemLoopback {
                             Text("Captura o áudio do Mac. Monitor Off silencia o retorno, mantendo a gravação e os meters de entrada.")
                                 .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)

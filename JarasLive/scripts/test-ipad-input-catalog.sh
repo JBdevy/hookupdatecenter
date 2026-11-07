@@ -7,7 +7,7 @@ python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
 source = Path('Apple/Shared/AudioDeviceSettings.swift').read_text()
-begin = source.index('    private func configureMobileSession(')
+begin = source.index('    private func mobileInputDevices(')
 methods = source[begin:source.index('    private func observeMobileSession()', begin)]
 begin = source.index('    private func selectMobileOutput(')
 methods += source[begin:source.index('    #endif', begin)]

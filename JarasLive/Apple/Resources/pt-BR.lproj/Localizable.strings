@@ -2326,3 +2326,6 @@
 "Click a cell to connect or disconnect" = "Clique em uma célula para conectar ou desconectar";
 
 "Loop ativo" = "Loop ativo";
+
+"Bluetooth microphone" = "Microfone Bluetooth";
+"Using the Bluetooth microphone may reduce headset playback quality." = "Usar o microfone Bluetooth pode reduzir a qualidade da saída do fone.";

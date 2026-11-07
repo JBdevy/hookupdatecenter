@@ -152,6 +152,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     private var configuredHardwareID: UInt32?
     #if os(iOS)
     static let defaultMobileInput = "catlive.mobile.default-input"
+    static let bluetoothMobileInput = "catlive.mobile.bluetooth-input"
     private(set) var localSessionEnabled = false
     private(set) var localSessionInterrupted = false
     @Published private(set) var localSessionReconfiguring = false
@@ -387,12 +388,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         channels = selectedUID == "none" ? 0 : devices.first?.channels ?? 0
         // Keep the input catalog available even when the recording input is
         // None. Capture and microphone permission remain owned by recording.
-        inputDevices = [OutputDevice(id: Self.defaultMobileInput,
-                                     name: JarasLocalization.string("System audio input"),
-                                     channels: max(1, session.inputNumberOfChannels), hardwareID: 0)]
-        inputDevices += (session.availableInputs ?? []).map {
-            OutputDevice(id: $0.uid, name: $0.portName, channels: $0.channels?.count ?? 1, hardwareID: 0)
-        }
+        inputDevices = mobileInputDevices(session)
         #endif
     }
     private var configuredInputHardwareID: UInt32?
@@ -462,6 +458,23 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         finishLocalRouteChange()
         try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
+    private func mobileInputDevices(_ session: AVAudioSession) -> [OutputDevice] {
+        let ports = session.availableInputs ?? []
+        let bluetooth = ports.first { $0.portType == .bluetoothHFP }
+        // HFP ports are hidden by iOS while music-only Bluetooth is enabled.
+        // A stable explicit choice lets the user opt in without activating the
+        // call profile just to list microphones or using a stale physical UID.
+        var result = [
+            OutputDevice(id: Self.defaultMobileInput, name: JarasLocalization.string("System audio input"),
+                         channels: max(1, session.inputNumberOfChannels), hardwareID: 0),
+            OutputDevice(id: Self.bluetoothMobileInput, name: JarasLocalization.string("Bluetooth microphone"),
+                         channels: max(1, bluetooth?.channels?.count ?? 1), hardwareID: 0)
+        ]
+        result += ports.filter { $0.portType != .bluetoothHFP }.map {
+            OutputDevice(id: $0.uid, name: $0.portName, channels: $0.channels?.count ?? 1, hardwareID: 0)
+        }
+        return result
+    }
     private func configureMobileSession(input: String) throws {
         let session = AVAudioSession.sharedInstance()
         // Both System default and a named output use the iPad's current route.
@@ -469,7 +482,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         // that renegotiates the music route into a low-bandwidth call profile.
         // Keep stereo output and mixing enabled for both selections, while the
         // duplex category keeps USB inputs discoverable even with input None.
-        let options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .allowAirPlay, .mixWithOthers]
+        // Only an explicit Bluetooth microphone selection opts into HFP.
+        var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP, .allowAirPlay, .mixWithOthers]
+        if input == Self.bluetoothMobileInput { options.insert(.allowBluetooth) }
         if session.category != .playAndRecord || session.mode != .default ||
             session.categoryOptions != options {
             try session.setCategory(.playAndRecord, mode: .default, options: options)
@@ -478,7 +493,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         if input.isEmpty || input == Self.defaultMobileInput {
             if session.preferredInput != nil { try session.setPreferredInput(nil) }
         } else {
-            if let port = session.availableInputs?.first(where: { $0.uid == input }) {
+            if let port = session.availableInputs?.first(where: {
+                input == Self.bluetoothMobileInput ? $0.portType == .bluetoothHFP : $0.uid == input
+            }) {
                 if session.preferredInput?.uid != port.uid {
                     try session.setPreferredInput(port)
                 }
@@ -509,7 +526,9 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         }
         let session = AVAudioSession.sharedInstance()
         guard session.category == .playAndRecord, !session.currentRoute.inputs.isEmpty,
-              inputUID == Self.defaultMobileInput || session.currentRoute.inputs.contains(where: { $0.uid == inputUID }) else {
+              inputUID == Self.defaultMobileInput || session.currentRoute.inputs.contains(where: {
+                  inputUID == Self.bluetoothMobileInput ? $0.portType == .bluetoothHFP : $0.uid == inputUID
+              }) else {
             throw ProjectError.invalid(JarasLocalization.string("The selected audio input is disconnected."))
         }
     }
