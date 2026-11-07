@@ -41,13 +41,50 @@ class ReuseValidationTests(unittest.TestCase):
 
     def test_replacement_requires_both_audio_architectures_and_visual_refresh(self):
         jobs = [{'name': n, 'status': 'completed', 'conclusion': 'success'} for n in (reuse.INTEL, reuse.UI, 'audio-validation')]
+        jobs.append({'name': 'audio-tail', 'status': 'completed', 'conclusion': 'skipped'})
         run = {**self.run, 'conclusion': 'success'}
         reuse.validate_run(run, jobs, 'owner/repo', audio=True)
-        for index in range(len(jobs)):
+        for index in range(len(jobs) - 1):
             invalid = copy.deepcopy(jobs)
             invalid[index]['conclusion'] = 'skipped'
             with self.assertRaises(ValueError):
                 reuse.validate_run(run, invalid, 'owner/repo', audio=True)
+
+    def test_tail_requires_prior_validation_and_actual_intel_tail_success(self):
+        jobs = [{'name': n, 'status': 'completed', 'conclusion': 'success'} for n in reuse.TAIL_JOBS]
+        reuse.validate_run({**self.run, 'conclusion': 'success'}, jobs, 'owner/repo', audio=True)
+        for name in reuse.TAIL_JOBS:
+            for conclusion in ['skipped', 'failure', 'cancelled']:
+                invalid = copy.deepcopy(jobs)
+                next(j for j in invalid if j['name'] == name)['conclusion'] = conclusion
+                with self.assertRaises(ValueError):
+                    reuse.validate_run({**self.run, 'conclusion': 'success'}, invalid, 'owner/repo', audio=True)
+
+    def test_tail_rejects_any_missing_or_unpassed_prior_audio_check(self):
+        steps = [{'name': n, 'status': 'completed', 'conclusion': 'success'} for n in sorted(reuse.PRIOR_STEPS)]
+        steps.append({'name': reuse.TAIL_STEP, 'status': 'completed', 'conclusion': 'failure'})
+        jobs = [{'name': reuse.INTEL, 'status': 'completed', 'conclusion': 'failure', 'steps': steps}]
+        reuse.validate_prior_audit(self.run, jobs, 'owner/repo')
+        for index in range(len(steps) - 1):
+            for conclusion in ['failure', 'skipped', None]:
+                invalid = copy.deepcopy(jobs)
+                invalid[0]['steps'][index]['conclusion'] = conclusion
+                with self.assertRaises(ValueError):
+                    reuse.validate_prior_audit(self.run, invalid, 'owner/repo')
+            invalid = copy.deepcopy(jobs)
+            del invalid[0]['steps'][index]
+            with self.assertRaises(ValueError):
+                reuse.validate_prior_audit(self.run, invalid, 'owner/repo')
+        with self.assertRaises(ValueError):
+            reuse.validate_prior_audit(self.run, jobs + jobs, 'owner/repo')
+        with self.assertRaises(ValueError):
+            reuse.validate_prior_audit(self.run, jobs, 'untrusted/repo')
+
+    def test_tail_scope_excludes_product_other_fixtures_and_test_drivers(self):
+        self.assertIn('JarasLive/Tests/Apple/VST3/GainFixture.cpp', reuse.TAIL_ONLY)
+        for path in ['JarasLive/Apple/Bridge/JarasVST3.mm', 'JarasLive/Tests/Apple/AudioRenderTests.swift',
+                     'JarasLive/scripts/test-vst3-state-stream.sh', '.github/workflows/catlive-audio-audit.yml']:
+            self.assertNotIn(path, reuse.TAIL_ONLY)
 
     def test_only_portable_fixture_and_publisher_changes_are_allowed(self):
         reuse.validate_changes(list(reuse.TEST_ONLY), list(reuse.PUBLISH_ONLY))
