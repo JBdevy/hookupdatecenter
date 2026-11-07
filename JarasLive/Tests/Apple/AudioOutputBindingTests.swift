@@ -21,18 +21,24 @@ let kAudioHardwarePropertyDefaultOutputDevice: UInt32 = 5
 }
 typealias AudioObjectPropertyListenerBlock = @Sendable (UInt32, UnsafePointer<AudioObjectPropertyAddress>) -> Void
 @MainActor var rateListeners: [UInt32: AudioObjectPropertyListenerBlock] = [:]
+@MainActor var bufferListeners: [UInt32: AudioObjectPropertyListenerBlock] = [:]
+@MainActor var hardwareBuffers: [UInt32: Int] = [10: 512, 20: 512]
 @MainActor var hardwareRates: [UInt32: Double] = [10: 44100, 20: 48000]
 @MainActor func AudioObjectGetPropertyData(_ object: UInt32, _ address: inout AudioObjectPropertyAddress, _ qualifierSize: UInt32, _ qualifier: UnsafeRawPointer?, _ bytes: inout UInt32, _ value: inout Double) -> OSStatus {
     value = hardwareRates[object] ?? 0
     return noErr
 }
 @MainActor func AudioObjectAddPropertyListenerBlock(_ object: UInt32, _ address: inout AudioObjectPropertyAddress, _ queue: DispatchQueue, _ listener: @escaping AudioObjectPropertyListenerBlock) -> OSStatus {
-    precondition(address.mSelector == kAudioDevicePropertyNominalSampleRate)
-    rateListeners[object] = listener
+    if address.mSelector == kAudioDevicePropertyBufferFrameSize { bufferListeners[object] = listener }
+    else {
+        precondition(address.mSelector == kAudioDevicePropertyNominalSampleRate)
+        rateListeners[object] = listener
+    }
     return noErr
 }
 @MainActor func AudioObjectRemovePropertyListenerBlock(_ object: UInt32, _ address: inout AudioObjectPropertyAddress, _ queue: DispatchQueue, _ listener: AudioObjectPropertyListenerBlock) -> OSStatus {
-    rateListeners[object] = nil
+    if address.mSelector == kAudioDevicePropertyBufferFrameSize { bufferListeners[object] = nil }
+    else { rateListeners[object] = nil }
     return noErr
 }
 let kAudioOutputUnitProperty_CurrentDevice: UInt32 = 1
@@ -138,9 +144,15 @@ struct OutputDevice: Identifiable, Equatable {
     }
     var observedRateDevice: AudioDeviceID?
     var outputRateListener: AudioObjectPropertyListenerBlock?
+    var observedBufferDevice: AudioDeviceID?
+    var outputBufferListener: AudioObjectPropertyListenerBlock?
     /* OUTPUT_RATE_PROPERTY */
     func refreshSampleRate() { if let rate = currentOutputSampleRate { sampleRate = rate } }
-    func refreshBuffer() {}
+    func refreshBuffer() {
+        if let device = devices.first(where: { $0.id == selectedUID }), let frames = hardwareBuffers[device.hardwareID] {
+            bufferFrames = frames
+        }
+    }
     // The runner inserts the actual output selection/recovery implementation.
     /* OUTPUT_BINDING_METHODS */
 }
@@ -322,9 +334,12 @@ typealias AudioDeviceSettings = AudioOutputBindingHarness
     AudioDeviceSettings.shared = AudioOutputBindingHarness()
     let startDrift = OutputStartupHarness()
     startDrift.engine.isRunning = false; startDrift.engine.deviceAfterStart = 20
-    try startDrift.startEngineIfNeeded()
+    // Restoring a different device after start stops the HAL engine. The
+    // current startup contract rejects that incomplete start and stays muted.
+    rejected { try startDrift.startEngineIfNeeded() }
     precondition(startDrift.engine.starts == 1 && startDrift.engine.volumeWhenStarted == 0)
-    precondition(actualDevice == 10, "Start must recover the selected hardware before unmuting")
+    precondition(actualDevice == 10 && !startDrift.engine.isRunning && startDrift.engine.mainMixerNode.outputVolume == 0,
+                 "A device rebound after start must remain silent until recovery restarts it")
 
     resetHAL()
     AudioDeviceSettings.shared = AudioOutputBindingHarness()
@@ -351,6 +366,7 @@ typealias AudioDeviceSettings = AudioOutputBindingHarness
     @MainActor static func main() async throws {
         try runAudioOutputBindingTests()
         rateListeners = [:]
+        bufferListeners = [:]
         let output = AudioOutputBindingHarness()
         output.select("speakers")
         precondition(rateListeners.count == 1 && output.currentOutputSampleRate == 44100)
@@ -365,14 +381,35 @@ typealias AudioDeviceSettings = AudioOutputBindingHarness
             precondition(output.sampleRate == rate && output.currentOutputSampleRate == rate)
         }
         precondition(recoveries == 2, "External rate changes must request graph recovery in both directions")
+        guard let oldBufferListener = bufferListeners[10] else {
+            preconditionFailure("The selected output must observe external buffer-size changes")
+        }
+        var bufferAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize, mScope: 0, mElement: 0)
+        let stopsBeforeBuffer = output.engine.stops, writesBeforeBuffer = UserDefaults.standard.writes
+        let hardwareWritesBeforeBuffer = hardwareSetCalls
+        for frames in [1024, 128, 128, 1024] {
+            hardwareBuffers[10] = frames
+            oldBufferListener(1, &bufferAddress)
+            try await Task.sleep(nanoseconds: 5_000_000)
+            precondition(output.bufferFrames == frames, "The displayed buffer must follow the current HAL value")
+        }
+        precondition(recoveries == 2 && output.engine.stops == stopsBeforeBuffer,
+                     "A buffer notification must not interrupt playback or rebuild the graph")
+        precondition(UserDefaults.standard.writes == writesBeforeBuffer && hardwareSetCalls == hardwareWritesBeforeBuffer,
+                     "External changes must not overwrite the user's preference or fight another audio client")
         output.select("interface")
         let before = recoveries
         oldListener(1, &address)
+        hardwareBuffers[10] = 64
+        oldBufferListener(1, &bufferAddress)
         try await Task.sleep(nanoseconds: 5_000_000)
         precondition(recoveries == before && rateListeners[10] == nil && rateListeners[20] != nil,
                      "Old-device notifications must not recover the newly selected graph")
+        precondition(output.bufferFrames == 512 && bufferListeners[10] == nil && bufferListeners[20] != nil,
+                     "Old-device buffer notifications must not alter the selected interface")
         output.select("none")
-        precondition(rateListeners.isEmpty && output.currentOutputSampleRate == nil)
+        precondition(rateListeners.isEmpty && bufferListeners.isEmpty && output.currentOutputSampleRate == nil)
+        print("EXTERNAL_HAL_BUFFER_CHANGES_REFRESH_WITHOUT_RESTART_OR_PREFERENCE_WRITES_OK")
         print("EXTERNAL_HAL_RATE_UP_DOWN_RECOVERY_AND_LISTENER_LIFETIME_OK")
     }
 }

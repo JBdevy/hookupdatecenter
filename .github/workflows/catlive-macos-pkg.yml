@@ -215,6 +215,7 @@ jobs:
           bash scripts/test-ipad-setlist-blocks.sh
           bash scripts/test-ipad-standalone-viewport.sh
           bash scripts/test-track-height-layout.sh
+          bash scripts/test-audio-output-binding.sh
           bash scripts/test-grid-hosting.sh
           bash scripts/test-empty-track-mixer-selection.sh
           bash scripts/test-matrix-patch-canvas.sh

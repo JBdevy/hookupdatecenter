@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 source = Path('Apple/Shared/AudioDeviceSettings.swift').read_text()
-names = ['observeOutputRate', 'permitConfigurationChange', 'selectInput', 'bindInput', 'select', 'bindOutput', 'systemDefaultDevice', 'refreshSystemDefaults',
+names = ['observeOutputRate', 'observeOutputBuffer', 'permitConfigurationChange', 'selectInput', 'bindInput', 'select', 'bindOutput', 'systemDefaultDevice', 'refreshSystemDefaults',
          'suspendOutput', 'outputDeviceDidChange', 'validateOutputBinding',
          'outputIsBound', 'requireSelectedOutput', 'applyBuffer']
 methods = []

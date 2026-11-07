@@ -166,7 +166,32 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
     private var observedOutputUnit: AudioUnit?
     private var observedRateDevice: AudioDeviceID?
     private var outputRateListener: AudioObjectPropertyListenerBlock?
+    private var observedBufferDevice: AudioDeviceID?
+    private var outputBufferListener: AudioObjectPropertyListenerBlock?
+    private func observeOutputBuffer(_ id: AudioDeviceID?) {
+        guard observedBufferDevice != id else { return }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        if let previous = observedBufferDevice, let outputBufferListener {
+            _ = AudioObjectRemovePropertyListenerBlock(previous, &address, .main, outputBufferListener)
+        }
+        observedBufferDevice = nil; outputBufferListener = nil
+        guard let id else { return }
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.observedBufferDevice == id else { return }
+                // HAL owns the live size, which can change outside this app.
+                // Refresh the display/scheduling margin without stopping audio,
+                // rewriting the saved preference or competing with other clients.
+                self.refreshBuffer()
+            }
+        }
+        if AudioObjectAddPropertyListenerBlock(id, &address, .main, listener) == noErr {
+            observedBufferDevice = id; outputBufferListener = listener
+        }
+    }
     private func observeOutputRate(_ id: AudioDeviceID?) {
+        observeOutputBuffer(id)
         guard observedRateDevice != id else { return }
         var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
