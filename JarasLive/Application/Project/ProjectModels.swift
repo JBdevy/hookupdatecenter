@@ -97,6 +97,32 @@ public struct TrackStereoLink: Codable, Equatable, Sendable {
 
 /// Shared visual geometry. Overlapping items retain the existing minimum per lane.
 public enum TrackHeightGeometry {
+    /// Keep the same point of a row at the same screen Y through a height zoom.
+    /// Without selection, use the first visible row, including its clipped fraction.
+    public struct ScrollAnchor {
+        public let row: Int
+        public let fraction: Double
+        public let screenY: Double
+        public init?(heights: [Double], offset: Double, selected: Int?) {
+            guard !heights.isEmpty, offset.isFinite else { return nil }
+            let visible = heights.indices.filter { heights[$0] > 0 && heights[$0].isFinite }
+            guard let last = visible.last else { return nil }
+            var end = 0.0
+            let first = heights.indices.first { index in
+                end += heights[index]
+                return heights[index] > 0 && end > offset
+            } ?? last
+            row = selected.flatMap { visible.contains($0) ? $0 : nil } ?? first
+            let top = heights.prefix(row).reduce(0, +)
+            let point = min(top + heights[row], max(top, offset))
+            fraction = (point - top) / heights[row]
+            screenY = point - offset
+        }
+        public func offset(heights: [Double]) -> Double? {
+            guard heights.indices.contains(row), heights[row] > 0 else { return nil }
+            return heights.prefix(row).reduce(0, +) + heights[row] * fraction - screenY
+        }
+    }
     public static let minimumScale = 0.1, maximumScale = 10.0
     public static func isValidScale(_ value: Double) -> Bool { value.isFinite && (minimumScale...maximumScale).contains(value) }
     public static func scale(_ value: Double?) -> Double { value.flatMap { isValidScale($0) ? $0 : nil } ?? 1 }

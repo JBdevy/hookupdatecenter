@@ -721,3 +721,42 @@ for width: CGFloat in [0, 1, 511, 512, 513, 1024, 1025, 3840, 7680] {
         "Viewport capacity cannot truncate a long project or its trailing blank area")
 }
 print("WINDOW_RESIZE_45_HOUR_OVERVIEW_AND_LONG_PROJECT_COVERAGE_OK")
+
+final class HeightZoomFixtureState: ObservableObject {
+    @Published var height: CGFloat = 64
+    @Published var selected: Int? = nil
+}
+struct HeightZoomFixture: View {
+    @ObservedObject var state: HeightZoomFixtureState
+    var body: some View {
+        GridScrollView(axis: .vertical, contentWidth: 600, contentHeight: state.height * 42,
+            trackHeight: state.height, rowHeights: Array(repeating: state.height, count: 40), selectedRow: state.selected) {
+                Color.gray.frame(width: 600, height: state.height * 42)
+            }.frame(width: 600, height: 400)
+    }
+}
+let heightState = HeightZoomFixtureState()
+let heightWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+heightWindow.isReleasedWhenClosed = false
+heightWindow.contentView = NSHostingView(rootView: HeightZoomFixture(state: heightState))
+func settleHeight() {
+    RunLoop.main.run(until: Date().addingTimeInterval(0.06))
+    heightWindow.contentView!.layoutSubtreeIfNeeded()
+}
+settleHeight()
+let heightScroll = allDescendants(GridNativeScrollView.self, in: heightWindow.contentView!).first!
+heightScroll.contentView.scroll(to: CGPoint(x: 0, y: 650))
+heightState.height = 96; settleHeight()
+precondition(abs(heightScroll.contentView.bounds.minY - 975) < 1, "Height zoom must preserve the first visible row, not jump to the top")
+heightState.selected = 12; settleHeight()
+let selectedScreenY = 12 * heightState.height - heightScroll.contentView.bounds.minY
+heightState.height = 128; settleHeight()
+precondition(abs(12 * heightState.height - heightScroll.contentView.bounds.minY - selectedScreenY) < 1, "Selected track must stay at its screen position")
+heightState.height = 64; settleHeight()
+precondition(abs(12 * heightState.height - heightScroll.contentView.bounds.minY - selectedScreenY) < 1, "Shrinking must preserve the same selected anchor")
+heightState.selected = nil; settleHeight()
+heightScroll.contentView.scroll(to: CGPoint(x: 0, y: 2200))
+heightState.height = 24; settleHeight()
+precondition(heightScroll.contentView.bounds.minY > 0 && heightScroll.contentView.bounds.maxY <= heightScroll.documentView!.frame.height + 1, "Near the bottom, clamp to the new end without jumping to zero")
+heightWindow.close()
+print("GRID_HOSTED_HEIGHT_ZOOM_SELECTED_UNSELECTED_SHRINK_END_CLAMP_OK")

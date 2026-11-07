@@ -312,7 +312,9 @@ private struct TimelineGridContent: View, Equatable {
                     let hostedMetalRequired = true
                     let hostedItemCoverage: TimelineHostedItemCoverage? = nil
                     #endif
-                        GridScrollView(axis: .vertical, contentWidth: geometry.size.width, contentHeight: contentHeight) {
+                        GridScrollView(axis: .vertical, contentWidth: geometry.size.width, contentHeight: contentHeight,
+                            trackHeight: rows.baseHeight, rowHeights: rows.heights,
+                            selectedRow: song.tracks.firstIndex { $0.id == selectedTrack && selectedTracks.contains($0.id) }) {
                             TimelineColumnsContainer(mixerWidth: labelWidth, viewportWidth: geometry.size.width, height: contentHeight, dividerWidth: dividerWidth,
                                 project: show.snapshot.project.id,
                                 mixerIdentity: TimelineMixerIdentity(revision: revision, mixerRevision: mixerRevision, song: songID, width: mountedLabelWidth,

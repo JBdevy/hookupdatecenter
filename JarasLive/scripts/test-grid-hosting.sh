@@ -14,7 +14,9 @@ fx = Path('Apple/Shared/FXEditor.swift').read_text()
 text = Path('Apple/Shared/TextItemEditor.swift').read_text()
 region = Path('Apple/Shared/RegionEditor.swift').read_text()
 track_environment = region[region.index('/// Immutable menu target:'):]
-Path(sys.argv[1]).write_text(fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + track_environment)
+models = Path('Application/Project/ProjectModels.swift').read_text()
+geometry = models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
+Path(sys.argv[1]).write_text(geometry + fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + track_environment)
 PY
 python3 - "$test_dir/main.swift" <<'PYTEST'
 from pathlib import Path

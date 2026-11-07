@@ -770,6 +770,20 @@ struct WorkspaceLayoutTests {
         w.mouseWheelMove(event(ModifierKeys::ctrlModifier),wheel);
         require(w.trackHeight>height,"Ctrl wheel no longer adjusts track height");
         require(w.verticalOffset==w.tracksViewport.getViewPositionY(),"Changing track height desynchronized scroll");
+        w.selectedTracks.clear(); w.selectedTrack.clear();
+        w.mixerDivider.scrollTo(w.rowTop(8) + w.rowHeight(8) / 2);
+        const double clippedFraction = double(w.verticalOffset-w.rowTop(8))/w.rowHeight(8);
+        wheel.deltaY=.5f; w.mouseWheelMove(event(ModifierKeys::ctrlModifier),wheel);
+        require(std::abs(w.verticalOffset-w.rowTop(8)-clippedFraction*w.rowHeight(8))<=1,
+                "Unselected height zoom moved the first visible row");
+        w.selectedTrack=tracks[11].id;w.selectedTracks={w.selectedTrack};
+        const int selectedY=w.rowTop(11)-w.verticalOffset;
+        for(float delta:{.3f,-.6f,.3f}) {
+            wheel.deltaY=delta;w.mouseWheelMove(event(ModifierKeys::ctrlModifier),wheel);
+            require(w.rowTop(11)-w.verticalOffset==selectedY,"Height zoom did not anchor the selected track");
+            require(w.verticalOffset==w.tracksViewport.getViewPositionY(),"Height zoom separated grid and mixer");
+        }
+
     }
     static void trackTail(const File &directory) {
         using floatingControlTests::require;

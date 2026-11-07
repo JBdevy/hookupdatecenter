@@ -36,12 +36,15 @@ struct GridScrollView<Content: View>: View {
     /// A horizontal timeline may keep its hosting geometry at the viewport
     /// width while the native document retains the full scrollable extent.
     var viewportWidth: CGFloat? = nil
+    var trackHeight: CGFloat? = nil
+    var rowHeights: [CGFloat] = []
+    var selectedRow: Int? = nil
     var fileDrop: (([URL], CGPoint) -> Bool)? = nil
     var fileDropPreview: (([URL], CGPoint?) -> Void)? = nil
     @ViewBuilder let content: () -> Content
     var body: some View {
         #if os(macOS)
-        NativeGridScroll(horizontal: axis == .horizontal, contentWidth: contentWidth, contentHeight: contentHeight, viewportWidth: viewportWidth, fileDrop: fileDrop, fileDropPreview: fileDropPreview, content: content())
+        NativeGridScroll(horizontal: axis == .horizontal, contentWidth: contentWidth, contentHeight: contentHeight, viewportWidth: viewportWidth, trackHeight: trackHeight, rowHeights: rowHeights, selectedRow: selectedRow, fileDrop: fileDrop, fileDropPreview: fileDropPreview, content: content())
         #else
         ScrollView(axis, showsIndicators: false, content: content)
         #endif
@@ -669,6 +672,9 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
     let contentWidth: CGFloat
     let contentHeight: CGFloat
     var viewportWidth: CGFloat? = nil
+    var trackHeight: CGFloat? = nil
+    var rowHeights: [CGFloat] = []
+    var selectedRow: Int? = nil
     let fileDrop: (([URL], CGPoint) -> Bool)?
     let fileDropPreview: (([URL], CGPoint?) -> Void)?
     let content: Content
@@ -744,6 +750,7 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
         defer { CATransaction.commit() }
         scroll.fileDrop = fileDrop
         scroll.fileDropPreview = fileDropPreview
+        let anchoredY = scroll.trackHeightOffset(height: trackHeight, rows: rowHeights, selected: selectedRow)
         // Update the existing, typed hosting root directly so SwiftUI can diff
         // unchanged descendants. An ObservableObject relay invalidated the
         // entire hosted root again on every parent layout/resize transaction.
@@ -767,6 +774,15 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
         // Commit the viewport after the hosting view has laid out this scale.
         // Scrolling here exposed old item geometry at the next scale's origin.
         if scroll.zoomAnchor != nil { host.needsLayout = true }
+        if let anchoredY {
+            let clip = scroll.contentView
+            var bounds = clip.bounds
+            bounds.origin.y = anchoredY
+            let origin = clip.constrainBoundsRect(bounds).origin
+            scroll.prepareVerticalViewport(at: origin.y)
+            clip.scroll(to: origin)
+            scroll.reflectScrolledClipView(clip)
+        }
     }
 }
 /// Stable environment actions prevent a document-size change from invalidating
@@ -967,6 +983,17 @@ private final class GridHostingView<Content: View>: NSHostingView<Content> {
     override var fittingSize: NSSize { frame.size }
 }
 final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, NativeTimelineSelectionScrollHost, NativeTimelineFollowPresentation {
+    private var previousTrackHeight: CGFloat?
+    private var previousRowHeights: [CGFloat] = []
+    func trackHeightOffset(height: CGFloat?, rows: [CGFloat], selected: Int?) -> CGFloat? {
+        defer { previousTrackHeight = height; previousRowHeights = rows }
+        guard let height, let previousTrackHeight, height != previousTrackHeight,
+              rows.count == previousRowHeights.count,
+              let anchor = TrackHeightGeometry.ScrollAnchor(heights: previousRowHeights.map(Double.init),
+                  offset: Double(contentView.bounds.minY), selected: selected),
+              let offset = anchor.offset(heights: rows.map(Double.init)) else { return nil }
+        return CGFloat(offset)
+    }
     var manualNavigation: (() -> Void)?
     private var manualScrollMonitor: Any?
     private(set) var isPlaybackFollowing = false

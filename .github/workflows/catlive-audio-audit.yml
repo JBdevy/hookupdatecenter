@@ -78,6 +78,7 @@ jobs:
             Tests/Apple/AudioMediaPreparationTests.swift \
             Tests/Apple/AutomationAudioTests.swift \
             Tests/Apple/ItemGainOrderTests.swift \
+            Tests/Apple/RecordingItemSilenceTests.swift \
             Tests/Apple/ItemFXContinuityTests.swift \
             Tests/Apple/TrackEQPlaybackTests.swift \
             Tests/Apple/NativeFXPlaybackTests.swift \

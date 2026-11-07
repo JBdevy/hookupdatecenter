@@ -1908,9 +1908,23 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     void adjustTrackHeight(float delta) {
         stopGesture();
         if (delta == 0 || !std::isfinite(delta)) return;
+        // Anchor the selected row, or the clipped point of the first visible
+        // row. Capture before resized() lets JUCE clamp the old scroll range.
+        int anchor = w.rowAt(w.verticalOffset);
+        if (const auto* song = w.session.song()) {
+            for (int i = 0; i < (int)song->tracks.size(); ++i)
+                if (song->tracks[(size_t)i].id == w.selectedTrack && w.trackSelected(w.selectedTrack) && !w.rowHidden(i)) { anchor = i; break; }
+            if (anchor < 0) for (int i = (int)song->tracks.size() - 1; i >= 0; --i)
+                if (!w.rowHidden(i)) { anchor = i; break; }
+        }
+        const int oldTop = anchor < 0 ? 0 : w.rowTop(anchor), oldHeight = anchor < 0 ? 0 : w.rowHeight(anchor);
+        const double fraction = oldHeight > 0 ? jlimit(0., 1., double(w.verticalOffset - oldTop) / oldHeight) : 0.;
+        const double screenY = oldTop + fraction * oldHeight - w.verticalOffset;
         w.trackHeight = jlimit(24, 240, (int)std::lround(w.trackHeight * std::exp(delta * .6)));
         w.resized();
         updateRanges();
+        if (anchor >= 0 && oldHeight > 0)
+            w.mixerDivider.scrollTo(roundToInt(w.rowTop(anchor) + fraction * w.rowHeight(anchor) - screenY));
     }
     void mouseWheelMove(const MouseEvent &e, const MouseWheelDetails &d) override {
         ++w.wheelCount;
@@ -4354,7 +4368,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     }
     for(auto id:{"advanced","grandma2","resolume","export"})
         controls[id]->setColour(TextButton::buttonColourId,Colour(0xff454545));
-    controls["record"]->setColour(TextButton::buttonColourId, theme::liveOffRed);
+    controls["record"]->setColour(TextButton::buttonColourId, theme::yellow);
     controls["record"]->setButtonText("REC");
     for (auto spec : std::initializer_list<std::pair<const char *, const char *>>{
              {"play", "play"}, {"subplay", "play"}, {"record", "record"},

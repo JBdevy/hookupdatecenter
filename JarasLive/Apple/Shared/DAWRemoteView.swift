@@ -2763,9 +2763,13 @@ private struct RemoteSidebarRail<Content: View>: View {
                         }
                     }
                     #if os(iOS)
-                    .background(RemoteTrackScrollProbe(controller: trackScrolling))
+                    .background(RemoteTrackScrollProbe(controller: trackScrolling, tracks: visibleTracks,
+                        selectedTrack: localShow?.selectedTrackForActions.flatMap { selectedTracks.contains($0) ? $0 : nil }
+                            ?? visibleTracks.first(where: { selectedTracks.contains($0.id) })?.id))
                     #endif
-                    .frame(minHeight: local ? viewport.size.height : 0, alignment: .top)
+                    .frame(height: max(local ? viewport.size.height : 0, CGFloat(max(0,
+                        visibleTracks.reduce(0.0) { $0 + DAWRemoteItemLayout.rowHeight($1, scale: trackScrolling.heightScale) + 1 }
+                            - (visibleTracks.isEmpty ? 0 : 1)))), alignment: .top)
                     .overlay(alignment: .bottom) {
                         if local {
                             // The hit target starts after the final visible row;
@@ -3832,7 +3836,9 @@ private struct RemoteNativeTimeline: View {
                     .overlay(alignment: .top) {
                         Rectangle().fill(Color.white.opacity(0.22)).frame(height: 1 / displayScale).allowsHitTesting(false)
                     }
-                    .frame(minHeight: max(0, height - gridTop), alignment: .top)
+                    .frame(height: max(max(0, height - gridTop),
+                        tracks.reduce(0.0) { $0 + DAWRemoteItemLayout.rowHeight($1, scale: scrolling.heightScale) + 1 }
+                            - (tracks.isEmpty ? 0 : 1)), alignment: .top)
                     .overlay(alignment: .topLeading) {
                         if let rectangle = selectionRectangle {
                             Rectangle().fill(JarasTheme.green.opacity(0.16))
@@ -5978,6 +5984,29 @@ private final class IpadMixerMeterView: UIView {
     @Published private(set) var heightScale = DAWRemoteItemLayout.heightScale(
         UserDefaults.standard.object(forKey: "jaras.remote.trackHeightScale") as? Double ?? 1)
     private var pinchStartScale: Double?
+    var heightTracks: [DAWRemoteState.Track] = []
+    var heightSelectedTrack: UUID?
+    #if os(iOS)
+    private var pendingHeightOffset: CGFloat?
+    private var pendingHeightContent: CGFloat = 0
+    private var heightAppliedViews = Set<ObjectIdentifier>()
+    func applyHeightOffset() {
+        guard let offset = pendingHeightOffset else { return }
+        for scroll in [scrollView, gridScrollView].compactMap({ $0 }) {
+            let id = ObjectIdentifier(scroll)
+            guard !heightAppliedViews.contains(id),
+                  abs(scroll.contentSize.height - max(scroll.bounds.height, pendingHeightContent)) < 2 else { continue }
+            let limited = DAWRemoteScrollRange.clamp(Double(offset), content: Double(scroll.contentSize.height),
+                viewport: Double(scroll.bounds.height), topInset: Double(scroll.adjustedContentInset.top),
+                bottomInset: Double(scroll.adjustedContentInset.bottom))
+            heightAppliedViews.insert(id)
+            scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: limited), animated: false)
+        }
+        if [scrollView, gridScrollView].compactMap({ $0 }).allSatisfy({ heightAppliedViews.contains(ObjectIdentifier($0)) }) {
+            pendingHeightOffset = nil
+        }
+    }
+    #endif
     func resizeTracks(_ scale: CGFloat) {
         if pinchStartScale == nil {
             pinchStartScale = heightScale
@@ -5986,7 +6015,25 @@ private final class IpadMixerMeterView: UIView {
             #endif
         }
         let next = DAWRemoteItemLayout.heightScale((pinchStartScale ?? heightScale) * Double(scale))
-        if abs(next - heightScale) > 0.0001 { heightScale = next }
+        if abs(next - heightScale) > 0.0001 {
+            #if os(iOS)
+            let heights = heightTracks.map { DAWRemoteItemLayout.rowHeight($0, scale: heightScale) + 1 }
+            let nextHeights = heightTracks.map { DAWRemoteItemLayout.rowHeight($0, scale: next) + 1 }
+            if let scroll = scrollView ?? gridScrollView,
+               let anchor = TrackHeightGeometry.ScrollAnchor(heights: heights,
+                   offset: Double(pendingHeightOffset ?? scroll.contentOffset.y),
+                   selected: heightTracks.firstIndex { $0.id == heightSelectedTrack }),
+               let offset = anchor.offset(heights: nextHeights) {
+                pendingHeightOffset = CGFloat(offset)
+                pendingHeightContent = CGFloat(max(0, nextHeights.reduce(0, +) - 1))
+                heightAppliedViews.removeAll()
+            }
+            #endif
+            heightScale = next
+            #if os(iOS)
+            DispatchQueue.main.async { [weak self] in self?.applyHeightOffset() }
+            #endif
+        }
     }
     func finishResizingTracks() {
         guard pinchStartScale != nil else { return }
@@ -5997,6 +6044,9 @@ private final class IpadMixerMeterView: UIView {
     weak var scrollView: UIScrollView? {
         didSet {
             guard oldValue !== scrollView else { return }
+            trackSizeObservation = scrollView?.observe(\.contentSize, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.applyHeightOffset() }
+            }
             trackObservation = scrollView?.observe(\.contentOffset, options: [.new]) { [weak self] source, _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -6012,6 +6062,9 @@ private final class IpadMixerMeterView: UIView {
             oldValue?.removeGestureRecognizer(gridTapRecognizer)
             gridScrollView?.addGestureRecognizer(itemHold)
             gridScrollView?.addGestureRecognizer(gridTapRecognizer)
+            gridSizeObservation = gridScrollView?.observe(\.contentSize, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.applyHeightOffset() }
+            }
             gridObservation = gridScrollView?.observe(\.contentOffset, options: [.new]) { [weak self] source, _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -6021,6 +6074,8 @@ private final class IpadMixerMeterView: UIView {
             }
         }
     }
+    private var trackSizeObservation: NSKeyValueObservation?
+    private var gridSizeObservation: NSKeyValueObservation?
     private var trackObservation: NSKeyValueObservation?
     var manualGridScroll: (() -> Void)?
     private var gridObservation: NSKeyValueObservation?
@@ -6096,7 +6151,7 @@ private final class IpadMixerMeterView: UIView {
         return heldArea != nil
     }
     private func synchronize(_ source: UIScrollView, to target: UIScrollView?) {
-        guard let target, source.window != nil, target.window != nil else { return }
+        guard pendingHeightOffset == nil, let target, source.window != nil, target.window != nil else { return }
         if source === gridScrollView {
             guard source.isDragging || source.isDecelerating else { return }
         } else if gridScrollView?.isDragging == true || gridScrollView?.isDecelerating == true { return }
@@ -6253,6 +6308,8 @@ private final class RemoteGridItemHoldArea: UIView {
 /// Find the containing native scroll view without replacing SwiftUI's delegate.
 private struct RemoteTrackScrollProbe: UIViewRepresentable {
     let controller: RemoteTrackScrollController
+    var tracks: [DAWRemoteState.Track]? = nil
+    var selectedTrack: UUID? = nil
     var isGrid = false
     var gridTap: ((Double) -> Void)? = nil
     func makeUIView(context: Context) -> RemoteTrackScrollProbeView {
@@ -6263,8 +6320,10 @@ private struct RemoteTrackScrollProbe: UIViewRepresentable {
     }
     func updateUIView(_ view: RemoteTrackScrollProbeView, context: Context) {
         view.controller = controller; view.isGrid = isGrid
+        if let tracks { controller.heightTracks = tracks; controller.heightSelectedTrack = selectedTrack }
         if isGrid { controller.gridTap = gridTap }
         view.resolve()
+        DispatchQueue.main.async { controller.applyHeightOffset() }
     }
 }
 private final class RemoteTrackScrollProbeView: UIView {

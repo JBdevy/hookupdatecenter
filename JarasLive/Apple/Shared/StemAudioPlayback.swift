@@ -510,6 +510,23 @@ struct TimecodePlaybackSpan {
     private var resettingStoppedConverters = false
     private var stoppedConverterMixers: [ObjectIdentifier: AVAudioMixerNode] = [:]
     private var recordingGraphNeedsRestart = false
+    private var recordingItemTracks = Set<UUID>()
+    func setRecordingItemTracks(_ ids: Set<UUID>) {
+        guard ids != recordingItemTracks else { return }
+        recordingItemTracks = ids
+        for (key, voice) in voices {
+            let transport = latestPlayback?.snapshot.transport
+            let position = key.head == 0 ? transport?.position : transport?.subPlay.position
+            let values = voice.clip.automatedValues(at: position ?? voice.clip.startTime)
+            applyItemGain(voice, gain: values.gain, muted: values.muted)
+        }
+        for tail in effectTails.values { applyItemGain(tail.voice) }
+        if let playback = latestPlayback,
+           let song = playback.snapshot.project.songs.first(where: { $0.id == playback.snapshot.transport.songId }) {
+            updateMIDISequenceClocks(playback.snapshot.transport)
+            updateMIDITakes(playback.snapshot.transport, song: song, preserveHeld: false)
+        }
+    }
     func recordingDidFinish() {
         #if os(macOS)
         recordingGraphNeedsRestart = true
@@ -2298,7 +2315,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     }
     private func applyItemGain(_ voice: Voice, gain: Double? = nil, muted: Bool? = nil) {
         let linear = gain ?? voice.clip.gain ?? 1
-        let silent = (muted ?? (voice.clip.muted == true)) || linear <= 0
+        let silent = recordingItemTracks.contains(voice.track) || (muted ?? (voice.clip.muted == true)) || linear <= 0
         // Use the stable source stage, before every item insert. The final
         // voice node remains a unity/mute render gate; it must not amplify a
         // limiter's output or reconnect a player that already has queued PCM.
@@ -3090,7 +3107,7 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
                 // graph but the gate stops all upstream plugin render work.
                 guard song.playbackScope(transport, head: head).allows(song.playbackItemStart(clip)),
                       song.allowsExclusiveSubplay(transport,head:head,track:plan.track,owner:clip.regionOwnerID,selectedTracks:Set(latestPlayback?.snapshot.project.regionSetlist?.subplayExclusiveTrackIDs ?? [])),
-                      clip.muted != true, clip.startTime < position + 2,
+                      !recordingItemTracks.contains(plan.track), clip.muted != true, clip.startTime < position + 2,
                       clip.startTime + clip.duration > position - 1 else { continue }
                 let existed = midiTakeVoices[key] != nil
                 guard let voice = preparedMIDITakeVoice(for: key, track: plan.track) else { continue }
@@ -3196,10 +3213,10 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
             let start = head == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0
             let end = head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0
 
-for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: position, clock: clock, running: running, loopStart: start, loopEnd: end) }
+for (key, sampler) in samplers { sampler.sequenceHead(Int32(head), position: position, clock: clock, running: running && !recordingItemTracks.contains(key.track), loopStart: start, loopEnd: end) }
 
             #if os(macOS)
-            for bus in trackBuses.values { bus.effects.setMIDISequenceClock(head: head, position: position, clock: clock, running: running, loopStart: start, loopEnd: end) }
+            for (id, bus) in trackBuses { bus.effects.setMIDISequenceClock(head: head, position: position, clock: clock, running: running && !recordingItemTracks.contains(id), loopStart: start, loopEnd: end) }
             #endif
         }
     }

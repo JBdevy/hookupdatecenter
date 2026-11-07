@@ -88,6 +88,11 @@ class TrackCapture {
         for (const auto &spec : specs) change.additions.push_back(prepareTarget(spec, bits));
         return change;
     }
+    // Read only by the audio thread alongside applyTargets(). No allocation.
+    bool recordsTrack(const ID& id) const noexcept {
+        for (const auto& entry : entries) if (entry.active && entry.target.track == id) return true;
+        return false;
+    }
     int64 applyTargets(PreparedTargets &change) {
         for (auto &entry : entries) {
             entry.active = entry.active && change.active.count(entry.target.track) != 0;

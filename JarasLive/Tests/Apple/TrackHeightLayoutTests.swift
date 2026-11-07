@@ -143,3 +143,16 @@ MainActor.assumeIsolated {
     print("REMOTE_HEIGHT_RATIO_ROUNDTRIP_OVERLAPS_COMPACT_REGION_OK")
     print("TRACK_HEIGHT_SHARED_GEOMETRY_OVERLAPS_INDIVIDUAL_PREVIEW_LANE_CACHE_GLOBAL_RATIOS_BOUNDS_ACTIVE_RECORDING_OK")
 }
+
+// Non-uniform rows include overlap lanes, envelopes and hidden rows.
+let heightRows = [100.0, 0, 150, 80, 120]
+let enlargedRows = [200.0, 0, 300, 160, 240]
+let firstVisibleAnchor = TrackHeightGeometry.ScrollAnchor(heights: heightRows, offset: 175, selected: nil)!
+precondition(firstVisibleAnchor.row == 2 && firstVisibleAnchor.offset(heights: enlargedRows) == 350)
+let selectedHeightAnchor = TrackHeightGeometry.ScrollAnchor(heights: heightRows, offset: 175, selected: 3)!
+precondition(selectedHeightAnchor.screenY == 75 && selectedHeightAnchor.offset(heights: enlargedRows) == 425)
+let shrunkAnchor = TrackHeightGeometry.ScrollAnchor(heights: enlargedRows, offset: 425, selected: 3)!
+precondition(shrunkAnchor.offset(heights: heightRows) == 175, "A reverse zoom must return to the same screen position")
+precondition(TrackHeightGeometry.ScrollAnchor(heights: heightRows, offset: 175, selected: 1)!.row == 2)
+precondition(TrackHeightGeometry.ScrollAnchor(heights: [], offset: 0, selected: nil) == nil)
+print("TRACK_HEIGHT_SCROLL_ANCHOR_SELECTED_VISIBLE_HIDDEN_AND_REVERSE_OK")

@@ -260,9 +260,12 @@ inline void outputExcludesItems(const File &directory) {
         AudioBuffer<float> output(2,480);
         for(int block=0;block<10;++block) {
             engine.render(output.getArrayOfWritePointers(),2,480);
-            require(output.getMagnitude(0,480)>.06f,"Armed recording silenced the existing item");
+            if (!live && block >= 2) require(output.getMagnitude(0,480)<.000001f,"Recording must silence existing items on its track");
+            if (live) require(output.getMagnitude(0,480)>.06f,"Recording muted the live source with the old item");
         }
         const auto takes=engine.stopTrackRecording();require(takes.size()==1,"Output recording lost its take");
+        for(int block=0;block<4;++block)engine.render(output.getArrayOfWritePointers(),2,480);
+        require(output.getMagnitude(0,480)>.06f,"Existing items did not resume after recording ended");
         auto reader=read(takes.front().file);AudioBuffer<float> recorded(2,int(reader->lengthInSamples));
         reader->read(&recorded,0,recorded.getNumSamples(),0,true,true);
         const float expected=live?.25f*(fx?std::pow(10.f,6.f/20):1.f)*(postFader?.5f:1.f):0.f;

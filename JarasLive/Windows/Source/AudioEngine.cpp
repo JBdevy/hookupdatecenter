@@ -2326,6 +2326,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     if(latencyPlan)latencyPlan->metronomeBuffer.clear(0,samples);
     bool anySolo = false;
     for (auto &bus : buses) {
+        bus->recordingItemsSuppressed = captureActive && capture->recordsTrack(bus->id);
         anySolo |= bus->solo;
         bus->buffer.clear(0, samples);
         bus->subBuffer.clear(0, samples);
@@ -2408,12 +2409,12 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 if(!bus.fx[head].hasExternal())continue;
                 MIDIPlayback::appendExternal(bus.externalSequence,bus.externalMIDI[head],
                     bus.externalExpected[head],bus.externalScopes[head],cursor,count,sr,
-                    trackScope(current,head,index),sourceAudible(index),done);
+                    trackScope(current,head,index),sourceAudible(index) && !bus.recordingItemsSuppressed,done);
             }
             {
             AudioCallbackMetrics::Detail traversalProfile(callbackMetrics,3);
             for (auto &v : voices)
-                if (sourceAudible(v->bus) && trackScope(current,head,v->bus).allows(v->playbackStart,v->regionOwnerIndex)) {
+                if (!buses[v->bus]->recordingItemsSuppressed && sourceAudible(v->bus) && trackScope(current,head,v->bus).allows(v->playbackStart,v->regionOwnerIndex)) {
                     if (v->source && v->start > cursor && v->start <= cursor + 2)
                         v->source->readers[readerHeads[size_t(head)].load()]->requestUpcoming((int64)std::floor((v->clipAudio ? v->clipAudio->sourcePosition(0) : v->offset) * v->source->readers[readerHeads[size_t(head)].load()]->sampleRate), v->start-cursor, renderClock+done);
                     mixVoice(*v, head, cursor, (v->frozen ? buses[v->bus]->frozen[head] : buses[v->bus]->clips[head]).getArrayOfWritePointers(), 2, done, count);
@@ -2422,7 +2423,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             }
             AudioCallbackMetrics::Detail generatorProfile(callbackMetrics,4);
             for (size_t index = 0; index < buses.size(); ++index)
-                if (sourceAudible(index) && buses[index]->midi)
+                if (sourceAudible(index) && buses[index]->midi && !buses[index]->recordingItemsSuppressed)
                     buses[index]->midi->render(head, cursor, buses[index]->head(head), done, count, trackScope(current,head,index));
             for (size_t busIndex = 0; busIndex < buses.size(); ++busIndex)
                 if (sourceAudible(busIndex) && buses[busIndex]->click) {
@@ -2465,7 +2466,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         if(!run&&tailFrames[head]&&done<samples) {
             const int count=std::min<unsigned>(unsigned(samples-done),tailFrames[head]);
             // Flush delayed item processors as well as downstream bus delays.
-            for(auto &voice:voices)if(sourceAudible(voice->bus)&&trackScope(current,head,voice->bus).allows(voice->playbackStart,voice->regionOwnerIndex))
+            for(auto &voice:voices)if(!buses[voice->bus]->recordingItemsSuppressed&&sourceAudible(voice->bus)&&trackScope(current,head,voice->bus).allows(voice->playbackStart,voice->regionOwnerIndex))
                 mixVoice(*voice,head,tailCursor[head],(voice->frozen?buses[voice->bus]->frozen[head]:buses[voice->bus]->clips[head]).getArrayOfWritePointers(),2,done,count);
             for(int n=done;n<samples;n++)timelinePositions[size_t(head)][size_t(n)]=tailCursor[head]+(n-done)/sr;
             tailCursor[head]+=count/sr;tailFrames[head]-=unsigned(count);
@@ -2476,7 +2477,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     }
     // Item-level CatStem sees the already clipped/faded audio of both heads.
     // Scope/ignore rules and item automation were applied before this sum.
-    for(auto &voice:voices)if(!voice->midiItem&&voice->fx[0].hasActiveStem()&&!voice->frozen) {
+    for(auto &voice:voices)if(!buses[voice->bus]->recordingItemsSuppressed&&!voice->midiItem&&voice->fx[0].hasActiveStem()&&!voice->frozen) {
         const int head=renderingHead[0]?0:renderingHead[1]?1:0;
         auto &buffer=voice->stemInput[0];for(int ch=0;ch<2;ch++)buffer.addFrom(ch,0,voice->stemInput[1],ch,0,samples);
         const auto clock=blockClock;
