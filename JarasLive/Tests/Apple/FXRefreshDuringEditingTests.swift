@@ -67,12 +67,23 @@ extension Font {
         source.rta = 0; source.meters = 0; source.spectrogram = 0
         let editing = Timer(timeInterval: 1.0 / 120, repeats: true) { _ in MainActor.assumeIsolated { activity.revision += 1 } }
         RunLoop.main.add(editing, forMode: .common)
-        RunLoop.main.run(until: Date().addingTimeInterval(2))
+        // Deliver the same editing workload on busy CI hosts instead of
+        // treating the synthetic timer's scheduling rate as application FPS.
+        // Keep the displays' original minimum refresh rates over the whole
+        // measured interval, and bound the fixture so a stalled UI still fails.
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + 5
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        } while (ProcessInfo.processInfo.systemUptime - started < 2 || activity.revision < 80)
+            && ProcessInfo.processInfo.systemUptime < deadline
         editing.invalidate()
-        let result = "FX_REFRESH_DURING_EDITING revisions=\(activity.revision) rta=\(source.rta) meters=\(source.meters) spectrogram=\(source.spectrogram)\n"
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        let result = "FX_REFRESH_DURING_EDITING seconds=\(elapsed) revisions=\(activity.revision) rta=\(source.rta) meters=\(source.meters) spectrogram=\(source.spectrogram)\n"
         FileHandle.standardError.write(Data(result.utf8))
         window.contentView = nil; window.close()
-        precondition(activity.revision >= 80, "Must exercise continuous parameter changes")
-        precondition(source.rta >= 20 && source.meters >= 30 && source.spectrogram >= 15, "FX displays froze during parameter editing")
+        precondition(activity.revision >= 80, "Must deliver continuous parameter changes within five seconds")
+        precondition(source.rta >= Int(elapsed * 10) && source.meters >= Int(elapsed * 15)
+                     && source.spectrogram >= Int(elapsed * 7.5), "FX displays froze during parameter editing")
     }
 }
