@@ -30,7 +30,8 @@ Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport Combine\n' +
     stub_track + transport + '\n' + multi + '\n' + diagnostics + '\n' + native + '\n' + clip + '\n' +
     layer + '\n' + Path('Tests/Apple/TimelinePlaybackLayerTests.swift').read_text())
 PY
-swiftc -swift-version 5 "$test_dir/Presentation.swift" \
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 "$test_dir/Presentation.swift" \
     Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/TimelinePlaybackFollow.swift \
     "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -22,5 +22,6 @@ end = scroll.index('final class NativeTimelinePinnedView:', start)
 (folder/'scroll.swift').write_text(scroll[:start] + scroll[end:])
 (folder/'main.swift').write_text(Path('Tests/Apple/SidebarDividerInteractionTests.swift').read_text())
 PY
-swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$test_dir/scroll.swift" "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$test_dir/scroll.swift" "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

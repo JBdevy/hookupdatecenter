@@ -21,5 +21,6 @@ controls = '@MainActor final class ControlMappings { static let shared = Control
 typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
 Path(sys.argv[1]).write_text('import SwiftUI\n' + typography + '\n' + controls + router + '\n' + head_source + '\n' + diagnostics + '\n' + native_class('GridNativeScrollView') + '\n' + native_class('NativeTimelinePinnedView') + '\n' + Path('Tests/Apple/GridSelectionTests.swift').read_text())
 PY
-swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/GridSelectionInput.swift "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" Application/Project/ItemFadeCurve.swift -swift-version 5 Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/GridSelectionInput.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

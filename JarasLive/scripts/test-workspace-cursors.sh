@@ -34,5 +34,6 @@ x = x.replace('    @objc private func workspaceWindowBecameKey(_ notification: N
 
 (out/'main.swift').write_text((repo/'Tests/Apple/WorkspaceCursorPriorityTests.swift').read_text())
 PYFIXTURE
-swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0"     Apple/Shared/NativeTimelineInputGate.swift "$test_dir/GridScrollView.swift"     "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -O -swift-version 5 -target "$(uname -m)-apple-macos12.0"     Apple/Shared/NativeTimelineInputGate.swift "$test_dir/GridScrollView.swift"     "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test" "$@"

@@ -14,5 +14,6 @@ source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 start = source.index('struct MixerResizeHandle:')
 (folder/'divider.swift').write_text('import SwiftUI\nimport AppKit\n' + source[start:source.index('\n#endif', start)])
 PYDEPS
-swiftc -swift-version 5 "$test_dir/environment.swift" "$test_dir/divider.swift" Apple/Shared/GridScrollView.swift "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 "$test_dir/environment.swift" "$test_dir/divider.swift" Apple/Shared/GridScrollView.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

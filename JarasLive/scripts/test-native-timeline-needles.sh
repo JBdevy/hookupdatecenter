@@ -75,7 +75,8 @@ Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport Combine\n' +
     layer + '\n' + stubs + '\n' + Path('Tests/Apple/NativeTimelineNeedlesTests.swift').read_text() +
     Path('Tests/Apple/NativeTimelineNeedlesCadenceTests.swift').read_text() + auto_fader)
 PY
-swiftc -swift-version 5 "$test_dir/Presentation.swift" \
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 "$test_dir/Presentation.swift" \
     Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/TimelinePlaybackFollow.swift \
     "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -71,5 +71,6 @@ parts.append(Path('Tests/Apple/TrackMixerInputTests.swift').read_text())
 
 root.joinpath('main.swift').write_text('\n'.join(parts))
 PY
-swiftc -swift-version 5 -O -target "$(uname -m)-apple-macos12.0" Apple/Shared/JarasLegacyLayout.swift "$test_dir/Gate.swift" "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 -O -target "$(uname -m)-apple-macos12.0" Apple/Shared/JarasLegacyLayout.swift "$test_dir/Gate.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test" --shortcut

@@ -35,11 +35,13 @@ parts.extend(declaration(grid, needle) for needle in [
 ])
 parts.append(declaration(metal, 'enum TimelineWaveformCoverage {'))
 parts.append(declaration(scroll, 'enum TimelineLayoutDiagnostics {'))
+parts.append(declaration(scroll, 'private enum TimelineViewTreeDiagnostics {'))
 native_start = scroll.index('private final class GridDocumentView:')
 parts.append(scroll[native_start:scroll.index('\n#endif', native_start)])
 parts.append(declaration(scroll, 'private final class TimelineClipView:'))
 parts.append(Path('Tests/Apple/TimelineHostedItemsGateTests.swift').read_text())
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PYTHON
-swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$gate_test_dir/main.swift" -o "$gate_test_dir/test"
+python3 scripts/track-height-test-geometry.py "$gate_test_dir/TrackHeightGeometry.swift"
+swiftc "$gate_test_dir/TrackHeightGeometry.swift" -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$gate_test_dir/main.swift" -o "$gate_test_dir/test"
 CATLIVE_PROFILE_LAYOUT=0 "$gate_test_dir/test"

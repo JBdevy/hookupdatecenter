@@ -26,7 +26,8 @@ window=setlist[:setlist.index('/// Focus follows')].replace('CatLiveDetachedSetl
 (folder/'window-test/main.swift').write_text(Path('Tests/Apple/DetachedSetlistWindowTests.swift').read_text())
 
 PY
-swiftc -O -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$test_dir/workspace.swift" "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -O -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$test_dir/workspace.swift" "$test_dir/environment.swift" "$test_dir/divider.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"
 
 swiftc -O -swift-version 5 "$test_dir/setlist-window.swift" "$test_dir/window-test/main.swift" -o "$test_dir/window-test/test"
