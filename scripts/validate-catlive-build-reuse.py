@@ -9,11 +9,13 @@ import time
 
 WORKFLOW = '.github/workflows/catlive-macos-pkg.yml'
 INTEL = 'audio-audit / offline-audio (macos-15-intel, x86_64)'
+UI = 'audio-audit / ui-refresh'
 BUILD_JOBS = {'windows', 'macos-pkg', 'macos-compatibility', 'compatibility',
               'integration / receiver (macos-26)', 'integration / receiver (windows-2022)'}
-TEST_ONLY = {WORKFLOW, 'JarasLive/Tests/Apple/AudioRenderTests.swift'}
 PUBLISH_ONLY = {WORKFLOW, 'scripts/validate-catlive-build-reuse.py',
                 'scripts/test-catlive-build-reuse.py'}
+TEST_ONLY = PUBLISH_ONLY | {'.github/workflows/catlive-audio-audit.yml',
+                            'JarasLive/Tests/Apple/AudioRenderTests.swift'}
 
 
 def require(condition, message):
@@ -29,7 +31,7 @@ def validate_run(run, jobs, repository, audio=False):
     require(re.fullmatch('[0-9a-f]{40}', run['head_sha']), 'Invalid source SHA')
     require(len({j['name'] for j in jobs}) == len(jobs), 'Ambiguous job names')
     by_name = {j['name']: j for j in jobs}
-    expected = {INTEL, 'audio-validation'} if audio else BUILD_JOBS
+    expected = {INTEL, UI, 'audio-validation'} if audio else BUILD_JOBS
     for name in expected:
         require(name in by_name and by_name[name]['status'] == 'completed'
                 and by_name[name]['conclusion'] == 'success', f'Required job did not pass: {name}')
