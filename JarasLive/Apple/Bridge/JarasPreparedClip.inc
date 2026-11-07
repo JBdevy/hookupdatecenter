@@ -195,7 +195,11 @@ struct PreparedClipKernel {
     double mobileClockOffset = 0;
     int rampFrame = 0;
     PreparedClipKernel(double sr, int ch) : sampleRate(sr), channels(ch) {
-        pitch.presetDefault(2, float(sr));
+        // Distribute FFT/spectral work across callbacks. At 128 frames, doing
+        // every stem's full analysis on the same callback exceeds the device
+        // deadline even when average CPU use is low. outputSeek below primes
+        // the extra lookahead before Play, preserving the audible start frame.
+        pitch.presetDefault(2, float(sr), true);
         const int capacity = std::max(8192, pitch.outputSeekLength(1.f));
         for (auto &buffer : input) buffer.resize(capacity);
         for (auto &buffer : output) buffer.resize(512);

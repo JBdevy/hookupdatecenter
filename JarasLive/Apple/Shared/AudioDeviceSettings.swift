@@ -748,7 +748,10 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
             self?.refreshSampleRate(); self?.refreshBuffer()
-            if let self { UserDefaults.standard.set(self.sampleRate, forKey: "jaras.audioSampleRate"); self.deviceChanged?() }
+            if let self {
+                UserDefaults.standard.set(self.sampleRate, forKey: "jaras.audioSampleRate")
+                self.deviceChanged?(); self.inputDeviceChanged?()
+            }
         }
         #else
         do {
@@ -796,6 +799,7 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
             UserDefaults.standard.set(bufferFrames, forKey: "jaras.audioBufferFrames"); error = ""
         } else { error = "Unable to change buffer (\(result))" }
         deviceChanged?()
+        inputDeviceChanged?()
         #else
         do {
             let session = AVAudioSession.sharedInstance()

@@ -79,7 +79,9 @@ class ClipAudio {
                                          [](const auto &segment) { return std::abs(segment.pitch) >= 1e-8; });
         if (!spectral || preparedPitchRate == rate) return;
         for (auto &head : heads) {
-            head.pitch.presetDefault(2, (float)rate);
+            // Spread spectral work over callbacks, including small ASIO
+            // buffers. The prepared input lookahead still removes DSP delay.
+            head.pitch.presetDefault(2, (float)rate, true);
             head.input.setSize(2, std::max(4096, head.pitch.outputSeekLength(1.f)));
             head.input.clear();
         }

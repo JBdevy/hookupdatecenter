@@ -103,7 +103,7 @@ class Session final : private Timer {
     bool isDetectingBPM() const { return bpmCancellation != nullptr; }
     void cancelBPMDetection();
     void cancelExport() { exportCancelled = true; if(loadCancellation)loadCancellation->store(true); }
-    void toggleRecording();
+    void toggleRecording(bool stopPlayback = false);
     void updateRecordingTargets(bool starting = false);
     int recordArm(const ID &id) const {
         auto at = recordArms.find(id);

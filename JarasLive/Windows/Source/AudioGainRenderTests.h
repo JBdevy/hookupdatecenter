@@ -94,16 +94,18 @@ inline void monitorOff(const File& directory) {
     auto song = inputSong();
     engine->prepareSong(song, directory, {}, &project);
     engine->armTrack(song.tracks[0].id, true);
-    AudioBuffer<float> input(2, 128), output(2, 128); fill(input);
-    for (bool monitoring : {false, true, false}) {
-        song.tracks[0].inputMonitoring = monitoring;
-        engine->setMixer(project, song);
-        engine->render(output.getArrayOfWritePointers(), 2, 128, input.getArrayOfReadPointers(), 2);
-        require(engine->trackPeak(song.tracks[0].id) > .1f, "Monitor Off hid the armed input meter");
-        for (int channel = 0; channel < 2; ++channel)
-            for (int sample = 0; sample < 128; ++sample)
-                require(std::abs(output.getSample(channel, sample) - (monitoring ? input.getSample(channel, sample) : 0.f)) < .000002f,
-                        "Monitor Off must silence the return without disabling capture input");
+    for (const int frames : {128, 512, 1024}) {
+        AudioBuffer<float> input(2, frames), output(2, frames); fill(input);
+        for (bool monitoring : {false, true, false}) {
+            song.tracks[0].inputMonitoring = monitoring;
+            engine->setMixer(project, song);
+            engine->render(output.getArrayOfWritePointers(), 2, frames, input.getArrayOfReadPointers(), 2);
+            require(engine->trackPeak(song.tracks[0].id) > .1f, "Monitor Off hid the armed input meter");
+            for (int channel = 0; channel < 2; ++channel)
+                for (int sample = 0; sample < frames; ++sample)
+                    require(std::abs(output.getSample(channel, sample) - (monitoring ? input.getSample(channel, sample) : 0.f)) < .000002f,
+                            "Monitor Off must silence the return without disabling capture input");
+        }
     }
 }
 inline void hardPanSilence(const File& directory) {

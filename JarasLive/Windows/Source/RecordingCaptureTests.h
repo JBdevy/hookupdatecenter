@@ -281,7 +281,16 @@ inline void immediateReplay(const File &directory) {
     session.cycleRecordArm(track.id);session.toggleRecording();
     AudioBuffer<float> output(2,480);
     for(int i=0;i<4;++i)session.audio.render(output.getArrayOfWritePointers(),2,480);
-    session.toggleRecording();session.command(jaras::CommandKind::play);
+    const auto playingPosition=session.audio.state().position;
+    session.toggleRecording();
+    require(session.transport().playing && session.audio.state().playing && !session.audio.isRecording(),
+            "REC off must finish capture without stopping playback");
+    for(int i=0;i<4;++i)session.audio.render(output.getArrayOfWritePointers(),2,480);
+    require(session.audio.state().position>playingPosition,"REC off reset or stalled the playback cursor");
+    // Stop must remain available while the take is being finalized.
+    session.command(jaras::CommandKind::stopAll);
+    require(!session.transport().playing && !session.audio.state().playing,"Stop was ignored during take finalization");
+    session.command(jaras::CommandKind::play);
     require(!session.transport().playing,"Play started before the captured file was published");
     const auto deadline=Time::getMillisecondCounterHiRes()+10000;
     while((session.busy||session.preparingLiveAudio()||!session.transport().playing)&&Time::getMillisecondCounterHiRes()<deadline)

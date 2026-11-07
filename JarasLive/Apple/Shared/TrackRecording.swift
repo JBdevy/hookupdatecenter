@@ -335,11 +335,11 @@ private final class CaptureWriter: @unchecked Sendable {
     private let mobileInput = JarasMobileAudioInput()
     private var inputEngineRunning: Bool { mobileInput.running }
     #else
-    private let captureEngine = AVAudioEngine()
+    private let desktopInput = JarasMacAudioInput()
     private var systemCapture: AnyObject?
     private var inputEngineRunning: Bool {
         if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback { return capture.running }
-        return captureEngine.isRunning
+        return desktopInput.running
     }
     #endif
     private func captureFormat() throws -> AVAudioFormat {
@@ -350,7 +350,10 @@ private final class CaptureWriter: @unchecked Sendable {
         return format
         #else
         if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback, let format = capture.format { return format }
-        return captureEngine.inputNode.outputFormat(forBus: 0)
+        guard let format = desktopInput.format else {
+            throw ProjectError.invalid(JarasLocalization.string("No audio inputs available."))
+        }
+        return format
         #endif
     }
     private var captureRing: JarasCaptureRing?
@@ -387,7 +390,7 @@ private final class CaptureWriter: @unchecked Sendable {
         guard format.channelCount > 0, format.sampleRate > 0 else { releaseInput(); return }
         for config in desired where config.patch.firstChannel >= 1 && config.patch.firstChannel + config.patch.channelCount - 1 <= Int(format.channelCount) {
             // Leave room for a complete incoming batch plus the monitor's
-            // scheduling reserve; AVAudioEngine taps can deliver large batches.
+            // scheduling reserve, including system-loopback capture batches.
             let ring = JarasCaptureRing(channels: UInt(format.channelCount), capacity: UInt(max(16384, format.sampleRate / 2)))
             let count = min(config.channels, config.patch.channelCount)
             let source = ring.monitorSource(withSampleRate: format.sampleRate, firstChannel: UInt(config.patch.firstChannel - 1), channelCount: UInt(count))
@@ -428,15 +431,20 @@ private final class CaptureWriter: @unchecked Sendable {
             } } catch { self.error = error.localizedDescription }
             return
         }
-        let input = captureEngine.inputNode
-        if tapInstalled { input.removeTap(onBus: 0); tapInstalled = false }
+        let wasRunning = desktopInput.running
+        desktopInput.pause()
+        desktopInput.setCapture(nil); tapInstalled = false
         guard let ring = captureRing else { return }
         let rings = monitorRings
-        input.installTap(onBus: 0, bufferSize: 256, format: input.outputFormat(forBus: 0)) { buffer, _ in
+        let capture: @Sendable (AVAudioPCMBuffer) -> Void = { buffer in
             ring.push(buffer)
             for monitor in rings { monitor.push(buffer) }
         }
+        desktopInput.setCapture(capture)
         tapInstalled = true
+        if wasRunning {
+            do { try desktopInput.start() } catch { self.error = error.localizedDescription }
+        }
         #endif
     }
     private var configuredInput: UInt32 = 0
@@ -470,27 +478,20 @@ private final class CaptureWriter: @unchecked Sendable {
             }
             return
         }
-        var selected = device.hardwareID
+        let selected = device.hardwareID
         let canConfigure = (!recording && !busy) || (allowCaptureSetup && writer == nil)
         guard selected == configuredInput || canConfigure else {
             throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
         }
-        guard let unit = captureEngine.inputNode.audioUnit else {
-            throw ProjectError.invalid(JarasLocalization.string("No audio inputs available."))
-        }
         // A remembered selection does not prove which hardware this unit uses.
         // Verify the actual route before reusing an existing input configuration.
-        let actual = try actualInputDevice(unit)
-        guard selected != configuredInput || actual != selected else { return }
+        guard selected != configuredInput || desktopInput.device != selected else { return }
         guard canConfigure else {
             throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
         }
         releaseInput(); configuredInput = 0
-        let result = AudioUnitSetProperty(unit,kAudioOutputUnitProperty_CurrentDevice,kAudioUnitScope_Global,0,&selected,UInt32(MemoryLayout<UInt32>.size))
-        guard result == noErr else {
-            throw ProjectError.invalid(JarasLocalization.string("Could not open the selected audio input device.") + " (\(result))")
-        }
-        guard try actualInputDevice(unit) == selected else {
+        try desktopInput.prepare(withDevice: selected, bufferFrames: UInt32(audio.bufferFrames))
+        guard desktopInput.device == selected else {
             throw ProjectError.invalid(JarasLocalization.string("Could not open the selected audio input device."))
         }
         configuredInput = selected
@@ -503,19 +504,6 @@ private final class CaptureWriter: @unchecked Sendable {
         try mobileInput.prepare(withSampleRate: session.sampleRate, channels: AVAudioChannelCount(session.inputNumberOfChannels))
         #endif
     }
-    #if os(macOS)
-    private func actualInputDevice(_ unit: AudioUnit) throws -> UInt32 {
-        var actual: UInt32 = 0, bytes = UInt32(MemoryLayout<UInt32>.size)
-        let result = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &actual, &bytes)
-        guard result == noErr else {
-            throw ProjectError.invalid(JarasLocalization.string("Could not open the selected audio input device.") + " (\(result))")
-        }
-        guard bytes == UInt32(MemoryLayout<UInt32>.size) else {
-            throw ProjectError.invalid(JarasLocalization.string("Could not open the selected audio input device."))
-        }
-        return actual
-    }
-    #endif
     private func requireConfiguredInput(expectedUID: String? = nil, expectedDevice: UInt32? = nil) throws {
         #if os(macOS)
         let audio = AudioDeviceSettings.shared
@@ -529,8 +517,7 @@ private final class CaptureWriter: @unchecked Sendable {
         }
         if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback,
            audio.usesSystemLoopback, capture.device == device.hardwareID { return }
-        guard let unit = captureEngine.inputNode.audioUnit,
-              try actualInputDevice(unit) == device.hardwareID else {
+        guard desktopInput.device == device.hardwareID else {
             throw ProjectError.invalid(JarasLocalization.string("The audio input changed while preparing the recording. Start recording again."))
         }
         #else
@@ -546,7 +533,7 @@ private final class CaptureWriter: @unchecked Sendable {
         try mobileInput.start()
         #else
         if #available(macOS 14.2, *), let capture = systemCapture as? MacSystemLoopback { try capture.start(); return }
-        if !captureEngine.isRunning { captureEngine.prepare(); try captureEngine.start() }
+        try desktopInput.start()
         #endif
     }
     func open(directory: URL, project: UUID) {
@@ -721,7 +708,6 @@ private final class CaptureWriter: @unchecked Sendable {
     func toggle(show: ShowController) {
         if recording {
             finish()
-            show.send(.stop)
             return
         }
         guard !busy, show.canControl(), let directory, project == show.snapshot.project.id else { return }
@@ -988,7 +974,7 @@ private final class CaptureWriter: @unchecked Sendable {
             capture.stop(); try? capture.setCapture(nil)
         }
         systemCapture = nil
-        captureEngine.stop()
+        desktopInput.stop()
         #endif
         finishInputRelease()
     }
@@ -999,7 +985,7 @@ private final class CaptureWriter: @unchecked Sendable {
         #if os(iOS)
         mobileInput.setCapture(nil); tapInstalled = false
         #else
-        if tapInstalled { captureEngine.inputNode.removeTap(onBus: 0); tapInstalled = false }
+        desktopInput.setCapture(nil); tapInstalled = false
         #endif
         captureRing = nil
     }

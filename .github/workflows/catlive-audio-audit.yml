@@ -68,7 +68,13 @@ jobs:
           python3 scripts/generate-test-sf2.py "$RUNNER_TEMP/catlive-native-test.sf2"
           echo "JARAS_TEST_SF2=$RUNNER_TEMP/catlive-native-test.sf2" >> "$GITHUB_ENV"
       - name: Validate microphone monitoring across independent input and output callbacks
-        run: bash scripts/test-input-meter-capture.sh
+        run: |
+          bash scripts/test-mac-audio-input.sh
+          bash scripts/test-input-meter-capture.sh
+      - name: Validate audio remains available during close decisions
+        run: |
+          bash scripts/test-application-termination.sh
+          bash scripts/test-project-close.sh
       - name: Validate audio continuity at 44.1 and 48 kHz
         run: |
           bash scripts/test-audio.sh \

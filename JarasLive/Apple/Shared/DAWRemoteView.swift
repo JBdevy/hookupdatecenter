@@ -1064,7 +1064,6 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var remoteMIDIPlaylistID: UUID?
     @AppStorage("jaras.remote.observer.setlistScale") private var observerSetlistScale = 1.0
     @State private var settingsOpen = false
-    @State private var confirmSave = false
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @State private var keyboardVisible = false
@@ -1330,7 +1329,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         .onChange(of: controlsEnabled) { enabled in
             if !enabled {
                 navigationOpen = false; projectsOpen = false; playlistPickerOpen = false
-                noticesOpen = false; timerOpen = false; settingsOpen = false; confirmSave = false
+                noticesOpen = false; timerOpen = false; settingsOpen = false
                 searchFocused = false; scrubPosition = nil; pendingSeek = nil
             } else { updatePanelSubscription() }
         }
@@ -1511,7 +1510,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         .background(RemoteSidebarEdgeReveal(active:
             sidebarHidden && !prompterFullscreen && controlsEnabled && state.projects?.busy != true &&
                 !navigationOpen && !projectsOpen && !playlistPickerOpen && !settingsOpen &&
-                !timerOpen && !noticesOpen && !confirmSave,
+                !timerOpen && !noticesOpen,
             reveal: revealSidebar))
         .overlay(alignment: .bottomLeading) {
             // These layouts have no visible transport footer. Keep a local
@@ -1528,7 +1527,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         local && !observer && controlsEnabled && state.projects?.busy != true && !creatingPlaylist &&
         editingEntry == nil && !trackActionsOpen && !confirmingRemoval && !duplicateQueueWarning &&
         !settingsOpen && !projectsOpen && !playlistPickerOpen && !timerOpen && !noticesOpen &&
-        !confirmSave && deletingTracks == nil && splittingItems == nil && !nativeNormalization &&
+        deletingTracks == nil && splittingItems == nil && !nativeNormalization &&
         nativeMarker == nil && configInitRegion == nil && unifyingRegion == nil && !autoSettings && !searchFocused
     }
     private func handleNativeKey(_ event: HardwareKeyboardEvent) -> Bool {
@@ -1795,7 +1794,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 fadeoutButton
                 Button { timerOpen = true } label: { Image(systemName: "clock").frame(width: 44, height: 44) }
                     .foregroundStyle(Color.blue).accessibilityLabel("Timer")
-            Button { confirmSave = true } label: { Image(systemName: "square.and.arrow.down").frame(width: 44, height: 44) }
+            Button { action(.save) } label: { Image(systemName: "square.and.arrow.down").frame(width: 44, height: 44) }
                     .foregroundStyle(JarasTheme.green).disabled(!state.pendingSave || state.saving).accessibilityLabel("Save")
                 Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
                 Button { if let openSettings { openSettings() } else { settingsOpen = true } } label: { Image(systemName: "gearshape").frame(width: 44, height: 44) }
@@ -1849,10 +1848,6 @@ private struct RemoteSidebarRail<Content: View>: View {
                     open: { action(.openRecentProject, target: $0) },
                     openInNewTab: { action(.openRecentProjectInNewTab, target: $0) },
                     close: { projectsOpen = false })
-            }
-            .alert("Do you want to save this project?", isPresented: $confirmSave) {
-                Button("Cancel", role: .cancel) {}
-                Button("Save") { action(.save) }
             }
     }
     private func phoneTransportButton(_ title: String, icon: String, active: Bool = false, color: Color = JarasTheme.green, perform: @escaping () -> Void) -> some View {
@@ -2321,10 +2316,6 @@ private struct RemoteSidebarRail<Content: View>: View {
             .onChange(of: state.position) { position in
                 if let pendingSeek, abs(position - pendingSeek) <= 0.1 { self.pendingSeek = nil }
             }
-            .alert("Do you want to save this project?", isPresented: $confirmSave) {
-                Button("Cancel", role: .cancel) {}
-                Button("Save") { action(.save) }
-            }
     }
     private var setlistControls: some View {
         SetlistFooterControls(projectID: state.project, bypassed: state.multiLoopsBypassed == true,
@@ -2501,7 +2492,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 Button("Advanced", action: openAdvanced)
                     .buttonStyle(TransportButtonStyle(color: JarasTheme.panel, fontSize: 11, width: local ? 60 : 68, height: 28))
             }
-            Button { confirmSave = true } label: {
+            Button { action(.save) } label: {
                 Label(state.saving ? "Salvando…" : state.pendingSave ? "Save" : "Salvo", systemImage: state.pendingSave ? "square.and.arrow.down" : "checkmark")
                     .font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
                     .frame(width: local ? 56 : 72, height: 28)

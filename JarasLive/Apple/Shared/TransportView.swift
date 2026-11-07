@@ -750,13 +750,12 @@ private struct ProjectSaveButton: View {
     var exportToIPad: (() -> Void)? = nil
     var reduceProject: (() -> Void)? = nil
     let action: () -> Void
-    @State private var confirmingSave = false
     @State private var showingOptions = false
     @State private var draftName = ""
     @State private var renameError = ""
     @State private var renaming = false
     var body: some View {
-        Button { if pending { confirmingSave = true } } label: {
+        Button { if pending { action() } } label: {
             Label(LocalizedStringKey(saving ? "Salvando…" : pending ? "Save" : "Salvo"), systemImage: pending ? "square.and.arrow.down" : "checkmark")
                 .font(.jarasSystem(size: TransportControlMetrics.font, weight: .semibold))
                 .lineLimit(1).minimumScaleFactor(0.8)
@@ -791,10 +790,6 @@ private struct ProjectSaveButton: View {
                 }.padding(16).frame(width: 440)
             }
             #endif
-            .alert(Text(verbatim: confirmingSave ? JarasLocalization.string("Do you want to save this project?") : ""), isPresented: $confirmingSave) {
-                Button("Cancel", role: .cancel) {}.keyboardShortcut(.cancelAction)
-                Button("Save") { action() }.keyboardShortcut(.defaultAction)
-            }
             .jarasHelp(message.isEmpty ? "Save" : message)
     }
     private func saveName() {

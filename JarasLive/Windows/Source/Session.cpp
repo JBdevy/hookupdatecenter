@@ -1027,12 +1027,14 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
         warnTransportFadeout(String::fromUTF8("Subplay indisponível enquanto o Fadeout está acontecendo.")); return;
     }
     if (kind == jaras::CommandKind::volume && trackFaderLocked(target)) return;
-    if (busy && !controlAllowedDuringSave(kind))
+    const bool stopsFinalizingPlayback = recordingFinalizing &&
+        (kind == jaras::CommandKind::stop || kind == jaras::CommandKind::stopAll || kind == jaras::CommandKind::pause);
+    if (busy && !controlAllowedDuringSave(kind) && !stopsFinalizingPlayback)
         return;
     if (audio.isRecording() &&
         (kind == jaras::CommandKind::stopAll || kind == jaras::CommandKind::stop ||
          kind == jaras::CommandKind::pause)) {
-        toggleRecording();
+        toggleRecording(true);
         if (fadeoutRequested && !completingFadeout) cancelTransportFadeout();
         return;
     }
@@ -1231,7 +1233,7 @@ void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set
     }
     dirty = true; audio.setMixer(project(), *song()); notifyMixer();
 }
-void Session::toggleRecording() {
+void Session::toggleRecording(bool stopPlayback) {
     if (jaras::projectSync::readOnly()) return;
     if (!audio.isRecording() && (recordingFinalizing || graphCancellation)) {
         recordingResume = recordingResume == RecordingResume::record ? RecordingResume::none : RecordingResume::record;
@@ -1240,8 +1242,10 @@ void Session::toggleRecording() {
     if (audio.isRecording()) {
         auto capture = audio.detachTrackRecording();
         recordingActiveTracks.clear();
-        core.execute({jaras::CommandKind::stopAll});
-        publishTransport();
+        if (stopPlayback) {
+            core.execute({jaras::CommandKind::stopAll});
+            publishTransport();
+        }
         const auto directory = mediaDirectory;
         const auto projectID = project().id, songID = recordingSong;
         const auto start = recordingStart;
@@ -2631,7 +2635,7 @@ void Session::timerCallback() {
             notify();
         }
         if (audio.isRecording() && audio.recordedSamples() > 0 && !audio.transportClockPending() && !audio.state().playing) {
-            toggleRecording();
+            toggleRecording(true);
             return;
         }
         syncClock();

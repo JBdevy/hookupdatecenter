@@ -1,6 +1,21 @@
 #import <Foundation/Foundation.h>
-@class AVAudioPCMBuffer, AVAudioSourceNode;
+#import <TargetConditionals.h>
+@class AVAudioPCMBuffer, AVAudioSourceNode, AVAudioFormat;
 NS_ASSUME_NONNULL_BEGIN
+#if TARGET_OS_OSX
+/// Direct AUHAL input: no AVAudioEngine tap batching on the monitoring path.
+@interface JarasMacAudioInput : NSObject
+@property(nonatomic, readonly, nullable) AVAudioFormat *format;
+@property(nonatomic, readonly) BOOL running;
+@property(nonatomic, readonly) uint32_t device;
+@property(nonatomic, readonly) uint32_t bufferFrames;
+- (BOOL)prepareWithDevice:(uint32_t)device bufferFrames:(uint32_t)frames error:(NSError **)error;
+- (void)setCapture:(void (^_Nullable)(AVAudioPCMBuffer *))capture;
+- (BOOL)startAndReturnError:(NSError **)error;
+- (void)pause;
+- (void)stop;
+@end
+#endif
 @interface JarasCaptureRing : NSObject
 - (instancetype)initWithChannels:(NSUInteger)channels capacity:(NSUInteger)frames;
 - (AVAudioSourceNode *)monitorSourceWithSampleRate:(double)rate firstChannel:(NSUInteger)first channelCount:(NSUInteger)count;

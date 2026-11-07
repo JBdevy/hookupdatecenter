@@ -66,7 +66,7 @@ for sampleRate in [44100.0, 48000.0] {
     }
     do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: samples) }
 
-    for block: AVAudioFrameCount in [64, 512] {
+    for block: AVAudioFrameCount in [64, 128, 512] {
         let engine = AVAudioEngine()
         let source = JarasPreparedClip(format: format)
         engine.attach(source.node)

@@ -495,10 +495,12 @@ private final class FloatingStartupAnchor: NSView {
 
 #if os(macOS)
 @MainActor final class JarasApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var closeApproved = false
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if closeApproved { return .terminateNow }
         if ProjectSyncControl.following {
             DesktopProjectTabs.shared.active?.documents.closeNotice = "Project Sync: o PC B está seguindo o PC A. Desative a sincronização antes de encerrar."
             return .terminateCancel
@@ -506,10 +508,17 @@ private final class FloatingStartupAnchor: NSView {
         let guardClose = ProjectCloseGuard.shared
         guard !guardClose.pending else { guardClose.focusCurrentDialog(); return .terminateCancel }
         guard guardClose.attached else { return .terminateNow }
-        Task { @MainActor in
-            guardClose.request { allowed in sender.reply(toApplicationShouldTerminate: allowed) }
+        Task { @MainActor [weak self] in
+            guardClose.request { [weak self] allowed in
+                guard allowed, let self else { return }
+                self.closeApproved = true
+                sender.terminate(nil)
+            }
         }
-        return .terminateLater
+        // terminateLater enters AppKit's termination run loop. Playback timers
+        // and main-queue audio scheduling must keep advancing while a save
+        // sheet waits for the user; request termination again after approval.
+        return .terminateCancel
     }
 }
 

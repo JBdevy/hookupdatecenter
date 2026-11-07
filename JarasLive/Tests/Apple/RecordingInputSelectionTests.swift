@@ -3,140 +3,90 @@ import Foundation
 enum ProjectError: Error { case invalid(String) }
 enum JarasLocalization { static func string(_ value: String) -> String { value } }
 struct InputDevice { var hardwareID: UInt32 }
-typealias AudioUnit = Int
-let noErr: Int32 = 0
-let kAudioOutputUnitProperty_CurrentDevice: UInt32 = 1
-let kAudioUnitScope_Global: UInt32 = 0
-@MainActor var deviceSetResult: Int32 = 0
-@MainActor var deviceSetCalls = 0
-@MainActor var actualDevice: UInt32 = 3
-@MainActor var deviceReadResult: Int32 = 0
-@MainActor var acceptsDeviceChanges = true
-@MainActor func AudioUnitSetProperty(_ unit: Int, _ property: UInt32, _ scope: UInt32, _ element: UInt32, _ selected: inout UInt32, _ size: UInt32) -> Int32 {
-    deviceSetCalls += 1
-    if deviceSetResult == noErr && acceptsDeviceChanges { actualDevice = selected }
-    return deviceSetResult
-}
-@MainActor func AudioUnitGetProperty(_ unit: Int, _ property: UInt32, _ scope: UInt32, _ element: UInt32, _ selected: inout UInt32, _ size: inout UInt32) -> Int32 {
-    selected = actualDevice
-    return deviceReadResult
-}
 @MainActor final class AudioDeviceSettings {
     static let shared = AudioDeviceSettings()
     var inputDevice: InputDevice?
     var inputUID = ""
-
+    var bufferFrames = 128
+    var usesSystemLoopback = false
+    var loopback: AnyObject?
+    func resolveInputDevice() throws -> InputDevice? { inputDevice }
 }
-@MainActor final class InputNode { var audioUnit: Int? = 1 }
-@MainActor final class CaptureEngine {
-    let node = InputNode()
-    var inputNodeReads = 0
-    var inputNode: InputNode { inputNodeReads += 1; return node }
-    var isRunning = false
-    var starts = 0
-    var stops = 0
-    var startFailure = false
-    func prepare() {}
-    func start() throws {
-        if startFailure { throw ProjectError.invalid("Start failed") }
-        isRunning = true; starts += 1
+@MainActor final class MacSystemLoopback {
+    var device: UInt32 = 0
+    func start() throws {}
+}
+@MainActor final class InputHardware {
+    var actualDevice: UInt32 = 0
+    var readable = true, acceptsDeviceChanges = true, prepareFails = false
+    var requestedFrames: UInt32 = 0
+    var device: UInt32 { readable ? actualDevice : 0 }
+    var running = false
+    var starts = 0, stops = 0, preparations = 0
+    func prepare(withDevice device: UInt32, bufferFrames: UInt32) throws {
+        preparations += 1; requestedFrames = bufferFrames
+        if prepareFails { throw ProjectError.invalid("Input unavailable") }
+        if acceptsDeviceChanges { actualDevice = device }
     }
-    func stop() { isRunning = false; stops += 1 }
+    func start() throws { starts += 1; running = true }
+    func stop() { stops += 1; running = false; actualDevice = 0 }
 }
 @MainActor final class RecordingInputHarness {
-    let captureEngine = CaptureEngine()
-    var recording = false
-    var busy = false
+    let desktopInput = InputHardware()
+    var systemCapture: AnyObject?
+    var recording = false, busy = false
     var writer: Int?
     var configuredInput: UInt32 = 0
-    func releaseInput() { captureEngine.stop() }
-    // The script inserts the production configuration/validation/start methods.
+    func releaseInput() { desktopInput.stop() }
     /* RECORDING_INPUT_METHODS */
 }
-
 @MainActor func rejected(_ operation: () throws -> Void) {
     do { try operation(); preconditionFailure("Unsafe input request was accepted") }
     catch {}
 }
-@MainActor func resetInput() {
-    let audio = AudioDeviceSettings.shared
-    audio.inputDevice = InputDevice(hardwareID: 10); audio.inputUID = "input-A"
-    deviceSetResult = 0; deviceSetCalls = 0
-    actualDevice = 3; deviceReadResult = 0; acceptsDeviceChanges = true
-}
-@MainActor func runRecordingInputTests() throws {
-    let audio = AudioDeviceSettings.shared
-    resetInput()
-    let missing = RecordingInputHarness()
-    audio.inputDevice = nil
-    rejected { try missing.configureInput() }
-    precondition(missing.captureEngine.inputNodeReads == 0, "None must not instantiate the default input")
-
-    resetInput()
-    let failed = RecordingInputHarness()
-    failed.configuredInput = 3; failed.captureEngine.isRunning = true
-    deviceSetResult = -50
-    rejected { try failed.configureInput() }
-    precondition(!failed.captureEngine.isRunning && failed.configuredInput == 0)
-    rejected { try failed.startInputEngine() }
-    precondition(failed.captureEngine.starts == 0, "A rejected CurrentDevice must never start the previous input")
-
-    resetInput()
-    let input = RecordingInputHarness()
-    try input.configureInput()
-    try input.startInputEngine()
-    precondition(input.configuredInput == 10 && input.captureEngine.starts == 1)
-    try input.configureInput()
-    precondition(deviceSetCalls == 1, "An already-bound input must not be rebound")
-    try input.requireConfiguredInput(expectedUID: "input-A", expectedDevice: 10)
-    audio.inputUID = "input-B"
-    rejected { try input.requireConfiguredInput(expectedUID: "input-A", expectedDevice: 10) }
-    audio.inputUID = "input-A"; audio.inputDevice = InputDevice(hardwareID: 11)
-    rejected { try input.requireConfiguredInput(expectedUID: "input-A", expectedDevice: 10) }
-    input.captureEngine.stop()
-    rejected { try input.startInputEngine() }
-    precondition(input.captureEngine.starts == 1, "A device changed while writer preparation yielded must not restart the old binding")
-
-    resetInput()
-    let unavailable = RecordingInputHarness()
-    unavailable.captureEngine.node.audioUnit = nil
-    rejected { try unavailable.configureInput() }
-    precondition(unavailable.configuredInput == 0 && deviceSetCalls == 0)
-
-    resetInput()
-    let busy = RecordingInputHarness()
-    busy.busy = true
-    rejected { try busy.configureInput() }
-    precondition(busy.captureEngine.inputNodeReads == 0)
-    try busy.configureInput(allowCaptureSetup: true)
-    busy.recording = true
-    try busy.configureInput()
-    precondition(deviceSetCalls == 1, "An active take can keep using its existing selected binding")
-
-    resetInput()
-    let drifted = RecordingInputHarness()
-    try drifted.configureInput()
-    actualDevice = 48
-    rejected { try drifted.startInputEngine() }
-    precondition(drifted.captureEngine.starts == 0, "Matching cached IDs must not allow a different actual AU device to start")
-    try drifted.configureInput()
-    precondition(deviceSetCalls == 2 && actualDevice == 10, "Configuration must rebind after HAL changes the actual device behind a matching cache")
-    try drifted.startInputEngine()
-    precondition(drifted.captureEngine.starts == 1)
-    drifted.captureEngine.stop()
-    actualDevice = 48; drifted.recording = true
-    rejected { try drifted.configureInput() }
-    precondition(deviceSetCalls == 2, "A live take must reject drift rather than silently switch hardware")
-    drifted.recording = false; acceptsDeviceChanges = false
-    rejected { try drifted.configureInput() }
-    precondition(drifted.configuredInput == 0, "A setter success without matching hardware readback cannot publish a successful binding")
-    rejected { try drifted.startInputEngine() }
-    acceptsDeviceChanges = true; deviceReadResult = -50
-    rejected { try drifted.configureInput() }
-    precondition(drifted.captureEngine.starts == 1, "Unreadable CurrentDevice must fail closed")
-    print("RECORDING_INPUT_SELECTION_FAILURE_AND_ASYNC_REVALIDATION_OK")
-}
-
 @main struct RecordingInputTests {
-    @MainActor static func main() throws { try runRecordingInputTests() }
+    @MainActor static func main() throws {
+        let audio = AudioDeviceSettings.shared
+        let missing = RecordingInputHarness()
+        rejected { try missing.configureInput() }
+        precondition(missing.desktopInput.preparations == 0, "None cannot open the system default mic")
+        audio.inputDevice = InputDevice(hardwareID: 10); audio.inputUID = "input-A"
+        let input = RecordingInputHarness()
+        try input.configureInput(); try input.startInputEngine()
+        precondition(input.configuredInput == 10 && input.desktopInput.starts == 1)
+        precondition(input.desktopInput.requestedFrames == 128, "Capture must use the selected output buffer instead of a batched tap")
+        try input.configureInput()
+        precondition(input.desktopInput.preparations == 1, "Reconciliation cannot restart an unchanged input")
+        try input.requireConfiguredInput(expectedUID: "input-A", expectedDevice: 10)
+        audio.inputUID = "input-B"
+        rejected { try input.requireConfiguredInput(expectedUID: "input-A", expectedDevice: 10) }
+        audio.inputUID = "input-A"; audio.inputDevice = InputDevice(hardwareID: 11)
+        rejected { try input.startInputEngine() }
+        precondition(input.desktopInput.starts == 1, "Async preparation cannot start an outdated device")
+        audio.inputDevice = InputDevice(hardwareID: 10)
+        input.desktopInput.actualDevice = 48
+        rejected { try input.startInputEngine() }
+        try input.configureInput(); try input.startInputEngine()
+        precondition(input.desktopInput.preparations == 2 && input.desktopInput.device == 10)
+        input.recording = true; input.desktopInput.actualDevice = 48
+        rejected { try input.configureInput() }
+        precondition(input.desktopInput.preparations == 2, "A live take must reject route drift")
+        let busy = RecordingInputHarness(); busy.busy = true
+        rejected { try busy.configureInput() }
+        try busy.configureInput(allowCaptureSetup: true)
+        busy.recording = true
+        try busy.configureInput()
+        precondition(busy.desktopInput.preparations == 1)
+        for failure in 0..<3 {
+            let broken = RecordingInputHarness()
+            if failure == 0 { broken.desktopInput.prepareFails = true }
+            if failure == 1 { broken.desktopInput.acceptsDeviceChanges = false }
+            if failure == 2 { broken.desktopInput.readable = false }
+            rejected { try broken.configureInput() }
+            precondition(broken.configuredInput == 0)
+            rejected { try broken.startInputEngine() }
+            precondition(broken.desktopInput.starts == 0, "An unavailable or unverified input cannot start")
+        }
+        print("RECORDING_INPUT_BUFFER_SELECTION_FAILURE_AND_ASYNC_REVALIDATION_OK")
+    }
 }

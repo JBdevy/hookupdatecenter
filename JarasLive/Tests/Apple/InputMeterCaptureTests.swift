@@ -106,3 +106,31 @@ for (inputFrames, outputFrames) in [(4800, 512), (4410, 128), (8192, 1024), (256
     try batchedMonitor(inputFrames: inputFrames, outputFrames: outputFrames, jitter: false)
     try batchedMonitor(inputFrames: inputFrames, outputFrames: outputFrames, jitter: true)
 }
+
+// Small hardware input blocks must not acquire a fixed 4096-frame monitoring
+// delay. At matching clocks, one callback of reserve is enough after priming.
+for quantum: AVAudioFrameCount in [64, 128, 512, 1024] {
+    let engine = AVAudioEngine()
+    try engine.enableManualRenderingMode(.offline, format: outputFormat, maximumFrameCount: quantum)
+    let ring = JarasCaptureRing(channels: 2, capacity: UInt(rate / 2))
+    let source = ring.monitorSource(withSampleRate: rate, firstChannel: 0, channelCount: 2)
+    engine.attach(source); engine.connect(source, to: engine.mainMixerNode, format: outputFormat)
+    let input = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: quantum)!
+    let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: quantum)!
+    input.frameLength = quantum
+    for ch in 0..<2 { input.floatChannelData![ch].initialize(repeating: 0.25, count: Int(quantum)) }
+    try engine.start()
+    for block in 0..<8 {
+        ring.push(input)
+        let status = try engine.renderOffline(quantum, to: output)
+        precondition(status == .success)
+        if block >= 1 {
+            for sample in 0..<Int(quantum) {
+                precondition(abs(output.floatChannelData![0][sample] - 0.25) < 0.00001,
+                             "Small-buffer monitoring gained hidden delay or lost continuous input")
+            }
+        }
+    }
+    engine.stop()
+    print("MONITOR_HARDWARE_QUANTUM_LOW_LATENCY_OK rate=\(rate) buffer=\(quantum)")
+}

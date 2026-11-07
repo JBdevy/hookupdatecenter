@@ -6,6 +6,7 @@
 #include <thread>
 #include <memory>
 #include <cmath>
+#include "JarasMacAudioInput.inc"
 #include "../../Core/ThirdParty/Lame/lame.h"
 
 // Store encoder priming and padding in the standard Xing/LAME frame so that
