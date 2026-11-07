@@ -58,7 +58,7 @@ empty.finish(start: 0) { items,error in
     emptyFinished.signal()
 }
 precondition(emptyFinished.wait(timeout: .now()+3) == .success,"empty take finalization completes")
-let wavs = try FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("Stems/Recordings"),includingPropertiesForKeys: nil).filter { $0.pathExtension == "wav" }
+let wavs = try FileManager.default.contentsOfDirectory(at: directory.appendingPathComponent("Stems"),includingPropertiesForKeys: nil).filter { $0.pathExtension == "wav" }
 precondition(wavs.count == 3,"a take without audio must not leave an empty WAV")
 print("RECORDING_MISSING_INPUT_HANDLED_OK")
 
@@ -247,6 +247,7 @@ precondition(abs(monitorRing.takeInputPeak(2)-0.3)<0.0001 && abs(monitorRing.tak
 precondition(monitorRing.takeInputPeak(2)==0, "Input peak consumption must clear held callback values")
 monitorRing.beginCapture()
 monitorRing.push(small)
+monitorRing.push(small) // Prime the reserve between independent capture/output callbacks.
 let monitorPCM = AVAudioPCMBuffer(pcmFormat: monitorFormat, frameCapacity: 512)!
 let monitorStatus = try monitorEngine.renderOffline(512, to: monitorPCM); precondition(monitorStatus == .success)
 precondition(abs(monitorPCM.floatChannelData![0][100] - 0.3) < 0.0001 && abs(monitorPCM.floatChannelData![1][100] - 0.4) < 0.0001, "live monitor maps input channels 3/4 independently from the recording writer")

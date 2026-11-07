@@ -20,18 +20,18 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
     std::vector<float> _samples;
     std::unique_ptr<std::atomic<float>[]> _inputPeaks;
     NSUInteger _channels, _capacity;
-    std::atomic<uint64_t> _read, _write, _dropped;
+    std::atomic<uint64_t> _read, _write, _dropped, _inputBlockFrames;
     // Bit 0 accepts input; bit 1 belongs to the single realtime producer.
     std::atomic<unsigned> _captureState;
 }
 - (instancetype)initWithChannels:(NSUInteger)channels capacity:(NSUInteger)frames {
-    if ((self = [super init])) { _channels=channels; _capacity=frames; _samples.resize(channels*frames); _read=0; _write=0; _dropped=0; _captureState=1; _inputPeaks=std::make_unique<std::atomic<float>[]>(channels); for(NSUInteger c=0;c<channels;++c) _inputPeaks[c]=0; }
+    if ((self = [super init])) { _channels=channels; _capacity=frames; _samples.resize(channels*frames); _read=0; _write=0; _dropped=0; _inputBlockFrames=0; _captureState=1; _inputPeaks=std::make_unique<std::atomic<float>[]>(channels); for(NSUInteger c=0;c<channels;++c) _inputPeaks[c]=0; }
     return self;
 }
 - (void)beginCapture {
     // The preceding writer has finished before a ring can be reused.
     [self endCapture]; [self waitForPendingCapture];
-    _read=0; _write=0; _dropped=0;
+    _read=0; _write=0; _dropped=0; _inputBlockFrames=0;
     _captureState.store(1, std::memory_order_release);
 }
 - (void)endCapture { _captureState.fetch_and(~1u, std::memory_order_acq_rel); }
@@ -49,6 +49,9 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
     }
     unsigned accepting = 1;
     if (!_captureState.compare_exchange_strong(accepting, 3, std::memory_order_acquire)) return;
+    // The input tap may batch far more frames than its requested buffer size.
+    // Publish the actual producer quantum before publishing the corresponding PCM.
+    _inputBlockFrames.store(std::max<uint64_t>(_inputBlockFrames.load(std::memory_order_relaxed), buffer.frameLength), std::memory_order_relaxed);
     auto write=_write.load(std::memory_order_relaxed), read=_read.load(std::memory_order_acquire);
     auto count=std::min<uint64_t>(buffer.frameLength, _capacity-(write-read));
     auto channels=buffer.floatChannelData;
@@ -66,11 +69,26 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
 }
 - (AVAudioSourceNode *)monitorSourceWithSampleRate:(double)rate firstChannel:(NSUInteger)first channelCount:(NSUInteger)count {
     AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:(AVAudioChannelCount)count];
+    __block bool primed = false;
+    __block uint64_t previousDropped = 0;
     return [[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(BOOL *silent, const AudioTimeStamp *time, AVAudioFrameCount frames, AudioBufferList *output) {
         auto read=self->_read.load(std::memory_order_relaxed), write=self->_write.load(std::memory_order_acquire);
-        // Bound latency after a device pause; never replay stale live input.
-        if (write-read > std::max<uint64_t>(4096, frames*4)) read=write-std::min<uint64_t>(write-read,frames*2);
-        auto available=std::min<uint64_t>(frames,write-read);
+        const auto inputBlock = self->_inputBlockFrames.load(std::memory_order_relaxed);
+        const auto reserve = std::min<uint64_t>(self->_capacity, std::max<uint64_t>(inputBlock, frames) + frames);
+        const auto dropped = self->_dropped.load(std::memory_order_relaxed);
+        // Bound latency after an output pause, relative to BOTH callback sizes.
+        // A normal large input batch is not stale: trimming every such batch to
+        // two output callbacks used to discard most of the microphone signal.
+        const auto backlogLimit = std::max<uint64_t>(4096, inputBlock * 3 + uint64_t(frames) * 4);
+        if (write-read > backlogLimit || dropped > previousDropped)
+            read=write-std::min<uint64_t>(write-read,reserve);
+        previousDropped = dropped;
+        // Independent input/output callbacks need a small scheduling reserve.
+        // Accumulate it before starting, and after a real input interruption,
+        // instead of repeatedly alternating partial input and zero-filled gaps.
+        if (!primed && write-read >= reserve && reserve > 0) primed = true;
+        auto available=primed ? std::min<uint64_t>(frames,write-read) : 0;
+        if (available < frames) primed = false;
         *silent=available==0;
         for (NSUInteger c=0; c<output->mNumberBuffers; ++c) {
             auto *samples=(float *)output->mBuffers[c].mData;

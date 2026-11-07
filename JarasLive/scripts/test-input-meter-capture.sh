@@ -21,7 +21,7 @@ if [[ -n "${CATLIVE_IOS_SIMULATOR:-}" ]]; then
 else
     compile=(clang++)
     swift=(swiftc)
-    run=()
+    run=(env)
 fi
 "${compile[@]}" -std=c++17 -fobjc-arc -I Apple/Bridge -c "$meter_test_dir/Capture.mm" -o "$meter_test_dir/capture.o"
 "${swift[@]}" -swift-version 5 -import-objc-header Apple/Bridge/JarasRecording.h "$meter_test_dir/main.swift" "$meter_test_dir/capture.o" -lc++ -o "$meter_test_dir/test"
