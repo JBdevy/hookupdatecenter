@@ -289,7 +289,11 @@ inline void immediateReplay(const File &directory) {
     require(session.audio.state().position>playingPosition,"REC off reset or stalled the playback cursor");
     // Stop must remain available while the take is being finalized.
     session.command(jaras::CommandKind::stopAll);
-    require(!session.transport().playing && !session.audio.state().playing,"Stop was ignored during take finalization");
+    require(!session.transport().playing,"Stop was ignored during take finalization");
+    // Transport updates are consumed at the next audio callback, including in
+    // offline inspection. Check the engine after it has received that command.
+    session.audio.render(output.getArrayOfWritePointers(),2,480);
+    require(!session.audio.state().playing,"Stop did not reach the audio callback during take finalization");
     session.command(jaras::CommandKind::play);
     require(!session.transport().playing,"Play started before the captured file was published");
     const auto deadline=Time::getMillisecondCounterHiRes()+10000;
