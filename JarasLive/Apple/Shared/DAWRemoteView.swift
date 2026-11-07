@@ -3865,7 +3865,8 @@ private struct RemoteNativeTimeline: View {
                         }
                     }
                     #if os(iOS)
-                    .background(RemoteTrackScrollProbe(controller: scrolling, isGrid: true, gridTap: { fraction in
+                    .background(RemoteTrackScrollProbe(controller: scrolling, tracks: tracks,
+                        selectedTrack: localShow?.selectedTrackForActions ?? scrolling.heightSelectedTrack, isGrid: true, gridTap: { fraction in
                         guard local || (!state.playing && region != nil) else { return }
                         if local { localShow?.selectProgramChange(nil) }
                         let time = start + fraction * span

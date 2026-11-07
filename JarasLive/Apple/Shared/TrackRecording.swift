@@ -631,7 +631,6 @@ private final class CaptureWriter: @unchecked Sendable {
     private func updateArmedTargets() {
         guard recording, let show else { return }
         let allTracks = show.current?.tracks.filter { $0.kind == .standard && armed.contains($0.id) } ?? []
-        (projectAudio ?? StemAudioPlayback.shared).setRecordingItemTracks(Set(allTracks.map(\.id)))
         let position = show.snapshot.transport.position
         updateMIDITargets(allTracks.filter { $0.recordingMode == .midi }, position: position)
         for id in Array(outputWriters.keys) where !allTracks.contains(where: { $0.id == id && $0.recordsOutput }) {
@@ -639,6 +638,9 @@ private final class CaptureWriter: @unchecked Sendable {
             let output = outputWriters.removeValue(forKey: id)!, recordedProject = project
             output.finish(start: startPosition) { [weak self] items, message in Task { @MainActor in self?.accept(items, message: message, project: recordedProject) } }
         }
+        // Input target changes drain on the writer queue. Keep removed input
+        // tracks silent until that queue has retired their takes.
+        (projectAudio ?? StemAudioPlayback.shared).setRecordingItemTracks(Set(allTracks.map(\.id)).union(activeTargets.keys))
         let newOutputs = allTracks.filter { $0.recordsOutput && outputWriters[$0.id] == nil }
         if !newOutputs.isEmpty && !busy {
             busy = true
@@ -663,6 +665,9 @@ private final class CaptureWriter: @unchecked Sendable {
         writer.changeTargets(Array(activeTargets.values), position: position) { [weak self] items, message in
             Task { @MainActor [weak self] in
                 self?.accept(items, message: message, project: recordedProject)
+                if let self, self.recording, self.project == recordedProject {
+                    (self.projectAudio ?? StemAudioPlayback.shared).setRecordingItemTracks(self.armed)
+                }
                 for id in removedIDs { RecordingLaneLayout.shared.remove(id); LiveRecordingPreview.shared.takes[id] = nil; self?.pendingTakes.remove(id) }
             }
         }
