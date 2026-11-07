@@ -39,11 +39,11 @@ class ReuseValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             reuse.validate_run(self.run, jobs, 'owner/repo')
 
-    def test_replacement_requires_both_audio_architectures(self):
-        jobs = [{'name': n, 'status': 'completed', 'conclusion': 'success'} for n in (reuse.INTEL, 'audio-validation')]
+    def test_replacement_requires_both_audio_architectures_and_visual_refresh(self):
+        jobs = [{'name': n, 'status': 'completed', 'conclusion': 'success'} for n in (reuse.INTEL, reuse.UI, 'audio-validation')]
         run = {**self.run, 'conclusion': 'success'}
         reuse.validate_run(run, jobs, 'owner/repo', audio=True)
-        for index in range(2):
+        for index in range(len(jobs)):
             invalid = copy.deepcopy(jobs)
             invalid[index]['conclusion'] = 'skipped'
             with self.assertRaises(ValueError):

@@ -20,6 +20,18 @@ permissions:
   contents: read
 
 jobs:
+  # Hosted Intel VMs can expose a Metal device without a usable architecture;
+  # SwiftUI Canvas aborts inside MTLLoader before this fixture can mount. Keep
+  # the unchanged live-editor assertions on the GPU-capable Apple Silicon host.
+  ui-refresh:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate live FX editor refresh while parameters change
+        working-directory: JarasLive
+        run: bash scripts/test-fx-refresh-during-editing.sh
+
   offline-audio:
     strategy:
       fail-fast: false
@@ -70,10 +82,9 @@ jobs:
             Tests/Apple/EQIntelStabilityTests.swift \
             Tests/Apple/DynamicsStabilityTests.swift \
             Tests/Apple/TriggerGateRenderTests.swift
-      - name: Validate native effect DSP and editor refresh
+      - name: Validate native effect DSP and instruments
         run: |
           bash scripts/test-effects.sh
-          bash scripts/test-fx-refresh-during-editing.sh
           bash scripts/test-instruments.sh
           bash scripts/test-instrument-behavior.sh
       - name: Validate failed media without stopping healthy stems
