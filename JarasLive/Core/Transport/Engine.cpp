@@ -28,6 +28,8 @@ void Engine::applyProjectEdit(Project project) {
 }
 void Engine::commitProjectEdit(Project project) {
     if (project_.projectSyncID) project.projectSyncID = project_.projectSyncID;
+    if (project_.regionSetlist && project_.regionSetlist->autoAdvance &&
+        (!project.regionSetlist || !project.regionSetlist->autoAdvance)) stopQueuedSubplay();
     const bool liveChanged = project_.regionSetlist && project_.regionSetlist->liveEnabled.value_or(false) !=
         (project.regionSetlist && project.regionSetlist->liveEnabled.value_or(false));
     project_ = std::move(project);
@@ -101,12 +103,10 @@ void Engine::syncPlaylistEntries() {
     if (!transport_.queuedRegionId) { transport_.queuedPlaylistEntryId.reset(); return; }
     if (transport_.queuedPlaylistEntryId && (!list || !list->containsEntry(*transport_.queuedPlaylistEntryId))) {
         // Removing the queued occurrence cancels that request, even when its
-        // source still exists elsewhere in the playlist/grid. Retract only a
-        // pre-roll started by Auto; a manually running secondary head is free.
-        if (automaticSubplayQueue_ == transport_.queuedRegionId) {
-            if (automaticSubplayActive_) { execute({CommandKind::subStop}); resumeSub_ = false; }
-            automaticSubplayQueue_.reset();
-        }
+        // source still exists elsewhere in the playlist/grid. Cancel its
+        // secondary playback too, preserving an unrelated free Sub Play.
+        stopQueuedSubplay();
+        automaticSubplayQueue_.reset();
         transport_.queuedRegionId.reset(); transport_.queuedPlaylistEntryId.reset();
         autoRegionQueue_ = false; return;
     }
@@ -117,6 +117,7 @@ void Engine::configureRegionSetlist(RegionSetlist state) {
     validateRegionSetlist(project_, state);
     const auto& previous = project_.regionSetlist;
     const auto previousTarget = automaticRegionQueueTarget();
+    if (previous && previous->autoAdvance && !state.autoAdvance) stopQueuedSubplay();
     const bool playbackChanged = !previous || previous->selectedId != state.selectedId || previous->autoAdvance != state.autoAdvance ||
         previous->autoUntilBlockEnd != state.autoUntilBlockEnd || previous->playlists.size() != state.playlists.size() ||
         !std::equal(previous->playlists.begin(), previous->playlists.end(), state.playlists.begin(), [](const auto& a, const auto& b) {
@@ -177,6 +178,19 @@ std::optional<ID> Engine::nextBlockPreparationTarget() const {
         if (block.songId == song->id && block.playlistId == state.selectedId && block.beforeRegionId == target)
             return target;
     return {};
+}
+void Engine::stopQueuedSubplay() {
+    if (!transport_.queuedRegionId || (!transport_.subPlay.playing && !resumeSub_)) return;
+    const auto* queued = playbackBounds(region(transport_.queuedRegionId));
+    const auto* secondary = playbackBounds(region(transport_.subPlaybackStartRegionId));
+    const bool startsInQueue = queued && subPlayStart_ && *subPlayStart_ >= queued->startTime && *subPlayStart_ < queued->endTime;
+    if (!(automaticSubplayActive_ && automaticSubplayQueue_ == transport_.queuedRegionId) &&
+        !(queued && secondary && queued->id == secondary->id) && !startsInQueue) return;
+    execute({CommandKind::subStop});
+    resumeSub_ = false;
+    // Auto may leave a manually chosen queue in place. Do not immediately
+    // retrigger its canceled pre-roll; a fresh queue request rearms it.
+    automaticSubplayQueue_ = transport_.queuedRegionId;
 }
 void Engine::refreshAutomaticRegionQueue() {
     const auto occurrence = transport_.queuedPlaylistEntryId ? transport_.queuedPlaylistEntryId : transport_.queuedRegionId;
@@ -1151,6 +1165,7 @@ void Engine::execute(const Command& c) {
             const auto* queued = region(transport_.queuedRegionId);
             if (queued && (part->id == queued->id || queued->parentRegionID == part->id) &&
                 (transport_.queuedPlaylistEntryId == entry || (!entry && !transport_.queuedPlaylistEntryId))) {
+                stopQueuedSubplay();
                 transport_.queuedRegionId.reset(); transport_.queuedPlaylistEntryId.reset(); transport_.queueStartedAt = 0;
                 autoRegionQueue_ = false; automaticSubplayQueue_.reset();
                 if (project_.regionSetlist) project_.regionSetlist->autoAdvance = false;
@@ -1158,8 +1173,11 @@ void Engine::execute(const Command& c) {
             }
             if (part->parentRegionID && active && (active->id == *part->parentRegionID || active->parentRegionID == part->parentRegionID))
                 throw std::invalid_argument("Cannot queue a song from the active unified region");
+            stopQueuedSubplay();
+            automaticSubplayQueue_.reset();
             transport_.queuedRegionId = part->id; transport_.queuedPlaylistEntryId = entry; transport_.queueStartedAt = transport_.position;
             transport_.subPlay.position = part->startTime; manualSubCursor_ = false; autoRegionQueue_ = false;
+            startAutomaticSubplay(0);
         } else {
             clearIgnoreNext();
             transport_.paused = false; resumeSub_ = false;
@@ -1344,6 +1362,7 @@ void Engine::execute(const Command& c) {
             break;
         }
         transport_.loop.start.reset(); transport_.loop.end.reset();
+        stopQueuedSubplay();
         if (project_.regionSetlist) project_.regionSetlist->autoAdvance = false;
         autoRegionQueue_ = false;
         transport_.queuedRegionId.reset(); transport_.queuedPlaylistEntryId.reset();
@@ -1657,12 +1676,10 @@ static double automaticSubplayInitDuration(const Song& song, const Part& queued,
     }
     return cursor-queued.startTime;
 }
-void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDestination) {
-    if (!std::isfinite(elapsed) || elapsed <= 0) return;
-    refreshMultiLoop();
+double Engine::startAutomaticSubplay(double elapsed) {
     double subElapsed = elapsed;
     if (automaticSubplayQueue_ != transport_.queuedRegionId) automaticSubplayQueue_.reset();
-    if (!sectionDestination && transport_.playing && !transport_.loop.enabled && !(transport_.multiLoop && !transport_.multiLoop->released) && !transport_.subPlay.playing && project_.regionSetlist &&
+    if (transport_.playing && !transport_.loop.enabled && !(transport_.multiLoop && !transport_.multiLoop->released) && !transport_.subPlay.playing && project_.regionSetlist &&
         project_.regionSetlist->automaticSubplay.value_or(false) && !project_.regionSetlist->prepareWithoutPlayback.value_or(false)) {
         const auto* active = playbackBounds(region(transport_.regionId));
         const auto* queued = region(transport_.queuedRegionId);
@@ -1687,6 +1704,12 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
             }
         }
     }
+    return subElapsed;
+}
+void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDestination) {
+    if (!std::isfinite(elapsed) || elapsed <= 0) return;
+    refreshMultiLoop();
+    const double subElapsed = sectionDestination ? elapsed : startAutomaticSubplay(elapsed);
     if (transport_.subPlay.playing && currentSong()) {
         transport_.subPlay.position += subElapsed;
     }

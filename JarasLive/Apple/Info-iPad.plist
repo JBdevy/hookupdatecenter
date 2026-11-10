@@ -7,7 +7,9 @@
 	<!-- Encryption is provided by Apple's CryptoKit and system networking. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>NSMicrophoneUsageDescription</key>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+<string>O CatLive conecta teclados e controladores MIDI Bluetooth para tocar e controlar o transporte. / CatLive connects Bluetooth MIDI keyboards and controllers to play and control the transport.</string>
+<key>NSMicrophoneUsageDescription</key>
 	<string>O CatLive usa a entrada de áudio para gravar e monitorar as pistas no modo Nativo. / CatLive uses the audio input to record and monitor tracks in Native mode.</string>
 	<key>UIBackgroundModes</key>
 	<array>

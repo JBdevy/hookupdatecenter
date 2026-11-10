@@ -3341,6 +3341,7 @@ private struct RemoteMIDIBinding: Codable, Equatable {
     @Published private(set) var transfer: Transfer?
     @Published private(set) var event: Event?
     @Published private(set) var error = ""
+    @Published private(set) var deviceNames: [String] = []
     private var client: MIDIClientRef = 0
     private var port: MIDIPortRef = 0
     private var sources: [MIDIEndpointRef: (Int32, String)] = [:]
@@ -3434,11 +3435,11 @@ private struct RemoteMIDIBinding: Codable, Equatable {
     }
     func stop() {
         for source in sources.keys { MIDIPortDisconnectSource(port, source) }
-        sources.removeAll(); pressed.removeAll(); cancelLearning(); event = nil
+        sources.removeAll(); deviceNames = []; pressed.removeAll(); cancelLearning(); event = nil
         if port != 0 { MIDIPortDispose(port); port = 0 }
         if client != 0 { MIDIClientDispose(client); client = 0 }
     }
-    private func refresh() {
+    func refresh() {
         guard port != 0 else { return }
         let available = Set((0..<MIDIGetNumberOfSources()).map { MIDIGetSource($0) })
         for source in sources.keys.filter({ !available.contains($0) }) { MIDIPortDisconnectSource(port, source); sources.removeValue(forKey: source); pressed.removeAll() }
@@ -3450,6 +3451,8 @@ private struct RemoteMIDIBinding: Codable, Equatable {
                 sources[source] = (id, name?.takeRetainedValue() as String? ?? "MIDI")
             }
         }
+        let names = sources.values.map { $0.1 }.sorted()
+        if deviceNames != names { deviceNames = names }
     }
     private func receive(_ endpoint: MIDIEndpointRef, _ status: UInt8, _ number: UInt8, _ value: UInt8) {
         guard let source = sources[endpoint] else { return }
@@ -3477,6 +3480,11 @@ private struct RemoteMIDIActionsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("MIDI").font(.jarasHeadline)
+                BluetoothMIDIConnectionButton { midi.refresh() }
+                if midi.deviceNames.isEmpty { Text("No MIDI inputs").foregroundStyle(JarasTheme.secondary) }
+                ForEach(Array(midi.deviceNames.enumerated()), id: \.offset) { entry in
+                    Label(entry.element, systemImage: "pianokeys").font(.jarasCaption)
+                }
                 if !midi.error.isEmpty { Text(verbatim: midi.error).foregroundStyle(.red) }
                 ForEach(RemoteMIDIAction.allCases) { action in
                     VStack(alignment: .leading, spacing: 5) {

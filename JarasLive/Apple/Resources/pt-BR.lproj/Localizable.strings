@@ -2333,3 +2333,6 @@
 "Preview on/off" = "Preview — ativar/desativar";
 
 "Insert media" = "Inserir mídia";
+
+"Connect Bluetooth MIDI…" = "Conectar MIDI Bluetooth…";
+"Connect your MIDI controller here, even if it is already paired in Bluetooth settings." = "Conecte seu controlador MIDI aqui, mesmo que ele já esteja pareado nos Ajustes de Bluetooth.";

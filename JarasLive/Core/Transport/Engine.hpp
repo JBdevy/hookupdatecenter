@@ -106,6 +106,8 @@ private:
     std::optional<ID> automaticRegionQueueTarget(bool ignoreBlockBoundary = false) const;
     std::optional<ID> nextBlockPreparationTarget() const;
     void refreshAutomaticRegionQueue();
+    void stopQueuedSubplay();
+    double startAutomaticSubplay(double elapsed);
     void autoQueueRegion();
     void clearIgnoreNext();
     void toggleIgnoreNext();

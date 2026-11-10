@@ -541,7 +541,92 @@ static void testRepeatBetweenSectionMarkersAndStop() {
     }
 }
 
+static void testQueuedSubplayCancellationAndRequeue() {
+    Project project; project.id = "queue-cancel"; project.name = "Queue cancellation";
+    project.songs = {{"songs", "Songs", 600, 120, {},
+        {{"a", "A", 0, 100}, {"b", "B", 200, 300}, {"c", "C", 400, 500}}}};
+    RegionSetlist state; state.autoAdvance = true; state.automaticSubplay = true;
+    state.automaticSubplaySeconds = 3; state.selectedId = "list";
+    state.playlists = {{"list", "Show", "songs", {"a", "b", "c"}}};
+    project.regionSetlist = state;
+    const auto start = [](Engine& engine, const Project& p) {
+        engine.loadProject(p); engine.execute({CommandKind::selectRegion, "a"});
+        engine.execute({CommandKind::play}); engine.advance(97.5);
+    };
+    for (bool automatic : {false, true}) for (int cancellation = 0; cancellation < 5; ++cancellation) {
+        auto p = project; p.regionSetlist->automaticSubplay = automatic;
+        Engine engine; start(engine, p);
+        if (!automatic) engine.execute({CommandKind::subPlay});
+        expect(engine.transport().subPlay.playing, "fixture has queued Sub Play running");
+        if (cancellation == 0) engine.execute({CommandKind::queueRegion, "b"});
+        if (cancellation == 1) engine.execute({CommandKind::escape});
+        if (cancellation == 2) { auto next = *engine.project().regionSetlist; next.autoAdvance = false; engine.configureRegionSetlist(next); }
+        if (cancellation == 3) { auto next = engine.project(); next.regionSetlist->autoAdvance = false; engine.applyProjectEdit(next); }
+        if (cancellation == 4) { auto next = *engine.project().regionSetlist; next.playlists[0].regionIds = {"a", "c"}; engine.configureRegionSetlist(next); }
+        expect(engine.transport().playing && engine.transport().position == 97.5 &&
+               !engine.transport().subPlay.playing && engine.transport().subPlayPromotion == 0,
+               "removing a queued song or disabling Auto stops its Sub Play without moving or promoting main playback");
+        if (cancellation != 4) {
+            engine.advance(.01);
+            expect(!engine.transport().subPlay.playing, "a canceled queue cannot restart on the next audio tick");
+        }
+    }
+    for (bool wholeProject : {false, true}) {
+        Engine engine; start(engine, project);
+        // Replace the automatic queue with a manual one after the lead point.
+        engine.execute({CommandKind::queueRegion, "c"});
+        expect(engine.transport().subPlay.playing && engine.transport().subPlay.position == 400,
+               "replacing a running queue starts the new song immediately from its own beginning");
+        engine.execute({CommandKind::pause});
+        auto next = engine.project(); next.regionSetlist->autoAdvance = false;
+        if (wholeProject) engine.applyProjectEdit(next); else engine.configureRegionSetlist(*next.regionSetlist);
+        engine.execute({CommandKind::play}); engine.advance(.01);
+        expect(engine.transport().playing && !engine.transport().subPlay.playing && engine.transport().queuedRegionId == "c",
+               "Auto off cancels a manual queue's paused Sub Play and prevents both resume and automatic retrigger");
+        engine.execute({CommandKind::queueRegion, "c"});
+        engine.execute({CommandKind::queueRegion, "c"});
+        expect(engine.transport().subPlay.playing && engine.transport().subPlay.position == 400,
+               "explicitly removing and readding the same manual queue rearms its elapsed pre-roll with Auto off");
+    }
+    for (bool nextInit : {false, true}) for (bool bars : {false, true}) for (const ID target : {ID("b"), ID("c")}) {
+        auto p = project; p.regionSetlist->automaticSubplayNext = nextInit;
+        if (nextInit) for (auto& part : p.songs[0].parts) {
+            if (bars) part.subplayInitBars = 2; else part.subplayInitSeconds = 3;
+        }
+        else if (bars) p.regionSetlist->automaticSubplayBars = 2;
+        Engine engine; start(engine, p);
+        engine.execute({CommandKind::queueRegion, "b"});
+        engine.execute({CommandKind::queueRegion, target});
+        const double incomingStart = target == "b" ? 200 : 400;
+        expect(engine.transport().subPlay.playing && engine.transport().subPlay.position == incomingStart &&
+               engine.transport().position == 97.5 && engine.transport().subPlayPromotion == 0,
+               "requeued same or different song starts immediately after seconds/bars or Config Init trigger, without skipping its intro");
+        engine.advance(.25);
+        expect(engine.transport().subPlay.position == incomingStart + .25,
+               "requeued playback advances once and does not replay elapsed lead time");
+    }
+    for (int mode = 0; mode < 4; ++mode) {
+        auto p = project; p.regionSetlist->autoAdvance = false;
+        if (mode == 1) p.regionSetlist->automaticSubplay = false;
+        if (mode == 2) p.regionSetlist->prepareWithoutPlayback = true;
+        if (mode == 3) { p.regionSetlist->automaticSubplayNext = true; p.songs[0].parts[1].subplayInitSeconds = 0; }
+        Engine engine; engine.loadProject(p); engine.execute({CommandKind::play}); engine.advance(95);
+        engine.execute({CommandKind::queueRegion, "b"});
+        expect(!engine.transport().subPlay.playing, "queue before trigger waits; disabled/preparation/zero-init modes never start Sub Play");
+        engine.advance(2.5);
+        expect(engine.transport().subPlay.playing == (mode == 0), "normal lead triggers later, while modes without pre-roll remain silent");
+    }
+    {
+        auto p = project; p.regionSetlist->automaticSubplay = false;
+        Engine engine; start(engine, p); engine.execute({CommandKind::subSeek, "", 400}); engine.execute({CommandKind::subPlay});
+        engine.execute({CommandKind::queueRegion, "b"});
+        expect(engine.transport().subPlay.playing && engine.transport().subPlay.position == 400,
+               "canceling the queue preserves unrelated freely positioned Sub Play");
+    }
+}
+
 int main() {
+    testQueuedSubplayCancellationAndRequeue();
     testRepeatBetweenSectionMarkersAndStop();
     testPlayFromEmptyTimelineTail();
     testZeroConfigInitUsesOrdinaryQueue();

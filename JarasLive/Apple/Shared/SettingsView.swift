@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreAudioKit
 struct SettingsView: View {
     @ObservedObject var auth: AuthService
     @ObservedObject var show: ShowController
@@ -132,6 +133,7 @@ struct SettingsView: View {
                         if !audio.error.isEmpty { Text(LocalizedStringKey(audio.error)).foregroundStyle(.red).font(.jarasCaption) }
                         }
                     case .midi:
+                        BluetoothMIDIConnectionButton { audio.refreshMIDI() }
                         Text("MIDI inputs").font(.jarasHeadline)
                         if audio.midiSources.isEmpty { Text("No MIDI inputs").foregroundStyle(JarasTheme.secondary) }
                         ForEach(0..<6, id: \.self) { slot in
@@ -252,5 +254,57 @@ struct SettingsView: View {
         }
         return text
     }
+}
+#endif
+
+
+/// Pair with the system's BLE MIDI browser so CoreMIDI creates actual endpoints.
+/// Ordinary Bluetooth audio pairing does not necessarily create MIDI ports.
+struct BluetoothMIDIConnectionButton: View {
+    var onDismiss: () -> Void
+    #if os(iOS)
+    @State private var presenting = false
+    #else
+    @State private var browser: CABTLEMIDIWindowController?
+    #endif
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button("Connect Bluetooth MIDI…") {
+                #if os(iOS)
+                presenting = true
+                #else
+                if browser == nil { browser = CABTLEMIDIWindowController() }
+                browser?.showWindow(nil)
+                browser?.window?.makeKeyAndOrderFront(nil)
+                #endif
+            }.buttonStyle(.bordered)
+            Text("Connect your MIDI controller here, even if it is already paired in Bluetooth settings.")
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        #if os(iOS)
+        .sheet(isPresented: $presenting, onDismiss: onDismiss) {
+            NavigationStack {
+                BluetoothMIDIBrowser()
+                    .navigationTitle("Bluetooth MIDI")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { presenting = false }
+                        }
+                    }
+            }
+        }
+        #else
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
+            if let window = notification.object as? NSWindow, window === browser?.window { onDismiss() }
+        }
+        #endif
+    }
+}
+#if os(iOS)
+private struct BluetoothMIDIBrowser: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> CABTMIDICentralViewController { CABTMIDICentralViewController() }
+    func updateUIViewController(_ controller: CABTMIDICentralViewController, context: Context) {}
 }
 #endif
