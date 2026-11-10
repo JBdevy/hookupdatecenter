@@ -1067,6 +1067,9 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     const auto beforeCommand = transport();
     core.execute({kind, target, value});
     presentationQueues.command(kind, beforeCommand, transport());
+    if (kind == jaras::CommandKind::toggleLoop && !beforeCommand.loop.enabled && transport().loop.enabled &&
+        song() && transport().loop.start && transport().loop.end)
+        timeSelection=TimeSelection{project().id,song()->id,*transport().loop.start,*transport().loop.end};
     if (beforeCommand.loop.enabled && !transport().loop.enabled) clearTimeRange();
     if (kind == jaras::CommandKind::escape && !cancellingTransport) clearTimeRange();
     if (old != transport().songId) clearTimeRange();

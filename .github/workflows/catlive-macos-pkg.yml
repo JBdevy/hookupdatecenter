@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão pública do CatLive (ex.: 1.25)'
         required: true
-        default: '1.32'
+        default: '1.33'
       audio_only:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
@@ -150,6 +150,7 @@ jobs:
             ${{ runner.temp }}/catlive-windows/test-results/remote-state.json
             ${{ runner.temp }}/catlive-windows/test-results/external-crypto.jl
             ${{ runner.temp }}/catlive-windows/test-results/fx-portability.json
+            ${{ runner.temp }}/catlive-windows/test-results/partial-package/
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
@@ -442,6 +443,7 @@ jobs:
         run: |
           swift test --jobs 2 --filter ProjectEncryptionTests/testCrossPlatformReleaseFixtures
           swift test --jobs 2 --filter WindowsFXPortabilityTests
+          swift test --jobs 2 --filter PartialProjectPackageTests
           swift test --jobs 2 --filter WindowsDAWImportParityTests
           python3 scripts/verify-daw-import-parity.py "$CATLIVE_WINDOWS_IMPORT_FIXTURES"
           bash scripts/test-daw-remote.sh

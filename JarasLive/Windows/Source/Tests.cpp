@@ -65,6 +65,7 @@
 #include "ProjectDeletionPanel.h"
 #include "ShowMode.h"
 #include "PortablePackage.h"
+#include "PartialProjectPackage.h"
 #include "TimelinePlaybackFollow.h"
 #include "RecordingProject.h"
 #include "TrackEditing.h"
@@ -6778,6 +6779,46 @@ int runTests(const File &directory) {
                "Remote block selection controls and reflects the host Preview page");
         directory.getChildFile("remote-state.json")
             .replaceWithText(JSON::toString(presentation.snapshot(1)));
+    });
+    test("Partial export adds native FX and only new media without changing the baseline", [&] {
+        const auto root = directory.getChildFile("partial-package");
+        root.getChildFile("Stems").createDirectory();
+        auto base = projectFixture();
+        base.partialImportIDs = std::vector<ID>{uuid()};
+        auto saved = ProjectCodec::encode(base);
+        expect(ProjectCodec::decode(saved).partialImportIDs == base.partialImportIDs, "Partial import ledger lost in codec");
+        auto track = list(get(list(get(saved, "songs"))[0], "tracks"))[0];
+        auto fx = fxschema::defaults(); put(fx, "inserted", Array<var>{"EQ"}); put(track, "fx", fx);
+        const auto existing = root.getChildFile("Stems/Piano.wav");
+        expect(existing.replaceWithText("existing audio"), "Partial baseline media");
+        auto snapshot = object(); put(snapshot, "format", "catlive-jlpartial"); put(snapshot, "version", 1);
+        put(snapshot, "id", text(uuid())); put(snapshot, "createdAt", Time::getCurrentTime().toISO8601(true));
+        put(snapshot, "project", saved.clone()); put(snapshot, "instruments", object());
+        put(snapshot, "files", Array<var>{portablePackage::recordJSON(packageZIP::fingerprint("Stems/Piano.wav", existing))});
+        const auto baseline = root.getChildFile("Baseline.jlpartial");
+        expect(baseline.replaceWithText(JSON::toString(snapshot)), "Partial snapshot");
+        const auto original = JSON::toString(snapshot);
+        put(fx, "inserted", Array<var>{"EQ", "Reverb"}); put(fx, "reverbEnabled", true); put(fx, "reverbMix", 37.);
+        auto clips = list(get(track, "clips"));
+        for (auto path : {"Stems/desktop.wav", "Stems/new.wav"}) {
+            auto clip = clips[0].clone(); put(clip, "id", text(uuid())); put(clip, "startTime", 22. + clips.size());
+            auto file = get(clip, "audioFile"); put(file, "path", path); clips.add(clip);
+        }
+        put(track, "clips", clips);
+        expect(root.getChildFile("Stems/desktop.wav").replaceWithText("existing audio") &&
+                   root.getChildFile("Stems/new.wav").replaceWithText("new audio"), "Partial new media");
+        const auto archive = root.getChildFile("Windows.ziplivepartial"); double progress = 0;
+        partialPackage::exportPackage(saved, root, baseline, archive, [&](double value) {
+            expect(value >= progress && value <= 1, "Partial progress"); progress = value;
+        });
+        packageZIP::Reader zip(archive);
+        expect(progress == 1 && zip.entries.size() == 3, "Partial sent existing media or did not finish");
+        auto payload = JSON::parse(zip.data("Partial.json", 134217728).toString());
+        auto deltaTrack = list(get(list(get(get(payload, "project"), "songs"))[0], "tracks"))[0];
+        expect(list(get(get(deltaTrack, "fx"), "inserted")) == Array<var>{"Reverb"}, "Existing EQ sent as an addition");
+        const auto deltaClips = list(get(deltaTrack, "clips"));
+        expect(deltaClips.size() == 2 && str(get(deltaClips[0], "audioFile"), "path") == "Stems/Piano.wav", "Identical media was not reused");
+        expect(JSON::toString(snapshot) == original, "Partial export modified its baseline");
     });
     test("Portable packages exchange encrypted projects and UTF-8 media with Mac, including ZIP64", [&] {
         const auto root=directory.getChildFile("portable-package");

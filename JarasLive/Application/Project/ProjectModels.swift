@@ -591,6 +591,8 @@ public indirect enum PortableProjectJSON: Codable, Equatable, Sendable {
 }
 
 public struct Project: Codable, Identifiable, Equatable, Sendable {
+    /// Additive packages already applied; repeated imports never restore deleted content.
+    public var partialImportIDs: [UUID]? = nil
     /// Unfinished Reduce Project choices travel with the saved document.
     public var reductionDraft: PortableProjectJSON? = nil
     /// Permanent identity shared by copies used for redundant playback. Assigned by Save.

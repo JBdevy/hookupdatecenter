@@ -498,6 +498,17 @@ struct MainView: View {
                 #endif
                 mappings.bind(show)
                 show.togglePartsPanel = { partsRightOpen.toggle() }
+                show.showPartsPanel = {
+                    #if os(macOS)
+                    if detachedParts.isDetached { detachedParts.open(show: show) }
+                    else if !partsLeftOpen {
+                        partsRightOpen = true
+                        if setlistCollapsed { toggleSetlist() }
+                    }
+                    #else
+                    partsRightOpen = true
+                    #endif
+                }
                 show.toggleTracksPanel = { toggleMixer() }
                 show.toggleBarMixerPanel = { toggleBarMixer() }
                 show.toggleSetlistPanel = { toggleSetlist() }
@@ -527,7 +538,7 @@ struct MainView: View {
                 // SwiftUI presents the replacement .id before removing the old
                 // workspace. The old view must not erase the new callbacks.
                 guard presentedSessionID == show.projectSessionID else { return }
-                show.toggleTracksPanel = {}; show.toggleBarMixerPanel = {}; show.toggleSetlistPanel = {}; show.togglePartsPanel = {}
+                show.toggleTracksPanel = {}; show.toggleBarMixerPanel = {}; show.toggleSetlistPanel = {}; show.togglePartsPanel = {}; show.showPartsPanel = {}
                 #if os(macOS)
                 ResolumeController.shared.stop()
                 FXWindows.shared.closeAll()

@@ -128,6 +128,17 @@ const { containsCreateProjectTrackName, isCreateProjectSourceLabel } = require('
     assert.equal(removalName('ABTAGCD.wav', 'TAG, ABCD', false).name, 'ABCD.wav');
     assert.equal(removalName('Clube do VS Song.wav', 'VS, Clube do VS', false).name, 'Song.wav');
     assert.equal(removalName('Piano.wav', ', ,', false), null);
+    // One selected phrase is one removal, never its individual words.
+    for (const name of ['Cabelo do maluco.wav', 'Clube dos amigos.wav', 'VS solo.wav',
+      'Clube de amigos do VS.wav']) assert.equal(removalName(name, 'Clube do VS', false), null);
+    assert.equal(removalName('Clube do VS - Cabelo do maluco.wav', 'Clube do VS', false).name, 'Cabelo do maluco.wav');
+    assert.equal(removalName('Clube do VS - Clube dos amigos.wav', 'Clube do VS', false).name, 'Clube dos amigos.wav');
+    const variants = suggestRepeatedNames(['Clube do VS - Piano', 'CLUBE DO VS - GTR',
+      'clube_do_vs - Click', 'Clube Do VS - Baixo']);
+    assert.deepEqual(variants, [{ text: 'Clube do VS', count: 4 }]);
+    const generic = suggestRepeatedNames(['Casa da Música - Piano', 'CASA DA MUSICA - GTR',
+      'Casa_da_Música - Click', 'Casa da Musica - Baixo']);
+    assert.deepEqual(generic, [{ text: 'Casa da Música', count: 4 }]);
     const multiRoot = path.join(temporary, 'multi');
     await file('multi/Clube do VS Song/VS Professional Mario Sena Voz.wav', 'multi-audio');
     await file('multi/Clube do VS Song/abacate Foto.png', 'multi-image');

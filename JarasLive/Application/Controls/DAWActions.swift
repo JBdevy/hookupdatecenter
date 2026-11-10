@@ -7,7 +7,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case selectTrack, muteTrack, soloTrack, volumeTrack, panTrack
     case muteMaster, soloMaster, volumeMaster
     case tempoDown, tempoUp, tapTempo, playStop, play, stop, pause, repeatPlayback, subPlayStop, subPlay, addTrack
-    case tunerDown, tunerUp, partsUp, partsDown, toggleParts, cancelSection
+    case tunerDown, tunerUp, partsUp, partsDown, parts1, parts2, toggleParts, cancelSection
     case setlistUp, setlistDown, toggleAuto, splitItems, ignoreNext
     case projectStart, projectEnd, nextRegion, previousRegion, nextTimelinePoint, previousTimelinePoint
     case toggleVideo, toggleTeleprompter, togglePreview, normalizeItems, reRenderItems, unifyAudioItems, createTempoMarker
@@ -51,6 +51,8 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .tunerUp: return "Tuner +"
         case .partsUp: return "Parts Up"
         case .partsDown: return "Parts Down"
+        case .parts1: return "Parts 1"
+        case .parts2: return "Parts 2"
         case .toggleParts: return "Parts show/hide"
         case .cancelSection: return "Cancel queued section"
         case .playStop: return "Play/Stop"
@@ -86,7 +88,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         let command: UInt = 1 << 20, shift: UInt = 1 << 17, option: UInt = 1 << 19
         let key: UInt16, modifiers: UInt, label: String
         switch self {
-        case .togglePreview, .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts, .cancelSection, .reRenderItems, .unifyAudioItems: return nil
+        case .togglePreview, .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .parts1, .parts2, .toggleParts, .cancelSection, .reRenderItems, .unifyAudioItems: return nil
         case .saveProject: (key, modifiers, label) = (1, command, "⌘S")
         case .toggleFullscreen: (key, modifiers, label) = (103, command, "⌘F11")
         case .muteTrack: (key, modifiers, label) = (46, 0, "M")
@@ -132,6 +134,14 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         default: return nil
         }
     }
+}
+
+/// An explicit tab request, separate from transport and setlist selection.
+/// Its identity lets views ignore replays while accepting repeated mappings.
+public struct PartsTabSelectionRequest: Equatable, Sendable {
+    public let id = UUID()
+    public let secondary: Bool
+    public init(secondary: Bool) { self.secondary = secondary }
 }
 
 public struct DAWActionBinding: Codable, Equatable, Identifiable {
@@ -288,7 +298,7 @@ extension DAWAction {
         case .volumeMaster, .volumeTrack, .panTrack: return .volume
         case .muteMaster, .muteTrack: return .mute
         case .soloMaster, .soloTrack: return .solo
-        case .setlistUp, .setlistDown, .toggleAuto, .ignoreNext, .toggleSetlist, .toggleMultiLoopBypass, .partsUp, .partsDown, .toggleParts, .cancelSection: return .setlist
+        case .setlistUp, .setlistDown, .toggleAuto, .ignoreNext, .toggleSetlist, .toggleMultiLoopBypass, .partsUp, .partsDown, .parts1, .parts2, .toggleParts, .cancelSection: return .setlist
         default: return .shortcuts
         }
     }

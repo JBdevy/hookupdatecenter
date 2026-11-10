@@ -61,5 +61,17 @@
 <key>UTTypeDescription</key><string>CatLive Project</string>
 <key>UTTypeConformsTo</key><array><string>public.data</string></array>
 <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>jl</string><string>bkjl</string></array></dict>
-</dict></array>
+</dict><dict>
+<key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.jlpartial</string>
+<key>UTTypeDescription</key><string>CatLive Partial Inventory</string>
+<key>UTTypeConformsTo</key><array><string>public.json</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>jlpartial</string></array></dict>
+</dict>
+<dict>
+<key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.ziplivepartial</string>
+<key>UTTypeDescription</key><string>CatLive Partial Package</string>
+<key>UTTypeConformsTo</key><array><string>public.zip-archive</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>ziplivepartial</string></array></dict>
+</dict>
+</array>
 </dict></plist>

@@ -106,7 +106,7 @@ public enum ClickTempoDetector {
         }
         let measured = input.filter { $0.position.isFinite && $0.bpm.isFinite && $0.bpm >= 60 && $0.bpm <= 300 && $0.position < end }
             .sorted { $0.position < $1.position }
-        let sections = measured.indices.compactMap { index -> Section? in
+        let bridged = measured.indices.compactMap { index -> Section? in
             let section = measured[index]
             guard index > 0, index + 1 < measured.count else { return section }
             let previous = measured[index - 1], next = measured[index + 1]
@@ -122,6 +122,36 @@ public enum ClickTempoDetector {
                 section.bpm > max(previous.bpm, next.bpm) * 1.03
             if abs(beats - 1) <= 0.05, previousBeats >= 4, nextBeats >= 4, outsideNeighbors { return nil }
             return section
+        }
+        // Voice/noise in a Click file can produce several false clocks in a
+        // short burst. Require the same established clock on both sides, and
+        // limit suppression to two bars; persistent changes and ramps remain.
+        var clocks: [Section] = []
+        for section in bridged {
+            if clocks.last.map({ abs(rounded($0.bpm) - rounded(section.bpm)) < 0.01 }) != true { clocks.append(section) }
+        }
+        var sections: [Section] = []
+        var cursor = 0
+        while cursor < clocks.count {
+            let current = clocks[cursor]
+            if let previous = sections.last {
+                let quarterNotes = Double(max(1, beatsPerBar)) * 4 / Double(max(1, beatUnit))
+                let maximum = 2 * quarterNotes * 60 / previous.bpm
+                let established = (current.position - previous.position) * previous.bpm / 60 >= quarterNotes
+                var returning: Int?
+                if established, cursor + 1 < clocks.count {
+                    for next in (cursor + 1)..<clocks.count {
+                        if clocks[next].position - current.position > maximum { break }
+                        let nextEnd = next + 1 < clocks.count ? clocks[next + 1].position : end
+                        if abs(rounded(clocks[next].bpm) - rounded(previous.bpm)) < 0.01,
+                           (nextEnd - clocks[next].position) * clocks[next].bpm / 60 >= quarterNotes {
+                            returning = next; break
+                        }
+                    }
+                }
+                if let returning { cursor = returning + 1; continue }
+            }
+            sections.append(current); cursor += 1
         }
         guard let first = sections.first else { return [] }
         var result = [Section(position: first.position, bpm: rounded(first.bpm))]

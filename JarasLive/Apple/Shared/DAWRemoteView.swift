@@ -982,6 +982,8 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var addingToPlaylist: UUID?
     @State private var creatingPlaylist = false
     var exportProject: (() -> Void)? = nil
+    var exportPartial: (() -> Void)? = nil
+    var importPartial: (() -> Void)? = nil
     var groupTracks: ((Set<UUID>) -> Void)? = nil
     var groupableTracks: Set<UUID> = []
     @State private var regionMovePreview: IpadRegionMovePreview?
@@ -1045,6 +1047,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var noticesOpen = false
     @State private var timerOpen = false
     @State private var sectionsOpen = false
+    @State private var partsTabSelection = CurrentValueSubject<PartsTabSelectionRequest?, Never>(nil)
     @State private var sectionsInList = false
     @AppStorage("jaras.ipad.parts.left.open") private var nativeLeftPartsOpen = false
     @AppStorage("jaras.ipad.parts.left.preferredWidth") private var nativeLeftPartsWidth = 240.0
@@ -1374,6 +1377,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             if !local && !observer { RemoteMIDIActions.shared.start() }
             if local, let localShow {
                 localShow.togglePartsPanel = { [open = $nativeLeftPartsOpen] in open.wrappedValue.toggle() }
+                localShow.showPartsPanel = { showMappedParts() }
                 localShow.toggleSetlistPanel = { toggleMainSetlist() }
                 localShow.toggleTracksPanel = { toggleMainTrackMixer() }
                 localShow.toggleTeleprompterWindow = { showPrompter(prompterPanel == .first ? nil : .first) }
@@ -2350,7 +2354,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             if verticalSections {
                 VStack(spacing: 4) {
                     cancelSectionButton.padding([.top, .leading, .trailing], 4)
-                    SectionListTabs(current: current?.name, queued: queued?.name, subPlaying: state.subPlaying, playing: state.playing) { secondary in
+                    SectionListTabs(current: current?.name, queued: queued?.name, subPlaying: state.subPlaying, playing: state.playing, selectionRequests: (localShow?.partsTabSelection ?? partsTabSelection).compactMap { $0 }.eraseToAnyPublisher()) { secondary in
                         remoteSectionBank(secondary: secondary)
                     }
                 }
@@ -2509,7 +2513,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     .modifier(RemoteControlSurface(color: state.pendingSave ? JarasTheme.green.opacity(0.16) : nil))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(state.pendingSave ? JarasTheme.green.opacity(0.7) : JarasTheme.line))
             }.disabled(state.saving || (!local && !state.pendingSave))
-                .modifier(RemoteProjectExportHold(export: exportProject))
+                .modifier(RemoteProjectExportHold(export: exportProject, exportPartial: exportPartial, importPartial: importPartial))
             }
                 HStack(spacing: 4) {
                 Button {
@@ -2846,6 +2850,20 @@ private struct RemoteSidebarRail<Content: View>: View {
         } else { selectedTracks = [id] }
         localShow?.setMixerTrackSelection(selectedTracks, anchor: id)
     }
+    private func showMappedParts() {
+        if phoneLayout {
+            if phonePanel != .sections { choosePhonePanel(.sections) }
+        } else {
+            if local && nativeLeftPartsOpen && prompterPanel == nil { return }
+            prompterFullscreen = false
+            sectionsInList = true
+            sectionsOpen = true
+            if !mainSetlistVisible {
+                if prompterPanel != nil { togglePrompterSetlist() }
+                else { toggleMainSetlist() }
+            }
+        }
+    }
     private func performRemoteMIDI(_ command: RemoteMIDIAction) {
         guard !local, !observer, !RemoteMIDIActions.shared.isLearning else { return }
         switch command {
@@ -2855,6 +2873,9 @@ private struct RemoteSidebarRail<Content: View>: View {
         case .togglePreview: if state.previewActive != nil { action(.togglePreview) }
         case .bypass: action(.toggleMultiLoopBypass)
         case .cancelSection: action(.cancelSection)
+        case .parts1, .parts2:
+            partsTabSelection.send(.init(secondary: command == .parts2))
+            showMappedParts()
         case .toggleParts:
             if phoneLayout { choosePhonePanel(phonePanel.togglingFooterParts()) }
             else { sectionsInList = true; sectionsOpen.toggle() }
@@ -3274,7 +3295,7 @@ private struct RemoteSetlistRowLabel: View, Equatable {
     }
 }
 private enum RemoteMIDIAction: String, CaseIterable, Identifiable, Codable {
-    case setlistUp, setlistDown, partsUp, partsDown, toggleParts, cancelSection, playStop, subPlayStop, togglePreview, repeatPlayback, bypass, playlistUp, playlistDown
+    case setlistUp, setlistDown, partsUp, partsDown, parts1, parts2, toggleParts, cancelSection, playStop, subPlayStop, togglePreview, repeatPlayback, bypass, playlistUp, playlistDown
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -3282,6 +3303,8 @@ private enum RemoteMIDIAction: String, CaseIterable, Identifiable, Codable {
         case .setlistDown: return "Setlist Down"
         case .partsUp: return "Parts Up"
         case .partsDown: return "Parts Down"
+        case .parts1: return "Parts 1"
+        case .parts2: return "Parts 2"
         case .toggleParts: return "Parts"
         case .cancelSection: return "Cancel queued section"
         case .playStop: return "Play / Stop"
@@ -5419,9 +5442,16 @@ private struct RemoteSetlistEntryEditor: View {
 /// Holding Save opens the package dialog; releasing a hold must not also save.
 private struct RemoteProjectExportHold: ViewModifier {
     let export: (() -> Void)?
+    let exportPartial: (() -> Void)?
+    let importPartial: (() -> Void)?
     @ViewBuilder func body(content: Content) -> some View {
         if let export {
             content.buttonStyle(IpadTapHoldButtonStyle(hold: export))
+                .contextMenu {
+                    Button("Opções de salvar", action: export)
+                    if let exportPartial { Button("Export Partial", action: exportPartial) }
+                    if let importPartial { Button("Import Partial", action: importPartial) }
+                }
                 .accessibilityAction(named: Text("Export CatLive project"), export)
         } else { content.buttonStyle(RemoteFullAreaButtonStyle()) }
     }

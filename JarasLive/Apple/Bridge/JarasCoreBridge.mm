@@ -353,6 +353,7 @@ static NSDictionary* projectJSON(const Project& p, bool includeWaveforms = true)
     if(p.timelineMovementLocked) result[@"timelineMovementLocked"]=@(*p.timelineMovementLocked);
     if(p.savedCursor) result[@"savedCursor"]=@{@"songID":text(p.savedCursor->songID), @"position":@(p.savedCursor->position)};
     if(p.projectSyncID) result[@"projectSyncID"]=text(*p.projectSyncID);
+    if(p.partialImportIDs) { NSMutableArray* ids = [NSMutableArray new]; for(const auto& id : *p.partialImportIDs) [ids addObject:text(id)]; result[@"partialImportIDs"] = ids; }
     if(p.masterPan != 0) result[@"masterPan"]=@(p.masterPan);
     if(p.masterVolume != 1) result[@"masterVolume"]=@(p.masterVolume);
     if(p.masterMute) result[@"masterMute"]=@YES;
@@ -407,6 +408,7 @@ static Track readTrack(NSDictionary* td) {
 static Project readProject(NSDictionary* d) {
     Project p; p.id=str(d[@"id"]); p.name=str(d[@"name"]); p.projectFormatVersion=number(d[@"projectFormatVersion"]); p.minimumJarasVersion=str(d[@"minimumJarasVersion"]); p.createdAt=str(d[@"createdAt"]); p.updatedAt=str(d[@"updatedAt"]);
     if(d[@"projectSyncID"] && d[@"projectSyncID"] != NSNull.null) p.projectSyncID=str(d[@"projectSyncID"]);
+    if(d[@"partialImportIDs"] && d[@"partialImportIDs"] != NSNull.null) { p.partialImportIDs.emplace(); for(id value in array(d[@"partialImportIDs"])) p.partialImportIDs->push_back(str(value)); }
     if(d[@"importedTimeline"] && d[@"importedTimeline"] != NSNull.null) p.importedTimeline=number(d[@"importedTimeline"])!=0;
     if(d[@"timelineMovementLocked"] && d[@"timelineMovementLocked"] != NSNull.null) p.timelineMovementLocked=number(d[@"timelineMovementLocked"])!=0;
     if(d[@"savedCursor"] && d[@"savedCursor"] != NSNull.null) {

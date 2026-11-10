@@ -227,7 +227,29 @@ inline std::vector<Section> markerSections(std::vector<Section> input,int beatsP
         }
         if(!bridge)stable.push_back(input[i]);
     }
-    input=std::move(stable);
+    // Same policy as ClickTempoDetector: ignore a short contaminated burst
+    // only when an established tempo returns within two bars and persists.
+    std::vector<Section> clocks;
+    for(const auto &section:stable)
+        if(clocks.empty() || std::abs(rounded(clocks.back().bpm)-rounded(section.bpm))>=.01)clocks.push_back(section);
+    input.clear();
+    for(size_t i=0;i<clocks.size();) {
+        size_t returning=clocks.size();
+        if(!input.empty()) {
+            const auto previous=input.back();
+            const double quarterNotes=(double)std::max(1,beatsPerBar)*4/std::max(1,beatUnit);
+            const double maximum=2*quarterNotes*60/previous.bpm;
+            if((clocks[i].position-previous.position)*previous.bpm/60>=quarterNotes)
+                for(size_t next=i+1;next<clocks.size();++next) {
+                    if(clocks[next].position-clocks[i].position>maximum)break;
+                    const double nextEnd=next+1<clocks.size()?clocks[next+1].position:end;
+                    if(std::abs(rounded(clocks[next].bpm)-rounded(previous.bpm))<.01 &&
+                       (nextEnd-clocks[next].position)*clocks[next].bpm/60>=quarterNotes) {returning=next;break;}
+                }
+        }
+        if(returning<clocks.size()){i=returning+1;continue;}
+        input.push_back(clocks[i++]);
+    }
     std::vector<Section> result{{input.front().position,rounded(input.front().bpm)}};
     for(size_t i=1;i<input.size();++i) {
         const auto previous=result.back();

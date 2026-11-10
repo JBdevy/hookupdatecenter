@@ -59,8 +59,14 @@ import UniformTypeIdentifiers
                                 ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                                     HStack {
                                         Button { selected = group.id; checked = group.sources } label: {
-                                            HStack { Text(verbatim: group.name); Spacer(); Text("\(group.sources.count)").foregroundStyle(JarasTheme.secondary) }
-                                                .padding(8).contentShape(Rectangle())
+                                            HStack(spacing: 8) {
+                                                Text(verbatim: "\(index + 1)").monospacedDigit()
+                                                    .foregroundStyle(JarasTheme.secondary)
+                                                    .frame(width: max(24, CGFloat(String(groups.count).count) * 9), alignment: .trailing)
+                                                Text(verbatim: group.name)
+                                                Spacer()
+                                                Text("\(group.sources.count)").foregroundStyle(JarasTheme.secondary)
+                                            }.padding(8).contentShape(Rectangle())
                                         }.buttonStyle(.plain)
                                     }.frame(height: 36)
                                         .background(selected == group.id ? JarasTheme.green.opacity(0.2) : Color.clear, in: RoundedRectangle(cornerRadius: 5))

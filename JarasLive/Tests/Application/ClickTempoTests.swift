@@ -1,6 +1,25 @@
 import XCTest
 @testable import JarasApplication
 final class ClickTempoTests: XCTestCase {
+    func testShortVoiceBurstReturnsToEstablishedTempoWithoutExtraMarkers() {
+        typealias S = ClickTempoDetector.Section
+        let measured = [S(position: 0.0000833333, bpm: 161),
+            S(position: 88.6133333, bpm: 221.794378), S(position: 89.372875, bpm: 179.416895),
+            S(position: 89.7072917, bpm: 203.792811), S(position: 90.3743542, bpm: 161),
+            S(position: 90.9317917, bpm: 161), S(position: 151.2213333, bpm: 221.385195),
+            S(position: 151.9815833, bpm: 179.416895), S(position: 152.316, bpm: 203.792811),
+            S(position: 152.9830417, bpm: 161), S(position: 153.5404792, bpm: 161)]
+        XCTAssertEqual(ClickTempoDetector.markerSections(measured, until: 155.031), [measured[0]])
+        for bpm in [93.0, 147.5, 212.0] {
+            let burst = [S(position: 0, bpm: bpm), S(position: 30, bpm: bpm * 1.2), S(position: 31, bpm: bpm)]
+            XCTAssertEqual(ClickTempoDetector.markerSections(burst, until: 60), [burst[0]])
+            let sustained = [S(position: 0, bpm: bpm), S(position: 30, bpm: 120), S(position: 45, bpm: bpm)]
+            XCTAssertEqual(ClickTempoDetector.markerSections(sustained, until: 60).count, 3)
+            let changing = [S(position: 0, bpm: bpm), S(position: 30, bpm: 110), S(position: 31, bpm: 130)]
+            XCTAssertTrue(ClickTempoDetector.markerSections(changing, until: 60).contains { $0.bpm == 130 })
+        }
+    }
+
     func testTransitionGapsAcrossDifferentTemposOffsetsAndMeters() throws {
         // Synthetic, unrelated songs: both slower and faster bridge intervals,
         // increasing/decreasing tempos, and different timeline/sample clocks.

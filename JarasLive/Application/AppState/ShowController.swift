@@ -749,6 +749,9 @@ public struct ShowTimelinePresentationState: Equatable {
             let index = (anchor ?? (action == .partsDown ? -1 : 0)) + (action == .partsDown ? 1 : -1)
             guard markers.indices.contains(index) else { return }
             send(.queueSection, target: markers[index].id)
+        case .parts1, .parts2:
+            partsTabSelection.send(.init(secondary: action == .parts2))
+            showPartsPanel()
         case .toggleParts: togglePartsPanel()
         case .playStop: send(snapshot.transport.playing ? .stop : .play)
         case .pause: send(.pause)
@@ -800,6 +803,10 @@ public struct ShowTimelinePresentationState: Equatable {
     public var toggleBarMixerPanel: () -> Void = {}
     public var toggleSetlistPanel: () -> Void = {}
     public var togglePartsPanel: () -> Void = {}
+    public var showPartsPanel: () -> Void = {}
+    // Retain the last request so a panel opened by the action receives it too.
+    // Repeated requests still publish, even after the user changes tabs by hand.
+    public let partsTabSelection = CurrentValueSubject<PartsTabSelectionRequest?, Never>(nil)
     public var onSetlistEdited: () -> Void = {}
     public var audioUpdate: (ShowSnapshot, UInt64) -> Void = { _, _ in }
     public var audioAutomationOverride: (UUID?, UUID, Double?) -> Void = { _, _, _ in }

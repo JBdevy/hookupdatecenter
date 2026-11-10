@@ -77,6 +77,8 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"soloMaster", "Solo Master", 3, ""},
         {"partsUp", "Parts Up", 4, ""},
         {"partsDown", "Parts Down", 4, ""},
+        {"parts1", "Parts 1", 4, ""},
+        {"parts2", "Parts 2", 4, ""},
         {"toggleParts", "Parts show/hide", 4, ""},
         {"cancelSection", "Cancel queued section", 4, ""},
         {"setlistUp", "Setlist Up", 4, "cursor up"},

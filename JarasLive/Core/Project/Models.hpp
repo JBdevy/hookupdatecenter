@@ -49,6 +49,7 @@ struct Project {
     std::optional<bool> timelineMovementLocked;
     // Preserve imported timing through engine snapshots and project saves.
     std::optional<bool> importedTimeline;
+    std::optional<std::vector<ID>> partialImportIDs;
 };
 // Control-thread validation; never called from an audio callback.
 void validateRegionSetlist(const Project& project, const RegionSetlist& state);

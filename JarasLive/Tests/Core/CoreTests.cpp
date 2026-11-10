@@ -513,7 +513,36 @@ static void testPlayFromEmptyTimelineTail() {
     }
 }
 
+static void testRepeatBetweenSectionMarkersAndStop() {
+    Project project; project.id="repeat-project"; project.name="Repeat";
+    project.songs={{"repeat-song","Song",60,120,{},{{"region","Song",0,60}}}};
+    TimelineMarker left{"left","Verse",10,0}, right{"right","Chorus",20,0}, next{"next","End",40,0};
+    left.section=true;right.section=true;next.section=true;
+    TimelineMarker tempo{"tempo","TEMPO",15,0};tempo.tempoBPM=120;
+    TimelineMarker note{"note","Annotation",17,0};
+    project.songs[0].markers=std::vector<TimelineMarker>{next,tempo,right,note,left};
+    for(bool playing:{false,true}) {
+        Engine engine;engine.loadProject(project);engine.execute({CommandKind::editSeek,"",12});
+        if(playing){engine.execute({CommandKind::play});engine.advance(1);engine.execute({CommandKind::editSeek,"",35});}
+        engine.execute({CommandKind::loopStart,"",1});engine.execute({CommandKind::loopEnd,"",5});
+        engine.execute({CommandKind::toggleLoop});
+        expect(engine.transport().loop.enabled && engine.transport().loop.start==10 && engine.transport().loop.end==20,
+               "Repeat uses surrounding section markers, ignores tempo/notes, and prefers playback over edit cursor while playing");
+        engine.execute({CommandKind::pause});
+        expect(engine.transport().loop.enabled,"Pause must preserve Repeat");
+        engine.execute({CommandKind::stop});
+        expect(!engine.transport().loop.enabled && !engine.transport().loop.start && !engine.transport().loop.end,"Stop clears manual Repeat bounds");
+        engine.execute({CommandKind::editSeek,"",20});engine.execute({CommandKind::toggleLoop});
+        expect(engine.transport().loop.start==20 && engine.transport().loop.end==40,"A marker belongs to the section starting at that marker");
+        engine.execute({CommandKind::stopAll});
+        expect(!engine.transport().loop.enabled && !engine.transport().loop.start && !engine.transport().loop.end,"Stop All clears Repeat");
+        engine.execute({CommandKind::editSeek,"",45});engine.execute({CommandKind::loopStart,"",43});engine.execute({CommandKind::loopEnd,"",48});engine.execute({CommandKind::toggleLoop});
+        expect(engine.transport().loop.start==43 && engine.transport().loop.end==48,"Without a pair of section markers, preserve an explicitly selected range");
+    }
+}
+
 int main() {
+    testRepeatBetweenSectionMarkersAndStop();
     testPlayFromEmptyTimelineTail();
     testZeroConfigInitUsesOrdinaryQueue();
     testAutomaticSubplayBars();

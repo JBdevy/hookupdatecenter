@@ -4183,6 +4183,9 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             if(safe) safe->showPanel("Reduzir projeto",std::make_unique<ProjectReductionPanel>(safe->session,
                 [safe](std::function<void()> saved){if(safe)safe->chooseSave(false,std::move(saved));}),760,
                 safe->session.dirty||safe->session.isSaving()||!safe->session.document.existsAsFile()?206:560);
+        }, [safe] {
+            if(safe) safe->showPanel("Export Partial", std::make_unique<PortableExportPanel>(safe->session,
+                [safe](std::function<void()> saved){if(safe)safe->chooseSave(false,std::move(saved));},true),540,376);
         });
         CallOutBox::launchAsynchronously(std::move(panel),controls["save"]->getScreenBounds(),nullptr);
     };

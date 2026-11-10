@@ -6,6 +6,7 @@ enum SetlistPlacement: String { case left, right, detached }
 
 struct TransportView: View {
     @State private var showingPortableExport = false
+    @State private var showingPartialExport = false
     @State private var showingReduction = false
     @State private var showingExport = false
     @State private var showingResolume = false
@@ -70,6 +71,9 @@ struct TransportView: View {
             .workspaceEditor("grandMA2", isPresented: $showingGrandMA2) { GrandMA2SettingsView(show: show) }
             .sheet(isPresented: $showingPortableExport) {
                 if let documents { PortableProjectExportView(documents: documents) }
+            }
+            .sheet(isPresented: $showingPartialExport) {
+                if let documents { PartialProjectTransferView(documents: documents, mode: .export) }
             }
             .sheet(isPresented: $showingReduction) {
                 if let documents { ProjectReductionView(documents: documents) }
@@ -213,6 +217,7 @@ struct TransportView: View {
                     ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message,
                                       projectName: documents?.currentURL?.deletingPathExtension().lastPathComponent ?? show.snapshot.project.name, rename: documents.map { documents in { name in try await documents.renameProject(name) } },
                                       exportToIPad: documents == nil ? nil : { showingPortableExport = true },
+                                      exportPartial: documents == nil ? nil : { showingPartialExport = true },
                                       reduceProject: documents == nil ? nil : { showingReduction = true }) { Task { await show.save() } }
                     Spacer(minLength: 0)
                     PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist", tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
@@ -748,6 +753,7 @@ private struct ProjectSaveButton: View {
     var projectName = ""
     var rename: ((String) async throws -> Void)? = nil
     var exportToIPad: (() -> Void)? = nil
+    var exportPartial: (() -> Void)? = nil
     var reduceProject: (() -> Void)? = nil
     let action: () -> Void
     @State private var showingOptions = false
@@ -775,6 +781,9 @@ private struct ProjectSaveButton: View {
                         .onSubmit { saveName() }.disabled(renaming)
                     if !renameError.isEmpty { Text(verbatim: JarasLocalization.string(renameError)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                     Button("Save") { saveName() }.disabled(rename == nil || renaming || draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if let exportPartial {
+                        Button("Export Partial") { showingOptions = false; exportPartial() }
+                    }
                     if let exportToIPad {
                         Divider()
                         HStack {

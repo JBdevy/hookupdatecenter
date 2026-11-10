@@ -1275,6 +1275,10 @@ void Engine::execute(const Command& c) {
     case CommandKind::subSeek: transport_.subExclusivePlaybackRegionId.reset(); manualSubCursor_ = true; automaticSubplayActive_ = false; if (currentSong()) { transport_.subPlay.position = std::max(0.0, c.value); transport_.subPlaybackStartRegionId = playbackEntryRegion(*currentSong(), transport_.subPlay.position); } break;
     case CommandKind::stopAll: execute({CommandKind::subStop}); execute({CommandKind::stop}); break;
     case CommandKind::stop:
+        // Repeat is a transient transport selection. Stop must clear it even
+        // when the main head promotes an already-playing Subplay head.
+        transport_.loop = {};
+        transport_.multiLoop.reset();
         automaticSubplayQueue_.reset();
         clearIgnoreNext();
         if (transport_.subPlay.playing) { promoteSubPlay(); break; }
@@ -1352,6 +1356,16 @@ void Engine::execute(const Command& c) {
             if (transport_.multiLoop && transport_.multiLoop->gates) {
                 transport_.loop.start = transport_.multiLoop->start;
                 transport_.loop.end = transport_.multiLoop->end;
+            }
+            else if (const auto* song = currentSong(); song && song->markers) {
+                const double cursor = transport_.playing ? transport_.position : transport_.editPosition;
+                std::optional<double> left, right;
+                for (const auto& marker : *song->markers) {
+                    if (!marker.section.value_or(false) || marker.tempoBPM) continue;
+                    if (marker.position <= cursor && (!left || marker.position > *left)) left = marker.position;
+                    if (marker.position > cursor && (!right || marker.position < *right)) right = marker.position;
+                }
+                if (left && right) { transport_.loop.start = left; transport_.loop.end = right; }
             }
             if (!transport_.loop.start || !transport_.loop.end || *transport_.loop.end <= *transport_.loop.start) {
                 transport_.loop.start.reset(); transport_.loop.end.reset();

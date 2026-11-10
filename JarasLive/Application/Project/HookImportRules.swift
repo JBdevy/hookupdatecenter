@@ -687,6 +687,7 @@ function removalName(name, text, directory) {
 
 function suggestRepeatedNames(names, { limit = 5 } = {}) {
   const counts = new Map();
+  const displayNames = new Map();
   const sourceLabels = new Map();
   const trackLabels = new Map();
   const cached = (cache, detector, value) => {
@@ -718,11 +719,14 @@ function suggestRepeatedNames(names, { limit = 5 } = {}) {
     for (const { start, size, text } of windows) {
       if (Array.from({ length: size }, (_, i) => start + i).some((i) => trackTokens.has(i))) continue;
       if (text.length < 2 || text.length > 120 || !/\p{L}/u.test(text)) continue;
-      perItem.add(text);
+      const key = foldRemovalValue(text).text.trim();
+      if (!displayNames.has(key)) displayNames.set(key, text);
+      perItem.add(key);
     }
     for (const text of perItem) counts.set(text, (counts.get(text) || 0) + 1);
   }
   const candidates = [...counts]
+    .map(([key, count]) => [displayNames.get(key), count])
     .filter(([text, count]) => count > 1 && !containsCreateProjectTrackName(text))
     .map(([text, count]) => [text, count, cached(sourceLabels, isCreateProjectSourceLabel, text)])
     // Prefer the complete provider tag over generic pieces such as "VS".
@@ -733,7 +737,11 @@ function suggestRepeatedNames(names, { limit = 5 } = {}) {
   const suggestions = [];
   for (const [text, count] of candidates) {
     // Prefer the complete repeated phrase over five variations of its words.
-    if (suggestions.some((item) => item.text.includes(text) || text.includes(item.text))) continue;
+    const phrase = ` ${foldRemovalValue(text).text.trim()} `;
+    if (suggestions.some((item) => {
+      const previous = ` ${foldRemovalValue(item.text).text.trim()} `;
+      return previous.includes(phrase) || phrase.includes(previous);
+    })) continue;
     suggestions.push({ text, count });
     if (suggestions.length >= limit) break;
   }

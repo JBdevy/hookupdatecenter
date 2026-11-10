@@ -105,6 +105,8 @@ public struct NativeFXInstance: Codable, Equatable, Sendable {
     public var id = UUID().uuidString
     public var kind: String
     public var settings: NativeFXSettings
+    /// Retains identity when a legacy stage is promoted by reordering an item.
+    public var legacyOrigin: String? = nil
     public var effectKey: String { "Native:" + id }
     public init(kind: String, settings: NativeFXSettings) { self.kind = kind; self.settings = settings }
 }
@@ -280,7 +282,8 @@ extension NativeFXSettings {
         for key in Self.order.dropFirst() where inserted.contains(key) {
             var value = Self().merging(effect: key, from: self)
             value.inserted = [key]
-            let instance = NativeFXInstance(kind: key, settings: value)
+            var instance = NativeFXInstance(kind: key, settings: value)
+            instance.legacyOrigin = key
             replacements[key] = instance.effectKey; promoted.append(instance)
         }
         // Bypass the old stages without resetting their coefficients while

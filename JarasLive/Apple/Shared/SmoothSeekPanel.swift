@@ -237,7 +237,7 @@ struct SmoothSeekPanel: View {
                 .accessibilityLabel("Cancel queued section")
                 .padding(4)
             #endif
-            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing, playing: transport.playing) { secondary in
+            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing, playing: transport.playing, selectionRequests: show.partsTabSelection.compactMap { $0 }.eraseToAnyPublisher()) { secondary in
                 bank(region: secondary ? queued : current, secondary: secondary)
             }
         }.background(JarasTheme.panel)
@@ -468,8 +468,10 @@ struct SectionListTabs<Content: View>: View {
     let queued: String?
     var subPlaying = false
     var playing = false
+    var selectionRequests: AnyPublisher<PartsTabSelectionRequest, Never> = Empty().eraseToAnyPublisher()
     @ViewBuilder let content: (Bool) -> Content
     @State private var secondary = false
+    @State private var lastSelectionRequest: UUID?
     var body: some View {
         VStack(spacing: 1) {
             HStack(spacing: 3) {
@@ -478,6 +480,11 @@ struct SectionListTabs<Content: View>: View {
             }.padding(4)
             content(secondary).id(secondary)
         }.background(JarasTheme.panel)
+            .onReceive(selectionRequests) { request in
+                guard lastSelectionRequest != request.id else { return }
+                lastSelectionRequest = request.id
+                secondary = request.secondary
+            }
     }
     private func tab(_ name: String?, secondary target: Bool) -> some View {
         Button { secondary = target } label: {

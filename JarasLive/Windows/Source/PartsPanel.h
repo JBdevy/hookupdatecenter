@@ -26,16 +26,11 @@ class PartsPanel final : public Component, private Timer {
                 error(String::fromUTF8(e.what()));
             }
         };
-        currentTab.onClick = [this] {
-            secondaryTab = false;
-            resized();
-        };
-        queuedTab.onClick = [this] {
-            secondaryTab = true;
-            resized();
-        };
+        currentTab.onClick = [this] { selectTab(false); };
+        queuedTab.onClick = [this] { selectTab(true); };
         startTimerHz(60);
     }
+    void selectTab(bool secondary) { secondaryTab = secondary; resized(); }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         g.setColour(theme::secondary.withAlpha(.35f));

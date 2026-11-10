@@ -30,6 +30,9 @@ static void expectMetadataSnapshot(JarasCoreBridge* core, NSDictionary* full) {
 int main(int argc,char**argv){@autoreleasepool{
     expect(argc==2,"fixture required");
     NSData* input=[NSData dataWithContentsOfFile:[NSString stringWithUTF8String:argv[1]]]; NSError* error=nil;
+    NSMutableDictionary* partialFixture=[NSJSONSerialization JSONObjectWithData:input options:NSJSONReadingMutableContainers error:&error];
+    partialFixture[@"partialImportIDs"]=@[@"EA963926-2749-418C-868F-B011D832CC04"];
+    input=[NSJSONSerialization dataWithJSONObject:partialFixture options:0 error:&error];
     JarasCoreBridge* core=[JarasCoreBridge new]; expect([core loadProjectData:input error:&error],"load bridge");
     NSDictionary* original=[NSJSONSerialization JSONObjectWithData:input options:0 error:&error];
     NSDictionary* snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];

@@ -331,6 +331,63 @@ enum PortableProjectImportPrompt: String, Identifiable {
             }
         }
     }
+    func partialInstruments(_ project: Project, directory: URL, requireAll: Bool = true) throws -> [String: URL] {
+        var result: [String: URL] = [:]
+        for id in PortableProjectPackage.instrumentIDs(in: project) {
+            guard let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: directory) else {
+                if !requireAll { continue }
+                throw ProjectError.invalid("Instrumento nativo não encontrado: " + id)
+            }
+            result[id] = file
+        }
+        return result
+    }
+    func importPartialPackage(_ archive: URL, progress: @escaping @MainActor (Double) -> Void) async throws {
+        guard ready, let document = currentURL, !busy, !show.saving,
+              !TrackRecording.shared.recording, !TrackRecording.shared.busy else { throw ProjectError.invalid("Aguarde a operação atual antes de importar o parcial.") }
+        guard !show.isPlaying else { throw ProjectError.invalid("Pare a reprodução para importar o parcial.") }
+        let scoped = archive.startAccessingSecurityScopedResource()
+        let previousControl = show.canExecute
+        show.canExecute = { false }; busy = true; presentsOwnProgress = true
+        defer { show.canExecute = previousControl; busy = false; presentsOwnProgress = false; if scoped { archive.stopAccessingSecurityScopedResource() } }
+        try await show.flushProject()
+        let original = show.snapshot.project, session = show.projectSessionID, revision = show.projectRevision
+        let directory = document.deletingLastPathComponent()
+        let instruments = try partialInstruments(original, directory: directory, requireAll: false)
+        let job = Task.detached(priority: .userInitiated) {
+            try PartialProjectPackage.prepareImport(archive, project: original, directory: directory, instruments: instruments) { value in
+                Task { @MainActor in progress(value) }
+            }
+        }
+        let prepared = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+        try Task.checkCancellation()
+        guard currentURL == document, show.projectSessionID == session, show.projectRevision == revision else { throw ProjectError.invalid("O projeto mudou durante a leitura do parcial. Tente novamente.") }
+        var applied = false
+        do {
+            try prepared.install()
+            await preloadTimelineWaveforms(prepared.project, at: document)
+            try Task.checkCancellation()
+            try show.applyImportedProject(prepared.project); applied = true
+            try await show.flushProject()
+            missingAudioPaths = Set(ProjectAudioRecovery.missingPaths(in: prepared.project, directory: directory))
+            projectAudio.setMissingAudioPaths(missingAudioPaths)
+            show.preparePlayback()
+        } catch {
+            if applied {
+                // A backup cleanup can fail after the document was committed.
+                // Keep all media if the committed document references this import,
+                // or if the saved file cannot be inspected safely.
+                guard let saved = try? await ProjectStore(url: document).load(),
+                      saved.partialImportIDs != prepared.project.partialImportIDs else {
+                    throw ProjectError.invalid("O parcial foi aplicado, mas houve uma falha ao finalizar o salvamento. As mídias foram mantidas; confira o projeto e salve novamente.")
+                }
+                do { try show.applyImportedProject(original) }
+                catch { throw ProjectError.invalid("Não foi possível finalizar a importação. As mídias foram mantidas para preservar o projeto aberto.") }
+            }
+            prepared.rollback()
+            throw error
+        }
+    }
     @Published var ready = false
     @Published var opened = UUID()
     @Published var currentURL: URL?

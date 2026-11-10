@@ -156,6 +156,19 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     } else if (action == "toggleSetlist") {
         setlistVisible = !setlistVisible;
         resized();
+    } else if (action == "parts1" || action == "parts2") {
+        const bool secondary = action == "parts2";
+        partsLeft->selectTab(secondary);
+        partsSidebar->selectTab(secondary);
+        if (!partsLeft->isShowing()) {
+            setlistVisible = true;
+            if (!partsRightVisible) toggleRightParts();
+            if (setlistWindow && setlistPlacement == SetlistPlacement::detached) {
+                setlistWindow->setVisible(true);
+                setlistWindow->toFront(false);
+            }
+            resized();
+        }
     } else if (action == "toggleParts")
         setlist->toggleParts();
     else if (action == "togglePreview")

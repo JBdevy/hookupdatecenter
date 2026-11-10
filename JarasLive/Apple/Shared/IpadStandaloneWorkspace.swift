@@ -124,7 +124,7 @@ import Combine
         let foreground = NativeProjectTabs.shared.isForeground(show)
         if foreground { VinhetasController.shared.unbind() }
         if ControlMappings.shared.endNativeSession(mappingSession) {
-            show?.togglePartsPanel = {}; show?.toggleSetlistPanel = {}; show?.toggleTracksPanel = {}; show?.toggleTeleprompterWindow = {}; show?.toggleVideoWindow = {}
+            show?.togglePartsPanel = {}; show?.showPartsPanel = {}; show?.toggleSetlistPanel = {}; show?.toggleTracksPanel = {}; show?.toggleTeleprompterWindow = {}; show?.toggleVideoWindow = {}
         }
         if foreground {
         DAWRemoteSession.nativeHost.stop()
@@ -169,6 +169,8 @@ import Combine
     @State private var addingTrack = false
     @State private var advancedOpen = false
     @State private var exportingProject = false
+    @State private var saveOptions = false
+    @State private var partialTransfer: PartialProjectTransferView.Mode?
     @State private var regionLoops: FXTarget?
     @State private var itemMenu: FXTarget?
     @State private var itemMenuAction: String?
@@ -187,7 +189,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || trackEdit != nil || fx != nil || automationTrack != nil
+        clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || saveOptions || partialTransfer != nil || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || trackEdit != nil || fx != nil || automationTrack != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -224,7 +226,8 @@ import Combine
                     createPlaylist: { show.createRegionPlaylist(name: $0, selected: $1) },
                     addBlock: { show.addSetlistBlock(namePrefix: JarasLocalization.string("Bloco")) },
                     toggleRegionStop: { show.toggleRegionStop() }, stopsAtRegionEnd: local.stopsAtRegionEnd,
-                    exportProject: { exportingProject = true },
+                    exportProject: { saveOptions = true },
+                    exportPartial: { partialTransfer = .inventory }, importPartial: { partialTransfer = .importPackage },
                     groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, openSettings: { settingsSection = .general; settingsOpen = true }, openAudioSettings: { settingsSection = .audio; settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
@@ -384,6 +387,20 @@ import Combine
                     IpadModalHeader(title: "Settings", close: { settingsOpen = false })
                     SettingsView(auth: auth, show: show, backend: backend, selection: $settingsSection)
                 }
+            }
+        } else if saveOptions {
+            IpadCompactModal(preferredSize: CGSize(width: 440, height: 280), onDismiss: { saveOptions = false }) {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text("Salvar / Exportar").font(.jarasTitle2.bold())
+                    Button("Exportar projeto completo") { saveOptions = false; exportingProject = true }
+                    Button("Export Partial") { saveOptions = false; partialTransfer = .inventory }
+                    Button("Import Partial") { saveOptions = false; partialTransfer = .importPackage }
+                    Button("Fechar") { saveOptions = false }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
+            }
+        } else if let mode = partialTransfer {
+            IpadCompactModal(preferredSize: CGSize(width: 580, height: 440)) {
+                ScrollView { PartialProjectTransferView(documents: documents, mode: mode, close: { partialTransfer = nil }) }
             }
         } else if exportingProject {
             IpadCompactModal(preferredSize: CGSize(width: 580, height: 400)) {
