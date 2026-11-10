@@ -135,6 +135,23 @@ struct InputValidationShake: GeometryEffect {
     }
 }
 
+/// The overlay owns the blink clock, so muting Master does not rebuild its
+/// faders, FX controls or audio graph every half second.
+struct MasterMuteIndicator: ViewModifier {
+    let muted: Bool
+    func body(content: Content) -> some View {
+        content.overlay {
+            if muted {
+                TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                    let bright = Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+                    RoundedRectangle(cornerRadius: 5).fill(Color.red.opacity(bright ? 0.28 : 0.04))
+                        .overlay { RoundedRectangle(cornerRadius: 5).strokeBorder(Color.red.opacity(bright ? 1 : 0.25), lineWidth: 2) }
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
+    }
+}
+
 /// Blink only at the requested transitions; an idle button must not schedule
 /// whole-window animation/layout work at the display refresh rate.
 struct JarasBlink: ViewModifier {

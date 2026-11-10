@@ -3851,6 +3851,14 @@ class Workspace::TrackHeightHandle final : public Component, private Timer {
 };
 
 void Workspace::paintOverChildren(Graphics &g) {
+    if (!browserVisible && !loginPanel && controls["masterMute"]->isVisible() && session.project().masterMute) {
+        const bool bright = (int64(Time::getMillisecondCounterHiRes() / 500.0) % 2) == 0;
+        const juce::Rectangle<float> bounds(4, (float)transportBounds.getY() + 8, 266, 70);
+        g.setColour(Colour(0xffff3b30).withAlpha(bright ? .28f : .04f));
+        g.fillRoundedRectangle(bounds, 5);
+        g.setColour(Colour(0xffff3b30).withAlpha(bright ? 1.f : .25f));
+        g.drawRoundedRectangle(bounds.reduced(1), 5, 2);
+    }
     if(externalDropPoint&&session.song()&&!externalDropFiles.empty()) {
         const auto local=timeline->getLocalPoint(this,*externalDropPoint);
         if(timeline->getLocalBounds().contains(local)&&local.y>=timeline->headerHeight()){
@@ -5916,6 +5924,11 @@ void Workspace::timerCallback() {
     if (resourceUsage.sample()) repaint(footerBounds);
     // Follow the transport origin when its caption is hidden in fullscreen.
     // Include the complete bars and antialiased edges in the timer invalidation.
+    const int mutePhase = session.project().masterMute ? int(int64(now * 2) % 2) : -1;
+    if (masterMuteBlinkPhase != mutePhase) {
+        masterMuteBlinkPhase = mutePhase;
+        repaint(4, transportBounds.getY() + 8, 266, 70);
+    }
     if (masterPeakReadout) masterPeakReadout->refresh();
     if (masterMeterPaint.update(session.audio.meterLevels())) repaint(8, transportBounds.getY() + 11, 14, 64);
     const auto visibleTracks = tracksViewport.getViewArea();

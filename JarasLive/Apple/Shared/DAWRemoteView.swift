@@ -2456,6 +2456,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         }.padding(.leading, local ? 19 : 6).padding(.trailing, 6).padding(.vertical, 3)
             .frame(maxWidth: .infinity).frame(height: 70, alignment: .top)
             .background(remoteColor(state.masterColor ?? 0x414141).opacity(0.5)).cornerRadius(6)
+            .modifier(MasterMuteIndicator(muted: state.masterMute))
             .overlay(alignment: .leading) {
                 if local { IpadMixerMeter(meter: StemAudioPlayback.shared.masterMeter).frame(width: 10).padding(.vertical, 5).padding(.leading, 2) }
             }

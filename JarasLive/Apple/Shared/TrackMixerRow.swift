@@ -1200,6 +1200,7 @@ struct MasterStrip: View {
             }.padding(.vertical, 4)
         }.padding(.horizontal, 6).frame(minWidth: 230, maxWidth: .infinity).frame(height: 70)
             .background(Color(hex: show.snapshot.project.masterColor ?? 0x414141).opacity(0.5)).cornerRadius(6)
+            .modifier(MasterMuteIndicator(muted: show.snapshot.project.masterMute == true))
             .contextMenu {
                 MasterTrackContextMenu(show: show, patch: { patchPresented = true },
                     fx: { fxPresented = true }, edit: { colorPresented = true })
@@ -3529,6 +3530,7 @@ private struct FooterMixerStrip: View, Equatable {
             #endif
         }.frame(width: track == nil ? FooterMixerMetrics.masterWidth : FooterMixerMetrics.width).frame(maxHeight: .infinity)
             .background(color.opacity(selected ? 0.38 : 0.24)).overlay(alignment: .top) { color.frame(height: 3) }
+            .modifier(MasterMuteIndicator(muted: track == nil && (masterState?.masterMute ?? (show.snapshot.project.masterMute == true))))
             .overlay { if selected { Rectangle().stroke(Color.white.opacity(0.65), lineWidth: 1).allowsHitTesting(false) } }
             #if os(macOS)
             .overlay {

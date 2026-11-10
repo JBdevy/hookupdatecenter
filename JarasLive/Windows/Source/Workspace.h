@@ -138,6 +138,7 @@ class Workspace final : public Component,
     std::set<int> heldShortcutKeys;
     std::unique_ptr<meterDisplay::PeakReadout> masterPeakReadout;
     meterDisplay::RepaintState masterMeterPaint;
+    int masterMuteBlinkPhase = -1;
     bool lastSetlistPlaying = false;
     std::unique_ptr<native::TransportButtons> nativeTransport;
     void syncNativeTransport();

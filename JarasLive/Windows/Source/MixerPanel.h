@@ -223,6 +223,9 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             return nullptr;
         }
         void refresh() {
+            const int phase = id.empty() && mixer.session.project().masterMute
+                ? int(int64(Time::getMillisecondCounterHiRes() / 500.0) % 2) : -1;
+            if (masterMuteBlinkPhase != phase) { masterMuteBlinkPhase = phase; repaint(); }
             peak->refresh();
             if(id.empty()) {
                 const auto &project=mixer.session.project();
@@ -267,6 +270,15 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 fx.setColour(TextButton::textColourOffId, fxchain::colour(settings, id.empty()));
                 resized();repaint();
             }
+        }
+        void paintOverChildren(Graphics &g) override {
+            if (!id.empty() || !mixer.session.project().masterMute) return;
+            const bool bright = masterMuteBlinkPhase == 0;
+            const auto bounds = getLocalBounds().toFloat();
+            g.setColour(Colour(0xffff3b30).withAlpha(bright ? .28f : .04f));
+            g.fillRoundedRectangle(bounds, 5);
+            g.setColour(Colour(0xffff3b30).withAlpha(bright ? 1.f : .25f));
+            g.drawRoundedRectangle(bounds.reduced(1), 5, 2);
         }
         void paint(Graphics &g) override {
             const auto *t = track();
@@ -457,6 +469,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
       private:
         MixerPanel &mixer;
         ID id;
+        int masterMuteBlinkPhase = -1;
         jaras::Track masterPresentation; // View state only; Master is never added to the song's tracks.
         uint64 lastRevision = ~uint64(0);
         bool lastSelection = false, lastLocked = false;
