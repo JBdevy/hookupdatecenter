@@ -139,6 +139,7 @@ final class PartialProjectPackageTests: XCTestCase {
         var ipad = snapshot.project
         ipad.songs[0].tracks[0].volume = 0.17
         ipad.songs[0].tracks[0].mute = true
+        ipad.songs[0].tracks[0].fx!.bands = NativeFXSettings().bands
         ipad.songs[0].tracks[0].fx!.bands[0].gain = 9
         let prepared = try PartialProjectPackage.prepareImport(destination.appendingPathComponent("Windows.ziplivepartial"), project: ipad, directory: destination, instruments: [:])
         try prepared.install()

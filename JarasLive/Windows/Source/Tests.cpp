@@ -3131,9 +3131,13 @@ int runTests(const File &directory) {
         expect(intermediate.size()==3 && intermediate[1].bpm==155 && intermediate[1].position==20,
             "A genuine intermediate ramp tempo was removed");
         const auto shortNeighbor=clickTempo::markerSections({{0,170},{20,114},
-            {20+60./114,142},{20+60./114+2*60./142,170}},4,4,40);
+            {20+60./114,142},{20+60./114+2*60./142,128}},4,4,40);
         expect(shortNeighbor.size()>=2 && shortNeighbor[1].bpm==114,
             "A bridge was removed without a stable following clock");
+        const auto returnsToClock=clickTempo::markerSections({{0,170},{20,114},
+            {20+60./114,142},{20+60./114+2*60./142,170}},4,4,40);
+        expect(returnsToClock.size()==1 && returnsToClock[0].bpm==170,
+            "A short contaminated burst persisted after the established clock returned");
     });
     test("Transition gap detection generalizes across tempos offsets and meters", [&] {
         for(double rate:{44100.,48000.,96000.})
