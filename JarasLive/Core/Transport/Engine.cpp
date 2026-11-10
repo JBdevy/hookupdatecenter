@@ -183,7 +183,9 @@ void Engine::stopQueuedSubplay() {
     if (!transport_.queuedRegionId || (!transport_.subPlay.playing && !resumeSub_)) return;
     const auto* queued = playbackBounds(region(transport_.queuedRegionId));
     const auto* secondary = playbackBounds(region(transport_.subPlaybackStartRegionId));
-    const bool startsInQueue = queued && subPlayStart_ && *subPlayStart_ >= queued->startTime && *subPlayStart_ < queued->endTime;
+    const double secondaryPosition = manualSubCursor_ ? transport_.subPlay.position
+                                                     : subPlayStart_.value_or(transport_.subPlay.position);
+    const bool startsInQueue = !secondary && queued && secondaryPosition >= queued->startTime && secondaryPosition < queued->endTime;
     if (!(automaticSubplayActive_ && automaticSubplayQueue_ == transport_.queuedRegionId) &&
         !(queued && secondary && queued->id == secondary->id) && !startsInQueue) return;
     execute({CommandKind::subStop});

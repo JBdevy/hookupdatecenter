@@ -623,6 +623,13 @@ static void testQueuedSubplayCancellationAndRequeue() {
         expect(engine.transport().subPlay.playing && engine.transport().subPlay.position == 400,
                "canceling the queue preserves unrelated freely positioned Sub Play");
     }
+    {
+        Engine engine; start(engine, project);
+        engine.execute({CommandKind::subSeek, "", 400});
+        engine.execute({CommandKind::queueRegion, "b"});
+        expect(engine.transport().subPlay.playing && engine.transport().subPlay.position == 400,
+               "canceling a queue preserves a secondary head manually moved away from its original queued song");
+    }
 }
 
 int main() {
