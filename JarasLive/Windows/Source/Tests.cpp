@@ -6788,7 +6788,7 @@ int runTests(const File &directory) {
         auto saved = ProjectCodec::encode(base);
         expect(ProjectCodec::decode(saved).partialImportIDs == base.partialImportIDs, "Partial import ledger lost in codec");
         auto track = list(get(list(get(saved, "songs"))[0], "tracks"))[0];
-        auto fx = fxschema::defaults(); put(fx, "inserted", Array<var>{"EQ"}); put(track, "fx", fx);
+        auto fx = fxschema::defaults(true); put(fx, "inserted", Array<var>{"EQ"}); put(track, "fx", fx);
         const auto existing = root.getChildFile("Stems/Piano.wav");
         expect(existing.replaceWithText("existing audio"), "Partial baseline media");
         auto snapshot = object(); put(snapshot, "format", "catlive-jlpartial"); put(snapshot, "version", 1);
