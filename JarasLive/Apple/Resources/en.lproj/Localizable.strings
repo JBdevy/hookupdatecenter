@@ -2256,3 +2256,5 @@
 
 "Connect Bluetooth MIDI…" = "Connect Bluetooth MIDI…";
 "Connect your MIDI controller here, even if it is already paired in Bluetooth settings." = "Connect your MIDI controller here, even if it is already paired in Bluetooth settings.";
+
+"The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone." = "The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone.";

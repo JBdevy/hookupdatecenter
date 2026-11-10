@@ -40,11 +40,13 @@ class ProjectDeletionPanel final : public Component, private Timer {
         g.setColour(Colours::white); g.setFont(theme::font(13, true));
         g.drawFittedText(plan->document.getFileNameWithoutExtension(), 24, 60, getWidth()-48, 24, Justification::topLeft, 1);
         g.setFont(theme::font(13));
-        g.drawFittedText(localization::translate("The CatLive project and its own media, waveform caches and backups will be permanently deleted. The containing folder, unrelated files and media shared with other projects will be kept. This cannot be undone."),
+        g.drawFittedText(localization::translate(plan->deletesDirectory
+            ? "The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone."
+            : "The CatLive project and its own media, waveform caches and backups will be permanently deleted. The containing folder, unrelated files and media shared with other projects will be kept. This cannot be undone."),
                          24, 94, getWidth()-48, 66, Justification::topLeft, 5, 1.f);
         g.setColour(theme::display); g.fillRoundedRectangle(24, 172, (float)getWidth()-48, 44, 5);
         g.setColour(Colours::white); g.setFont(theme::font(10));
-        g.drawFittedText(plan->document.getFullPathName(), 34, 180, getWidth()-68, 28, Justification::centredLeft, 2, 1.f);
+        g.drawFittedText(plan->target().getFullPathName(), 34, 180, getWidth()-68, 28, Justification::centredLeft, 2, 1.f);
         if (failure.isNotEmpty()) {
             g.setColour(Colour(0xffff454a)); g.setFont(theme::font(11));
             g.drawFittedText(failure, 24, 224, getWidth()-48, 34, Justification::topLeft, 2, 1.f);

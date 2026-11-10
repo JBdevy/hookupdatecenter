@@ -1783,7 +1783,9 @@ private struct ProjectDeletionConfirmation: View {
         VStack(alignment: .leading, spacing: 16) {
             Label("Delete project", systemImage: "trash").font(.jarasTitle3.bold()).foregroundStyle(.red)
             Text(verbatim: deletion.document.deletingPathExtension().lastPathComponent).font(.jarasHeadline)
-            Text("The CatLive project and its own media, waveform caches and backups will be permanently deleted. The containing folder, unrelated files and media shared with other projects will be kept. This cannot be undone.").font(.jarasBody)
+            Text(LocalizedStringKey(deletion.deletesDirectory
+                 ? "The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone."
+                 : "The CatLive project and its own media, waveform caches and backups will be permanently deleted. The containing folder, unrelated files and media shared with other projects will be kept. This cannot be undone.")).font(.jarasBody)
             Text(verbatim: deletion.target.path).font(.jarasCaption).textSelection(.disabled)
                 .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(JarasTheme.display).cornerRadius(5)
             if !documents.error.isEmpty { Text(LocalizedStringKey(documents.error)).font(.jarasCaption).foregroundStyle(.red) }

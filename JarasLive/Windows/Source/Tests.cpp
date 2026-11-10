@@ -1493,8 +1493,27 @@ int runTests(const File &directory) {
         Timer::callPendingTimersSynchronously();
         expect(deleteButton && deleteButton->isEnabled() && deleteButton->getButtonText()==localization::translate("Delete project") && !invoked,"Confirmation must become available after three seconds without deleting anything automatically");
         saveConfirmation("project-deletion-ready.png");
-        plan.remove();expect(!document.exists() && !exclusive.exists() && shared.existsAsFile() && unrelated.existsAsFile() && root.isDirectory(),"Deletion removed shared or unrelated files, or retained exclusive media");
+        rejected=false;try{plan.remove();}catch(...){rejected=true;}
+        expect(rejected && document.existsAsFile() && exclusive.existsAsFile(),"A new sibling must cancel approval to delete the whole folder");
+        ProjectDeletion sharedPlan(document);expect(!sharedPlan.deletesDirectory,"A shared folder must clearly use file-only deletion");Thread::sleep(3100);
+        sharedPlan.remove();expect(!document.exists() && !exclusive.exists() && shared.existsAsFile() && unrelated.existsAsFile() && root.isDirectory(),"Deletion removed shared or unrelated files, or retained exclusive media");
         expect(!cache.exists() && sharedCache.existsAsFile() && !backupFile.exists() && !recovery.exists() && !recovery.getParentDirectory().exists() && foreign.existsAsFile(),"Deletion must remove owned waveform/recovery media and empty subfolders while preserving unrelated recovery files");
+    });
+    test("Dedicated project deletion removes the entire folder and unreferenced contents", [&] {
+        auto root=directory.getNonexistentChildFile("DeleteWholeProject",{});root.createDirectory();
+        auto document=root.getChildFile("Show.jl");ProjectCodec::write(document,ProjectCodec::encode(projectFixture(),{}));
+        for(const auto &path:{"Stems/unused.wav","Videos/unused.mp4","backups/old.bkjl","Stems/WF/unused.waveform","Presets/fx.json","notes.txt"}) {
+            auto file=root.getChildFile(path);file.getParentDirectory().createDirectory();expect(file.replaceWithText("inside project"),"Cannot create folder deletion fixture");
+        }
+        auto outside=directory.getChildFile("outside-project.wav");expect(outside.replaceWithText("keep"),"Cannot create external fixture");
+        ProjectDeletion plan(document);expect(plan.deletesDirectory && plan.target()==root,"Confirmation must target the entire project folder");
+        bool early=false;try{plan.remove();}catch(...){early=true;}expect(early && root.isDirectory(),"Whole-folder deletion bypassed countdown");
+        Thread::sleep(3100);
+        const auto locked=CreateFileW(root.getChildFile("notes.txt").getFullPathName().toWideCharPointer(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,0,nullptr);
+        expect(locked!=INVALID_HANDLE_VALUE,"Cannot lock deletion fixture");
+        bool busy=false;try{plan.remove();}catch(...){busy=true;}CloseHandle(locked);
+        expect(busy && document.existsAsFile(),"A locked file must report failure and retain the project document for retry");
+        plan.remove();expect(!root.exists() && outside.loadFileAsString()=="keep","Whole-folder deletion left residue or removed an external file");
     });
     test("Batch FX bypass and deletion undo every selected chain with exact plugin state", [&] {
         auto p = projectFixture();

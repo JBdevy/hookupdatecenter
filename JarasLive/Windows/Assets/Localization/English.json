@@ -1778,5 +1778,6 @@
   "Search tracks": "Search tracks",
   "Sources": "Sources",
   "Destinations →": "Destinations →",
-  "Click a cell to connect or disconnect": "Click a cell to connect or disconnect"
+  "Click a cell to connect or disconnect": "Click a cell to connect or disconnect",
+  "The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone.": "The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone."
 }

@@ -5,14 +5,14 @@ import Darwin
 import Glibc
 #endif
 
-/// Deletes an explicit inventory of this document's files, never its container.
-/// Shared sources and files whose ownership cannot be established are retained.
+/// Deletes the whole dedicated project folder after explicit confirmation.
+/// A document in a shared/user folder keeps the narrower file-inventory action.
 public struct ProjectFolderDeletion: Identifiable, Sendable {
     public let id = UUID()
     public let document: URL
     public let directory: URL
-    public var target: URL { document }
-    public var deletesDirectory: Bool { false }
+    public var target: URL { deletesDirectory ? directory : document }
+    public let deletesDirectory: Bool
     private let directoryIdentity: String
     private let documentIdentity: String
     private let files: [URL: String]
@@ -29,11 +29,13 @@ public struct ProjectFolderDeletion: Identifiable, Sendable {
         try Self.validateLocation(document)
         directoryIdentity = try Self.identity(directory)
         documentIdentity = try Self.identity(document, contents: true)
+        deletesDirectory = try Self.isDedicatedDirectory(document)
         files = try Self.inventory(document)
         availableAt = ProcessInfo.processInfo.systemUptime + 3
     }
     public func contains(_ url: URL) -> Bool {
-        url.standardizedFileURL == document
+        let candidate = url.standardizedFileURL
+        return candidate == document || (deletesDirectory && candidate.path.hasPrefix(directory.path + "/"))
     }
     public func validate() throws {
         guard remainingSeconds == 0 else { throw ProjectError.invalid("Wait 3 seconds before deleting the project.") }
@@ -42,9 +44,23 @@ public struct ProjectFolderDeletion: Identifiable, Sendable {
               try Self.identity(document, contents: true) == documentIdentity else {
             throw ProjectError.invalid("The project folder changed. Open the confirmation again.")
         }
+        if deletesDirectory {
+            guard try Self.isDedicatedDirectory(document) else {
+                throw ProjectError.invalid("The project folder changed. Open the confirmation again.")
+            }
+        }
     }
     public func remove() throws {
         try validate()
+        if deletesDirectory {
+            // FileManager removes symbolic links inside the folder themselves,
+            // without following them into external media or another project.
+            try FileManager.default.removeItem(at: directory)
+            guard !FileManager.default.fileExists(atPath: directory.path) else {
+                throw ProjectError.invalid("Could not delete the project folder.")
+            }
+            return
+        }
         // Recheck references after the countdown: a newly saved sibling can
         // claim a shared stem. Never expand the list approved in the dialog.
         let current = try Self.inventory(document)
@@ -81,6 +97,19 @@ public struct ProjectFolderDeletion: Identifiable, Sendable {
         return standard.path.hasPrefix(root.path + "/") &&
             standard == standard.resolvingSymlinksInPath().standardizedFileURL &&
             (try? standard.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }
+    private static func isDedicatedDirectory(_ document: URL) throws -> Bool {
+        let fm = FileManager.default, root = document.deletingLastPathComponent().standardizedFileURL
+        var protected = [fm.homeDirectoryForCurrentUser, fm.temporaryDirectory, URL(fileURLWithPath: "/")]
+        for type in [FileManager.SearchPathDirectory.documentDirectory, .desktopDirectory, .downloadsDirectory,
+                     .musicDirectory, .moviesDirectory, .picturesDirectory, .applicationSupportDirectory,
+                     .libraryDirectory, .cachesDirectory, .applicationDirectory] {
+            protected += fm.urls(for: type, in: .allDomainsMask)
+        }
+        if let volume = try root.resourceValues(forKeys: [.volumeURLKey]).volume { protected.append(volume) }
+        if protected.contains(where: { $0.resolvingSymlinksInPath().standardizedFileURL == root }) { return false }
+        return try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension.lowercased() == "jl" }.allSatisfy { $0.standardizedFileURL == document }
     }
     private static func inventory(_ document: URL) throws -> [URL: String] {
         let fm = FileManager.default, root = document.deletingLastPathComponent()

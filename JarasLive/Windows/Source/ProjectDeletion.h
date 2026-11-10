@@ -1,8 +1,8 @@
 #pragma once
 #include "MediaCleanup.h"
 namespace catlive {
-// Explicit file inventory, like ProjectFolderDeletion.swift. Never remove a
-// project container or media shared by sibling documents/recovery snapshots.
+// Delete a dedicated project folder completely. Documents in shared/user
+// folders retain a separately described, narrower file-inventory action.
 class ProjectDeletion {
   public:
     explicit ProjectDeletion(File value)
@@ -13,6 +13,7 @@ class ProjectDeletion {
             throw std::runtime_error("Escolha um projeto CatLive local, sem links simbólicos.");
         documentIdentity = identity(document);
         rootIdentity = identity(root, false);
+        deletesDirectory = dedicatedDirectory();
         approved = inventory();
     }
     int remaining() const {
@@ -22,11 +23,16 @@ class ProjectDeletion {
         if (remaining() > 0)
             throw std::runtime_error("Aguarde 3 segundos antes de excluir o projeto.");
         if (!mediaCleanup::plainPath(root, document) || identity(document) != documentIdentity ||
-            identity(root, false) != rootIdentity)
+            identity(root, false) != rootIdentity || (deletesDirectory && !dedicatedDirectory()))
             throw std::runtime_error("O projeto mudou. Abra a confirmação novamente.");
     }
     void remove() const {
         validate();
+        if (deletesDirectory) {
+            removeTree(root, document);
+            if (root.exists()) throw std::runtime_error("Não foi possível excluir a pasta do projeto.");
+            return;
+        }
         const auto current = inventory();
         for (const auto &[path, stamp] : approved) {
             const auto found = current.find(path);
@@ -48,12 +54,49 @@ class ProjectDeletion {
             throw std::runtime_error("Não foi possível excluir o projeto.");
     }
     File document;
+    bool deletesDirectory = false;
+    const File &target() const { return deletesDirectory ? root : document; }
 
   private:
     File root;
     double readyAt;
     String documentIdentity, rootIdentity;
     std::map<String, String> approved;
+    bool dedicatedDirectory() const {
+        if (root == root.getParentDirectory()) return false;
+        for (auto location : {File::userHomeDirectory, File::userDocumentsDirectory, File::userDesktopDirectory,
+                             File::userMusicDirectory, File::userMoviesDirectory, File::userPicturesDirectory,
+                             File::userApplicationDataDirectory, File::commonApplicationDataDirectory,
+                             File::globalApplicationsDirectory, File::tempDirectory})
+            if (root == File::getSpecialLocation(location)) return false;
+        const auto home = File::getSpecialLocation(File::userHomeDirectory);
+        if (root == home.getChildFile("Downloads") || root == home.getParentDirectory()) return false;
+        // An ancestor junction must not turn an apparently local folder into
+        // another location while the confirmation is open.
+        for (auto parent = root; parent != parent.getParentDirectory(); parent = parent.getParentDirectory()) {
+            const auto attributes = GetFileAttributesW(parent.getFullPathName().toWideCharPointer());
+            if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
+        }
+        for (const auto &file : root.findChildFiles(File::findFiles, false, "*.jl"))
+            if (file != document) return false;
+        return true;
+    }
+    static void removeTree(const File &file, const File &document) {
+        const auto attributes = GetFileAttributesW(file.getFullPathName().toWideCharPointer());
+        if (attributes == INVALID_FILE_ATTRIBUTES) throw std::runtime_error("Não foi possível conferir a pasta do projeto.");
+        const bool directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        // Directory junctions and symlinks are removed as links, never followed.
+        if (directory && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            const auto children = file.findChildFiles(File::findFilesAndDirectories, false);
+            for (const auto &child : children) if (child != document) removeTree(child, document);
+            // Keep the .jl available for a retry if Windows reports a locked
+            // media/cache file. Never report successful deletion in that case.
+            for (const auto &child : children) if (child == document) removeTree(child, document);
+        }
+        const bool removed = directory ? RemoveDirectoryW(file.getFullPathName().toWideCharPointer()) != 0
+                                       : DeleteFileW(file.getFullPathName().toWideCharPointer()) != 0;
+        if (!removed) throw std::runtime_error("Não foi possível excluir a pasta inteira. Feche os arquivos em uso e tente novamente.");
+    }
     // Recovery media belongs to the deleted project too. Timeline cleanup uses
     // a narrower inventory because it must retain those recovery files.
     static bool ownedPath(const String &path) {
