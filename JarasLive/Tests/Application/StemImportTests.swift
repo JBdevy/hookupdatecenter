@@ -3,6 +3,55 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testAppendMatchesCustomNamesBeforeTaxonomyAndPreservesTracks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var base = Project.empty(name: "Custom destinations")
+        let names = ["Baixo", "Baixo Moog", "Baixo Analogico", "Tuba Hits"]
+        base.songs[0].tracks = names.enumerated().map { index, name in
+            var track = Track(id: UUID(), name: name, role: .other, color: UInt32(0x334455 + index))
+            track.volume = 0.42; track.pan = -0.25
+            return track
+        }
+        let sources = ["Baixo Moog.wav", "Baixo Analógico.wav", "tuba_hits.wav"]
+        var folder = root
+        for file in sources { folder = try fixture(root, folder: "Song", file: file) }
+        let appended = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "", base: base,
+            destination: root.appendingPathComponent("Project/Show.jl"))
+        XCTAssertEqual(appended.songs[0].tracks.map(\.id), base.songs[0].tracks.map(\.id))
+        XCTAssertEqual(appended.songs[0].tracks.map { $0.clips.count }, [0, 1, 1, 1])
+        for (before, after) in zip(base.songs[0].tracks, appended.songs[0].tracks) {
+            XCTAssertEqual(after.name, before.name); XCTAssertEqual(after.volume, before.volume)
+            XCTAssertEqual(after.pan, before.pan); XCTAssertEqual(after.color, before.color)
+            XCTAssertEqual(after.parentTrackID, before.parentTrackID)
+        }
+    }
+    func testAppendCustomNameWithOrderingAndSongSuffix() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var base = Project.empty(name: "Custom")
+        let track = Track(id: UUID(), name: "Atmosfera Azul", role: .other)
+        base.songs[0].tracks = [track]
+        let folder = try fixture(root, folder: "Song", file: "01 Atmosfera Azul - Song.wav")
+        let appended = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "", base: base,
+            destination: root.appendingPathComponent("Project/Show.jl"))
+        XCTAssertEqual(appended.songs[0].tracks.map(\.id), [track.id])
+        XCTAssertEqual(appended.songs[0].tracks[0].clips.count, 1)
+    }
+    func testAppendKeepsExplicitNumberedTrackReservedWhenAliasesCollide() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var base = Project.empty(name: "Numbered")
+        base.songs[0].tracks = ["Click", "Click 2", "Click 3"].map { Track(id: UUID(), name: $0, role: .other) }
+        var folder = root
+        for file in ["Click.wav", "Click 2.wav", "Click alternate.wav"] { folder = try fixture(root, folder: "Song", file: file) }
+        let appended = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "", base: base,
+            destination: root.appendingPathComponent("Project/Show.jl"))
+        XCTAssertEqual(appended.songs[0].tracks.map(\.id), base.songs[0].tracks.map(\.id))
+        XCTAssertEqual(appended.songs[0].tracks.map { $0.clips.count }, [1, 1, 1], "Simultaneous stems must not overlap on an existing destination")
+        XCTAssertEqual(appended.songs[0].tracks.map { $0.clips.first?.name }, ["Click.wav", "Click 2.wav", "Click alternate.wav"])
+    }
+
     func testImportAfterReviewSkipsUnreadableAudioAndKeepsValidStems() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

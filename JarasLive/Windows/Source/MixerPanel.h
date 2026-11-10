@@ -223,9 +223,9 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             return nullptr;
         }
         void refresh() {
-            const int phase = id.empty() && mixer.session.project().masterMute
+            const int blinkPhase = id.empty() && mixer.session.project().masterMute
                 ? int(int64(Time::getMillisecondCounterHiRes() / 500.0) % 2) : -1;
-            if (masterMuteBlinkPhase != phase) { masterMuteBlinkPhase = phase; repaint(); }
+            if (masterMuteBlinkPhase != blinkPhase) { masterMuteBlinkPhase = blinkPhase; repaint(); }
             peak->refresh();
             if(id.empty()) {
                 const auto &project=mixer.session.project();

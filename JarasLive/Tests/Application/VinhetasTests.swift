@@ -1,6 +1,16 @@
 import XCTest
 @testable import JarasApplication
 final class VinhetasTests: XCTestCase {
+    func testPadDurationIncludesSixtySecondsButRejectsOneAdditionalFrame() {
+        for rate in [8_000.0, 44_100, 48_000, 96_000, 192_000] {
+            XCTAssertTrue(VinhetasPad.acceptsDuration(frames: Int64(rate * 60), sampleRate: rate))
+            XCTAssertFalse(VinhetasPad.acceptsDuration(frames: Int64(rate * 60) + 1, sampleRate: rate))
+        }
+        XCTAssertFalse(VinhetasPad.acceptsDuration(frames: 0, sampleRate: 48_000))
+        XCTAssertFalse(VinhetasPad.acceptsDuration(frames: 1, sampleRate: 0))
+        XCTAssertFalse(VinhetasPad.acceptsDuration(frames: 1, sampleRate: .infinity))
+        XCTAssertFalse(VinhetasPad.acceptsDuration(frames: 1, sampleRate: .nan))
+    }
     func testPadMappingFooterAndRemovalPersistAcrossPresets() throws {
         var library = VinhetasLibrary()
         let cc = ControlInput(kind: "midi", label: "CC", channel: 0, status: 0xb0, number: 20)

@@ -80,6 +80,9 @@ import AVFoundation
                 for path in files {
                     do {
                         let file = try AVAudioFile(forReading: directory.appendingPathComponent(path))
+                        guard VinhetasPad.acceptsDuration(frames: file.length, sampleRate: file.processingFormat.sampleRate) else {
+                            throw ProjectError.invalid("Os pads aceitam áudios de até 60 segundos.")
+                        }
                         guard file.length > 0, file.length <= Int64(UInt32.max),
                               let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else { throw CocoaError(.fileReadCorruptFile) }
                         try file.read(into: buffer); result[path] = buffer
@@ -225,6 +228,10 @@ import AVFoundation
         let access = source.startAccessingSecurityScopedResource()
         defer { if access { source.stopAccessingSecurityScopedResource() } }
         do {
+            let file = try AVAudioFile(forReading: source)
+            guard VinhetasPad.acceptsDuration(frames: file.length, sampleRate: file.processingFormat.sampleRate) else {
+                throw ProjectError.invalid("Os pads aceitam áudios de até 60 segundos.")
+            }
             let name = UUID().uuidString + "." + source.pathExtension.lowercased()
             let destination = directory.appendingPathComponent(name)
             try FileManager.default.copyItem(at: source, to: destination)

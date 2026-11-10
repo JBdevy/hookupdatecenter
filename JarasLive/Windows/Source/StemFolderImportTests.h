@@ -3,6 +3,25 @@
 #include "MediaImportTests.h"
 namespace catlive::stemImportTests {
 template<class Test> void registerTests(const File& directory,Test test) {
+ test("Stem append prefers custom destination names over taxonomy and keeps numbered destinations separate",[&]{
+    using mediaImportTests::require;
+    auto root=directory.getNonexistentChildFile("custom-stem-names","");root.createDirectory();
+    auto folder=root.getChildFile("Song");
+    for(auto name:{"Baixo Moog.wav","Baixo Analogico.wav","Tuba Hits.wav","Click.wav","Click 2.wav","Click alternate.wav"})mediaImportTests::source(folder,name,4800);
+    auto base=Session::makeEmptyProject("Custom");
+    for(auto name:{"Baixo","Baixo Moog","Baixo Analogico","Tuba Hits","Click","Click 2","Click 3"}){
+        jaras::Track t;t.id=uuid();t.name=name;t.role.id="other";t.volume=.42;t.pan=-.25;base.songs[0].tracks.push_back(t);
+    }
+    StringArray warnings;auto scan=stemImport::scan({folder});
+    auto appended=stemImport::build(*scan,"",base,root.getChildFile("Project/Show.jl"),false,{},warnings);
+    require(appended.songs[0].tracks.size()==base.songs[0].tracks.size(),"Exact custom destination was replaced by taxonomy or Out");
+    for(size_t i=0;i<base.songs[0].tracks.size();++i){const auto& old=base.songs[0].tracks[i];const auto& added=appended.songs[0].tracks[i];
+        require(added.id==old.id&&added.name==old.name&&added.volume==old.volume&&added.pan==old.pan,"Destination identity or controls changed");
+        require(added.clips.size()==(i==0?0:1),"Stem went to another same-family track or overlapped a numbered destination");
+    }
+    require(appended.songs[0].tracks[4].clips[0].name=="Click.wav"&&appended.songs[0].tracks[5].clips[0].name=="Click 2.wav"&&appended.songs[0].tracks[6].clips[0].name=="Click alternate.wav","Exact filenames must reserve their destination before taxonomy aliases");
+ });
+
  test("Stem append reuses imported REAPER Click Guia and numbered tracks before creating any channel",[&]{
     using mediaImportTests::require;
     auto root=directory.getNonexistentChildFile("existing-stems","");root.createDirectory();

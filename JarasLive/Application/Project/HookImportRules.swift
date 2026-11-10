@@ -747,7 +747,7 @@ function calculatePeakNormalizationGain(peakDb, targetDb = CREATE_PROJECT_INTERN
   return 10 ** ((targetPeak - sourcePeak) / 20);
 }
 
-function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakResolver, onProgress } = {}) {
+function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakResolver, onProgress, classifyTrack = classifyCreateProjectTrack, resolveTrackKey = key => key } = {}) {
   if (typeof durationResolver !== 'function') throw new Error('Leitor de duração de áudio indisponível.');
   const uniqueFolders = [...new Set(folderPaths.map((item) => path.resolve(String(item || ''))).filter(Boolean))];
   if (!uniqueFolders.length) throw new Error('Escolha pelo menos uma pasta de música.');
@@ -792,7 +792,7 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
 
   for (const discovered of discoveredSongs) {
     const measured = discovered.audioFiles.map((filePath) => {
-      const classification = classifyCreateProjectTrack(filePath, discovered.inferredSongName.name);
+      const classification = classifyTrack(filePath, discovered.inferredSongName.name);
       try {
         const resolvedDuration = durationResolver(filePath);
         const duration = Number(resolvedDuration);
@@ -814,6 +814,7 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
           trackName: classification.name,
           trackKey: classification.key,
           recognized: classification.recognized,
+          matchedExistingName: classification.matchedExistingName === true,
           candidateName: classification.candidateName || '',
           candidateKey: classification.candidateKey || '',
           // O primeiro valor de VOLPAN é o volume do item e permanece 1.
@@ -885,7 +886,7 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
   for (const song of songs) {
     const reservedKeys = new Set(song.files.map((file) => file.trackKey));
     const usedKeys = new Set();
-    for (const file of song.files) {
+    for (const file of [...song.files].sort((a, b) => Number(b.matchedExistingName) - Number(a.matchedExistingName))) {
       if (!usedKeys.has(file.trackKey)) {
         usedKeys.add(file.trackKey);
         continue;
@@ -901,6 +902,7 @@ function auditCreateProjectFolders({ folderPaths = [], durationResolver, peakRes
           ? `custom:${normalizeTrackKey(duplicateName)}`
           : normalizeTrackKey(duplicateName);
         index += 1;
+        duplicateKey = resolveTrackKey(duplicateKey);
       } while (reservedKeys.has(duplicateKey) || usedKeys.has(duplicateKey));
 
       file.trackName = duplicateName;
@@ -992,12 +994,39 @@ function suggestImportRemovals(names, { limit = 12 } = {}) {
    .filter(item => !groups.has(normalizeTrackKey(item.text)))
    .slice(0, limit);
 }
-function analyzeImport(folders) {
+function existingImportClassifier(tracks) {
+ const exact = new Map(), canonical = new Map();
+ for (const track of tracks) {
+   if (track.isFolder || !Number.isInteger(track.index)) continue;
+   const name = normalizeTrackKey(track.name);
+   if (name && !exact.has(name)) exact.set(name, track);
+   const key = canonicalExistingTrackKey(track.name);
+   if (key && !canonical.has(key)) canonical.set(key, track);
+   if (key && !canonical.has('custom:' + key)) canonical.set('custom:' + key, track);
+ }
+ const resolveKey = key => canonical.has(key) ? 'existing:' + canonical.get(key).index : key;
+ const classify = (filePath, folderName) => {
+   const name = path.basename(filePath, path.extname(filePath));
+   // Exact filename first, then the normal import cleanup (song/ordering prefix).
+   const target = exact.get(normalizeTrackKey(name)) || exact.get(stripSongName(name, folderName));
+   if (target) {
+     const normalized = normalizeTrackKey(target.name);
+     const internal = /^(click|regencia)( \d+)?$/.exec(normalized);
+     const label = internal ? (internal[1] === 'click' ? 'Click' : 'Regência') + (internal[2] || '') : target.name;
+     return { name: label, key: 'existing:' + target.index, recognized: true, matchedExistingName: true, sourceName: name };
+   }
+   const result = classifyCreateProjectTrack(filePath, folderName);
+   return { ...result, key: resolveKey(result.key) };
+ };
+ return { classify, resolveKey };
+}
+function analyzeImport(folders, existingTracks = []) {
+ const matching = existingImportClassifier(existingTracks);
  const entries = new Map(folders.map(folder => [folder.path, folder.files]));
  const durations = new Map(folders.flatMap(folder => folder.files.map(file => [folder.path + '/' + file.name, file.duration])));
  const peaks = new Map(folders.flatMap(folder => folder.files.map(file => [folder.path + '/' + file.name, file.peakDb])));
  globalThis.fs = { promises: { readdir(folder) { return entries.get(folder).map(file => ({ name: file.name, isFile() { return true; } })); } } };
- return auditCreateProjectFolders({ folderPaths: folders.map(folder => folder.path), durationResolver: file => durations.get(file), peakResolver: file => peaks.get(file) });
+ return auditCreateProjectFolders({ folderPaths: folders.map(folder => folder.path), durationResolver: file => durations.get(file), peakResolver: file => peaks.get(file), classifyTrack: matching.classify, resolveTrackKey: matching.resolveKey });
 }
 
 """#

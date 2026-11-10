@@ -4,6 +4,7 @@
 #include <atomic>
 #include <vector>
 #include <climits>
+#include <cmath>
 #include "../../Core/Audio/PadGateRelease.hpp"
 
 namespace catlive {
@@ -11,6 +12,18 @@ namespace catlive {
 /// bounded commands and mixes preallocated voices; repeated triggers overlap.
 class VinhetasAudio {
   public:
+    static constexpr double maximumDuration = 60.0;
+    static bool acceptsDuration(juce::int64 frames, double rate) {
+        return frames > 0 && std::isfinite(rate) && rate > 0 && double(frames) / rate <= maximumDuration;
+    }
+    static juce::String importError(const juce::File &file) {
+        juce::AudioFormatManager formats; formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+        if (!reader) return juce::String::fromUTF8("Não foi possível ler este áudio.");
+        if (!acceptsDuration(reader->lengthInSamples, reader->sampleRate))
+            return juce::String::fromUTF8("Os pads aceitam áudios de até 60 segundos.");
+        return {};
+    }
     struct Sample { juce::AudioBuffer<float> pcm; double rate = 44100; };
     enum class Kind { start, stop, volume, stopPad, panic };
     struct Command { Kind kind{}; uint64_t token = 0; int preset = 0, pad = 0; float gain = 1; const Sample *sample = nullptr; };
@@ -44,7 +57,7 @@ class VinhetasAudio {
     static std::shared_ptr<Sample> decode(const juce::File &file) {
         juce::AudioFormatManager formats; formats.registerBasicFormats();
         std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
-        if (!reader || reader->lengthInSamples <= 0 || reader->lengthInSamples > INT_MAX) return nullptr;
+        if (!reader || !acceptsDuration(reader->lengthInSamples, reader->sampleRate) || reader->lengthInSamples > INT_MAX) return nullptr;
         auto sample = std::make_shared<Sample>(); sample->rate = reader->sampleRate;
         sample->pcm.setSize(2, int(reader->lengthInSamples));
         if (!reader->read(&sample->pcm, 0, sample->pcm.getNumSamples(), 0, true, true)) return nullptr;

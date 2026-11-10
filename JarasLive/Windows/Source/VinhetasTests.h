@@ -117,6 +117,28 @@ struct VinhetasPanelProbe {
 }
 namespace catlive::vinhetasTests {
 template<class Test> void run(const File &directory, Test &&test) {
+    test("Pads accept exactly 60 seconds and reject longer media before decoding", [&] {
+        using recordingCaptureTests::require;
+        for (double rate : {8000., 44100., 48000., 96000., 192000.}) {
+            require(VinhetasAudio::acceptsDuration(int64(rate * 60), rate), "60 second pad rejected");
+            require(!VinhetasAudio::acceptsDuration(int64(rate * 60) + 1, rate), "Pad exceeded 60 seconds");
+        }
+        require(!VinhetasAudio::acceptsDuration(0, 48000) && !VinhetasAudio::acceptsDuration(1, 0), "Invalid pad duration accepted");
+        for (int extra : {0, 1}) {
+            const auto file = directory.getNonexistentChildFile("pad-duration-" + String(extra), ".wav");
+            {
+                auto stream = file.createOutputStream(); WavAudioFormat format;
+                require(stream != nullptr, "Cannot create pad fixture");
+                std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(), 8000, 1, 16, {}, 0));
+                require(writer != nullptr, "Cannot create pad writer"); stream.release();
+                AudioBuffer<float> block(1, 1000); block.clear();
+                int remaining = 480000 + extra;
+                while (remaining > 0) { const int count = std::min(remaining, 1000); require(writer->writeFromAudioSampleBuffer(block, 0, count), "Cannot write pad fixture"); remaining -= count; }
+            }
+            require(VinhetasAudio::importError(file).isEmpty() == (extra == 0), "Pad import duration check disagrees with source frames");
+            require(bool(VinhetasAudio::decode(file)) == (extra == 0), "Stored pads bypassed the maximum duration");
+        }
+    });
     test("Vinhetas keeps continuous PCM across rapid small-buffer triggers and voice exhaustion", [] { vinhetasContinuityTests::run(); });
     test("Setlist block MIDI explicitly transfers conflicting Vinhetas pad and preset mappings",[&]{VinhetasPanelProbe::blockMIDI(directory);});
     test("Vinhetas has sixteen shared MIDI mappings, preset learn and note release after preset change",[&]{VinhetasPanelProbe::run(directory);});

@@ -352,8 +352,6 @@ enum StemProjectImporter {
             }
             virtual.append(["path": folderPath, "files": entries])
         }
-        let audit = try call("analyzeImport", args: [virtual], context: js, as: ImportAudit.self)
-        guard !audit.songs.isEmpty else { throw ProjectError.invalid("No songs found") }
         var project = base
         guard !project.songs.isEmpty else { throw ProjectError.invalid("Missing arrangement") }
         var arrangement = project.songs[0]
@@ -364,13 +362,16 @@ enum StemProjectImporter {
             $0.kind == .standard && $0.role == .other && $0.parentTrackID == nil && $0.clips.isEmpty && $0.name.trimmingCharacters(in: .whitespaces).hasPrefix("#") && !js.objectForKeyedSubscript("groupKeyFromFolderName")!.call(withArguments: [$0.name])!.toString()!.isEmpty
         }.map(\.id))
         let existingIndices = Dictionary(uniqueKeysWithValues: arrangement.tracks.enumerated().map { ($0.element.id, $0.offset) })
-        let existingLayout: [[String: Any]] = arrangement.tracks.enumerated().filter { $0.element.kind == .standard }.map { index, track in
+        let existingLayout: [[String: Any]] = arrangement.tracks.enumerated().filter { $0.element.kind == .standard && $0.element.role.rawValue != "vinhetas" }.map { index, track in
             ["index": index, "name": track.name, "isFolder": existingFolders.contains(track.id),
              "parentIndex": track.parentTrackID.flatMap { existingIndices[$0] } as Any? ?? NSNull()]
         }
+        let audit = try call("analyzeImport", args: [virtual, existingLayout], context: js, as: ImportAudit.self)
+        guard !audit.songs.isEmpty else { throw ProjectError.invalid("No songs found") }
         var rootAnchors: [UUID: UUID] = [:]
         var keys: [String: Int] = [:]
-        for (index, track) in arrangement.tracks.enumerated() where track.kind == .standard && !existingFolders.contains(track.id) {
+        for (index, track) in arrangement.tracks.enumerated() where track.kind == .standard && track.role.rawValue != "vinhetas" && !existingFolders.contains(track.id) {
+            keys["existing:\(index)"] = index
             let key = js.objectForKeyedSubscript("canonicalExistingTrackKey")!.call(withArguments: [track.name])!.toString()!
             if keys[key] == nil { keys[key] = index }
             if keys["custom:" + key] == nil { keys["custom:" + key] = index }

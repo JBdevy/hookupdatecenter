@@ -77,6 +77,10 @@ public struct VinhetasPreset: Codable, Equatable {
     }
 }
 public struct VinhetasPad: Codable, Equatable {
+    public static let maximumDuration: Double = 60
+    public static func acceptsDuration(frames: Int64, sampleRate: Double) -> Bool {
+        frames > 0 && sampleRate.isFinite && sampleRate > 0 && Double(frames) / sampleRate <= maximumDuration
+    }
     public static let palette: [UInt32] = [0xE74C3C,0xE67E22,0xF1C40F,0x91C83E,0x2ECC71,0x1ABC9C,0x18A9BB,0x3498DB,0x5275EB,0x7861D9,0x9B59B6,0xC750B7,0xE86298,0xDC7770,0xC6A356,0x56A48E]
     public var name: String
     public var color: UInt32 = 0x626262

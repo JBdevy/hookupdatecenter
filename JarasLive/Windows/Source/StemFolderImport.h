@@ -91,9 +91,7 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
         }
         auto entry=object();put(entry,"path",path);put(entry,"files",var(files));virtualFolders.add(entry);
     }
-    auto audit=rules.call("analyzeImport",{var(virtualFolders)});
     auto values=[](const var& value){return value.getArray()?*value.getArray():Array<var>{};};
-    auto songs=values(audit["songs"]);if(songs.isEmpty())throw std::runtime_error("No songs found.");
     auto& arrangement=project.songs[0];const auto originalCount=arrangement.tracks.size();double offset=0;
     std::set<ID> folders;for(const auto& track:arrangement.tracks)if(track.parentTrackID)folders.insert(*track.parentTrackID);
     for(const auto& track:arrangement.tracks)if(!track.parentTrackID&&track.clips.empty()&&text(track.name).trim().startsWith("#")&&rules.call("groupKeyFromFolderName",{text(track.name)}).toString().isNotEmpty())folders.insert(track.id);
@@ -104,8 +102,10 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
         auto entry=object();put(entry,"index",(int)i);put(entry,"name",text(track.name));put(entry,"isFolder",folders.count(track.id)>0);
         var parent;for(size_t j=0;j<originalCount;++j)if(track.parentTrackID==arrangement.tracks[j].id)parent=(int)j;
         put(entry,"parentIndex",parent);layout.add(entry);
-        if(!folders.count(track.id)){auto key=rules.call("canonicalExistingTrackKey",{text(track.name)}).toString();keys.emplace(key,i);keys.emplace("custom:"+key,i);}
+        if(!folders.count(track.id)){keys["existing:"+String((int)i)]=i;auto key=rules.call("canonicalExistingTrackKey",{text(track.name)}).toString();keys.emplace(key,i);keys.emplace("custom:"+key,i);}
     }
+    auto audit=rules.call("analyzeImport",{var(virtualFolders),var(layout)});
+    auto songs=values(audit["songs"]);if(songs.isEmpty())throw std::runtime_error("No songs found.");
     for(const auto& channel:values(audit["tracks"])){auto key=channel["key"].toString();if(keys.count(key))continue;
         jaras::Track track;track.id=uuid();track.name=utf8(channel["name"].toString());auto group=channel["groupKey"].toString();
         track.role.id=track.name=="Click"?"click":track.name=="Guia"||track.name==utf8(String::fromUTF8("Regência"))?"guide":group=="sanfonas"?"accordion":text(track.name).startsWith("Baixo")?"bass":group=="teclados"?"keys":group=="percussivo"?"drums":group=="guitarras"?"guitar":"other";
