@@ -16,6 +16,7 @@ PUBLISH_ONLY = {WORKFLOW, 'scripts/validate-catlive-build-reuse.py',
                 'scripts/test-catlive-build-reuse.py'}
 TEST_ONLY = PUBLISH_ONLY | {'.github/workflows/catlive-audio-audit.yml',
                             'JarasLive/Tests/Apple/AudioRenderTests.swift',
+                            'JarasLive/Tests/Apple/MobileAudioDriverTests.mm',
                             'JarasLive/Tests/Apple/VST3/GainFixture.cpp'}
 TAIL_ONLY = PUBLISH_ONLY | {'JarasLive/Tests/Apple/VST3/GainFixture.cpp'}
 TAIL_JOBS = {'validate-prior-audio', 'audio-tail'}

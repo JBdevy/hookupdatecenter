@@ -16,7 +16,21 @@ int main() { @autoreleasepool {
             auto format = [driver configureWithSampleRate:rate channels:channels error:&error];
             assert(format && !error && engine.isInManualRenderingMode);
             auto stereo = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:2];
-            auto player = [AVAudioPlayerNode new];
+            // This fixture advances a synthetic hardware clock without waiting
+            // for wall time. A looping AVAudioPlayerNode has its own asynchronous
+            // start/refill scheduling, which can starve when these callbacks run
+            // faster than realtime. Supply PCM synchronously so this test isolates
+            // the output driver, channel mapping and reconnects. Player/streaming
+            // continuity is covered by PreparedClipAudioTests and the audio suites.
+            auto player = [[AVAudioSourceNode alloc] initWithFormat:stereo renderBlock:
+                ^OSStatus(BOOL *silent, const AudioTimeStamp *, AVAudioFrameCount frames, AudioBufferList *buffers) {
+                    *silent = NO;
+                    for (UInt32 ch = 0; ch < buffers->mNumberBuffers; ++ch) {
+                        auto samples = static_cast<float *>(buffers->mBuffers[ch].mData);
+                        for (AVAudioFrameCount n = 0; n < frames; ++n) samples[n] = ch == 0 ? .1f : .2f;
+                    }
+                    return noErr;
+                }];
             auto controls = [JarasEqualizer makeNode];
             auto router = [JarasChannelRouter makeNode];
             [engine attachNode:player]; [engine attachNode:controls]; [engine attachNode:router];
@@ -25,13 +39,9 @@ int main() { @autoreleasepool {
             [engine connect:router to:engine.mainMixerNode format:format];
             [JarasChannelRouter configure:router first:channels > 2 ? channels - 1 : 1 count:2];
             assert([JarasAudioOutputConnection connectEngine:engine error:&error] && !error);
-            auto source = [[AVAudioPCMBuffer alloc] initWithPCMFormat:stereo frameCapacity:512];
-            source.frameLength = 512;
-            for (unsigned n = 0; n < 512; ++n) { source.floatChannelData[0][n] = .1; source.floatChannelData[1][n] = .2; }
-            [player scheduleBuffer:source atTime:nil options:AVAudioPlayerNodeBufferLoops completionHandler:nil];
             assert([engine startAndReturnError:&error]);
             assert([driver startAndReturnError:&error]);
-            [player play];
+            const auto failuresBefore = [driver.diagnostics[@"failureCount"] unsignedLongLongValue];
             auto output = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:512];
             output.frameLength = 512;
             const auto epoch = mach_absolute_time();
@@ -48,6 +58,7 @@ int main() { @autoreleasepool {
                     if (std::abs(static_cast<float *>(output.mutableAudioBufferList->mBuffers[ch].mData)[128] - expected) >= .00001) { fprintf(stderr, "PCM rate=%g channels=%u block=%u ch=%u actual=%g expected=%g\n", rate, channels, block, ch, static_cast<float *>(output.mutableAudioBufferList->mBuffers[ch].mData)[128], expected); abort(); }
                 }
             }
+            assert([driver.diagnostics[@"failureCount"] unsignedLongLongValue] == failuresBefore);
             auto clock = driver.renderTime;
             assert(clock.isSampleTimeValid && clock.isHostTimeValid && clock.sampleTime == 30 * 512);
             assert(std::abs(double(clock.hostTime - epoch) / ticks - 30 * 512 / rate) < 1e-6);
@@ -66,7 +77,7 @@ int main() { @autoreleasepool {
             assert([driver renderFrames:512 time:&time flags:&flags buffers:output.mutableAudioBufferList] == noErr);
             assert(flags & kAudioUnitRenderAction_OutputIsSilence);
             for (unsigned ch = 0; ch < channels; ++ch) for (unsigned f = 0; f < 512; ++f) assert(static_cast<float *>(output.mutableAudioBufferList->mBuffers[ch].mData)[f] == 0);
-            [driver stop]; [engine stop]; [player stop];
+            [driver stop]; [engine stop];
             [engine detachNode:player]; [engine detachNode:controls]; [engine detachNode:router];
             printf("MOBILE_DRIVER_PCM_DISCRETE_CHANNELS_CLOCK_GATE_RECONNECT_OK rate=%.0f channels=%u\n", rate, channels);
         }

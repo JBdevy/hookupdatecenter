@@ -95,6 +95,17 @@ class ReuseValidationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 reuse.validate_changes([], [path])
 
+    def test_mobile_pcm_fixture_does_not_allow_output_driver_changes(self):
+        fixture = 'JarasLive/Tests/Apple/MobileAudioDriverTests.mm'
+        reuse.validate_changes([fixture], [])
+        with self.assertRaises(ValueError):
+            reuse.validate_changes([], [fixture])
+        for path in ['JarasLive/Apple/Bridge/JarasMobileAudioIO.inc',
+                     'JarasLive/Apple/Bridge/JarasEffects.mm',
+                     'JarasLive/scripts/test-mobile-audio-driver.sh']:
+            with self.assertRaises(ValueError):
+                reuse.validate_changes([fixture, path], [])
+
 
 if __name__ == '__main__':
     unittest.main()
