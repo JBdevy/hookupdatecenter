@@ -158,6 +158,8 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         resized();
     } else if (action == "toggleParts")
         setlist->toggleParts();
+    else if (action == "togglePreview")
+        stage.preview = !stage.preview;
     else if (action == "toggleVideo" || action == "toggleTeleprompter") {
         const String name = action == "toggleVideo" ? "Video" : "Teleprompter 1";
         auto it = floatingWindows.find(name);

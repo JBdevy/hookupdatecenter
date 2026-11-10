@@ -15,6 +15,7 @@
 #include <mach/mach_time.h>
 #include "JarasMobileAudioIO.inc"
 #include "JarasPreparedClip.inc"
+#include "JarasPadSource.inc"
 
 @implementation JarasAudioOutputConnection
 + (BOOL)startPlayer:(AVAudioPlayerNode *)player error:(NSError **)error {

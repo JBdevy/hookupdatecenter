@@ -1337,6 +1337,29 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertNotNil(show.lastSavedAt.flatMap { ISO8601DateFormatter().date(from: $0) })
     }
 
+    @MainActor func testMIDINavigationDeliversEveryPressWithoutReplayingAfterResubscribe() async throws {
+        var project = Project.empty(name: "MIDI event navigation")
+        let parts = (0..<10).map { Part(id: UUID(), name: "Song \($0)", startTime: Double($0*10), endTime: Double($0*10+5)) }
+        project.songs[0].parts = parts; project.songs[0].duration = 100
+        let executor = SaveTestExecutor(); executor.playing = true
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        var calls = 0
+        var subscription = show.setlistNavigationEvents.sink { request in
+            calls += 1; show.stepRegion(request.direction)
+        }
+        // All presses arrive before SwiftUI gets another render pass.
+        for _ in 0..<6 { show.performAction(.setlistDown) }
+        XCTAssertEqual(calls, 6); XCTAssertEqual(show.focusedRegion, parts[5].id)
+        subscription.cancel()
+        subscription = show.setlistNavigationEvents.sink { request in calls += 1; show.stepRegion(request.direction) }
+        XCTAssertEqual(calls, 6, "Rebuilding the workspace must not replay the last MIDI event")
+        show.performAction(.setlistUp)
+        XCTAssertEqual(calls, 7); XCTAssertEqual(show.focusedRegion, parts[4].id)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(executor.regionCommands.isEmpty, "MIDI browsing while playing must not replace the queue")
+        subscription.cancel()
+    }
+
     @MainActor func testHeldArrowOnlyCommitsAfterRelease() async throws {
         var project = Project.empty(name: "Held navigation")
         let regions = (0..<20).map { Part(id: UUID(), name: "Region \($0)", startTime: Double($0 * 10), endTime: Double($0 * 10 + 5)) }

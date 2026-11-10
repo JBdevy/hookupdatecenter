@@ -1344,7 +1344,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 Button("Patch") { openSelectedPatch(state.tracks.filter { selectedTracks.contains($0.id) }.map(\.id)) }
             }
             if selectedTracks.count == 1, let id = selectedTracks.first, groupableTracks.contains(id), let addTrackAudio {
-                Button("Add Stems") { addTrackAudio(id) }
+                Button("Insert media") { addTrackAudio(id) }
             }
             Button("Create group") { groupTracks?(selectedTracks) }
                 .disabled(selectedTracks.count < 2 || !selectedTracks.isSubset(of: groupableTracks))
@@ -1386,7 +1386,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 else if let action = event.action { performRemoteMIDI(action) }
             }
         }
-        .onReceive(localShow?.$setlistNavigationRequest.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { request in
+        .onReceive(localShow?.setlistNavigationEvents.map(Optional.some).eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { request in
             guard local, let request, let localShow, let song = localShow.current else { return }
             let parts = Dictionary(uniqueKeysWithValues: song.parts.map { ($0.id, $0) })
             let entries: [SetlistEntry] = setlistRowsCache.entries(in: state, expanded: expandedRegions, query: search, order: local && state.selectedPlaylist == nil ? allRegionsOrder : nil).compactMap { entry in
@@ -2028,14 +2028,16 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private var observerSetlist: some View {
         let played = Set(state.playedLiveRegionIDs ?? [])
-        return ScrollView(.vertical) {
+        let focus = DAWRemoteSetlistPresentation.observerFocus(in: state, expanded: expandedRegions)
+        return ScrollViewReader { scroll in
+        ScrollView(.vertical) {
             LazyVStack(spacing: 5) {
                 ForEach(setlistRowsCache.entries(in: state, expanded: expandedRegions, query: "")) { entry in
                     switch entry {
                     case .block(let block): RemoteSetlistBlockLabel(block: block, fontStyle: state.setlistFontStyle ?? 0, scale: min(2.5, max(1, observerSetlistScale))).equatable()
                     case .region(let row):
                     let region = row.region
-                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: state.showsSetlistSelection && observerRegion(region.id, contains: state.focusedRegion),
+                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: region.id == focus,
                         active: state.playing && observerRegion(region.id, contains: state.setlistCurrentEntryId), queued: observerRegion(region.id, contains: state.setlistQueuedEntryId),
                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? 0xffffff),
                         duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.setlistCurrentEntryId ? state.position : region.start)))),
@@ -2049,6 +2051,11 @@ private struct RemoteSidebarRail<Content: View>: View {
                     ForEach(state.songs) { song in Text(verbatim: song.name).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(RemoteSurface.panel).cornerRadius(5) }
                 }
             }.padding(8)
+        }
+        .onAppear { if let focus { scroll.scrollTo(DAWRemoteSetlistPresentation.Entry.ID.region(focus)) } }
+        .onChange(of: focus) { id in
+            if let id { scroll.scrollTo(DAWRemoteSetlistPresentation.Entry.ID.region(id)) }
+        }
         }
     }
     private func observerRegion(_ region: UUID, contains id: UUID?) -> Bool {
@@ -2149,6 +2156,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     if local, let openRemoteSettings {
                         IpadNativeRemoteToggle(openSettings: openRemoteSettings, width: 54, horizontal: true)
                         IpadNativePreviewButton(width: 54, horizontal: true)
+                        IpadNativeVideoButton()
                     } else if !local {
                         IpadPreviewButton(width: 54, horizontal: true, active: state.previewActive == true,
                             page: state.previewPage ?? 0,
@@ -2160,7 +2168,7 @@ private struct RemoteSidebarRail<Content: View>: View {
 
 
                 }
-                }.frame(maxWidth: local ? 500 : .infinity).fixedSize(horizontal: false, vertical: true)
+                }.frame(maxWidth: local ? 566 : .infinity).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     if local {
                         IpadNativeAudioStatus { openAudioSettings?() }
@@ -2840,10 +2848,10 @@ private struct RemoteSidebarRail<Content: View>: View {
     private func performRemoteMIDI(_ command: RemoteMIDIAction) {
         guard !local, !observer, !RemoteMIDIActions.shared.isLearning else { return }
         switch command {
-        case .play: action(.play)
-        case .stop: action(.stop)
         case .playStop: action(state.playing || state.paused ? .stop : .play)
+        case .subPlayStop: if state.playing { action(state.subPlaying ? .subStop : .subPlay) }
         case .repeatPlayback: action(.toggleLoop)
+        case .togglePreview: if state.previewActive != nil { action(.togglePreview) }
         case .bypass: action(.toggleMultiLoopBypass)
         case .cancelSection: action(.cancelSection)
         case .toggleParts:
@@ -3265,7 +3273,7 @@ private struct RemoteSetlistRowLabel: View, Equatable {
     }
 }
 private enum RemoteMIDIAction: String, CaseIterable, Identifiable, Codable {
-    case setlistUp, setlistDown, partsUp, partsDown, toggleParts, cancelSection, play, stop, playStop, repeatPlayback, bypass, playlistUp, playlistDown
+    case setlistUp, setlistDown, partsUp, partsDown, toggleParts, cancelSection, playStop, subPlayStop, togglePreview, repeatPlayback, bypass, playlistUp, playlistDown
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -3275,9 +3283,9 @@ private enum RemoteMIDIAction: String, CaseIterable, Identifiable, Codable {
         case .partsDown: return "Parts Down"
         case .toggleParts: return "Parts"
         case .cancelSection: return "Cancel queued section"
-        case .play: return "Play"
-        case .stop: return "Stop"
         case .playStop: return "Play / Stop"
+        case .subPlayStop: return "SubPlay/Stop"
+        case .togglePreview: return "Preview on/off"
         case .repeatPlayback: return "Repeat"
         case .bypass: return "Bypass Multiloops"
         case .playlistUp: return "Previous playlist"
@@ -3316,6 +3324,12 @@ private struct RemoteMIDIBinding: Codable, Equatable {
     private init() {
         if let data = UserDefaults.standard.data(forKey: "catlive.remote.midiActions"),
            let value = try? JSONDecoder().decode([String: RemoteMIDIBinding].self, from: data) { bindings = value }
+        if bindings["playStop"] == nil { bindings["playStop"] = bindings["play"] ?? bindings["stop"] }
+        if bindings["subPlayStop"] == nil { bindings["subPlayStop"] = bindings["subPlay"] }
+        let legacy = ["play", "stop", "subPlay"]
+        if legacy.contains(where: { bindings[$0] != nil }) {
+            legacy.forEach { bindings.removeValue(forKey: $0) }; persist()
+        }
     }
     func clear(_ action: RemoteMIDIAction) { bindings.removeValue(forKey: action.rawValue); persist() }
     var isLearning: Bool { learning != nil || learningBlock != nil || transfer != nil }
@@ -5495,7 +5509,7 @@ private struct IpadTrackAudioContextMenu: ViewModifier {
             if let action { actions.append(IpadTrackMenuAction(title: JarasLocalization.string(title), destructive: destructive, action: action)) }
         }
         append("Patch", openPatch); append("Sound Designer", soundDesigner); append("FX", fx)
-        append("Add Stems", addAudio); append("Create group", group); append("Ungroup", ungroup)
+        append("Insert media", addAudio); append("Create group", group); append("Ungroup", ungroup)
         append("Remove from group", removeFromGroup); append("Link tracks", link); append("Unlink tracks", unlink)
         append("Editar pista", edit); append("Ícone da pista", icon)
         append(count > 1 ? "Duplicate tracks" : "Duplicate track", duplicate)

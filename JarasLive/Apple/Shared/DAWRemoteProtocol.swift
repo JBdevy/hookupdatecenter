@@ -577,6 +577,15 @@ enum DAWRemoteSetlistPresentation {
         var hasDrawer: Bool = false
         var id: UUID { region.id }
     }
+    /// Observer browsing is independent of both playback heads. A hidden child
+    /// points to its drawer; playlist copies retain their own entry identity.
+    static func observerFocus(in state: DAWRemoteState, expanded: Set<UUID>) -> UUID? {
+        guard let id = state.focusedRegion else { return nil }
+        if state.regions.contains(where: { $0.id == id }) { return id }
+        guard let parent = state.timelineRegions.first(where: { $0.id == id })?.parentRegion,
+              state.regions.contains(where: { $0.id == parent }) else { return nil }
+        return expanded.contains(parent) ? id : parent
+    }
     static func canQueueDuplicate(_ entry: UUID, in state: DAWRemoteState) -> Bool {
         guard let source = state.regions.first(where: { $0.id == entry })?.sourceRegionId else { return true }
         func root(_ id: UUID?) -> UUID? {

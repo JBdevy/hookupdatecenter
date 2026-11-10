@@ -62,13 +62,10 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"tempoUp", "BPM +", 0, "shift + +"},
         {"tapTempo", "Tap Tempo", 0, ""},
         {"playStop", "Play/Stop", 0, "spacebar"},
-        {"play", "Play", 0, ""},
-        {"stop", "Stop", 0, ""},
         {"pause", "Pause", 0, ""},
         {"transportFadeout", "Fadeout", 0, ""},
         {"repeatPlayback", "Repeat", 0, "R"},
         {"subPlayStop", "SubPlay/Stop", 0, "shift + spacebar"},
-        {"subPlay", "Sub Play", 0, ""},
         {"tunerDown", "Tuner −", 0, ""},
         {"tunerUp", "Tuner +", 0, ""},
         {"volumeTrack", "Volume Track", 1, "", true, true},
@@ -99,6 +96,7 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"previousRegion", "Go to previous region", 5, "A"},
         {"nextTimelinePoint", "Next marker or region boundary", 5, "W"},
         {"previousTimelinePoint", "Previous marker or region boundary", 5, "E"},
+        {"togglePreview", "Preview on/off", 5, ""},
         {"toggleVideo", "Video window on/off", 5, "alt + shift + V"},
         {"toggleTeleprompter", "Teleprompter window on/off", 5, "alt + shift + T"},
         {"normalizeItems", "Normalize selected items", 5, "N"},
@@ -147,9 +145,31 @@ class ActionBindings final : public ChangeBroadcaster,
                              private MidiInputCallback,
                              private AsyncUpdater {
   public:
+    void migrateTransportMappings() {
+        auto values = settings.value("catlive.actions", object()).clone();
+        bool changed = false;
+        for (const auto &oldID : {"play", "stop", "subPlay"}) {
+            const auto old = get(values, Identifier(oldID));
+            if (!old.isObject()) continue;
+            const String target = String(oldID) == "subPlay" ? "subPlayStop" : "playStop";
+            auto combined = get(values, Identifier(target), object()).clone();
+            for (const auto &kind : {"keyboard", "midi"}) {
+                const auto current = get(combined, Identifier(kind));
+                if (current.isVoid() || (String(kind) == "keyboard" && current.toString().isEmpty())) {
+                    const auto input = get(old, Identifier(kind));
+                    if (!input.isVoid()) put(combined, Identifier(kind), input);
+                }
+            }
+            put(values, Identifier(target), combined);
+            values.getDynamicObject()->removeProperty(Identifier(oldID));
+            changed = true;
+        }
+        if (changed) settings.set("catlive.actions", values);
+    }
     std::atomic<bool> inputEnabled{true};
     ActionBindings(Appearance &preferences, AudioDeviceManager &manager)
         : settings(preferences), devices(manager) {
+        migrateTransportMappings();
         devices.addMidiInputDeviceCallback({}, this);
     }
     ~ActionBindings() override {

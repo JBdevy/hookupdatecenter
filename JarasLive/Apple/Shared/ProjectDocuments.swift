@@ -234,8 +234,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         if kind == .trackAudio || kind == .trackMedia {
             guard let target = nativeAudioTarget else { return }
             nativeAudioTarget = nil
-            guard target.session == show.projectSessionID, let url = urls.first,
-                  kind == .trackMedia || ["mp3", "wav", "wave", "aif", "aiff"].contains(url.pathExtension.lowercased()) else { return }
+            guard target.session == show.projectSessionID, let url = urls.first else { return }
             _ = importAudio([NSItemProvider(item: url as NSURL, typeIdentifier: UTType.fileURL.identifier)],
                             start: target.position, track: target.track, song: target.song, layout: .sameTrack)
             return

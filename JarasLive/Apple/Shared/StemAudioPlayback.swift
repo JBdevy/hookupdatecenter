@@ -538,6 +538,7 @@ struct TimecodePlaybackSpan {
     private var renderEnabled = false
     private var instrumentRenderPending = false
     @MainActor private struct TrackBus {
+        var padSource: JarasPadSource?
         let mix = AVAudioMixerNode()
         // Merge printed MIDI after the ordered track FX, before live controls.
         let processedMix = AVAudioMixerNode()
@@ -574,52 +575,52 @@ struct TimecodePlaybackSpan {
     }
     func detachOutputCapture(_ track: UUID) { recordingTaps.removeValue(forKey: track)?.removeTap(onBus: 0) }
     var outputCaptureFormat: AVAudioFormat { AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)! }
-    private var padPlayers: [UUID: AVAudioPlayerNode] = [:]
-    private var padEnvelopes: [UUID: AVAudioUnitEffect] = [:]
-    private var releasingPads: Set<UUID> = []
+    private struct PadVoice {
+        let source: JarasPadSource
+        let token: UInt64
+    }
+    private var padVoices: [UUID: PadVoice] = [:]
     private var padTracks: [UUID: UUID] = [:]
     private var padCompletions: [UUID: @MainActor () -> Void] = [:]
     func playPad(_ id: UUID, buffer: AVAudioPCMBuffer, gain: Float, track: UUID?, finished: @escaping @MainActor () -> Void) throws {
         guard let track, let playback = latestPlayback,
               playback.snapshot.project.songs.first(where: { $0.id == playback.snapshot.transport.songId })?
-                .tracks.contains(where: { $0.id == track && $0.role.rawValue == "vinhetas" }) == true else { finished(); return }
+                .tracks.contains(where: { $0.id == track && $0.role.rawValue == "vinhetas" }) == true,
+              let source = trackBuses[track]?.padSource else { finished(); return }
         try prepareDevice()
-        let player = AVAudioPlayerNode(), envelope = JarasEqualizer.makeNode()
-        engine.attach(player); engine.attach(envelope)
-        let destination = trackBus(for: track).mix
-        engine.connect(player, to: envelope, format: buffer.format)
-        engine.connect(envelope, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: buffer.format)
-        padEnvelopes[id] = envelope
-        player.volume = gain; padPlayers[id] = player; padTracks[id] = track; padCompletions[id] = finished
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in self?.stopPad(id) }
+        finishReleasedPads()
+        let token = source.play(buffer, gain: gain)
+        guard token != 0 else {
+            finished()
+            throw NSError(domain: "CatLive.Pads", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Não foi possível iniciar outra voz do pad."])
         }
-        do { if !engine.isRunning { try engine.start() }; player.play(); startMeterClock() }
-        catch { stopPad(id); throw error }
+        padVoices[id] = PadVoice(source: source, token: token)
+        padTracks[id] = track; padCompletions[id] = finished
+        startMeterClock()
     }
     func stopPad(_ id: UUID) {
-        guard let player = padPlayers.removeValue(forKey: id) else { return }
+        guard let voice = padVoices.removeValue(forKey: id) else { return }
+        voice.source.stopVoice(voice.token)
         padTracks[id] = nil
         let finished = padCompletions.removeValue(forKey: id)
-        releasingPads.remove(id)
-        player.stop(); engine.detach(player)
-        if let envelope = padEnvelopes.removeValue(forKey: id) { engine.detach(envelope) }
         startMeterClock(); finished?()
     }
     func releasePad(_ id: UUID) {
-        guard engine.isRunning, let envelope = padEnvelopes[id] else { stopPad(id); return }
-        guard releasingPads.insert(id).inserted else { return }
-        // The render thread owns the 10 ms fade. The UI clock only reclaims
-        // the silent player afterward, so a busy interface cannot step the gain.
-        JarasEqualizer.beginPadRelease(envelope)
+        guard engine.isRunning, let voice = padVoices[id] else { stopPad(id); return }
+        voice.source.releaseVoice(voice.token)
         startMeterClock()
     }
+    // Rendering owns completion and the exact 10 ms gate release. This UI
+    // timer only retires bookkeeping; it cannot interrupt a playing voice.
     func finishReleasedPads() {
-        for id in Array(releasingPads) {
-            if let envelope = padEnvelopes[id], JarasEqualizer.isPadReleaseComplete(envelope) { stopPad(id) }
-        }
+        for (id, voice) in Array(padVoices) where !voice.source.isPlaying(voice.token) { stopPad(id) }
+        for bus in trackBuses.values { bus.padSource?.reclaimFinishedBuffers() }
     }
-    func setPadGain(_ id: UUID, gain: Float) { padPlayers[id]?.volume = gain }
+    func setPadGain(_ id: UUID, gain: Float) {
+        guard let voice = padVoices[id] else { return }
+        voice.source.setVoice(voice.token, gain: gain)
+    }
 
     private var transportFadeEndpointReached = false
     private var transportFadeSchedule: (tracks: Set<UUID>, duration: Double, host: UInt64, sample: Double)?
@@ -1230,7 +1231,7 @@ struct TimecodePlaybackSpan {
     func setMissingAudioPaths(_ paths: Set<String>) { missingAudioPaths = paths }
     private func configureGraph(directory: URL?, resetProject: Bool = false, prepareMaster: Bool = true) {
         for id in Array(recordingTaps.keys) { detachOutputCapture(id) }
-        for id in Array(padPlayers.keys) { stopPad(id) }
+        for id in Array(padVoices.keys) { stopPad(id) }
         stop()
         discardIdleVoices()
         if let generator = timecodeGenerator { engine.detach(generator.node) }
@@ -1252,6 +1253,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             #if os(macOS)
             if resetProject { bus.effects.releaseExternal() }
             #endif
+            if let source = bus.padSource { engine.detach(source.node) }
             engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.controls); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
         }
         trackBuses.removeAll(); groupConnections.removeAll(); retiredTrackEffects.removeAll()
@@ -1317,7 +1319,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // the new source paths never render. Reallocate only at a silent stop.
         if realtime, mobileOutput != nil, engine.isRunning { mobileTrackGraphNeedsRestart = true }
         #endif
-        let bus = TrackBus()
+        var bus = TrackBus()
         engine.attach(bus.silence); engine.attach(bus.mix); engine.attach(bus.processedMix); engine.attach(bus.masterSend); engine.attach(bus.groupSend)
         engine.attach(bus.controls); engine.attach(bus.internalSend)
         for route in bus.hardware {
@@ -1346,6 +1348,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         bus.effects.mediaDirectory = directory
         bus.effects.attach(to: engine, input: bus.mix, format: format, destinations: [AVAudioConnectionPoint(node: bus.processedMix, bus: 0)])
         engine.connect(bus.silence, to: bus.mix, fromBus: 0, toBus: 0, format: format)
+        if tracks[id]?.role.rawValue == "vinhetas" {
+            let source = JarasPadSource(format: format)
+            engine.attach(source.node)
+            engine.connect(source.node, to: bus.mix, fromBus: 0, toBus: bus.mix.nextAvailableInputBus, format: format)
+            bus.padSource = source
+        }
         // Build the upstream path before its fanout. On an already running
         // AVAudioEngine, installing the splitter before it has an input leaves
         // newly added tracks unclocked (including their native Click source).
@@ -1626,7 +1634,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     #if os(iOS)
     private func prepareChangedMobileTrackGraph() throws {
         guard mobileTrackGraphNeedsRestart, let mobileOutput, outputAllowed,
-              !transportWasRunning, voices.isEmpty, padPlayers.isEmpty,
+              !transportWasRunning, voices.isEmpty, padVoices.isEmpty,
               inputMonitors.isEmpty, !instrumentRenderPending else { return }
         // prepare() and pause/start retain the stale topology on iOS 16.
         // Stop hardware pulls before releasing the render resources; retain
@@ -1643,7 +1651,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #if os(iOS)
         guard !usesSelectedHardware || AudioDeviceSettings.shared.localSessionEnabled else { return }
         #endif
-        let active = transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padPlayers.isEmpty
+        let active = transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padVoices.isEmpty
             || masterMeter.level > 0 || meters.values.contains { $0.level > 0 }
         guard meterTimer == nil || meterTimerActive != active else { return }
         meterTimer?.invalidate()
@@ -1817,7 +1825,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     }
     func prepareForClosing() {
         for id in Array(recordingTaps.keys) { detachOutputCapture(id) }
-        for id in Array(padPlayers.keys) { stopPad(id) }
+        for id in Array(padVoices.keys) { stopPad(id) }
         #if os(iOS)
         // A timed-out HAL stop is still owned by its worker. Do not acquire
         // that same engine lock from a project-close/UI callback.
@@ -3578,7 +3586,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         // Existing tracks, monitored input, instruments and playing tabs keep
         // their prepared graph and plugin instances.
         if realtime, engine.isRunning, tracks.isEmpty, trackBuses.isEmpty,
-           !transportWasRunning, voices.isEmpty, padPlayers.isEmpty,
+           !transportWasRunning, voices.isEmpty, padVoices.isEmpty,
            inputMonitors.isEmpty, recordingTaps.isEmpty, !instrumentRenderPending,
            let song = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }),
            song.tracks.contains(where: { $0.kind == .standard || $0.kind == .click || $0.clips.contains(where: \.isProjectionMedia) }) {
@@ -3930,7 +3938,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         #endif
         #if os(macOS)
         if running, !transportWasRunning, recordingGraphNeedsRestart,
-           padPlayers.isEmpty, recordingTaps.isEmpty {
+           padVoices.isEmpty, recordingTaps.isEmpty {
             // Recording can add the first player branch to an input-only live
             // graph. Reallocate its render resources once before the next Play.
             engine.stop()
@@ -4455,7 +4463,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         }
         // Instruments can generate audio while the transport is stopped.
         // Keep polling the existing stereo taps whenever the device is running.
-        if !realtime && !transport.playing && !transport.subPlay.playing && padPlayers.isEmpty {
+        if !realtime && !transport.playing && !transport.subPlay.playing && padVoices.isEmpty {
             if engine.isRunning { engine.pause() }
             for meter in meters.values { meter.reset() }
             drainNativeMeterPeaks()
@@ -4516,7 +4524,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         #if os(iOS)
         guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
         #endif
-        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padPlayers.isEmpty else {
+        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padVoices.isEmpty else {
             decayIdleMeterLevels(now: now)
             return
         }

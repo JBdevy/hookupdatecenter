@@ -704,6 +704,9 @@ for left in [0.0, 500.0, 5000.0, 9800.0] {
     precondition(displayed.rect == longHeader.rect, "repositioning controls never changes the item's trim edges")
 }
 grid.items = [longHeader]; grid.timelineOrigin = CGPoint(x: 5000, y: 0)
+// Pinning is enabled only above the follow-header zoom threshold. This pixel
+// layout keeps the same geometry while exercising that presentation mode.
+grid.updateLayout(GridSelectionLayout(items: [longHeader]), pixelsPerSecond: 32)
 let visibleHeader = longHeader.visibleLeftHeader(in: CGRect(x: 5000, y: 0, width: 800, height: 600), titleWidth: nameWidth)
 var visibleMuteCount = 0
 grid.mute = { id in precondition(id == longHeader.id); visibleMuteCount += 1 }
@@ -807,12 +810,15 @@ precondition(indexedResizes.count == 2 && indexedResizes.allSatisfy { $0.0 && $0
 grid.updateLayout(indexedLayout, pixelsPerSecond: 8)
 drag(CGPoint(x: 75, y: 95), CGPoint(x: 402, y: 185))
 precondition(grid.selected == [indexedID], "marquee after a zoom uses projected item bounds")
-grid.timelineOrigin = CGPoint(x: 160, y: 0)
-let indexedVisible = indexedLayout.projectedItem(at: 0, pixelsPerSecond: 8)
-    .visibleLeftHeader(in: CGRect(x: 160, y: 0, width: 800, height: 600), titleWidth: 100)
+// The preceding marquee uses a zoom below the pinning threshold. Zoom in
+// before checking controls whose item's original start is offscreen.
+grid.updateLayout(indexedLayout, pixelsPerSecond: 32)
+grid.timelineOrigin = CGPoint(x: 480, y: 0)
+let indexedVisible = indexedLayout.projectedItem(at: 0, pixelsPerSecond: 32)
+    .visibleLeftHeader(in: CGRect(x: 480, y: 0, width: 800, height: 600), titleWidth: 100)
 var indexedMuteCount = 0
 grid.mute = { id in precondition(id == indexedID); indexedMuteCount += 1 }
-let indexedMutePoint = CGPoint(x: indexedVisible.muteRect!.midX - 160, y: indexedVisible.muteRect!.midY)
+let indexedMutePoint = CGPoint(x: indexedVisible.muteRect!.midX - 480, y: indexedVisible.muteRect!.midY)
 _ = grid.handlePointerEvent(event(.leftMouseDown, indexedMutePoint))
 _ = grid.handlePointerEvent(event(.leftMouseUp, indexedMutePoint))
 precondition(indexedMuteCount == 1, "the indexed long item's controls stay pinned and clickable after a native viewport move")

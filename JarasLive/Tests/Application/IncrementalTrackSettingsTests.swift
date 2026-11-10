@@ -978,6 +978,19 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertFalse(show.hasUnsavedChanges); XCTAssertFalse(show.canUndo); XCTAssertEqual(show.projectRevision,0)
         XCTAssertEqual(executor.snapshotReads,0); XCTAssertEqual(executor.fullEdits,0)
     }
+    @MainActor func testPreviewActionTogglesPresentationWithoutTouchingAudioOrTransport() throws {
+        let (show, executor) = try show(fixture())
+        let transport = show.snapshot.transport
+        var active = false, calls = 0
+        show.togglePreview = { active.toggle(); calls += 1 }
+        show.performAction(.togglePreview); XCTAssertTrue(active)
+        show.performAction(.togglePreview); XCTAssertFalse(active)
+        XCTAssertEqual(calls, 2); XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(executor.snapshotReads, 0); XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertTrue(executor.mixerCommands.isEmpty); XCTAssertFalse(show.hasUnsavedChanges)
+        show.canExecute = { false }; show.performAction(.togglePreview)
+        XCTAssertEqual(calls, 2, "Preview mapping must respect the active session's access gate")
+    }
     @MainActor func testActionsSelectTrackAndDeliverMIDIWithoutReloadingProject() throws {
         let project = fixture(), (show, executor) = try show(project)
         let track = project.songs[0].tracks[1].id

@@ -2333,6 +2333,25 @@ int runTests(const File &directory) {
         expect(!firstProjectionItem(song,7,"video"),"End is exclusive");
         expect(!firstProjectionItem(song,3,"teleprompt"),"Teleprompter stays scoped to its own track");
     });
+    test("Main Video excludes TP1/TP2 movies and photos, including fallback after a cut", [&] {
+        for(const auto &extension : {"mp4", "png"}) {
+            jaras::Song song;jaras::Track tp1,tp2,upper,lower;
+            tp1.role.id="teleprompt";tp2.role.id="teleprompt2";upper.role.id=lower.role.id="other";
+            jaras::AudioClip a;a.id=uuid();a.startTime=0;a.duration=1;a.audioFile=jaras::AudioFile{"Videos/upper.mp4",{}};
+            auto b=a;b.id=uuid();b.duration=3;b.audioFile=jaras::AudioFile{"Videos/lower.mp4",{}};
+            auto p=a;p.id=uuid();p.duration=10;p.audioFile=jaras::AudioFile{std::string("Videos/tp1.")+extension,{}};
+            auto q=p;q.id=uuid();q.audioFile=jaras::AudioFile{std::string("Videos/tp2.")+extension,{}};
+            tp1.clips={p};tp2.clips={q};upper.clips={a};lower.clips={b};song.tracks={tp1,upper,tp2,lower};
+            expect(firstProjectionItem(song,.99,"video")->id==a.id,"Skip the upper TP media");
+            expect(firstProjectionItem(song,1,"video")->id==b.id,"Reveal the lower ordinary track after a cut");
+            expect(!firstProjectionItem(song,3,"video"),"TP media cannot fill an empty Video window");
+            for(double at : {0.,1.,3.}) {
+                expect(firstProjectionItem(song,at,"teleprompt")->id==p.id,"TP1 keeps its own media");
+                expect(firstProjectionItem(song,at,"teleprompt2")->id==q.id,"TP2 keeps its own media");
+            }
+            song.tracks={tp1,tp2};expect(!firstProjectionItem(song,0,"video"),"TP-only project has no main video");
+        }
+    });
     test("Media drop imports a batch into separate tracks or one sequence with gap and one undo", [&] {
         const auto folder=directory.getChildFile("media-drop");folder.createDirectory();
         Image image(Image::RGB,8,8,true);image.clear(image.getBounds(),Colours::red);

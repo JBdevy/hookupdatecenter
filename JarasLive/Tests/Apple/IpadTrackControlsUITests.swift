@@ -22,7 +22,7 @@ final class TrackTouchTests:XCTestCase {
   rec.press(forDuration: 0.8)
   XCTAssertTrue(app.staticTexts["Recording mode"].waitForExistence(timeout: 3), app.debugDescription)
   XCTAssertEqual(app.staticTexts["event"].label, "none", "Opening REC options must not arm the track")
-  XCTAssertFalse(app.buttons["Add Stems"].exists, "The track menu must not steal the REC hold")
+  XCTAssertFalse(app.buttons["Insert media"].exists, "The track menu must not steal the REC hold")
   let channels = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "MIDI channel")).firstMatch
   XCTAssertTrue(channels.exists, app.debugDescription)
   channels.tap(); app.buttons["3"].firstMatch.tap()
@@ -85,7 +85,7 @@ final class TrackTouchTests:XCTestCase {
  func testLongPressOffersPatchAndAddStems() {
   let app=XCUIApplication();app.launch();let name=app.staticTexts["01  Normal track"]
   XCTAssertTrue(name.waitForExistence(timeout:10));name.press(forDuration:1.2)
-  XCTAssertTrue(app.buttons["Add Stems"].waitForExistence(timeout:5), app.debugDescription)
+  XCTAssertTrue(app.buttons["Insert media"].waitForExistence(timeout:5), app.debugDescription)
   XCTAssertTrue(app.buttons["Duplicate track"].exists)
   XCTAssertTrue(app.buttons["Delete track"].exists)
   XCTAssertFalse(app.buttons["Criar item MIDI"].exists)

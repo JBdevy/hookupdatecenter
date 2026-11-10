@@ -7,7 +7,10 @@ fixture=(root/'Tests/Apple/IpadTrackControlsFixture.swift').read_text().split('/
 (p/'tests.swift').write_text((root/'Tests/Apple/IpadTrackControlsUITests.swift').read_text())
 a=(root/'Apple/Shared/DAWRemoteView.swift').read_text();b=(root/'Apple/Shared/IpadStandaloneWorkspace.swift').read_text()
 def section(text,start,end):return text[text.index(start):text.index(end,text.index(start))]
-stepControls=section(a,'    private var tunerControl:','    private var timeText:')+section(a,'    private func stepTempo(','    private func smallButton(')
+def step_handler(name):
+ start=a.index('    private func '+name+'(')
+ return a[start:a.index('\n    private ',start+1)]+'\n'
+stepControls=section(a,'    private var tunerControl:','    private var timeText:')+step_handler('stepTempo')+step_handler('stepPitch')
 fixtureRoot=fixture[1].replace('// PRODUCTION_STEP_CONTROLS',stepControls)
 theme=(root/'Apple/Shared/Theme.swift').read_text()
 palette=section(theme,'private struct JarasNativePaletteKey:', 'extension View {') + theme[theme.index('extension Font {'):]

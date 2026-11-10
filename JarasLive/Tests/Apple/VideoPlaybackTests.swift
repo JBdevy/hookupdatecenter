@@ -239,6 +239,27 @@ import AVFoundation
     transition.setProjectionEnabled(false)
     precondition(transition.player.currentItem == nil, "Closing clears the prepared playback too")
     print("VIDEO_CROSS_TRACK_PREPARED_TRANSITION_OK")
+    // The lower item is already under the upper one. Revealing it at the cut
+    // must continue at its timeline offset instead of starting it from zero.
+    transitionSnapshot.project.songs[0].tracks[1].clips[0].startTime = 0
+    transitionSnapshot.project.songs[0].tracks[1].clips[0].duration = 2
+    transitionSnapshot.project.songs[0].tracks[1].clips[0].sourceOffset = 0.2
+    transitionSnapshot.transport.position = 0
+    transition.setProjectionEnabled(true); transition.update(transitionSnapshot)
+    precondition(transitionSnapshot.project.songs[0].firstProjectionItem(at: 0.99)?.id == first.id,
+                 "The upper active item takes priority")
+    try await Task.sleep(nanoseconds: 2_000_000_000)
+    transitionSnapshot.transport.position = 1
+    transition.update(transitionSnapshot)
+    precondition(transitionSnapshot.project.songs[0].firstProjectionItem(at: 1)?.id == second.id && transition.player.currentItem?.status == .readyToPlay,
+                 "At the upper item's end, reveal the lower item with a prepared decoder")
+    try await Task.sleep(nanoseconds: 80_000_000)
+    precondition(abs(transition.player.currentTime().seconds - 1.28) < 0.2,
+                 "The lower video respects its source offset and elapsed timeline time")
+    transition.setProjectionEnabled(false)
+    transitionSnapshot.project.songs[0].tracks[1].clips[0].startTime = 1
+    transitionSnapshot.project.songs[0].tracks[1].clips[0].duration = 1
+    print("VIDEO_UPPER_ITEM_END_REVEALS_OVERLAPPING_LOWER_ITEM_AT_CORRECT_OFFSET_OK")
     // A split of the same source must keep both player and item alive.
     transitionSnapshot.project.songs[0].tracks[1].clips[0].sourceOffset = first.sourceOffset + first.duration * first.audioRate
     transitionSnapshot.transport.position = 0.95

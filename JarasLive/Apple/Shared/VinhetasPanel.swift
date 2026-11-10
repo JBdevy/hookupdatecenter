@@ -140,9 +140,10 @@ import AVFoundation
     func panic() {
         for id in Array(voices.keys) { stopVoice?(id); finished(id) }
     }
+    private var available: Bool { show?.current?.tracks.contains { $0.role.rawValue == "vinhetas" } == true }
     var remoteState: DAWRemoteVinhetas {
         .init(selectedPreset: library.selectedPreset,
-            available: show?.current?.tracks.contains { $0.role.rawValue == "vinhetas" } == true,
+            available: available,
             presets: library.presets.enumerated().map { p, preset in
                 .init(name: preset.name, color: preset.color, pads: preset.pads.enumerated().map { n, pad in
                     .init(name: pad.name, color: pad.color, volume: min(2, pad.volume), gate: pad.gate,
@@ -155,7 +156,7 @@ import AVFoundation
         guard command.valid else { return }
         switch command.action {
         case .vinhetasDown:
-            guard remoteState.available, let id = command.target, voices[id] == nil,
+            guard available, let id = command.target, voices[id] == nil,
                   let p = command.preset, let n = command.pad else { return }
             guard !remotePresses.contains(id) else { return }
             remotePresses.append(id)

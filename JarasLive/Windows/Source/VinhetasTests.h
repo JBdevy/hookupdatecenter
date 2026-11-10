@@ -1,5 +1,6 @@
 #pragma once
 #include "VinhetasAudio.h"
+#include "VinhetasContinuityTests.h"
 #include "RecordingCaptureTests.h"
 #include "VinhetasPanel.h"
 #include "ActionBindings.h"
@@ -116,6 +117,7 @@ struct VinhetasPanelProbe {
 }
 namespace catlive::vinhetasTests {
 template<class Test> void run(const File &directory, Test &&test) {
+    test("Vinhetas keeps continuous PCM across rapid small-buffer triggers and voice exhaustion", [] { vinhetasContinuityTests::run(); });
     test("Setlist block MIDI explicitly transfers conflicting Vinhetas pad and preset mappings",[&]{VinhetasPanelProbe::blockMIDI(directory);});
     test("Vinhetas has sixteen shared MIDI mappings, preset learn and note release after preset change",[&]{VinhetasPanelProbe::run(directory);});
     test("Vinhetas reaches its FX track with stopped transport and obeys fader and mute",[&] {

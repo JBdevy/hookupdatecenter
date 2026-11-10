@@ -98,6 +98,7 @@ extension UTType {
         let directory = next.documents.currentURL?.deletingLastPathComponent()
         InstrumentLibrary.shared.setProjectDirectory(directory)
         if let directory {
+            VideoPlayback.shared.open(directory: directory)
             VideoPlayback.teleprompter.open(directory: directory)
             VideoPlayback.teleprompter2.open(directory: directory)
             TeleprompterRemote.setProjectDirectory(directory)
@@ -401,7 +402,7 @@ private struct NativeProjectPicker: UIViewControllerRepresentable {
     let cancelled: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.mp3, .wav, .aiff] : kind == .trackMedia ? [.image, .movie] : kind == .project ? [.catLiveProject, .catLivePackage, .zip] : [.catLivePackage, .zip]
+        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.audio, .movie, .image] : kind == .trackMedia ? [.image, .movie] : kind == .project ? [.catLiveProject, .catLivePackage, .zip] : [.catLivePackage, .zip]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: kind == .trackAudio || kind == .trackMedia)
         picker.directoryURL = directory
         picker.allowsMultipleSelection = kind == .stems

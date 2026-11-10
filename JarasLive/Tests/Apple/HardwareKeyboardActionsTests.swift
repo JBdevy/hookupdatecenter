@@ -2,7 +2,13 @@ import Foundation
 
 @MainActor final class MappingProbe {
     struct Entry { var input: ControlInput }
-    var show: Bool? = true
+    final class Show {
+        var selectedProgramChange: UUID?
+        var hasProgramChangeClipboard = false
+        func copyProgramChange() -> Bool { false }
+        func pasteProgramChange() {}
+    }
+    var show: Show? = Show()
     var editing: Int?
     var transferRequest: Int?
     var candidate: ControlInput?
@@ -37,10 +43,13 @@ import Foundation
         precondition(!probe.handleHardwareKey(event(0x06, .command)), "Copy belongs to the editor")
 
         let custom = event(0x09, [.control, .option]).input
-        precondition(probe.actions.setInput(custom, action: .repeatPlayback, kind: "keyboard"))
+        precondition(probe.actions.setInput(custom, action: .togglePreview, kind: "keyboard"))
         precondition(probe.handleHardwareKey(event(0x09, [.control, .option])))
         precondition(probe.executed.last?.matches(custom) == true, "Saved/custom Action binding was ignored")
 
+        let previewPresses = probe.executed.count
+        precondition(probe.handleHardwareKey(event(0x09, [.control, .option], repeatKey: true)))
+        precondition(probe.executed.count == previewPresses, "Holding Preview must not flicker on/off")
         let executed = probe.executed.count
         probe.editing = 1
         precondition(probe.handleHardwareKey(event(0x0b, .option)))

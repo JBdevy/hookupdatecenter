@@ -422,6 +422,9 @@ extension DAWRemoteSession {
         let stranger = DAWRemoteChannel(connection: NWConnection(to: endpoint, using: DAWRemoteChannel.parameters()), role: .client, name: "Stranger", queue: worker)
         received(.command(.init(project: project, action: .stop)), from: stranger)
     }
+    func testHoldStateFeedback() {
+        stateTimer?.invalidate(); stateTimer = nil; waitingForState = UInt64.max
+    }
     func testAcknowledgements() {
         stateTimer?.invalidate(); stateTimer = nil
         waitingForState = 987
@@ -1376,6 +1379,23 @@ waitFor("Vinhetas encrypted state available") { padClient.remoteState?.vinhetas 
 padClient.send(remotePress); padClient.send(remotePress)
 waitFor("Press accepted once") { padActions.count == 1 }
 require(padActions[0].target == pressID, "Host preserves per-press identity")
+// Keep state feedback blocked: presses/releases must use the command path
+// immediately and must not depend on a 100 ms presentation acknowledgement.
+let immediateTCP = DAWRemoteChannel.parameters().defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options
+require(immediateTCP?.noDelay == true, "Interactive commands must disable TCP batching")
+padHost.testHoldStateFeedback()
+var padDelays: [Double] = []
+for _ in 0..<24 {
+    let id = UUID(), began = ProcessInfo.processInfo.systemUptime, previous = padActions.count
+    padClient.send(.init(project: project, song: song, action: .vinhetasDown, target: id, pad: 0, preset: 2))
+    padClient.send(.init(project: project, action: .vinhetasUp, target: id))
+    waitFor("Back-to-back pad press/release") { padActions.count == previous + 2 }
+    require(padActions[previous].action == .vinhetasDown && padActions[previous + 1].action == .vinhetasUp &&
+        padActions[previous].target == id && padActions[previous + 1].target == id, "Pad command ordering")
+    padDelays.append((ProcessInfo.processInfo.systemUptime - began) * 1000)
+}
+print("REMOTE_PAD_24_ORDERED_PAIRS_NO_ACK_WAIT_OK median_ms=\(padDelays.sorted()[12]) max_ms=\(padDelays.max()!)")
+padActions = [padActions[0]]
 padClient.stop()
 waitFor("Disconnect releases only this connection's held pad") { padActions.count == 2 }
 require(padActions[1].action == .vinhetasUp && padActions[1].target == pressID, "Disconnect synthesizes release, not global Panic")

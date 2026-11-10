@@ -141,6 +141,7 @@ enum AppStartupPresentation {
         #else
         show.canExecute = { [weak auth] in preview || auth?.allowed == true }
         #endif
+        show.togglePreview = { TeleprompterWindow.shared.togglePreview() }
         #if os(macOS)
         show.toggleVideoWindow = { VideoPlayback.shared.toggle() }
         show.toggleWorkspaceFullscreen = { ProjectWindowAnchor.toggleFullscreen() }

@@ -1,5 +1,17 @@
 #import <AVFoundation/AVFoundation.h>
 NS_ASSUME_NONNULL_BEGIN
+/// One permanent source for all pad voices. Control calls run on the main
+/// thread; rendering never changes the engine graph or owns buffer lifetimes.
+@interface JarasPadSource : NSObject
+@property(nonatomic, readonly) AVAudioSourceNode *node;
+- (instancetype)initWithFormat:(AVAudioFormat *)format;
+- (uint64_t)playBuffer:(AVAudioPCMBuffer *)buffer gain:(float)gain;
+- (void)stopVoice:(uint64_t)token;
+- (void)releaseVoice:(uint64_t)token;
+- (void)setVoice:(uint64_t)token gain:(float)gain;
+- (BOOL)isPlaying:(uint64_t)token;
+- (void)reclaimFinishedBuffers;
+@end
 #if TARGET_OS_OSX || TARGET_OS_IOS
 /// File-backed source with the same lookahead pitch processing as Windows.
 /// Preparation reads/decodes on the control thread; playback reads bounded PCM

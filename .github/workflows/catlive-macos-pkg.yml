@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão pública do CatLive (ex.: 1.25)'
         required: true
-        default: '1.31'
+        default: '1.32'
       audio_only:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
@@ -243,7 +243,7 @@ jobs:
         if: ${{ inputs.audio_tests || inputs.full_fx_tests }}
         working-directory: JarasLive
         run: |
-          bash scripts/test-audio.sh Tests/Apple/AudioRenderTests.swift Tests/Apple/PlaybackSampleEpochTests.swift Tests/Apple/PlaybackEditingContinuityTests.swift Tests/Apple/AudioMediaPreparationTests.swift Tests/Apple/AutomationAudioTests.swift
+          bash scripts/test-audio.sh Tests/Apple/VinhetasPlaybackTests.swift Tests/Apple/AudioRenderTests.swift Tests/Apple/PlaybackSampleEpochTests.swift Tests/Apple/PlaybackEditingContinuityTests.swift Tests/Apple/AudioMediaPreparationTests.swift Tests/Apple/AutomationAudioTests.swift
 
       - name: Validate media failure isolation and VST3 realtime state
         if: ${{ inputs.audio_tests || inputs.full_fx_tests }}

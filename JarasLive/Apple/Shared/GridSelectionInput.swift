@@ -1060,6 +1060,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             // Its monitor must never intercept a click outside its visible area.
             guard bounds.contains(point), visibleRect.contains(point),
                   viewport.contains(point), point.y >= viewport.minY + headerHeight else { return false }
+            // The local monitor consumes this click before NSWindow can make
+            // itself key. Selecting an item in a background document must also
+            // bring its keyboard shortcuts back from the previous tool window.
+            if window?.isKeyWindow == false { window?.makeKey() }
             activeButton = event.buttonNumber
         } else if activeButton != event.buttonNumber { return false }
         switch event.type {

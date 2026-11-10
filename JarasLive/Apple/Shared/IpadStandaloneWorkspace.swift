@@ -27,6 +27,8 @@ import Combine
         guard !running, let show, let documents else { return }
         running = true
         ControlMappings.shared.bind(show, session: mappingSession)
+        show.toggleVideoWindow = { VideoPlayback.shared.toggle() }
+        if let directory = documents.currentURL?.deletingLastPathComponent() { VideoPlayback.shared.open(directory: directory) }
         VinhetasController.shared.bind(show: show)
         DAWRemoteHostBridge.documents = documents
         DAWRemoteHostBridge.bind(show, session: session)
@@ -67,6 +69,7 @@ import Combine
     }
     func refresh() {
         if let show {
+            VideoPlayback.shared.update(show.snapshot)
             VideoPlayback.teleprompter.update(show.snapshot)
             VideoPlayback.teleprompter2.update(show.snapshot)
         }
@@ -121,7 +124,7 @@ import Combine
         let foreground = NativeProjectTabs.shared.isForeground(show)
         if foreground { VinhetasController.shared.unbind() }
         if ControlMappings.shared.endNativeSession(mappingSession) {
-            show?.togglePartsPanel = {}; show?.toggleSetlistPanel = {}; show?.toggleTracksPanel = {}; show?.toggleTeleprompterWindow = {}
+            show?.togglePartsPanel = {}; show?.toggleSetlistPanel = {}; show?.toggleTracksPanel = {}; show?.toggleTeleprompterWindow = {}; show?.toggleVideoWindow = {}
         }
         if foreground {
         DAWRemoteSession.nativeHost.stop()
@@ -231,6 +234,7 @@ import Combine
         .onChange(of: local.projectRevision) { _ in inspectOutputRoutes() }
         .onChange(of: local.state?.project) { _ in inspectOutputRoutes() }
         .onChange(of: audio.channels) { _ in inspectOutputRoutes() }
+        .overlay { IpadNativeVideoPanel() }
         .disabled(dialogOpen || audio.localSessionReconfiguring).accessibilityHidden(dialogOpen)
         .overlay { workspaceDialogs }
         .overlay(alignment: .bottom) {

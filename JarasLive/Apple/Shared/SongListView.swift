@@ -558,8 +558,8 @@ struct SongListView: View {
             return lists[next].name
         }, released: { show.finishRegionNavigation() }, activate: { show.activateSetlistSelection() }, delete: { requestRemoval(selectedEntries, keyboard: true) }))
         #endif
-        .onChange(of: show.setlistNavigationRequest) { request in
-            guard let request, !creatingPlaylist && !choosingPlaylist else { return }
+        .onReceive(show.setlistNavigationEvents) { request in
+            guard !creatingPlaylist && !choosingPlaylist else { return }
             show.stepRegion(request.direction, entries: visible)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).background(JarasTheme.background)

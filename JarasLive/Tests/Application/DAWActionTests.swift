@@ -2,6 +2,44 @@ import XCTest
 @testable import JarasApplication
 
 final class DAWActionTests: XCTestCase {
+    func testPreviewCanMapKeyboardAndMIDIWithoutTakingExistingShortcuts() throws {
+        let action = DAWAction.togglePreview
+        XCTAssertTrue(DAWAction.visible.contains(action)); XCTAssertTrue(action.supportsMIDI)
+        XCTAssertNil(action.defaultKeyboard); XCTAssertFalse(action.repeats); XCTAssertFalse(action.needsTrack)
+        XCTAssertEqual(action.category, .shortcuts)
+        var bindings = DAWActionBindings()
+        let key = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
+        let midi = ControlInput(kind: "midi", label: "Preview pad", device: 2, channel: 1, status: 0x90, number: 80)
+        XCTAssertTrue(bindings.setInput(key, action: action, kind: "keyboard"))
+        XCTAssertTrue(bindings.setInput(midi, action: action, kind: "midi"))
+        let restored = DAWActionBindings(stored: try JSONDecoder().decode([DAWActionBinding].self, from: JSONEncoder().encode(bindings.entries)))
+        XCTAssertEqual(restored.matching(key), action); XCTAssertEqual(restored.matching(midi), action)
+        XCTAssertEqual(restored.matching(DAWAction.playStop.defaultKeyboard!), .playStop)
+        XCTAssertFalse(bindings.setInput(key, action: .toggleVideo, kind: "keyboard"), "Another action cannot silently take the Preview shortcut")
+    }
+
+    func testTransportMappingsExposeOnlyTogglesAndMigrateLegacyInputs() throws {
+        XCTAssertTrue(DAWAction.visible.contains(.playStop))
+        XCTAssertTrue(DAWAction.visible.contains(.subPlayStop))
+        XCTAssertFalse(DAWAction.visible.contains(where: { $0.legacyTransportMapping }))
+        let playInput = ControlInput(kind: "midi", label: "Play", device: 9, channel: 2, status: 0x90, number: 41)
+        let stopInput = ControlInput(kind: "midi", label: "Stop", device: 9, channel: 2, status: 0x90, number: 42)
+        var play = DAWActionBinding(action: .play); play.midi = playInput
+        var stop = DAWActionBinding(action: .stop); stop.midi = stopInput
+        var sub = DAWActionBinding(action: .subPlay); sub.midi = stopInput
+        var bindings = DAWActionBindings(stored: [stop, play, sub])
+        XCTAssertEqual(bindings.matching(playInput), .playStop)
+        XCTAssertEqual(bindings.matching(stopInput), .subPlayStop)
+        XCTAssertNil(bindings.binding(.play).midi); XCTAssertNil(bindings.binding(.stop).midi)
+        XCTAssertFalse(bindings.setInput(playInput, action: .play, kind: "midi"))
+        let saved = try JSONDecoder().decode([DAWActionBinding].self, from: JSONEncoder().encode(bindings.entries))
+        XCTAssertEqual(DAWActionBindings(stored: saved), bindings)
+        var existing = DAWActionBinding(action: .playStop); existing.midi = stopInput
+        bindings = DAWActionBindings(stored: [play, existing])
+        XCTAssertEqual(bindings.matching(stopInput), .playStop)
+        XCTAssertNil(bindings.matching(playInput), "An existing combined binding must take priority")
+    }
+
     func testFullscreenShortcutCanBeRemappedWithoutKeepingOldAlias() throws {
         var bindings = DAWActionBindings()
         let shortcut = ControlInput(kind: "keyboard", label: "", key: 103, modifiers: 1 << 20)
@@ -379,9 +417,9 @@ extension DAWActionTests {
         XCTAssertEqual(DAWAction.muteTrack.category, .mute)
         XCTAssertEqual(DAWAction.soloTrack.category, .solo)
         var bindings = DAWActionBindings()
-        let newActions: [DAWAction] = [.play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts]
+        let newActions: [DAWAction] = [.playStop, .subPlayStop, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts]
         for (index, action) in newActions.enumerated() {
-            XCTAssertNil(action.defaultKeyboard, "new MIDI controls must not steal existing editing shortcuts")
+            if action != .playStop && action != .subPlayStop { XCTAssertNil(action.defaultKeyboard, "MIDI controls must not steal editing shortcuts") }
             let input = ControlInput(kind: "midi", label: "Pad \(index)", device: 7, channel: 2, status: 0x90, number: UInt8(60 + index))
             XCTAssertTrue(bindings.setInput(input, action: action, kind: "midi"))
             XCTAssertEqual(bindings.matching(input), action)

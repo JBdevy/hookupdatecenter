@@ -676,6 +676,8 @@ public struct ShowTimelinePresentationState: Equatable {
         public let direction: Int
     }
     @Published public private(set) var setlistNavigationRequest: SetlistNavigationRequest?
+    /// Events are delivered for each MIDI press, without SwiftUI coalescing or replay.
+    public let setlistNavigationEvents = PassthroughSubject<SetlistNavigationRequest, Never>()
     @Published public private(set) var splitItemsRequest: UInt64 = 0
     /// Emitted only after a split commits; views select the newly created right halves.
     public let splitItemSelection = PassthroughSubject<Set<UUID>, Never>()
@@ -754,7 +756,10 @@ public struct ShowTimelinePresentationState: Equatable {
         case .toggleMultiLoopBypass: send(.toggleMultiLoopBypass)
         case .subPlayStop: send(snapshot.transport.subPlay.playing ? .subStop : .subPlay)
         case .addTrack: addTrackRequest &+= 1
-        case .setlistUp, .setlistDown: setlistNavigationRequest = SetlistNavigationRequest(id: UUID(), direction: action == .setlistUp ? -1 : 1)
+        case .setlistUp, .setlistDown:
+            let request = SetlistNavigationRequest(id: UUID(), direction: action == .setlistUp ? -1 : 1)
+            setlistNavigationRequest = request
+            setlistNavigationEvents.send(request)
         case .toggleAuto: toggleRegionAuto()
         case .ignoreNext: send(.ignoreNext)
         case .cancelSection: send(.cancelSection)
@@ -762,6 +767,7 @@ public struct ShowTimelinePresentationState: Equatable {
         case .normalizeItems: normalizeItemsRequest &+= 1
         case .reRenderItems, .unifyAudioItems: itemProcessingRequest = .init(id: UUID(), action: action)
         case .createTempoMarker: tempoMarkerRequest &+= 1
+        case .togglePreview: togglePreview()
         case .toggleVideo: toggleVideoWindow()
         case .toggleTeleprompter: toggleTeleprompterWindow()
         case .previousProjectTab: navigateProjectTab(-1)
@@ -785,6 +791,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var isPlaying: Bool { snapshot.transport.playing || snapshot.transport.subPlay.playing }
     public var canExecute: () -> Bool = { true }
     public var onStop: () -> Void = {}
+    public var togglePreview: () -> Void = {}
     public var toggleVideoWindow: () -> Void = {}
     public var toggleWorkspaceFullscreen: () -> Void = {}
     public var toggleTeleprompterWindow: () -> Void = {}

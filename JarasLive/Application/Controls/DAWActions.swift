@@ -10,14 +10,15 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case tunerDown, tunerUp, partsUp, partsDown, toggleParts, cancelSection
     case setlistUp, setlistDown, toggleAuto, splitItems, ignoreNext
     case projectStart, projectEnd, nextRegion, previousRegion, nextTimelinePoint, previousTimelinePoint
-    case toggleVideo, toggleTeleprompter, normalizeItems, reRenderItems, unifyAudioItems, createTempoMarker
+    case toggleVideo, toggleTeleprompter, togglePreview, normalizeItems, reRenderItems, unifyAudioItems, createTempoMarker
     case toggleTracks, toggleBarMixer, toggleSetlist, toggleMultiLoopBypass
 
+    public var legacyTransportMapping: Bool { self == .play || self == .stop || self == .subPlay }
     public static var visible: [Self] {
         #if os(iOS)
-        return allCases.filter { $0 != .toggleFullscreen }
+        return allCases.filter { !$0.legacyTransportMapping && $0 != .toggleFullscreen }
         #else
-        return allCases
+        return allCases.filter { !$0.legacyTransportMapping }
         #endif
     }
     public var needsTrack: Bool { [.selectTrack, .muteTrack, .soloTrack, .volumeTrack, .panTrack].contains(self) }
@@ -72,6 +73,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .previousRegion: return "Go to previous region"
         case .nextTimelinePoint: return "Next marker or region boundary"
         case .previousTimelinePoint: return "Previous marker or region boundary"
+        case .togglePreview: return "Preview on/off"
         case .toggleVideo: return "Video window on/off"
         case .toggleTeleprompter: return "Teleprompter window on/off"
         case .toggleTracks: return "Track Mixer show/hide"
@@ -84,7 +86,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         let command: UInt = 1 << 20, shift: UInt = 1 << 17, option: UInt = 1 << 19
         let key: UInt16, modifiers: UInt, label: String
         switch self {
-        case .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts, .cancelSection, .reRenderItems, .unifyAudioItems: return nil
+        case .togglePreview, .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .toggleParts, .cancelSection, .reRenderItems, .unifyAudioItems: return nil
         case .saveProject: (key, modifiers, label) = (1, command, "⌘S")
         case .toggleFullscreen: (key, modifiers, label) = (103, command, "⌘F11")
         case .muteTrack: (key, modifiers, label) = (46, 0, "M")
@@ -159,6 +161,20 @@ public struct DAWActionBindings: Codable, Equatable {
     public private(set) var entries: [DAWActionBinding]
     public init(stored: [DAWActionBinding] = []) {
         var stored = stored
+        // Retain the combined binding first; otherwise move the old Play/Stop
+        // (or Sub Play) input to its toggle. Legacy cases remain decodable only.
+        for (target, sources) in [(DAWAction.playStop, [DAWAction.play, .stop]), (.subPlayStop, [.subPlay])] {
+            var binding = stored.first { $0.action == target } ?? DAWActionBinding(action: target)
+            for source in sources {
+                guard let old = stored.first(where: { $0.action == source }) else { continue }
+                if binding.midi == nil { binding.midi = old.midi }
+                if binding.keyboard == nil { binding.keyboard = old.keyboard }
+            }
+            if stored.contains(where: { sources.contains($0.action) }) {
+                stored.removeAll { sources.contains($0.action) || $0.action == target }
+                stored.append(binding)
+            }
+        }
         if let index = stored.firstIndex(where: { $0.action == .selectTrack }),
            stored[index].keyboard?.key == 17, stored[index].keyboard?.modifiers == (1 << 20 | 1 << 17) {
             stored[index].keyboard = nil
@@ -218,7 +234,7 @@ public struct DAWActionBindings: Codable, Equatable {
     public func binding(_ action: DAWAction) -> DAWActionBinding { entries.first { $0.action == action }! }
     public func matching(_ input: ControlInput) -> DAWAction? { entries.first { $0.matches(input) }?.action }
     @discardableResult public mutating func setInput(_ input: ControlInput?, action: DAWAction, kind: String) -> Bool {
-        guard let index = entries.firstIndex(where: { $0.action == action }), input == nil || conflict(input!, excluding: action) == nil else { return false }
+        guard !action.legacyTransportMapping, let index = entries.firstIndex(where: { $0.action == action }), input == nil || conflict(input!, excluding: action) == nil else { return false }
         if action == .transportFadeout, let input, Self.reservedForFadeout(input) { return false }
         if kind == "keyboard" { guard !action.fixedKeyboard && !action.continuous else { return false }; entries[index].keyboard = input } else {
             guard action.supportsMIDI, !action.continuous || input == nil || (input?.kind == "midi" && input?.status == 0xb0) else { return false }

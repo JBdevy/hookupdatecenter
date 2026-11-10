@@ -1256,10 +1256,10 @@ public struct RegionMarkerRepulsion {
 
 public extension Song {
     /// Timeline order is the projection priority. Teleprompters opt into their
-    /// own source track; the main video window scans every track from the top.
+    /// own source track; the main video window excludes both teleprompters.
     func firstProjectionItem(at position: Double, trackKind: TrackKind? = nil) -> AudioClip? {
         guard position.isFinite else { return nil }
-        for track in tracks where !track.mute && (trackKind == nil || track.kind == trackKind) {
+        for track in tracks where !track.mute && (trackKind.map { track.kind == $0 } ?? !track.kind.isTeleprompter) {
             for clip in track.clips where clip.isProjectionMedia && clip.muted != true && position >= clip.startTime && position < clip.startTime + clip.duration { return clip }
         }
         return nil

@@ -188,7 +188,11 @@ class Workspace::Setlist final : public Component,
         std::vector<ID> ids;
         for (const auto &entry : entries) if (!entry.block) ids.push_back(entry.id);
         if (ids.empty() || w.session.busy) return;
-        const auto anchor = w.session.focusedRegion.value_or(ID{});
+        auto anchor = w.session.focusedRegion.value_or(ID{});
+        if (std::find(ids.begin(), ids.end(), anchor) == ids.end()) {
+            if (const auto *song = w.session.song()) for (const auto &part : song->parts)
+                if (part.id == anchor && part.parentRegionID) { anchor = *part.parentRegionID; break; }
+        }
         auto found = std::find(ids.begin(),ids.end(),anchor);
         int index = found == ids.end() ? (direction > 0 ? 0 : (int)ids.size()-1)
             : jlimit(0,(int)ids.size()-1,(int)std::distance(ids.begin(),found)+direction);

@@ -17,6 +17,42 @@ void addActionBindingsTests(const File &directory, Register &&test) {
     const auto require = [](bool okay, const char *message) {
         if (!okay) throw std::runtime_error(message);
     };
+    test("Preview supports saved keyboard and MIDI mappings without held repeats", [&, require] {
+        auto file=directory.getNonexistentChildFile("preview-action", ".json");
+        Appearance settings(file); AudioDeviceManager devices; ActionBindings bindings(settings,devices);
+        auto input=object();put(input,"status",0xb0);put(input,"number",78);put(input,"channel",2);
+        require(bindings.assign("togglePreview","keyboard","F8"),"Preview has no keyboard mapping");
+        require(bindings.assign("togglePreview","midi",input),"Preview has no MIDI mapping");
+        int calls=0;bindings.invoke=[&](const String &id,float,int){require(id=="togglePreview","Wrong Preview action");++calls;};
+        require(bindings.key(KeyPress::createFromDescription("F8")),"Preview shortcut was not consumed");
+        bindings.key(KeyPress::createFromDescription("F8"),true);require(calls==1,"Held key toggled Preview repeatedly");
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(2,78,127));
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::controllerEvent(2,78,90));
+        require(calls==2,"Preview MIDI did not toggle once per press");
+        Appearance restored(file); ActionBindings reopened(restored,devices);
+        reopened.invoke=bindings.invoke;reopened.key(KeyPress::createFromDescription("F8"));
+        require(calls==3&&reopened.midiInput("togglePreview").isObject(),"Preview mappings were not saved");
+    });
+    test("Legacy transport mappings migrate to combined toggles", [&, require] {
+        auto file=directory.getNonexistentChildFile("transport-toggle-migration", ".json");
+        Appearance settings(file); AudioDeviceManager devices;
+        auto values=object(), old=object(), midi=object();
+        put(midi,"status",0x90);put(midi,"number",60);put(midi,"channel",2);
+        put(old,"midi",midi);put(values,"play",old);put(values,"subPlay",old);
+        require(settings.set("catlive.actions",values).wasOk(),"Could not store legacy fixture");
+        ActionBindings bindings(settings,devices);
+        require(bindings.inputLabel("playStop","midi")=="Note 60 / Ch 2","Play mapping did not migrate");
+        require(bindings.inputLabel("subPlayStop","midi")=="Note 60 / Ch 2","Subplay mapping did not migrate");
+        for(const auto &definition:actionDefinitions())
+            require(String(definition.id)!="play"&&String(definition.id)!="stop"&&String(definition.id)!="subPlay","Legacy transport is still offered in Actions");
+        const auto saved=settings.value("catlive.actions",object());
+        require(!saved.hasProperty("play")&&!saved.hasProperty("subPlay"),"Legacy bindings remain after migration");
+        String called;bindings.invoke=[&](const String &id,float,int){called=id;};
+        ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,60,(uint8)100));
+        require(called=="playStop","Legacy Play pad is not a toggle");
+        Appearance restored(file);ActionBindings reopened(restored,devices);
+        require(reopened.inputLabel("playStop","midi")=="Note 60 / Ch 2","Migrated binding did not persist");
+    });
     test("Save project default shortcut can be remapped and persisted", [&, require] {
         auto file=directory.getNonexistentChildFile("save-action", ".json");
         Appearance settings(file);AudioDeviceManager devices;ActionBindings bindings(settings,devices);
@@ -83,11 +119,11 @@ void addActionBindingsTests(const File &directory, Register &&test) {
         ccEvent(127); ccEvent(90); require(invocations == 1 && invoked == "setlistBlock:1","Held CC retriggered its block");
         ccEvent(0); require(invocations == 1,"CC release activated the block");
         ccEvent(1); require(invocations == 2,"CC release did not rearm the block");
-        require(!bindings.assign("play","midi",cc) && !bindings.assign("setlistBlock:2","midi",cc), "Other actions stole a global block binding silently");
-        require(bindings.assign("play","keyboard","F9") && bindings.assign("play","midi",note), "Could not prepare fixed-action conflict");
+        require(!bindings.assign("playStop","midi",cc) && !bindings.assign("setlistBlock:2","midi",cc), "Other actions stole a global block binding silently");
+        require(bindings.assign("playStop","keyboard","F9") && bindings.assign("playStop","midi",note), "Could not prepare fixed-action conflict");
         require(!bindings.assign("setlistBlock:4097","midi",note), "Block binding stole an existing action silently");
-        require(bindings.assign("setlistBlock:4097","midi",note,true) && !bindings.midiInput("play").isObject() &&
-                bindings.inputLabel("play","keyboard") == "F9", "Explicit transfer lost another action's keyboard mapping");
+        require(bindings.assign("setlistBlock:4097","midi",note,true) && !bindings.midiInput("playStop").isObject() &&
+                bindings.inputLabel("playStop","keyboard") == "F9", "Explicit transfer lost another action's keyboard mapping");
         ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOff(2,61));
         ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)100));
         ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)90));

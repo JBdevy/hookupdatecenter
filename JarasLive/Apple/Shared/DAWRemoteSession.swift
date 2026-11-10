@@ -158,7 +158,11 @@ final class DAWRemoteChannel {
         self.connection = connection; self.queue = queue; cipher = DAWRemoteCipher(role: role, name: name)
     }
     static func parameters() -> NWParameters {
-        let parameters = NWParameters.tcp
+        let tcp = NWProtocolTCP.Options()
+        // Pad presses and transport commands must leave immediately, even
+        // while the previous small packet is still awaiting an ACK.
+        tcp.noDelay = true
+        let parameters = NWParameters(tls: nil, tcp: tcp)
         parameters.includePeerToPeer = true
         return parameters
     }

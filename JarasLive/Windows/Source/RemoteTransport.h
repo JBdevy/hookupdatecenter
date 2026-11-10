@@ -18,6 +18,8 @@ class Transport final : private Thread {
     };
     Transport() : Thread("CatLive Remote") {}
     ~Transport() override { stop(); }
+    // Set before start. Runs on the network worker, only to wake its UI owner.
+    std::function<void()> eventsReady;
     int start(String name, const String &address = "127.0.0.1", int requestedPort = 0) {
         stop();
         displayName = std::move(name);
@@ -82,6 +84,9 @@ class Transport final : private Thread {
     struct Client {
         Client(std::unique_ptr<StreamingSocket> value, const String &name, Cipher::Role role=Cipher::host)
             : socket(std::move(value)), cipher(role, name) {
+            const BOOL immediate = TRUE;
+            require(setsockopt((SOCKET)socket->getRawSocketHandle(), IPPROTO_TCP, TCP_NODELAY,
+                              reinterpret_cast<const char *>(&immediate), sizeof(immediate)) == 0);
             u_long nonblocking = 1;
             require(ioctlsocket((SOCKET)socket->getRawSocketHandle(), FIONBIO, &nonblocking) == 0);
             push(Frames::encode(cipher.hello()));
@@ -122,9 +127,12 @@ class Transport final : private Thread {
     size_t queuedBytes = 0;
     std::deque<double> invitations;
     void post(Event event) {
-        const ScopedLock lock(mutex);
-        require(pending.size() < 512);
-        pending.push_back(std::move(event));
+        {
+            const ScopedLock lock(mutex);
+            require(pending.size() < 512);
+            pending.push_back(std::move(event));
+        }
+        if (eventsReady) eventsReady();
     }
     void received(Client &client, const Bytes &data) {
         if (!client.hello) {
@@ -285,6 +293,7 @@ class Transport final : private Thread {
                                                  pending.clear();
                                              pending.push_back(
                                                  {Event::disconnected, client->id, client->name});
+                                             if (eventsReady) eventsReady();
                                              return true;
                                          }),
                           clients.end());

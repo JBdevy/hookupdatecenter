@@ -12,7 +12,7 @@ struct AdvancedView: View {
     }
     private var availableTabs: [Tab] {
         #if os(iOS)
-        [.timeline, .setlist, .transport]
+        [.timeline, .setlist, .transport, .video]
         #else
         Tab.allCases.filter { $0 != .transport }
         #endif

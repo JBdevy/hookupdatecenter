@@ -359,18 +359,96 @@ private struct NativeVideoLayer: NSViewRepresentable {
     func updateNSView(_ view: VideoLayerView, context: Context) { view.setPlayer(player); view.setStretch(stretch) }
     static func dismantleNSView(_ view: VideoLayerView, coordinator: ()) { view.clear() }
 }
+typealias ProjectionPlatformView = NSView
+#else
+private struct NativeVideoLayer: UIViewRepresentable {
+    let player: AVPlayer
+    let stretch: Bool
+    func makeUIView(context: Context) -> VideoLayerView { VideoLayerView(player: player, stretch: stretch) }
+    func updateUIView(_ view: VideoLayerView, context: Context) { view.setPlayer(player); view.setStretch(stretch) }
+    static func dismantleUIView(_ view: VideoLayerView, coordinator: ()) { view.clear() }
+}
+typealias ProjectionPlatformView = UIView
+#endif
+#if os(iOS)
+struct IpadNativeVideoButton: View {
+    @ObservedObject private var video = VideoPlayback.shared
+    var body: some View {
+        Button { video.toggle() } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "video")
+                Text("Video")
+            }.font(.system(size: 10, weight: .semibold)).lineLimit(1)
+                .frame(width: 62, height: 32).foregroundStyle(Color.black)
+                .background(video.visible ? JarasTheme.green : JarasTheme.liveOffRed, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel("Video")
+            .accessibilityValue(video.visible ? "On" : "Off")
+            .contextMenu { Toggle("Stretch", isOn: Binding(get: { video.stretch }, set: { video.setStretch($0) })) }
+    }
+}
+
+/// A floating surface leaves the timeline and transport available while watching.
+struct IpadNativeVideoPanel: View {
+    @ObservedObject private var video = VideoPlayback.shared
+    @State private var origin: CGPoint?
+    @State private var fullscreen = false
+    @GestureState private var drag = CGSize.zero
+    var body: some View {
+        GeometryReader { geometry in
+            if video.visible {
+                let width = fullscreen ? geometry.size.width : min(480, max(240, geometry.size.width * 0.55), geometry.size.width)
+                let height = fullscreen ? geometry.size.height : min(geometry.size.height, width * 9 / 16 + 36)
+                let initial = origin ?? CGPoint(x: geometry.size.width - width - 12, y: geometry.size.height - height - 12)
+                let x = fullscreen ? 0 : min(max(0, initial.x + drag.width), max(0, geometry.size.width - width))
+                let y = fullscreen ? 0 : min(max(0, initial.y + drag.height), max(0, geometry.size.height - height))
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        HStack { Image(systemName: "video"); Text("Video"); Spacer(minLength: 0) }
+                            .contentShape(Rectangle())
+                            .gesture(DragGesture().updating($drag) { value, current, _ in
+                                if !fullscreen { current = value.translation }
+                            }.onEnded { value in
+                                if !fullscreen { origin = CGPoint(x: min(max(0, initial.x + value.translation.width), max(0, geometry.size.width - width)),
+                                    y: min(max(0, initial.y + value.translation.height), max(0, geometry.size.height - height))) }
+                            })
+                        Button { fullscreen.toggle() } label: {
+                            Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 36, height: 36)
+                        }.accessibilityLabel(fullscreen ? "Sair da tela cheia" : "Tela cheia")
+                        Button { video.setVisible(false) } label: { Image(systemName: "xmark").frame(width: 36, height: 36) }
+                            .accessibilityLabel("Fechar vídeo")
+                    }.padding(.leading, 12).font(.system(size: 13, weight: .semibold))
+                        .frame(height: 36).background(JarasTheme.panel).foregroundStyle(Color.white).buttonStyle(.plain)
+                    VideoSurface(controller: video).clipped().contentShape(Rectangle())
+                        .onTapGesture(count: 2) { fullscreen.toggle() }
+                }.frame(width: width, height: height).background(Color.black)
+                    .clipShape(RoundedRectangle(cornerRadius: fullscreen ? 0 : 8))
+                    .overlay(RoundedRectangle(cornerRadius: fullscreen ? 0 : 8).stroke(Color.white.opacity(0.2), lineWidth: 1))
+                    .shadow(radius: fullscreen ? 0 : 10).offset(x: x, y: y)
+            }
+        }.onChange(of: video.visible) { visible in if !visible { fullscreen = false } }
+    }
+}
+#endif
+
 /// A ready AVPlayerItem is not necessarily a drawable AVPlayerLayer yet.
 /// Keep the outgoing layer visible until the incoming layer has a real frame.
-final class VideoLayerView: NSView {
+final class VideoLayerView: ProjectionPlatformView {
+    private var projectionLayer: CALayer? { layer }
     private(set) var video = AVPlayerLayer()
     private var incoming: AVPlayerLayer?
     private var readiness: NSKeyValueObservation?
     private var itemObservation: NSKeyValueObservation?
     private weak var requestedPlayer: AVPlayer?
     init(player: AVPlayer, stretch: Bool) {
-        super.init(frame: .zero); wantsLayer = true
+        super.init(frame: .zero)
+        #if os(macOS)
+        wantsLayer = true
+        #else
+        backgroundColor = .black
+        #endif
         video.videoGravity = stretch ? .resize : .resizeAspect
-        layer?.addSublayer(video)
+        projectionLayer?.addSublayer(video)
         setPlayer(player)
     }
     func clear() {
@@ -388,7 +466,7 @@ final class VideoLayerView: NSView {
         next.frame = bounds; next.videoGravity = video.videoGravity
         incoming = next
         // Decode behind the previous frame, without hiding the incoming layer.
-        layer?.insertSublayer(next, below: video)
+        projectionLayer?.insertSublayer(next, below: video)
         readiness = next.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self, weak next] _, _ in
             DispatchQueue.main.async {
                 guard let self, let next, self.incoming === next, next.isReadyForDisplay else { return }
@@ -413,34 +491,13 @@ final class VideoLayerView: NSView {
         CATransaction.commit()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func layout() {
-        super.layout(); CATransaction.begin(); CATransaction.setDisableActions(true)
+    private func layoutVideo() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
         video.frame = bounds; incoming?.frame = bounds; CATransaction.commit()
     }
+    #if os(macOS)
+    override func layout() { super.layout(); layoutVideo() }
+    #else
+    override func layoutSubviews() { super.layoutSubviews(); layoutVideo() }
+    #endif
 }
-
-#else
-private struct NativeVideoLayer: UIViewRepresentable {
-    let player: AVPlayer
-    let stretch: Bool
-    func makeUIView(context: Context) -> VideoLayerView { VideoLayerView(player: player, stretch: stretch) }
-    func updateUIView(_ view: VideoLayerView, context: Context) { if view.video.player !== player { view.video.player = player }; view.setStretch(stretch) }
-    static func dismantleUIView(_ view: VideoLayerView, coordinator: ()) { view.video.player = nil }
-}
-private final class VideoLayerView: UIView {
-    override class var layerClass: AnyClass { AVPlayerLayer.self }
-    var video: AVPlayerLayer { layer as! AVPlayerLayer }
-    init(player: AVPlayer, stretch: Bool) {
-        super.init(frame: .zero)
-        backgroundColor = .black; video.player = player; setStretch(stretch)
-    }
-    func setStretch(_ enabled: Bool) {
-        let gravity: AVLayerVideoGravity = enabled ? .resize : .resizeAspect
-        guard video.videoGravity != gravity else { return }
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        video.videoGravity = gravity
-        CATransaction.commit()
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-}
-#endif

@@ -55,6 +55,41 @@ import AVFoundation
     print("VINHETAS_GATE_10MS_RELEASE_VARIABLE_BLOCKS_OK rate=\(rate)")
     audio.setPadGain(first, gain: 0.5); try expect(0.0125, "Live pad gain")
     audio.stopPad(first); try expect(0, "All pads stopped")
+    // Stress the real graph at small buffers: restarting/finishing one pad
+    // must never interrupt another, rebuild nodes or wait for a UI timer.
+    let stableNodes = Set(engine.attachedNodes.map(ObjectIdentifier.init))
+    let sustained = UUID()
+    try audio.playPad(sustained, buffer: input, gain: 1, track: track.id, finished: {})
+    try expect(0.025, "Sustained reference")
+    let shortRate = rate == 44100 ? 48000.0 : 44100.0
+    let mono = AVAudioFormat(standardFormatWithSampleRate: shortRate, channels: 1)!
+    let short = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: 887)!
+    short.frameLength = 887
+    for f in 0..<887 { short.floatChannelData![0][f] = 0.001 }
+    var completed = 0
+    for press in 0..<96 {
+        let id = UUID()
+        try audio.playPad(id, buffer: short, gain: 1, track: track.id, finished: { completed += 1 })
+        var position = 0.0
+        for frames in [128, 37, 251, 64, 512, 128] {
+            let status = try engine.renderOffline(AVAudioFrameCount(frames), to: output)
+            precondition(status == .success)
+            for f in 0..<frames {
+                let expected: Float = 0.025 + (position < 887 ? 0.001 : 0)
+                for ch in 0..<2 {
+                    precondition(abs(output.floatChannelData![ch][f] - expected) < 0.00001,
+                        "Pad burst cut/delayed PCM: press=\(press) frame=\(f)")
+                }
+                position += shortRate / rate
+            }
+        }
+        audio.finishReleasedPads()
+        precondition(completed == press + 1, "Natural completion must be retired exactly once")
+        precondition(Set(engine.attachedNodes.map(ObjectIdentifier.init)) == stableNodes,
+            "Pad trigger/completion changed the running graph")
+    }
+    audio.stopPad(sustained); try expect(0, "Burst cleanup")
+    print("VINHETAS_96_TRIGGERS_128_FRAME_CONTINUOUS_PCM_MONO_RATE_CONVERSION_STABLE_GRAPH_OK rate=\(rate)")
     var capturedState = state
     var effects = NativeFXSettings(); effects.appendNative("Compressor")
     effects.threshold = 0; effects.ratio = 1; effects.makeup = -6

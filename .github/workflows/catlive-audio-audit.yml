@@ -79,6 +79,7 @@ jobs:
         run: |
           bash scripts/test-audio.sh \
             Tests/Apple/AudioRenderTests.swift \
+            Tests/Apple/VinhetasPlaybackTests.swift \
             Tests/Apple/PlaybackSampleEpochTests.swift \
             Tests/Apple/PlaybackEditingContinuityTests.swift \
             Tests/Apple/MobileQueueSyncTests.swift \

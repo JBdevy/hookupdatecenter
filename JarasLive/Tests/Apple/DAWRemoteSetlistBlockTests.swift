@@ -105,6 +105,44 @@ waitFor("observer still receives state after forbidden Live toggle") { blockClie
 require(blockCommands == 0 && blockClient.remoteState?.playedLiveRegionIDs == [],
     "Observer sees Live history but cannot enable/disable Live or restore cleared markings")
 print("REMOTE_OBSERVER_LIVE_CHILD_PARENT_COMPLETION_RESET_CACHED_ROWS_AND_READ_ONLY_OK")
+// Host keyboard/MIDI navigation publishes focus independently of playback and
+// queue. The same state provider serves desktop and native iPad hosts.
+let browsedSong = UUID()
+networkBlocks.regions.append(.init(id: browsedSong, name: "Browsing", start: 0, end: 10, color: 0x123456))
+networkBlocks.playing = true; networkBlocks.currentRegion = regionID
+networkBlocks.queuedRegion = plainRegion; networkBlocks.focusedRegion = browsedSong
+waitFor("observer sees browsing while another song plays and a third is queued") {
+    blockClient.remoteState?.focusedRegion == browsedSong && blockClient.remoteState?.playing == true
+}
+let browsingSnapshot = blockClient.remoteState!
+require(DAWRemoteSetlistPresentation.observerFocus(in: browsingSnapshot, expanded: []) == browsedSong &&
+        browsingSnapshot.setlistCurrentEntryId == regionID && browsingSnapshot.setlistQueuedEntryId == plainRegion,
+        "Blue browsing, red playback and orange queue have independent entry identities")
+networkBlocks.focusedRegion = drawerChild
+waitFor("focus-only packet reaches observer during playback") { blockClient.remoteState?.focusedRegion == drawerChild }
+require(DAWRemoteSetlistPresentation.observerFocus(in: blockClient.remoteState!, expanded: []) == regionID,
+        "A collapsed drawer reveals its focused child's parent")
+require(DAWRemoteSetlistPresentation.observerFocus(in: blockClient.remoteState!, expanded: [regionID]) == drawerChild,
+        "An expanded drawer selects only the child instead of two blue rows")
+networkBlocks.focusedRegion = browsedSong
+networkBlocks.subPlaying = true
+waitFor("observer browsing remains visible with SubPlay") { blockClient.remoteState?.subPlaying == true && blockClient.remoteState?.focusedRegion == browsedSong }
+require(DAWRemoteSetlistPresentation.observerFocus(in: blockClient.remoteState!, expanded: []) == browsedSong,
+        "SubPlay does not hide browsing")
+require(blockCommands == 0 && blockClient.remoteState?.currentRegion == regionID && blockClient.remoteState?.queuedRegion == plainRegion,
+        "Following focus neither controls the host nor replaces its playback/queue")
+networkBlocks.playing = false; networkBlocks.subPlaying = false; networkBlocks.focusedRegion = nil
+waitFor("clearing focus clears the observer highlight") { blockClient.remoteState?.focusedRegion == nil && blockClient.remoteState?.playing == false }
+require(DAWRemoteSetlistPresentation.observerFocus(in: blockClient.remoteState!, expanded: []) == nil,
+        "Empty focus does not invent a selected row")
+var duplicateFocus = browsingSnapshot
+let duplicateFocusID = UUID()
+var focusCopy = duplicateFocus.regions.first { $0.id == browsedSong }!
+focusCopy.id = duplicateFocusID; focusCopy.sourceRegionId = browsedSong
+duplicateFocus.regions.append(focusCopy); duplicateFocus.focusedRegion = duplicateFocusID
+require(DAWRemoteSetlistPresentation.observerFocus(in: duplicateFocus, expanded: []) == duplicateFocusID,
+        "A playlist copy keeps its own blue selection without highlighting the source")
+print("REMOTE_OBSERVER_BROWSING_PLAYING_QUEUED_DRAWERS_COPIES_AND_READ_ONLY_OK")
 blockClient.requestAccess(.notices)
 waitFor("notices-only role removes block metadata") { blockClient.accessMode == .notices && blockClient.remoteState?.setlistBlocks == nil }
 blockClient.stop(); blockHost.stop()
