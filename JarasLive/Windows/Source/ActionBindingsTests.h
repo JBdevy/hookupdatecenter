@@ -33,6 +33,21 @@ void addActionBindingsTests(const File &directory, Register &&test) {
         reopened.invoke=bindings.invoke;reopened.key(KeyPress::createFromDescription("F8"));
         require(calls==3&&reopened.midiInput("togglePreview").isObject(),"Preview mappings were not saved");
     });
+    test("Transport toggles accept one MIDI press until release", [&, require] {
+        for (const auto *action : {"playStop", "subPlayStop"}) {
+            Appearance settings(directory.getNonexistentChildFile("transport-press", ".json"));
+            AudioDeviceManager devices; ActionBindings bindings(settings, devices);
+            auto input=object(); put(input,"status",0x90); put(input,"number",61); put(input,"channel",2);
+            require(bindings.assign(action,"midi",input),"Transport toggle cannot be mapped");
+            int calls=0; bindings.invoke=[&](const String &id,float,int){require(id==action,"Wrong transport action");++calls;};
+            ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)127));
+            ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)90));
+            require(calls==1,"Held transport MIDI toggled playback repeatedly");
+            ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOff(2,61));
+            ActionBindingsTestAccess::receive(bindings,MidiMessage::noteOn(2,61,(uint8)127));
+            require(calls==2,"Transport MIDI release did not rearm");
+        }
+    });
     test("Legacy transport mappings migrate to combined toggles", [&, require] {
         auto file=directory.getNonexistentChildFile("transport-toggle-migration", ".json");
         Appearance settings(file); AudioDeviceManager devices;

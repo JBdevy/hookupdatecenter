@@ -62,6 +62,7 @@ private final class WorkspaceProbe {
     var local = true
     var allRegionsOrder = 0
     var nativeKeyboardBrowsing = false
+    var remoteNavigationTask: Task<Void, Never>?
     var observer = false
     var controlsEnabled = true
     var remoteMIDISetlistID: UUID?

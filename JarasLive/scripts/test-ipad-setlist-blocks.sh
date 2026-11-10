@@ -20,6 +20,9 @@ def declaration(marker):
 fixture = Path('Tests/Apple/IpadSetlistBlockDeletionTests.swift').read_text()
 fixture = fixture.replace('// PRODUCTION_NATIVE_SETLIST_REMOVAL', declaration('private struct NativeSetlistRemoval'))
 methods = ['selectSetlistEntry', 'prepareNativeSetlistDrag', 'deleteNativeSelection', 'requestNativeSetlistRemoval', 'confirmNativeSetlistRemoval', 'remoteSetlistBlockNumber', 'performRemoteBlockMIDI']
+if 'private func resetSetlistBrowsing(' in source:
+    methods.append('resetSetlistBrowsing')
+    fixture = fixture.replace('nativeKeyboardBrowsing', 'setlistBrowsing')
 fixture = fixture.replace('// PRODUCTION_NATIVE_SETLIST_ACTIONS', '\n'.join(declaration('private func ' + name + '(') for name in methods))
 block_row = declaration('private func setlistBlockRow(')
 assert '.onDrag' in block_row and 'prepareNativeSetlistDrag(block.id)' in block_row, 'Block rows must start the same native drag as songs'

@@ -83,8 +83,9 @@ struct TestSnapshot { var project = TestProject() }
 }
 @MainActor final class InstrumentLibrary { static let shared = InstrumentLibrary(); func setProjectDirectory(_ url: URL?) {} }
 @MainActor final class VideoPlayback {
-    static let teleprompter = VideoPlayback(), teleprompter2 = VideoPlayback()
-    func open(directory: URL) {}
+    static let shared = VideoPlayback(), teleprompter = VideoPlayback(), teleprompter2 = VideoPlayback()
+    var directory: URL?
+    func open(directory: URL) { self.directory = directory }
 }
 enum TeleprompterRemote { static func setProjectDirectory(_ url: URL) {} }
 enum NativeRecentProjectPath { static func resolve(_ path: String, documents: URL) -> URL { URL(fileURLWithPath: path) } }
@@ -99,7 +100,7 @@ enum ProjectTabNavigation {
         func check(_ value: @autoclosure () -> Bool, _ message: String) { precondition(value(), message) }
         func settle() async { try? await Task.sleep(nanoseconds: 150_000_000) }
         let tabs = NativeProjectTabs.shared, first = try AppContainer()
-        let a = URL(fileURLWithPath: "/tmp/native-tabs/A.jl"), b = URL(fileURLWithPath: "/tmp/native-tabs/B.jl")
+        let a = URL(fileURLWithPath: "/tmp/native-tabs/A.jl"), b = URL(fileURLWithPath: "/tmp/native-tabs/B/B.jl")
         first.documents.currentURL = a; first.show.playing = true; first.show.dirty = true
         tabs.install(first); _ = await first.setLocalPlaybackEnabled(true)
         first.documents.openInNewProjectTab?(b); await settle()
@@ -108,7 +109,9 @@ enum ProjectTabNavigation {
         check(first.show.playing && first.show.dirty && first.documents.currentURL == a, "Opening a tab altered the previous project")
         check(first.projectAudio !== second.projectAudio && first.projectRecorder !== second.projectRecorder, "Tabs share project-owned audio/recording state")
         tabs.select(0); check(tabs.active === first && StemAudioPlayback.shared === first.projectAudio, "Selecting must reuse the original session")
+        check(VideoPlayback.shared.directory == a.deletingLastPathComponent(), "Selecting an existing tab must restore the video media directory")
         tabs.open(b); await settle(); check(tabs.projects.count == 2 && tabs.active === second, "Already-open projects must reuse their tab")
+        check(VideoPlayback.shared.directory == b.deletingLastPathComponent() && VideoPlayback.teleprompter.directory == b.deletingLastPathComponent() && VideoPlayback.teleprompter2.directory == b.deletingLastPathComponent(), "All three video players must follow the active project directory")
         TrackRecording.shared.recording = true; tabs.select(0); tabs.open(URL(fileURLWithPath: "/tmp/native-tabs/C.jl")); await settle()
         check(tabs.active === second && tabs.projects.count == 2, "Switching interrupted recording")
         TrackRecording.shared.recording = false

@@ -379,7 +379,7 @@ enum ProjectError: Error { case invalid(String) }
         precondition(MIDIObjectGetIntegerProperty(virtualSource, kMIDIPropertyUniqueID, &sourceID) == noErr)
         AudioDeviceSettings.shared.midiSlots = [sourceID]
         mappings.bind(show)
-        mappings.beginAction(.play, kind: "midi")
+        mappings.beginAction(.playStop, kind: "midi")
         func transmit(_ words: UInt32...) {
             var list = MIDIEventList()
             withUnsafeMutablePointer(to: &list) { pointer in
@@ -403,8 +403,8 @@ enum ProjectError: Error { case invalid(String) }
         while show.actionsReceived.count == beforePlay && ProcessInfo.processInfo.systemUptime < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        precondition(show.actionsReceived.count == beforePlay + 1 && show.actionsReceived.last == .play)
-        print("REAL_COREMIDI_UMP_PORT_LEARNING_AND_MAPPED_PLAY_ON_MAIN_ACTOR_OK")
+        precondition(show.actionsReceived.count == beforePlay + 1 && show.actionsReceived.last == .playStop)
+        print("REAL_COREMIDI_UMP_PORT_LEARNING_AND_MAPPED_PLAYSTOP_ON_MAIN_ACTOR_OK")
         mappings.sources[100] = (123, "Test MIDI")
         let instrumentBefore = StemAudioPlayback.shared.forwarded
         VinhetasController.shared.claimedNumber = 61
