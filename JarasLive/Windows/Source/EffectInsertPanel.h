@@ -6,17 +6,25 @@ namespace catlive {
 class EffectInsertPanel final : public Component, private ListBoxModel, private Timer {
   public:
     EffectInsertPanel(File directory, std::function<bool(String, String)> insert,
-                      std::function<void()> close, bool allowInstruments = true, bool allowStemSeparator = true)
+                      std::function<void()> close, bool allowInstruments = true, bool allowStemSeparator = true,
+                      bool vinhetasOnly = false)
         : projectDirectory(std::move(directory)), apply(std::move(insert)),
-          dismiss(std::move(close)), list("Instrument catalog", this), allowsInstruments(allowInstruments) {
+          dismiss(std::move(close)), list("Instrument catalog", this), allowsInstruments(allowInstruments && !vinhetasOnly) {
         setComponentID("effectInsertPanel");
         addAndMakeVisible(effect); effect.setComponentID("effectKind");
         effect.addItem(localization::translate("Externo (VST3)"), 8);
-        if (allowInstruments) effect.addItem(localization::translate(String::fromUTF8("Instrumentos")), 7);
-        effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "CatLive Limiter"}, 1);
+        if (allowsInstruments) effect.addItem(localization::translate(String::fromUTF8("Instrumentos")), 7);
+        if (vinhetasOnly) {
+            effect.addItem("Reverb", 5);
+            effect.addItem("EQ", 1);
+            effect.addItem("Delay", 4);
+            effect.addItem("CatLive Limiter", 6);
+        } else {
+            effect.addItemList({"EQ", "Compressor", "Pitch", "Delay", "Reverb", "CatLive Limiter"}, 1);
+            effect.addItem("CatLive Trigger", 10);
+            effect.addItem("Cat Gate", 11);
+        }
         (void)allowStemSeparator; // Separation is an offline item action.
-        effect.addItem("CatLive Trigger", 10);
-        effect.addItem("Cat Gate", 11);
         effect.setSelectedId(1, dontSendNotification);
         effect.onChange = [this] {
             selected.clear();

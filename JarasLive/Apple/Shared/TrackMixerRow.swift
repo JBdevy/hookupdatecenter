@@ -1266,7 +1266,7 @@ struct PatchEditor: View {
                             ForEach(choices, id: \.self) { choice in Text(choice.title).tag(choice) }
                         }.disabled(TrackRecording.shared.recording)
                     }
-                    if let track, let settings = show.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == track }), settings.kind == .standard {
+                    if let track, let settings = show.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == track }), settings.kind == .standard && settings.role.rawValue != "vinhetas" {
                         HStack(alignment: .top, spacing: 10) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("MIDI input")

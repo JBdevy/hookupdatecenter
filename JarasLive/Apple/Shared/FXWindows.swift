@@ -35,8 +35,15 @@ struct FXInsertEditor: View {
     @State private var externalError = ""
     @State private var browsingExternal = false
     #endif
+    private var vinhetasTarget: Bool {
+        guard clip == nil else { return false }
+        return (targets.isEmpty ? [track] : targets).contains { target in
+            target.flatMap { FXModelLookup.track($0, in: show.snapshot.project) }?.role.rawValue == "vinhetas"
+        }
+    }
     private var availableEffects: [String] {
-        var result = NativeFXSettings.order.filter { $0 != "Instruments" || (clip == nil && track != nil && targets.count == 1) }
+        var result = vinhetasTarget ? ["Reverb", "EQ", "Delay", "Limiter"] :
+            NativeFXSettings.order.filter { $0 != "Instruments" || (clip == nil && track != nil && targets.count == 1) }
         #if os(macOS)
         result.insert("External", at: 0)
         #endif
@@ -66,6 +73,7 @@ struct FXInsertEditor: View {
         #if os(macOS)
         if effect == "External" {
             guard let chosen = plugins.plugins.first(where: { $0.id == external }) else { return }
+            guard !vinhetasTarget || !chosen.isInstrument else { return }
             if let clip {
                 // A MIDI take has no audio instance before its first
                 // instrument. Validate the chosen plugin separately,
@@ -196,7 +204,7 @@ struct FXInsertEditor: View {
         .onChange(of: external) { value in if value != nil && effect == "External" { applyEffect() } }
         .onChange(of: plugins.scanning) { scanning in if effect == "External" { resize(scanning ? 370 : 310) } }
         .background(ExternalPluginBrowserPresenter(isPresented: $browsingExternal, selected: $external,
-                                                  allowsInstruments: clip.map { FXModelLookup.clip($0, in: show.snapshot.project)?.midi != nil } ?? (targets.count == 1 && track != nil)))
+                                                  allowsInstruments: !vinhetasTarget && (clip.map { FXModelLookup.clip($0, in: show.snapshot.project)?.midi != nil } ?? (targets.count == 1 && track != nil))))
         #endif
     }
 }

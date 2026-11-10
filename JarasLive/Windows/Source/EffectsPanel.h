@@ -854,6 +854,15 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         void closeButtonPressed() override { setVisible(false); }
     };
     std::unique_ptr<InsertWindow> insertWindow;
+    bool vinhetasTarget() const {
+        if (item) return false;
+        const auto targets = insertionTargets.empty() ? std::vector<ID>{track} : insertionTargets;
+        for (const auto &song : session.project().songs)
+            for (const auto &candidate : song.tracks)
+                if (candidate.role.id == "vinhetas" &&
+                    std::find(targets.begin(), targets.end(), candidate.id) != targets.end()) return true;
+        return false;
+    }
     void addMenu() {
         if (insertWindow && insertWindow->isVisible()) {
             insertWindow->toFront(true);
@@ -868,7 +877,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
             [safe] {
                 if (safe && safe->insertWindow)
                     safe->insertWindow->setVisible(false);
-            }, !item && !track.empty() && insertionTargets.size() <= 1, item || !track.empty());
+            }, !item && !track.empty() && insertionTargets.size() <= 1, item || !track.empty(), vinhetasTarget());
         panel->setSize(460, 214);
         insertWindow->setContentOwned(panel, true);
         panel->updateLayout();
@@ -879,6 +888,10 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
     bool insert(const String &kind, const String &instrument) {
         try {
             if (session.busy) return false;
+            if (vinhetasTarget() &&
+                ((kind != "External" && kind != "EQ" && kind != "Reverb" && kind != "Delay" && kind != "Limiter") ||
+                 (kind == "External" && str(JSON::parse(instrument), "category").containsIgnoreCase("Instrument"))))
+                return false;
             if (!item && track.empty() &&
                 (kind == "Instruments" || kind == "CatStemSeparation 5" ||
                  (kind == "External" && str(JSON::parse(instrument), "category").containsIgnoreCase("Instrument"))))
