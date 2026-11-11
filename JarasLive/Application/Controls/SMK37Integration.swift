@@ -73,6 +73,11 @@ public enum SMK37Protocol {
         }
         return encode(0x17, data)
     }
+    public static func playlist(_ name: String) -> [UInt8] {
+        var bytes = text(name)
+        if bytes.count > 36 { bytes = Array(bytes.prefix(33)) + [46,46,46] }
+        return encode(0x19, bytes)
+    }
     public static func playback(position: Double, start: Double, end: Double) -> [UInt8] {
         guard position.isFinite, start.isFinite, end.isFinite, end > start else { return encode(0x18, Array(repeating: 0, count: 8)) }
         let duration = end - start, elapsed = min(duration, max(0, position - start))

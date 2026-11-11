@@ -97,7 +97,7 @@ final class TimelineAudioWaveform: ObservableObject {
     static func diskCacheURL(_ url: URL) -> URL { WaveformSource.cacheURL(url) }
     @Published private(set) var revision: UInt64 = 0
     @Published private(set) var preparingSourcePaths = Set<String>()
-    private var failedSourceKeys = Set<String>()
+    private var failedSourceKeys: [String: TimeInterval] = [:]
 
     /// Hash the (often long, Unicode) source path/version once per header.
     /// Project source/overview lookups share this identity, so they avoid
@@ -674,7 +674,7 @@ final class TimelineAudioWaveform: ObservableObject {
                 let entries: [Prepared?] = WaveformPreparation.map(files, progress: { done, total in
                     DispatchQueue.main.async { if !cancelled() { progress(done, total) } }
                 }) { url in
-                    guard !cancelled(), let audio = try? AVAudioFile(forReading: url) else { return nil }
+                    guard !cancelled(), let audio = try? AudioFileRead.openMedia(url, cancelled: cancelled) else { return nil }
                     let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
                     let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
                     let modified = (attributes?[.modificationDate] as? Date)?.timeIntervalSinceReferenceDate ?? 0
@@ -799,7 +799,7 @@ final class TimelineAudioWaveform: ObservableObject {
         // it and the loaded header before repeating URL decoding/normalization.
         let path = sourcePath ?? url.path
         if let value = headers.object(forKey: path as NSString) ?? pinnedHeader(path),
-           !refresh || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
+           (!refresh && value.rate > 0) || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
             return value.rate > 0 ? value : nil
         }
         // A document opened through /var, /tmp or another alias can retain
@@ -807,7 +807,7 @@ final class TimelineAudioWaveform: ObservableObject {
         // Remember only that path mapping, never a separate/stale header.
         let alias = headerAliases.object(forKey: path as NSString)
         if let alias, let value = headers.object(forKey: alias.path as NSString) ?? pinnedHeader(alias.path),
-           !refresh || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
+           (!refresh && value.rate > 0) || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
             return value.rate > 0 ? value : nil
         }
         let resolvedURL: URL
@@ -824,7 +824,7 @@ final class TimelineAudioWaveform: ObservableObject {
         let url = resolvedURL
         let key = url.path as NSString
         let previous = headers.object(forKey: key) ?? pinnedHeader(url.path)
-        if let value = previous, !refresh || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
+        if let value = previous, (!refresh && value.rate > 0) || ProcessInfo.processInfo.systemUptime - value.checkedAt < 1 {
             return value.rate > 0 ? value : nil
         }
         enqueue("header:\(url.path)", url: url) { [self] in
@@ -1584,7 +1584,8 @@ final class TimelineAudioWaveform: ObservableObject {
     }
     private func prepareSource(_ url: URL, header: Header) {
         let sourceKey = (header.cachePrefix ?? "\(url.path):\(header.frames)") as NSString
-        lock.lock(); let failed = failedSourceKeys.contains(sourceKey as String); lock.unlock()
+        lock.lock(); let failedAt = failedSourceKeys[sourceKey as String]; lock.unlock()
+        let failed = failedAt.map { ProcessInfo.processInfo.systemUptime - $0 < 1 } ?? false
         guard !failed else { return }
         enqueue("source:\(sourceKey)", url: url, queue: sourceWorker, preparingSource: true) { [self] in
             do {
@@ -1599,7 +1600,7 @@ final class TimelineAudioWaveform: ObservableObject {
                 sources.setObject(source, forKey: sourceKey, cost: source.cost)
                 return true
             } catch {
-                lock.lock(); failedSourceKeys.insert(sourceKey as String); lock.unlock()
+                lock.lock(); failedSourceKeys[sourceKey as String] = ProcessInfo.processInfo.systemUptime; lock.unlock()
                 return false
             }
         }
@@ -1613,7 +1614,7 @@ final class TimelineAudioWaveform: ObservableObject {
             files[path] = existing
             return existing.audio
         }
-        let audio = try AVAudioFile(forReading: url)
+        let audio = try AudioFileRead.openMedia(url)
         if files.count >= Self.decoderLimit, files[path] == nil,
            let oldest = files.min(by: { $0.value.access < $1.value.access })?.key {
             files.removeValue(forKey: oldest)
@@ -1840,7 +1841,7 @@ private final class WaveformSource: NSObject {
         // for a full PCM pass over every uncached stem. Visible sources are
         // prepared by prepareSource on its worker and persisted for next time.
         guard buildIfMissing else { throw NSError(domain: "JarasWaveform", code: 3) }
-        let audio = try AVAudioFile(forReading: url)
+        let audio = try AudioFileRead.openMedia(url)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: AVAudioFrameCount(TimelineAudioWaveform.blockFrames)) else {
             throw NSError(domain: "JarasWaveform", code: 1)
         }

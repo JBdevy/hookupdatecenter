@@ -23,6 +23,9 @@ void Workspace::performSMK37(int pad) {
 void Workspace::updateSMK37() {
     if(!smk37)return;smk37->poll();
     if(!projectReady||!vinhetasPanel)return;
+    const auto lists=session.project().regionSetlist.value_or(jaras::RegionSetlist{});
+    String playlist="All regions";for(const auto &list:lists.playlists)if(lists.selectedId==list.id && session.song() && list.songId==session.song()->id){playlist=text(list.name);break;}
+    smk37->playlist(playlist);
     smk37->library(vinhetasPanel->remoteSnapshot(true));
     smk37->fadeoutProgress(session.transportFadeoutActive(),session.transportFadeoutRemaining(),session.transportFadeoutDuration());
     const auto t=session.presentationTransport();const auto *song=session.song();const auto *region=session.core.sectionPlaybackRegion();

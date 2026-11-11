@@ -2,6 +2,16 @@ import XCTest
 @testable import JarasApplication
 
 final class ItemPlaybackRateLabelTests: XCTestCase {
+    func testMediaExtensionUsesSourceAndDoesNotRenameItems() {
+        XCTAssertEqual(TimelineItemMediaTitle.title("Buzina", path: "Pads/FX.WAV"), "Buzina - wav")
+        XCTAssertEqual(TimelineItemMediaTitle.title("Show.mp4", path: "Videos/Show.mp4"), "Show - mp4")
+        XCTAssertEqual(TimelineItemMediaTitle.title("Renamed", path: "C:\\Audio\\take.MP3"), "Renamed - mp3")
+        XCTAssertEqual(TimelineItemMediaTitle.title("Photo", path: "Images/photo.png"), "Photo - png")
+        XCTAssertEqual(TimelineItemMediaTitle.title("Buzina - wav", path: "Pads/FX.wav"), "Buzina - wav")
+        XCTAssertEqual(TimelineItemMediaTitle.title("Lyrics", path: nil), "Lyrics")
+        XCTAssertEqual(TimelineItemMediaTitle.title("Audio", path: "Stems/no-extension"), "Audio")
+    }
+
     private func label(_ clip: AudioClip, in song: Song) -> String {
         TimelineItemPlaybackRate.title(clip.name, rates: song.tempoAudioSegments(clip).map(\.audioRate),
             referenceRate: clip.tempoBasePlaybackRate ?? clip.audioRate)

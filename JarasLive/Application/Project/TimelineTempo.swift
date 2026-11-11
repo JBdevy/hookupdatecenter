@@ -3,6 +3,17 @@ import Foundation
 /// Item names expose the same source speed used by the playback fragments.
 /// A range describes items crossing several tempo sections without claiming
 /// that the entire item plays at its first section's rate.
+public enum TimelineItemMediaTitle {
+    public static func title(_ name: String, path: String?) -> String {
+        guard let path else { return name }
+        let ext = (path.replacingOccurrences(of: "\\", with: "/") as NSString).pathExtension.lowercased()
+        guard !ext.isEmpty else { return name }
+        if name.lowercased().hasSuffix(" - " + ext) { return name }
+        let base = name.lowercased().hasSuffix("." + ext) ? String(name.dropLast(ext.count + 1)) : name
+        return base + " - " + ext
+    }
+}
+
 public enum TimelineItemPlaybackRate {
     public static func title(_ name: String, rates: [Double], referenceRate: Double = 1) -> String {
         let values = rates.filter { $0.isFinite && $0 > 0 }

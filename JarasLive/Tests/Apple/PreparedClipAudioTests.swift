@@ -274,3 +274,41 @@ do {
     }
     print("PREPARED_CLIP_FAILED_REPLACEMENT_RETRY_OK")
 }
+
+// A decoder blocked on one file must not starve a healthy stem.
+
+do {
+ let slowURL = directory.appendingPathComponent("slow-source.wav")
+ try FileManager.default.copyItem(at: directory.appendingPathComponent("source-48000.wav"), to: slowURL)
+ let gate = AudioReadFailureSwitch()
+ let selector = NSSelectorFromString("readIntoBuffer:frameCount:error:")
+ let method = class_getInstanceMethod(AVAudioFile.self, selector)!
+ let original = method_getImplementation(method)
+ let read = unsafeBitCast(original, to: AudioReadImplementation.self)
+ let replacement: @convention(block) (AVAudioFile, AVAudioPCMBuffer, AVAudioFrameCount, AutoreleasingUnsafeMutablePointer<NSError?>?) -> Bool = { file, buffer, count, error in
+  if file.url == slowURL && !gate.rejectsReads() { Thread.sleep(forTimeInterval: 2) }
+  return read(file, selector, buffer, count, error)
+ }
+ method_setImplementation(method, imp_implementationWithBlock(replacement))
+ let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+ let engine = AVAudioEngine()
+ let slow = JarasPreparedClip(format: format), healthy = JarasPreparedClip(format: format)
+ for (source, url) in [(slow, slowURL), (healthy, directory.appendingPathComponent("source-48000.wav"))] {
+  engine.attach(source.node); engine.connect(source.node, to: engine.mainMixerNode, format: format)
+  try source.prepare(url, sourceFrame: 0, endFrame: 480000, rate: 8, pitch: 36, loopStart: 0, loopEnd: 480000)
+ }
+ try engine.enableManualRenderingMode(.realtime, format: format, maximumFrameCount: 512)
+ try engine.start()
+ let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+ gate.allowReads(); slow.start(atHostTime: 0, ramp: false); healthy.start(atHostTime: 0, ramp: false)
+ for _ in 0..<180 {
+  var status: OSStatus = 0; output.frameLength = 512
+  _ = engine.manualRenderingBlock(512, output.mutableAudioBufferList, &status)
+  Thread.sleep(forTimeInterval: 512.0 / 48000)
+ }
+ require(slow.underruns > 0, "Slow decoder fixture did not exhaust its lookahead")
+ require(healthy.underruns == 0, "Blocked decoder starved a healthy stem")
+ print("PREPARED_CLIP_BLOCKED_DECODER_ISOLATION_OK")
+ slow.stop(); healthy.stop(); engine.stop()
+ method_setImplementation(method, original)
+}

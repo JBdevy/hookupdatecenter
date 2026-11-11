@@ -204,9 +204,8 @@
         awaitValue({ body.waveformsForTest?.strokes.contains { $0.block.key != "timeline-centerline-unit" } == true },
             "Overview/detail readiness must update the inverted waveform without another zoom event")
         let waves = body.waveformsForTest!.strokes.filter { $0.block.key != "timeline-centerline-unit" }
-        precondition(waves.allSatisfy { $0.color.x == inverted.palettes[0].normal.x &&
-            $0.color.y == inverted.palettes[0].normal.y && $0.color.z == inverted.palettes[0].normal.z },
-            "Every waveform primitive must use the track's ink, including cached overviews")
+        precondition(waves.allSatisfy { $0.color.x == 0 && $0.color.y == 0 && $0.color.z == 0 },
+            "Every waveform primitive must remain black, including cached overviews")
         let text = frame.items.first { abs($0.rect.minY + origin.y - 186) < 0.001 }!
         precondition(text.topColor == mixed.palettes[2].normal,
             "Inverting waveform colors must not recolor teleprompter items")

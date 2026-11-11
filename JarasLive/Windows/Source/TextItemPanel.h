@@ -78,7 +78,7 @@ class TextItemPanel final : public Component {
   private:
     struct Notepad final : TextEditor {
         std::function<void()> apply,chooseColor,prepareInsertion;
-        bool coloring=false;
+        bool coloring=false, pasteHeld=false;
         void insertTextAtCaret(const String &text) override {
             if(!coloring && prepareInsertion)prepareInsertion();
             TextEditor::insertTextAtCaret(text);
@@ -87,7 +87,23 @@ class TextItemPanel final : public Component {
             if(event.mods.isPopupMenu() && !getHighlightedRegion().isEmpty()) {if(chooseColor)chooseColor();return;}
             TextEditor::mouseDown(event);
         }
+        bool keyStateChanged(bool down) override {
+            if(!down)pasteHeld=false;
+            return TextEditor::keyStateChanged(down);
+        }
+        void focusLost(FocusChangeType cause) override {
+            pasteHeld=false;
+            TextEditor::focusLost(cause);
+        }
         bool keyPressed(const KeyPress &key) override {
+            const auto mods=key.getModifiers();
+            const int code=key.getKeyCode();
+            // Own both Windows representations here, before a parent can
+            // retry the C0 event as another Ctrl+V. Rearm on key release.
+            if(mods.isCtrlDown() && !mods.isAltDown() && (code=='V' || code=='v' || code==22)) {
+                if(!pasteHeld){pasteHeld=true;pasteFromClipboard();}
+                return true;
+            }
             if (key.getModifiers().isCtrlDown() &&
                 (key.getKeyCode() == KeyPress::returnKey || key.getKeyCode() == 10)) {
                 if (apply)

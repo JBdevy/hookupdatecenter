@@ -2382,3 +2382,6 @@
 "Cannot copy the firmware file." = "Não foi possível copiar o arquivo de firmware.";
 "Cannot save the firmware backup at this location." = "Não foi possível salvar o backup da firmware nesse local.";
 "Cannot prepare the firmware backup." = "Não foi possível preparar o backup da firmware.";
+
+"Reset rate" = "Redefinir rate";
+"Reset selected items to 1x without changing tempo markers?" = "Redefinir os itens selecionados para 1× sem alterar os marcadores de tempo?";

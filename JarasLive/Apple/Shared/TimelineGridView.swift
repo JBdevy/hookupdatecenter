@@ -211,6 +211,8 @@ private struct TimelineGridContent: View, Equatable {
     @State private var exportingMIDI = false
     @State private var regionExport: RegionAudioExportRequest?
     @State private var normalizingItems = Set<UUID>()
+    @State private var rateResetItems: Set<UUID> = []
+    @State private var showingRateReset = false
     @State private var showingNormalize = false
     @State private var itemsToSplit = Set<UUID>()
     @State private var splitPosition = 0.0
@@ -822,6 +824,10 @@ private struct TimelineGridContent: View, Equatable {
             midiDocument = nil
         }
         .sheet(isPresented: $showingItemTuner) { ItemTunerEditor(show: show, items: tuningItems) }
+        .alert("Reset rate", isPresented: $showingRateReset) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset rate") { show.resetItemsRate(rateResetItems) }
+        } message: { Text("Reset selected items to 1x without changing tempo markers?") }
         .sheet(isPresented: $showingNormalize) { ItemNormalizationEditor(show: show, documents: documents, items: normalizingItems) }
         .alert(Text(verbatim: JarasLocalization.string(pendingTimebase?.relative == true ? "Enable relative timebase?" : "Disable relative timebase?")), isPresented: $confirmingTimebase) {
             Button("Cancel", role: .cancel) { pendingTimebase = nil }
@@ -1173,6 +1179,7 @@ private struct TimelineGridContent: View, Equatable {
             selectedTrack = id
             selectedTracks = [id]
         }, pointerDown: { EditorSelectionRouter.shared.handlePointer($0) })
+        input.resetRate = { ids in rateResetItems = ids; showingRateReset = true }
         input.renameItem = { id in renamingItem = show.current?.tracks.flatMap(\.clips).first { $0.id == id } }
         input.exportMIDI = { id in
             guard let clip = show.current?.tracks.flatMap(\.clips).first(where: { $0.id == id }) else { return }
@@ -2110,7 +2117,7 @@ private struct TimelineGridContent: View, Equatable {
                 let waveTop = rect.minY + min(GridSelectionItem.bodyInset, rect.height)
                 let channelHeight = max(1, rect.maxY - waveTop - 2) / CGFloat(channels)
                 let luminance = 0.2126 * item.rgb.x + 0.7152 * item.rgb.y + 0.0722 * item.rgb.z
-                let gray: CGFloat = item.silenced ? 0.78 : luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8
+                let gray: CGFloat = 0
                 context.setStrokeColor(NSColor(white: gray, alpha: 1).cgColor)
                 context.setLineWidth(1)
                 for channel in 0..<channels {
@@ -2327,7 +2334,7 @@ private struct TimelineGridContent: View, Equatable {
                     }
                 } else if rect.height > 26, let file = clip.audioFile ?? track.audioFile {
                     let luminance = 0.2126 * rgb.x + 0.7152 * rgb.y + 0.0722 * rgb.z
-                    let gray: Float = silenced ? 0.78 : luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8
+                    let gray: Float = 0
                     if prepared.waveform == nil {
                         guard let mediaSource = mediaURLs.resolveClipSource(clip.id, path: file.path) else { continue }
                         prepared.waveform = TimelineWaveformItem(clip: clip, fragments: fragments,
@@ -4967,7 +4974,7 @@ private struct TimelineMetalWaveformLayer: View {
                 let silenced = metadata.isSilenced(track) || clip.muted == true
                 let rgb = TrackNameContrast.components(track.color ?? JarasTheme.roleHex(track.role), emphasized: selectedClips.contains(clip.id))
                 let luminance = 0.2126 * rgb.red + 0.7152 * rgb.green + 0.0722 * rgb.blue
-                let gray: Float = silenced ? 0.78 : luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8
+                let gray: Float = 0
                 let mediaSource = mediaURLs.resolveSource(file.path, directory: mediaDirectory)
                 items.append(TimelineWaveformItem(clip: clip,
                     fragments: metadata.fragments(for: clip, preview: preview != nil),
@@ -5308,9 +5315,9 @@ private final class TimelineRenderMetadata {
         return fragments
     }
     func itemTitle(for clip: AudioClip, track: Track) -> String {
-        let name = clip.isImage ? JarasLocalization.string("Image")
-            : track.kind == .timecode && !clip.isProjectionMedia
-                ? (track.timecode?.mode ?? "mtc").uppercased() : clip.name
+        let baseName = track.kind == .timecode && !clip.isProjectionMedia
+            ? (track.timecode?.mode ?? "mtc").uppercased() : clip.name
+        let name = TimelineItemMediaTitle.title(baseName, path: clip.midi == nil ? (clip.audioFile ?? track.audioFile)?.path : nil)
         guard !clip.isImage, clip.midi != nil || (clip.audioFile ?? track.audioFile) != nil else { return name }
         lock.lock()
         let cached = itemTitles[clip.id]
@@ -5749,7 +5756,7 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
     let rgb = TrackNameContrast.components(track.color ?? JarasTheme.roleHex(track.role), emphasized: selected)
     let luminance = 0.2126 * rgb.red + 0.7152 * rgb.green + 0.0722 * rgb.blue
     // Audio and generated Click items share the selected waveform appearance.
-    let waveColor = inverted ? JarasTheme.track(track, emphasized: selected).opacity(silenced ? 0.55 : 1) : Color(white: silenced ? 0.78 : luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8)
+    let waveColor = Color.black
     if track.kind == .click && !clip.isProjectionMedia {
         let body = CGRect(x: rect.minX, y: rect.minY + GridSelectionItem.bodyInset, width: rect.width, height: max(0, rect.height - GridSelectionItem.bodyInset - 2))
         let visible = body.intersection(tile)
@@ -5770,7 +5777,7 @@ private func drawTimelineItem(_ clip: AudioClip, track: Track, title: String, re
         waveContext.fill(wave, with: .color(waveColor))
         return
     }
-    if (track.kind == .timecode && !clip.isProjectionMedia) || track.kind == .video || (clip.isProjectionMedia && ["mov", "mp4", "m4v", "avi", "mkv", "webm"].contains(URL(fileURLWithPath: clip.audioFile?.path ?? "").pathExtension.lowercased())) {
+    if (track.kind == .timecode && !clip.isProjectionMedia) || track.kind == .video || (track.kind != .standard && clip.isProjectionMedia && ["mov", "mp4", "m4v", "avi", "mkv", "webm"].contains(URL(fileURLWithPath: clip.audioFile?.path ?? "").pathExtension.lowercased())) {
         let body = CGRect(x: rect.minX, y: rect.minY + GridSelectionItem.headerHeight, width: rect.width, height: max(0, rect.height - GridSelectionItem.headerHeight))
         if body.height >= 12 {
             let fileExtension = URL(fileURLWithPath: clip.audioFile?.path ?? "").pathExtension

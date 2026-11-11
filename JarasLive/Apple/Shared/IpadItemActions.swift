@@ -46,6 +46,7 @@ import UniformTypeIdentifiers
         self.show = show; self.documents = documents; self.item = item; self.targets = targets; self.initialAction = initialAction; self.close = close
         projectID = show.snapshot.project.id; songID = show.current?.id
     }
+    @State private var resetRate = false
     @State private var normalize = false
     @State private var editingText = false
     @State private var editingName = false
@@ -120,6 +121,7 @@ import UniformTypeIdentifiers
                         if entries.count == 1, AudioSeparation.accepts(clip, on: track) {
                             action("Separation audio", symbol: "waveform.path") { beginSeparation() }
                         }
+                        action("Reset rate", symbol: "arrow.counterclockwise") { resetRate = true }
                         action("Normalize…", symbol: "waveform") { normalize = true }
                         action("Re-render", symbol: "arrow.triangle.2.circlepath") {
                             processing.start(show: show, documents: documents, ids: audioIDs, operation: .render)
@@ -159,6 +161,7 @@ import UniformTypeIdentifiers
     var body: some View {
         actionList.onAppear {
             switch initialAction {
+            case "resetRate": resetRate = true
             case "normalize": normalize = true
             case "fx": fx = true
             case "text": editingText = true
@@ -174,6 +177,10 @@ import UniformTypeIdentifiers
             default: break
             }
         }
+        .alert("Reset rate", isPresented: $resetRate) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset rate") { show.resetItemsRate(audioIDs) }
+        } message: { Text("Reset selected items to 1x without changing tempo markers?") }
         .onChange(of: locatingFile) { if !$0 && initialAction == "file" { close() } }
         .onChange(of: normalize) { if !$0 && initialAction == "normalize" { close() } }
         .onChange(of: fx) { if !$0 && initialAction == "fx" { close() } }

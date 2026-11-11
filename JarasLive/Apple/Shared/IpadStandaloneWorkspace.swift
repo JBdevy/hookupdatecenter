@@ -292,6 +292,7 @@ import Combine
         actions.append(command("Criar região do item", { show.regionsFromSelection(ids) }))
         if clip.midi == nil && (clip.audioFile ?? track.audioFile) != nil {
             actions.append(command("Open file location", { open("file") }))
+            actions.append(command("Reset rate", { open("resetRate") }))
             actions.append(command("Normalize…", { open("normalize") }))
             actions.append(command("Re-render", { open("render") }))
             if ids.count == 1, AudioSeparation.accepts(clip, on: track) {

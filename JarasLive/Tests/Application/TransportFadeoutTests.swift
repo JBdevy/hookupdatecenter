@@ -25,6 +25,22 @@ import XCTest
     func finishCurrentSong(_ enabled: Bool) {}
 }
 final class TransportFadeoutTests: XCTestCase {
+    @MainActor func testResetRatePreservesMarkersOtherItemsAndItemGeometry() throws {
+        let executor = FadeoutExecutor()
+        var project = Project.empty(name: "Reset rate")
+        let item = AudioClip(id: UUID(), name: "Audio", startTime: 2, duration: 5, sourceOffset: 3, playbackRate: 1.5, tempoBasePlaybackRate: 1.2)
+        let other = AudioClip(id: UUID(), name: "Other", startTime: 0, duration: 9, playbackRate: 0.8)
+        var track = Track(id: UUID(), name: "Track", role: .other)
+        track.clips = [item, other]; project.songs[0].tracks = [track]
+        project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 4, color: 0, tempoBPM: 140)]
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.resetItemsRate([item.id])
+        var expected = project
+        expected.songs[0].tracks[0].clips[0].playbackRate = 1
+        expected.songs[0].tracks[0].clips[0].tempoBasePlaybackRate = nil
+        XCTAssertEqual(show.snapshot.project, expected)
+    }
+
     @MainActor private func fixture() throws -> (ShowController, FadeoutExecutor, (Double) -> Void) {
         var now = 100.0
         let executor = FadeoutExecutor()

@@ -2513,7 +2513,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     const bool inverted = invertWaveformColors && !clip.text && !clipEditing::projection(clip) &&
                         (!clip.midi || clip.frozenMIDI.value_or(false)) &&
                         (track.role.id=="generatedClick" || jaras::fixedTrackName(track.role).empty());
-                    const auto waveformInk = inverted ? (muted ? colour.withMultipliedBrightness(.55f) : colour) : Colour::greyLevel(waveGray);
+                    const auto waveformInk = Colours::black;
                     if (muted) colour = Colour::greyLevel(selected ? .7f : .55f);
                     if (inverted) colour = Colour(0xff484848);
                     const bool compact=rect.getWidth()<20;
@@ -2673,7 +2673,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                             [](const RecordingPreview::Peak &peak, double frame) { return peak.end < frame; });
                         const auto colour = theme::track(track);
                         const float luminance = .2126f*colour.getFloatRed()+.7152f*colour.getFloatGreen()+.0722f*colour.getFloatBlue();
-                        g.setColour(Colour::greyLevel(luminance > .68f ? .3f : .92f));
+                        g.setColour(Colours::black);
                         for (int channel = 0; channel < preview.channels; ++channel) {
                             Path peaks;
                             int column = -1; float low = 0, high = 0, endColumn = 0;
@@ -5521,7 +5521,17 @@ String Workspace::itemTitle(const jaras::AudioClip &clip) const {
     }
     const auto found=itemTitles.find(clip.id);
     if(found!=itemTitles.end())return found->second;
-    const auto title=ClipTempo(clip,song,itemTitleTempo.get()).itemTitle(clip);
+    auto title=ClipTempo(clip,song,itemTitleTempo.get()).itemTitle(clip);
+    std::string path=clip.audioFile?clip.audioFile->path:std::string{};
+    if(path.empty() && song)for(const auto &track:song->tracks)
+        if(track.audioFile && std::any_of(track.clips.begin(),track.clips.end(),[&](const auto &item){return item.id==clip.id;})) {path=track.audioFile->path;break;}
+    if(!clip.midi && !path.empty()) {
+        const auto extension=File::getCurrentWorkingDirectory().getChildFile(text(path)).getFileExtension().trimCharactersAtStart(".").toLowerCase();
+        if(extension.isNotEmpty() && !title.endsWithIgnoreCase(" - "+extension)) {
+            if(title.endsWithIgnoreCase("."+extension))title=title.dropLastCharacters(extension.length()+1);
+            title+=" - "+extension;
+        }
+    }
     itemTitles.emplace(clip.id,title);return title;
 }
 const ItemLanes &Workspace::itemLanes(int index) const {
@@ -7518,6 +7528,7 @@ void Workspace::showClipMenu(ID id, Point<int> point) {
         if(audioItem){menu.addSeparator();menu.addItem(2,muted?localization::translate("Desmutar itens"):localization::translate("Mutar itens"));}
         menu.addSeparator();menu.addItem(12,localization::translate("Exportar"),audioItem && !textItem);
     }
+    if(audioItem || projection) menu.addItem(44, "Redefinir rate");
     menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({point.x, point.y, 1, 1}),
                        clipMenuAction(id, ownerID));
 }
@@ -7530,6 +7541,17 @@ std::function<void(int)> Workspace::clipMenuAction(ID id, ID ownerID) {
                 return;
             safe->perform([safe,id,ownerID,targets,projectID,songID,action] {
                 auto &w = *safe;
+                if(action==44) {
+                    w.confirm("Redefinir rate", "Redefinir os itens selecionados para 1x sem alterar os marcadores de tempo?", [safe,targets,projectID,songID] {
+                        if(!safe || safe->session.project().id!=projectID || !safe->session.song() || safe->session.song()->id!=songID)return;
+                        safe->perform([&]{safe->session.edit([&](jaras::Project &p){
+                            for(auto &song:p.songs)if(song.id==songID)for(auto &track:song.tracks)for(auto &clip:track.clips)if(targets.count(clip.id)) {
+                                clip.playbackRate=1; clip.tempoBasePlaybackRate.reset();
+                            }
+                        });});
+                    });
+                    return;
+                }
                 if(action==43) {
                     if(w.session.project().id!=projectID || !w.session.song() || w.session.song()->id!=songID)return;
                     w.session.edit([&](jaras::Project &p){for(auto &s:p.songs)if(s.id==songID)for(auto &t:s.tracks)if(t.id==ownerID && t.role.id=="generatedClick")for(auto &c:t.clips)if(c.id==id && !c.audioFile)c.clickDouble=!c.clickDouble.value_or(false);});

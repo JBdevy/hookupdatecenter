@@ -190,6 +190,7 @@ import CoreMIDI
         pending["action"] = nil
         queue("navigation", SMK37Protocol.navigation(kind: kind, rows: rows), force: true); flush()
     }
+    func playlist(_ name: String) { queue("playlist", SMK37Protocol.playlist(name)) }
     func playback(position: Double, start: Double, end: Double) {
         queue("playback", SMK37Protocol.playback(position: position, start: start, end: end))
     }
@@ -230,6 +231,7 @@ import CoreMIDI
         if now - lastHello >= 1 { if write(SMK37Protocol.encode(1)) { lastHello = now } }
         guard session.connected else { return }
         if let show {
+            playlist(show.selectedRegionPlaylist?.name ?? "All regions")
             let pads = VinhetasController.shared
             let active = pads.voices.values.filter { $0.preset == pads.library.selectedPreset }.reduce(UInt16(0)) { $0 | (1 << $1.pad) }
             library(pads.library, active: active)

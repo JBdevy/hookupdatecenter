@@ -53,6 +53,10 @@ public:
         return frame(24,data);
     }
     void playback(double position,double start,double end){queue("playback",playbackFrame(position,start,end));}
+    void playlist(const String &name) {
+        auto bytes=textBytes(name);if(bytes.size()>36){bytes.resize(33);bytes.insert(bytes.end(),{46,46,46});}
+        queue("playlist",frame(25,bytes));
+    }
     void selectedPad(int pad) { lastPad=pad;lastPadPreset=preset;serial=(serial+1)&127; }
     void library(const var &value) {
         preset=jlimit(0,5,(int)num(value,"selectedPreset"));if(lastPadPreset!=preset)lastPad=127;

@@ -212,6 +212,10 @@ jobs:
           bash scripts/test-playlist-occurrences.sh
           bash scripts/test-bridge.sh
           bash scripts/test-smk37-firmware.sh
+          bash scripts/test-video-waveform.sh
+          bash scripts/test-timeline-waveform-header.sh
+          bash scripts/test-timeline-native-body.sh
+          bash scripts/test-macos12-layout.sh
           bash scripts/test-control-mappings.sh
           bash scripts/test-remote-midi-actions.sh
           bash scripts/test-ipad-setlist-blocks.sh

@@ -645,6 +645,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var freezeMIDI: (Set<UUID>, Int) -> Void = { _, _ in }
     var glue: (Set<UUID>) -> Void = { _ in }
     var tuner: (Set<UUID>) -> Void = { _ in }
+    var resetRate: (Set<UUID>) -> Void = { _ in }
     var normalize: (Set<UUID>) -> Void = { _ in }
     var export: (Set<UUID>) -> Void = { _ in }
     var selectRow: (CGFloat) -> Void = { _ in }
@@ -684,7 +685,7 @@ struct GridSelectionInput: NSViewRepresentable {
         view.marqueeBegan = marqueeBegan
         view.itemMoveBegan = itemMoveBegan
         view.renameItem = renameItem; view.exportMIDI = exportMIDI
-        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -841,6 +842,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     var freezeMIDI: ((Set<UUID>, Int) -> Void)?
     var glue: ((Set<UUID>) -> Void)?
     var tuner: ((Set<UUID>) -> Void)?
+    var resetRate: ((Set<UUID>) -> Void)?
     var normalize: ((Set<UUID>) -> Void)?
     var export: ((Set<UUID>) -> Void)?
     var mute: ((UUID) -> Void)?
@@ -1567,6 +1569,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 }
                 let normalize = NSMenuItem(title: JarasLocalization.string("Normalize…"), action: #selector(normalizeSelection), keyEquivalent: "")
                 normalize.target = self; menu.addItem(normalize)
+                let reset = NSMenuItem(title: JarasLocalization.string("Reset rate"), action: #selector(resetRateSelection), keyEquivalent: "")
+                reset.target = self; menu.addItem(reset)
                 if self.item(id: contextItem)?.editable == true {
                     menu.addItem(.separator())
                     for (mode, title) in [(4,"Swap - LR"), (1,"Convert Mono - L"), (2,"Convert Mono - R"), (3,"Convert Mono L-R"), (0,"Convert Stereo")] {
@@ -1628,6 +1632,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         if !ids.isEmpty { glue?(ids) }
     }
     @objc private func convertSelection(_ sender: NSMenuItem) { convert?(selected, sender.tag) }
+    @objc private func resetRateSelection() { resetRate?(selected) }
     @objc private func normalizeSelection() { normalize?(selected) }
     @objc private func createContextRegion() { if let contextItem { createRegion?(contextItem) } }
     override func draw(_ dirtyRect: NSRect) {

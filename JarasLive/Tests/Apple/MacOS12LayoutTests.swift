@@ -115,6 +115,21 @@ MainActor.assumeIsolated {
             }
         }
     }
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 260, height: 300))
+    let document = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 2000))
+    scroll.documentView = document
+    window.contentView = scroll; scroll.tile()
+    let row = TrackMixerNativeControlView(frame: NSRect(x: 0, y: scroll.contentView.bounds.minY + 10, width: 260, height: 64))
+    document.addSubview(row)
+    row.refreshViewportVisibility()
+    let hosts = row.subviews.map(ObjectIdentifier.init)
+    TrackMixerRegistrationProbe.calls = 0
+    for _ in 0..<120 { row.refreshViewportVisibility() }
+    precondition(TrackMixerRegistrationProbe.calls == 0, "Unchanged rows must not walk their ancestor tree again on every scroll pixel")
+    precondition(row.subviews.map(ObjectIdentifier.init) == hosts, "Scrolling retains existing controls")
+    row.removeFromSuperview(); document.addSubview(row)
+    precondition(TrackMixerRegistrationProbe.calls > 0, "Reparenting must refresh native input registration")
+    print("MIXER_SCROLL_REUSES_NATIVE_REGISTRATION_AND_REPARENTS_CORRECTLY_OK")
     window.orderOut(nil)
     print("MACOS12_STABLE_NATIVE_CONTROLS_SEVEN_BUTTON_METRICS_AND_LAYOUT_GEOMETRY_OK forceLegacy=\(JarasDrawingCompatibility.forceLegacy)")
 }

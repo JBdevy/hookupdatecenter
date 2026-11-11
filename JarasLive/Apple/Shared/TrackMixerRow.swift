@@ -441,11 +441,11 @@ private final class TrackMixerControlHost: NSHostingView<AnyView> {
             })
         }
         tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
+            MainActor.assumeIsolated { self?.updateAccessibility(); self?.refresh() }
         })
         accessibilityObservations = [\NSWorkspace.isVoiceOverEnabled, \NSWorkspace.isSwitchControlEnabled].map { key in
             NSWorkspace.shared.observe(key, options: [.new]) { [weak self] _, _ in
-                MainActor.assumeIsolated { self?.refresh() }
+                MainActor.assumeIsolated { self?.updateAccessibility(); self?.refresh() }
             }
         }
     }
@@ -462,6 +462,7 @@ private final class TrackMixerControlHost: NSHostingView<AnyView> {
             guard let self else { return }
             self.idleDetachment = nil
             self.defersHostDetachment = false
+            self.updateAccessibility()
             self.refresh()
         }
         idleDetachment = work
@@ -472,7 +473,8 @@ private final class TrackMixerControlHost: NSHostingView<AnyView> {
             NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
     }
     private func refresh() {
-        updateAccessibility()
+        // Accessibility is refreshed by its notifications and once at rest,
+        // rather than querying system preferences for every scroll pixel.
         for view in views.allObjects { view.refreshViewportVisibility() }
     }
     deinit { idleDetachment?.cancel(); tokens.forEach(NotificationCenter.default.removeObserver) }
@@ -494,6 +496,8 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
     private var frameObservers: [NSObjectProtocol] = []
     private let controlAreas = NSHashTable<NSView>.weakObjects()
     private var updatingHostAttachment = false
+    private var hostsAttached = true
+    private var registeredInputActive: Bool?
     private lazy var inputRegistration = NativeTimelineControlInputRegistration(self)
     fileprivate func addControlArea(_ view: NSView) { controlAreas.add(view) }
     fileprivate func removeControlArea(_ view: NSView) { controlAreas.remove(view) }
@@ -536,6 +540,7 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
         observeViewport()
     }
     private func observeViewport() {
+        registeredInputActive = nil // Reparenting can change the input host.
         let next = window == nil ? nil : enclosingScrollView?.contentView
         if visibilityClip !== next {
             visibilityObserver?.remove(self)
@@ -567,7 +572,13 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
         refreshViewportVisibility()
     }
     fileprivate func refreshViewportVisibility() {
-        defer { inputRegistration.update(active: !isHidden && window != nil) }
+        defer {
+            let active = !isHidden && window != nil
+            if registeredInputActive != active {
+                inputRegistration.update(active: active)
+                registeredInputActive = active
+            }
+        }
         guard let clip = visibilityClip, window != nil else {
             setHostsAttached(true)
             if isHidden { isHidden = false }
@@ -591,8 +602,9 @@ private final class TrackMixerNativeControlView: NSView, NativeTimelineControlIn
         }
     }
     private func setHostsAttached(_ attached: Bool) {
-        guard !updatingHostAttachment else { return }
+        guard !updatingHostAttachment, hostsAttached != attached else { return }
         updatingHostAttachment = true
+        hostsAttached = attached
         defer { updatingHostAttachment = false }
         // Reverse insertion below the first child restores the original
         // meter/activity/controls order without disturbing other row children.

@@ -2984,6 +2984,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     }
     private func remoteSMKFeedback() {
         let link = SMK37Link.shared
+        link.playlist(state.playlists?.first { $0.id == state.selectedPlaylist }?.name ?? "All regions")
         if let pads = state.vinhetas { link.remoteLibrary(pads) }
         link.fadeout(active: state.fadeout?.active == true, remaining: state.fadeout?.remaining ?? 0, duration: state.fadeout?.duration ?? 0)
         let region = state.timelineRegions.first { $0.id == state.currentRegion }

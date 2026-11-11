@@ -1274,6 +1274,18 @@ public struct ShowTimelinePresentationState: Equatable {
             }
         }
     }
+    public func resetItemsRate(_ ids: Set<UUID>) {
+        editProject { project in
+            for song in project.songs.indices {
+                for track in project.songs[song].tracks.indices {
+                    for item in project.songs[song].tracks[track].clips.indices where ids.contains(project.songs[song].tracks[track].clips[item].id) {
+                        project.songs[song].tracks[track].clips[item].playbackRate = 1
+                        project.songs[song].tracks[track].clips[item].tempoBasePlaybackRate = nil
+                    }
+                }
+            }
+        }
+    }
     public func setItemsMix(_ ids: Set<UUID>, gain: Double? = nil, pan: Double? = nil, muted: Bool? = nil) {
         guard gain.map({ $0.isFinite && $0 >= 0 }) ?? true,
               pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else { return }

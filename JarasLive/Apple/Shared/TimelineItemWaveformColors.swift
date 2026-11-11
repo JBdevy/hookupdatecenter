@@ -6,7 +6,6 @@ enum TimelineItemWaveformColors {
         return track.kind == .click || (track.kind == .standard && (clip.midi == nil || clip.frozenMIDI == true))
     }
     static func ink(rgb: SIMD4<Float>, silenced: Bool) -> SIMD4<Float> {
-        let dim: Float = silenced ? 0.55 : 1
-        return SIMD4(rgb.x * dim, rgb.y * dim, rgb.z * dim, 1)
+        SIMD4(0, 0, 0, 1)
     }
 }

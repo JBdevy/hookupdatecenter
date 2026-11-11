@@ -1294,6 +1294,18 @@ int runTests(const File &directory) {
         expect(mode&&save&&first&&second,"Missing editor controls");
         for(auto *child:second->getChildren())if(auto *editor=dynamic_cast<TextEditor*>(child))secondEditor=editor;
         expect(secondEditor&&!second->isVisible(),"Default must show only the first column");
+        const auto savedClipboard=SystemClipboard::getTextFromClipboard();
+        SystemClipboard::copyTextToClipboard("Verse 1\nChorus\n");
+        first->clear();
+        const KeyPress normalPaste('V',ModifierKeys::ctrlModifier,0),controlPaste(22,ModifierKeys::ctrlModifier,0);
+        expect(first->keyPressed(normalPaste)&&first->keyPressed(controlPaste),"Editor must consume both paste representations");
+        expect(first->getText()=="Verse 1\nChorus\n","One Ctrl+V pasted the lyrics twice");
+        first->keyStateChanged(false);
+        first->keyPressed(controlPaste);first->keyPressed(normalPaste);
+        expect(first->getText()=="Verse 1\nChorus\nVerse 1\nChorus\n","A second released-and-pressed Ctrl+V must still paste");
+        first->keyStateChanged(false);
+        first->setText("First",false);
+        SystemClipboard::copyTextToClipboard(savedClipboard);
         mode->onClick();expect(second->isVisible()&&first->getText()=="First"&&secondEditor->getText().isEmpty(),"Enabling columns moved or duplicated existing text");
         secondEditor->setText("Second",false);save->onClick();
         expect(ItemTextColors::columns(committed)==StringArray{"First","Second"},"Saving columns lost independent contents");

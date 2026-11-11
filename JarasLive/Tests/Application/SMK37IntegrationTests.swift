@@ -2,6 +2,15 @@ import XCTest
 @testable import JarasApplication
 
 final class SMK37IntegrationTests: XCTestCase {
+    func testPlaylistHeaderIsPersistentBoundedAndChecksummed() throws {
+        let all = try XCTUnwrap(SMK37Protocol.decode(SMK37Protocol.playlist("All regions")))
+        XCTAssertEqual(all.command, 0x19)
+        XCTAssertEqual(String(bytes: all.payload, encoding: .ascii), "All regions")
+        let long = try XCTUnwrap(SMK37Protocol.decode(SMK37Protocol.playlist(String(repeating: "A", count: 60))))
+        XCTAssertEqual(long.payload.count, 36)
+        XCTAssertEqual(Array(long.payload.suffix(3)), [46,46,46])
+    }
+
     func testCenteredNavigationEdgesAndRepeatedNames() {
         XCTAssertEqual(SMK37Protocol.window(["Intro", "Song", "Song", "Final"], selected: 2), ["Intro", "Song", "Song", "Final", ""])
         XCTAssertEqual(SMK37Protocol.window(["A", "B", "C"], selected: 0), ["", "", "A", "B", "C"])

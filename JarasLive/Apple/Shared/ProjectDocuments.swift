@@ -837,7 +837,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         }.value
         let files = project.songs.flatMap(\.tracks).filter { $0.kind == .standard }.flatMap { track in
             track.clips.compactMap { clip -> URL? in
-                guard !clip.isProjectionMedia, let file = clip.audioFile ?? track.audioFile, !missing.contains(file.path) else { return nil }
+                guard !clip.isImage, let file = clip.audioFile ?? track.audioFile, !missing.contains(file.path) else { return nil }
                 return directory.appendingPathComponent(file.path)
             }
         }
