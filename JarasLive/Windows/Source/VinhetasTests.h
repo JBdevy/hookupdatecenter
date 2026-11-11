@@ -6,6 +6,30 @@
 #include "ActionBindings.h"
 namespace catlive {
 struct VinhetasPanelProbe {
+    static void packages(const File &directory) {
+        using recordingCaptureTests::require;
+        const ScopedValueSetter<var> restore(VinhetasPanel::globalState,var{});
+        Appearance preferences(directory.getNonexistentChildFile("zipfx-preferences",".json"));
+        VinhetasAudio audio;VinhetasPanel panel(audio,preferences);
+        auto library=VinhetasPanel::globalState.clone();
+        auto archive=directory.getNonexistentChildFile("empty-pads",".zipfx");
+        auto stage=directory.getNonexistentChildFile("pads-stage",{});
+        vinhetasPackage::exportFile(library,directory,archive);
+        auto empty=vinhetasPackage::prepareImport(archive,stage);
+        require(JSON::toString(vinhetasPackage::portable(empty))==JSON::toString(vinhetasPackage::portable(library)),"Empty preset round trip changed configuration");
+        stage.deleteRecursively();
+        const auto exchange=SystemStats::getEnvironmentVariable("CATLIVE_ZIPFX_EXCHANGE",{});
+        if(exchange.isNotEmpty()) {
+            const File folder(exchange);
+            auto imported=vinhetasPackage::prepareImport(folder.getChildFile("swift.zipfx"),stage);
+            auto banks=list(get(imported,"presets"));auto first=list(get(banks[0],"pads"));auto last=list(get(banks[5],"pads"));
+            require(str(banks[0],"name")=="Metais e efeitos" && num(last[15],"volume")==.25,"Swift archive lost pad settings");
+            require(str(first[0],"audioFile")==str(last[15],"audioFile"),"Shared media was duplicated");
+            require(num(list(get(imported,"padMappings"))[0],"channel")==16,"MIDI channel conversion changed");
+            vinhetasPackage::exportFile(imported,stage,folder.getChildFile("windows.zipfx"));
+            stage.deleteRecursively();
+        }
+    }
     static void blockMIDI(const File &directory) {
         using recordingCaptureTests::require;
         const ScopedValueSetter<var> restore(VinhetasPanel::globalState,var{});
@@ -117,6 +141,7 @@ struct VinhetasPanelProbe {
 }
 namespace catlive::vinhetasTests {
 template<class Test> void run(const File &directory, Test &&test) {
+    test("Pads package preserves presets and exchanges Swift archives",[&]{VinhetasPanelProbe::packages(directory);});
     test("Pads accept exactly 60 seconds and reject longer media before decoding", [&] {
         using recordingCaptureTests::require;
         for (double rate : {8000., 44100., 48000., 96000., 192000.}) {

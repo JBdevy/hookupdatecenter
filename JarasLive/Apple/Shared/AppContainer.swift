@@ -535,7 +535,7 @@ enum AppStartupPresentation {
     var active: AppContainer? { projects.indices.contains(selected) ? projects[selected] : nil }
     var anyPlaying: Bool { projects.contains { $0.show.isPlaying } }
     var needsSaveOnClose: Bool {
-        projects.contains { $0.show.hasUnsavedChanges || $0.show.saving ||
+        projects.contains { (!$0.documents.isTemporary && $0.show.hasUnsavedChanges) || $0.show.saving ||
             $0.documents.busy || $0.documents.importingAudio ||
             $0.projectRecorder.recording || $0.projectRecorder.busy }
     }
@@ -749,7 +749,7 @@ enum AppStartupPresentation {
         Task { @MainActor in
             defer { closingTab = false }
             do {
-                if project.show.hasUnsavedChanges {
+                if project.show.hasUnsavedChanges && !project.documents.isTemporary {
                     let alert = NSAlert()
                     alert.messageText = JarasLocalization.string("Do you want to save this project?")
                     alert.informativeText = project.show.snapshot.project.name
@@ -781,6 +781,7 @@ enum AppStartupPresentation {
                 project.show.send(.stopAll)
                 project.projectAudio.prepareForClosing()
                 project.projectRecorder.finish()
+                try project.documents.discardTemporarySession()
                 project.desktopWorkspaceHost = nil
                 project.desktopWorkspaceIdentity = nil
                 project.desktopWorkspaceEnvironment = nil

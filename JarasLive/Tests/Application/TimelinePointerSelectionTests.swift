@@ -125,12 +125,12 @@ extension ProjectEditingTests {
         XCTAssertEqual(song, original, "The preview must never mutate committed playback data")
     }
 
-    func testGroupMoveRejectsAllItemsWhenOneSpecialTrackWouldOverlap() {
+    func testGroupMoveRejectsAllItemsWhenProjectionMediaWouldOverlap() {
         var song = Project.empty(name: "Atomic selected item translation").songs[0]
         song.parts = []
         let audio = AudioClip(id: UUID(), name: "Audio", startTime: 1, duration: 1)
-        var text = AudioClip(id: UUID(), name: "Lyrics", startTime: 1, duration: 2); text.text = "Verse"
-        var occupied = AudioClip(id: UUID(), name: "Existing lyrics", startTime: 10, duration: 2); occupied.text = "Chorus"
+        var text = AudioClip(id: UUID(), name: "Video", startTime: 1, duration: 2); text.audioFile = AudioFile(path: "Videos/verse.mp4")
+        var occupied = AudioClip(id: UUID(), name: "Existing video", startTime: 10, duration: 2); occupied.audioFile = AudioFile(path: "Videos/chorus.mp4")
         var a = Track(id: UUID(), name: "A", role: .other); a.clips = [audio]
         var tp = Track(id: UUID(), name: "Teleprompter", role: TrackRole(rawValue: "teleprompt")); tp.clips = [text, occupied]
         song.tracks = [a, tp]

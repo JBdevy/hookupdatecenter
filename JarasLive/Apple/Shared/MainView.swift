@@ -272,7 +272,7 @@ struct MainView: View {
                                 TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
                                                  toggleMixer: toggleMixer)
                                     .foregroundStyle(JarasTheme.text)
-                            } sections: { SmoothSeekPanel(show: show) }
+                            } sections: { SmoothSeekPanel(show: show, placement: .left) }
                         } trailing: {
                             SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), sidebarScrollController: setlistScrollController,
                                 partsOpen: partsRightOpen, toggleParts: { partsRightOpen.toggle() })
@@ -497,6 +497,12 @@ struct MainView: View {
                 ResolumeController.shared.bind(show)
                 #endif
                 mappings.bind(show)
+                #if os(macOS)
+                show.smkPartsVisibility = { (partsLeftOpen || detachedParts.isVisible, partsRightOpen) }
+                #else
+                show.smkPartsVisibility = { (false, partsRightOpen) }
+                #endif
+                show.smkRecord = { recording.toggle(show: show) }
                 show.togglePartsPanel = { partsRightOpen.toggle() }
                 show.showPartsPanel = {
                     #if os(macOS)
@@ -875,7 +881,11 @@ struct RegionTunerControl: View {
             Text(String(format: "%dst", show.pitchRegion?.semitones ?? 0))
                 .font(.jarasSystem(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
                 .frame(width: 34, height: 23).background(JarasTheme.display).cornerRadius(4)
+                #if os(macOS)
                 .immediateRightClick { editing = show.pitchRegion }
+                #else
+                .modifier(NativeTunerTargets(show: show))
+                #endif
                 .accessibilityLabel("Song pitch").accessibilityValue(String(show.pitchRegion?.semitones ?? 0) + "st")
             Button { step(1) } label: { Image(systemName: "plus").frame(width: 20, height: 25).contentShape(Rectangle()) }
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) >= 12).jarasHelp("Raise song pitch")
@@ -890,7 +900,7 @@ struct RegionTunerControl: View {
         }
     }
 }
-private struct RegionPitchTargets: View {
+struct RegionPitchTargets: View {
     let show: ShowController
     let song: Song
     let region: Part

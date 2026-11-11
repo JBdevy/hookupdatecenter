@@ -12,8 +12,8 @@ struct SettingsView: View {
     @ObservedObject private var audio = AudioDeviceSettings.shared
     @ObservedObject private var recorder = TrackRecording.shared
     private var audioConfigurationLocked: Bool { recorder.recording || recorder.busy || show.isPlaying }
-    enum Section: String, CaseIterable { case tp1 = "Config TP 1", tp2 = "Config TP 2", notices = "Config Recados", general = "General", audio = "Audio", midi = "MIDI", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
-        var icon: String { switch self { case .tp1, .tp2: return "text.alignleft"; case .notices: return "message"; case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
+    enum Section: String, CaseIterable { case tp1 = "Config TP 1", tp2 = "Config TP 2", notices = "Config Recados", general = "General", audio = "Audio", midi = "MIDI", smk37 = "SMK37PRO", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
+        var icon: String { switch self { case .tp1, .tp2: return "text.alignleft"; case .notices: return "message"; case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi, .smk37: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
     }
     private var availableSections: [Section] {
         #if os(iOS)
@@ -157,6 +157,12 @@ struct SettingsView: View {
                         }
                         if audio.midiOutputs.isEmpty { Text("No MIDI outputs").foregroundStyle(JarasTheme.secondary) }
                         Button("Refresh devices") { audio.refreshMIDI() }
+                    case .smk37:
+                        #if os(macOS)
+                        SMK37FirmwareView(isLocked: { show.isPlaying || recorder.recording || recorder.busy })
+                        #else
+                        EmptyView()
+                        #endif
                     case .actions:
                         DAWActionsList(show: show)
                     case .mappings:
@@ -258,6 +264,58 @@ struct SettingsView: View {
 #endif
 
 
+#if os(macOS)
+/// CoreAudioKit creates a normal-level window; workspace tools use a higher
+/// app-local level. Keep the browser above its owning tool and fixed in size.
+@MainActor private final class MacBluetoothMIDIBrowser: ObservableObject {
+    private let controller = CABTLEMIDIWindowController()
+    private weak var owner: NSWindow?
+    private var closeObserver: NSObjectProtocol?
+    private var onDismiss: (() -> Void)?
+
+    init() {
+        closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notice in
+            guard let self, let window = notice.object as? NSWindow else { return }
+            if window === self.controller.window { self.onDismiss?() }
+            else if window === self.owner { self.close() }
+        }
+    }
+    deinit { if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) } }
+
+    func show(onDismiss: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+        if NSApp.keyWindow !== controller.window { owner = NSApp.keyWindow }
+        guard let window = controller.window else { return }
+        let wasVisible = window.isVisible
+        window.identifier = NSUserInterfaceItemIdentifier("catlive.tool.bluetoothMIDI")
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.hidesOnDeactivate = true
+        window.styleMask.remove([.resizable, .miniaturizable])
+        window.collectionBehavior.remove(.fullScreenPrimary)
+        window.collectionBehavior.insert(.fullScreenAuxiliary)
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        let available = owner?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 940, height: 580)
+        let size = NSSize(width: min(940, available.width), height: min(540, max(240, available.height - 32)))
+        window.contentMinSize = size
+        window.contentMaxSize = size
+        window.setContentSize(size)
+        window.level = NSWindow.Level(rawValue: max(owner?.level.rawValue ?? 0, ProjectionWindow.workspaceToolLevel.rawValue) + 1)
+        ProjectionWindow.followWorkspaceWindow(window)
+        if !wasVisible {
+            let anchor = owner?.frame ?? available
+            let x = min(max(available.minX, anchor.midX - window.frame.width / 2), available.maxX - window.frame.width)
+            let y = min(max(available.minY, anchor.midY - window.frame.height / 2), available.maxY - window.frame.height)
+            window.setFrameOrigin(NSPoint(x: x, y: y))
+        }
+        controller.showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+    }
+    func close() { controller.close() }
+}
+#endif
+
 /// Pair with the system's BLE MIDI browser so CoreMIDI creates actual endpoints.
 /// Ordinary Bluetooth audio pairing does not necessarily create MIDI ports.
 struct BluetoothMIDIConnectionButton: View {
@@ -265,7 +323,7 @@ struct BluetoothMIDIConnectionButton: View {
     #if os(iOS)
     @State private var presenting = false
     #else
-    @State private var browser: CABTLEMIDIWindowController?
+    @StateObject private var browser = MacBluetoothMIDIBrowser()
     #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -273,9 +331,7 @@ struct BluetoothMIDIConnectionButton: View {
                 #if os(iOS)
                 presenting = true
                 #else
-                if browser == nil { browser = CABTLEMIDIWindowController() }
-                browser?.showWindow(nil)
-                browser?.window?.makeKeyAndOrderFront(nil)
+                browser.show(onDismiss: onDismiss)
                 #endif
             }.buttonStyle(.bordered)
             Text("Connect your MIDI controller here, even if it is already paired in Bluetooth settings.")
@@ -283,28 +339,103 @@ struct BluetoothMIDIConnectionButton: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         #if os(iOS)
-        .sheet(isPresented: $presenting, onDismiss: onDismiss) {
-            NavigationStack {
-                BluetoothMIDIBrowser()
-                    .navigationTitle("Bluetooth MIDI")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { presenting = false }
-                        }
-                    }
-            }
-        }
+        .background(BluetoothMIDIBrowserPresenter(isPresented: $presenting, onDismiss: onDismiss)
+            .frame(width: 0, height: 0).allowsHitTesting(false))
         #else
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
-            if let window = notification.object as? NSWindow, window === browser?.window { onDismiss() }
-        }
+        .onDisappear { browser.close() }
         #endif
     }
 }
 #if os(iOS)
-private struct BluetoothMIDIBrowser: UIViewControllerRepresentable {
-    func makeUIViewController(context: Context) -> CABTMIDICentralViewController { CABTMIDICentralViewController() }
-    func updateUIViewController(_ controller: CABTMIDICentralViewController, context: Context) {}
+private struct BluetoothMIDIBrowserPresenter: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    var onDismiss: () -> Void
+
+    func makeUIViewController(context: Context) -> BluetoothMIDIBrowserHost { BluetoothMIDIBrowserHost() }
+    func updateUIViewController(_ controller: BluetoothMIDIBrowserHost, context: Context) {
+        controller.onDismiss = {
+            isPresented = false
+            onDismiss()
+        }
+        controller.setPresented(isPresented)
+    }
+    static func dismantleUIViewController(_ controller: BluetoothMIDIBrowserHost, coordinator: ()) {
+        controller.onDismiss = nil
+        controller.setPresented(false, animated: false)
+    }
+}
+
+/// CoreAudioKit owns a UIKit browser. Keep its navigation and dismissal in
+/// UIKit too: dismissing the old nested SwiftUI NavigationStack could leave
+/// its sheet presenter occupied on iOS 16, preventing the next opening.
+private final class BluetoothMIDIBrowserHost: UIViewController, UIAdaptivePresentationControllerDelegate {
+    var onDismiss: (() -> Void)?
+    private var wantsPresentation = false
+    private var browser: BluetoothMIDINavigationController?
+    private var closing = false
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        openIfNeeded()
+    }
+
+    func setPresented(_ presented: Bool, animated: Bool = true) {
+        wantsPresentation = presented
+        if presented {
+            openIfNeeded()
+        } else if let browser, !closing {
+            closing = true
+            browser.dismiss(animated: animated) { [weak self, weak browser] in
+                if let browser { self?.didClose(browser) }
+            }
+        }
+    }
+
+    private func openIfNeeded() {
+        guard wantsPresentation, browser == nil, !closing, viewIfLoaded?.window != nil,
+              presentedViewController == nil else { return }
+        let central = CABTMIDICentralViewController()
+        central.title = "Bluetooth MIDI"
+        central.navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done,
+            target: self, action: #selector(closeBrowser))
+        let navigation = BluetoothMIDINavigationController(rootViewController: central)
+        navigation.modalPresentationStyle = .formSheet
+        navigation.preferredContentSize = CGSize(width: 600, height: 520)
+        navigation.didDismiss = { [weak self, weak navigation] in
+            guard let navigation else { return }
+            // Release the old presenter only after UIKit has finished closing.
+            DispatchQueue.main.async { [weak self, weak navigation] in
+                if let navigation { self?.didClose(navigation) }
+            }
+        }
+        browser = navigation
+        navigation.presentationController?.delegate = self
+        present(navigation, animated: true)
+    }
+
+    @objc private func closeBrowser() { setPresented(false) }
+
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        if let navigation = presentationController.presentedViewController as? BluetoothMIDINavigationController {
+            didClose(navigation)
+        }
+    }
+
+    private func didClose(_ navigation: BluetoothMIDINavigationController) {
+        guard browser === navigation else { return }
+        navigation.didDismiss = nil
+        browser = nil
+        closing = false
+        wantsPresentation = false
+        onDismiss?()
+    }
+}
+
+private final class BluetoothMIDINavigationController: UINavigationController {
+    var didDismiss: (() -> Void)?
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if isBeingDismissed || presentingViewController == nil { didDismiss?() }
+    }
 }
 #endif

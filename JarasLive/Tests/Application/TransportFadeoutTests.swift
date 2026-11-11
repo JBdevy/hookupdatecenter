@@ -36,6 +36,19 @@ final class TransportFadeoutTests: XCTestCase {
         show.configureTransportFadeout(enabled: true, duration: 5, tracks: [p.songs[0].tracks[0].id])
         return (show, executor, { now = $0 })
     }
+    @MainActor func testSMKFaderIsSilentStoppedAndReportsOnlyAnActualCancellation() throws {
+        let (show, _, clock) = try fixture()
+        var messages: [String] = []; show.smkFeedback = { label, _ in messages.append(label) }
+        show.performSMKAction(.fadeout(true)); show.performSMKAction(.fadeout(false))
+        XCTAssertTrue(messages.isEmpty); XCTAssertFalse(show.transportFadeout.active)
+        show.send(.play); show.performSMKAction(.fadeout(false)); XCTAssertTrue(messages.isEmpty)
+        show.performSMKAction(.fadeout(true)); XCTAssertTrue(show.transportFadeout.active)
+        clock(101); show.tick(); XCTAssertEqual(show.transportFadeout.run?.remaining, 4)
+        show.performSMKAction(.fadeout(false)); XCTAssertEqual(messages, ["FADE OUT CANCELADO"])
+        XCTAssertTrue(show.snapshot.transport.playing)
+        show.performSMKAction(.fadeout(false)); XCTAssertEqual(messages.count, 1)
+        show.send(.stop); show.performSMKAction(.fadeout(true)); XCTAssertEqual(messages.count, 1)
+    }
     @MainActor func testExplicitButtonWorksWithoutShortcutEnablementAndCancelsWithoutStopping() throws {
         let (show, executor, clock) = try fixture()
         let before = show.snapshot.project

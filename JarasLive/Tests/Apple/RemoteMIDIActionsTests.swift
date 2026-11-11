@@ -102,3 +102,11 @@ extension RemoteMIDIActions {
 @main struct RemoteMIDITest {
  @MainActor static func main() { RemoteMIDIActions.verify() }
 }
+
+// This fixture exercises ordinary MIDI mapping, without a controller handshake.
+private enum SMK37Protocol { static func isDeviceName(_ name: String) -> Bool { false } }
+@MainActor private final class SMK37Link {
+ static let shared = SMK37Link()
+ func remoteInputs(_ sources: Set<Int32>) {}
+ func claims(device: Int32, status: UInt8, number: UInt8) -> Bool { false }
+}

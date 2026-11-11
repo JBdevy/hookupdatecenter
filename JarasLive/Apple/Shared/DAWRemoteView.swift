@@ -481,7 +481,7 @@ struct DAWRemoteClientView: View {
                           minimumHeight: remote.isLocalWorkspace && track.kind == .programChange ? Double(max(52, track.programChangeLaneCount * 24 + 8)) : nil,
                           peakDB: sendsPeaks && !track.kind.isText && track.kind != .timecode && track.kind != .programChange ? StemAudioPlayback.shared.meter(for: track.id).peakHold.decibels : nil,
                           canMeter: !track.kind.isText && track.kind != .timecode && track.kind != .programChange, parentTrack: track.parentTrackID,
-                          instrumentIcon: track.instrumentIcon)
+                          instrumentIcon: track.instrumentIcon, role: track.role.rawValue)
                 }, regions: cachedRegions, timelineRegions: cachedTimelineRegions,
                 currentRegion: transport.regionId, queuedRegion: transport.queuedRegionId, focusedRegion: show.focusedRegion,
                 currentPlaylistEntryId: transport.playlistEntryId, queuedPlaylistEntryId: transport.queuedPlaylistEntryId,
@@ -545,7 +545,8 @@ struct DAWRemoteClientView: View {
                 },
                 previewActive: TeleprompterWindow.shared.previewActive,
                 previewPage: TeleprompterWindow.shared.previewPage,
-                vinhetas: VinhetasController.shared.remoteState)
+                vinhetas: VinhetasController.shared.remoteState, recording: TrackRecording.shared.recording,
+                smkLoopName: SMK37Link.loopLabel(show).name, smkLoopColor: SMK37Link.loopLabel(show).color)
         }
         session.noticeSendHandler = { [weak show] command in
             guard command.valid, command.action == .noticeSend, let show,
@@ -566,6 +567,8 @@ struct DAWRemoteClientView: View {
             }
             let documents = Self.documents.flatMap { $0.show === show ? $0 : nil }
             if command.action == .remotePanel { return }
+            if command.action == .toggleRecord { TrackRecording.shared.toggle(show: show); return }
+            if command.action == .browseRegion { if let target = command.target { show.browseRegion(target) }; return }
             if command.action == .togglePreview { TeleprompterWindow.shared.togglePreview(); return }
             if command.action == .selectPreviewPage { TeleprompterWindow.shared.selectPreviewPage(Int(command.value)); return }
             if handleNotice(command) { return }
@@ -645,6 +648,7 @@ struct DAWRemoteClientView: View {
                     guard show.regionSetlist.playlists.contains(where: { $0.id == target && $0.songId == show.current?.id }) else { return }
                 }
                 show.selectRegionPlaylist(command.target)
+            case .toggleRecord, .browseRegion: break
             case .selectRegion:
                 guard let target = command.target, show.playlistRegion(target) != nil else { return }
                 show.focusRegion(target)
@@ -822,6 +826,23 @@ private struct IpadTapHoldButtonStyle: PrimitiveButtonStyle {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { configuration.trigger() }
+    }
+}
+/// Shared target picker for native transport layouts, including full screen.
+struct NativeTunerTargets: ViewModifier {
+    var show: ShowController?
+    @State private var editing: Part?
+    func body(content: Content) -> some View {
+        content.overlay {
+            if let show {
+                IpadTapHoldTouchSurface(tap: {}, hold: { editing = show.pitchRegion })
+                    .accessibilityLabel("Escolher pistas e grupos do Tuner")
+            }
+        }.sheet(item: $editing) { region in
+            if let show, let song = show.current {
+                RegionPitchTargets(show: show, song: song, region: region, close: { editing = nil })
+            }
+        }
     }
 }
 struct IpadTapHoldTouchSurface: UIViewRepresentable {
@@ -1048,6 +1069,10 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var timerOpen = false
     @State private var sectionsOpen = false
     @State private var partsTabSelection = CurrentValueSubject<PartsTabSelectionRequest?, Never>(nil)
+    @State private var smkNavigation = SMK37Navigation()
+    @State private var pendingSMKAction: SMK37Action?
+    @State private var smkExpectedState: Bool?
+    @State private var smkRequestedPage: Int?
     @State private var sectionsInList = false
     @AppStorage("jaras.ipad.parts.left.open") private var nativeLeftPartsOpen = false
     @AppStorage("jaras.ipad.parts.left.preferredWidth") private var nativeLeftPartsWidth = 240.0
@@ -1374,16 +1399,28 @@ private struct RemoteSidebarRail<Content: View>: View {
         .onChange(of: state.selectedPlaylist) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; nativeSetlistRemoval = nil; confirmingRemoval = false; localShow?.selectSetlistBlock(nil) }
         .onChange(of: state.project) { _ in remoteVinhetasFeedback.reset(); selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; pitchStepPending = false }
         .onAppear {
-            if !local && !observer { RemoteMIDIActions.shared.start() }
+            if !local && !observer {
+                RemoteMIDIActions.shared.start()
+                SMK37Link.shared.bindRemote(sources: RemoteMIDIActions.shared.smkSourceIDs, event: remoteSMKEvent, poll: remoteSMKFeedback)
+            }
             if local, let localShow {
                 localShow.togglePartsPanel = { [open = $nativeLeftPartsOpen] in open.wrappedValue.toggle() }
                 localShow.showPartsPanel = { showMappedParts() }
+                localShow.smkPartsVisibility = {
+                    (nativeLeftPartsOpen && prompterPanel == nil && !prompterFullscreen,
+                     phoneLayout ? phonePanel == .sections : sectionsOpen)
+                }
                 localShow.toggleSetlistPanel = { toggleMainSetlist() }
                 localShow.toggleTracksPanel = { toggleMainTrackMixer() }
                 localShow.toggleTeleprompterWindow = { showPrompter(prompterPanel == .first ? nil : .first) }
             }
         }
-        .onDisappear { if !local { RemoteMIDIActions.shared.stop() } }
+        .onDisappear { if !local { SMK37Link.shared.unbindRemote(); RemoteMIDIActions.shared.stop() } }
+        .onChange(of: state) { _ in
+            guard !local, !observer else { return }
+            SMK37Link.shared.updateRemote(event: remoteSMKEvent, poll: remoteSMKFeedback)
+            finishRemoteSMKAction()
+        }
         .onReceive(RemoteMIDIActions.shared.$event.dropFirst().compactMap { $0 }) { event in
             if !local && !observer {
                 if let number = event.blockNumber { performRemoteBlockMIDI(number) }
@@ -1405,6 +1442,8 @@ private struct RemoteSidebarRail<Content: View>: View {
                 setlistSelectionAnchor = localShow.focusedRegion
             }
         }
+        .onReceive(localShow?.$smkNavigation.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { smkNavigation = $0 }
+        .onReceive(localShow?.smkTrackScroll.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { trackScrolling.step($0) }
         .onReceive(localShow?.$selectedProgramChangeID.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { id in
             guard local, id != nil else { return }
             trackScrolling.itemSelection.replace([]); trackScrolling.selectionScope = .grid
@@ -1774,7 +1813,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                             fullscreen: prompterFullscreen, toggleFullscreen: { prompterFullscreen.toggle() }, managesSubscription: false, remote: remote))
                     case .notices:
                         return AnyView(RemoteNativeNoticesView(close: { choosePhonePanel(.grid) }, managesSubscription: false, remote: remote))
-                    case .sections: return AnyView(remoteSections)
+                    case .sections: return AnyView(remoteSections())
                     }
 
     }
@@ -2206,7 +2245,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 .allowsHitTesting(!prompterFullscreen).accessibilityHidden(prompterFullscreen)
                         } else {
                             if leftParts.total > 0 {
-                                remoteSections.frame(width: leftParts.content).clipped()
+                                remoteSections(placement: .left).frame(width: leftParts.content).clipped()
                                 resizeHandle(label: "Resize Parts", changed: { translation in
                                     if nativeLeftPartsDragStart == nil {
                                         nativeLeftPartsDragStart = leftParts.content
@@ -2270,7 +2309,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                             }, ended: {
                                 finishNativePartsResize(available: freeSpace, leftVisible: leftParts.total > 0, rightVisible: true)
                             })
-                            remoteSections.frame(width: parts.content).clipped()
+                            remoteSections().frame(width: parts.content).clipped()
                         }
                     }
                     if !local, remoteVinhetasOpen, !remoteVinhetasDetached, !prompterFullscreen {
@@ -2346,7 +2385,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 }
             })
     }
-    private var remoteSections: some View {
+    private func remoteSections(placement: SMK37Navigation.Panel = .setlist) -> some View {
         let playback = state.sectionPlayback
         let current = state.timelineRegions.first { $0.id == playback?.currentRegion }
         let queued = state.timelineRegions.first { $0.id == playback?.secondaryRegion }
@@ -2354,20 +2393,20 @@ private struct RemoteSidebarRail<Content: View>: View {
             if verticalSections {
                 VStack(spacing: 4) {
                     cancelSectionButton.padding([.top, .leading, .trailing], 4)
-                    SectionListTabs(current: current?.name, queued: queued?.name, subPlaying: state.subPlaying, playing: state.playing, selectionRequests: (localShow?.partsTabSelection ?? partsTabSelection).compactMap { $0 }.eraseToAnyPublisher()) { secondary in
-                        remoteSectionBank(secondary: secondary)
+                    SectionListTabs(current: current?.name, queued: queued?.name, subPlaying: state.subPlaying, playing: state.playing, selectionRequests: (localShow?.partsTabSelection ?? partsTabSelection).compactMap { $0 }.filter { $0.panel == nil || $0.panel == placement }.eraseToAnyPublisher()) { secondary in
+                        remoteSectionBank(secondary: secondary, placement: placement)
                     }
                 }
             } else {
                 HStack(spacing: 1) {
-                    remoteSectionBank(secondary: false)
+                    remoteSectionBank(secondary: false, placement: placement)
                     Rectangle().fill(JarasTheme.secondary.opacity(0.35)).frame(width: 1)
-                    remoteSectionBank(secondary: true)
+                    remoteSectionBank(secondary: true, placement: placement)
                 }.padding(5).background(RemoteSurface.panel)
             }
         }
     }
-    private func remoteSectionBank(secondary: Bool) -> some View {
+    private func remoteSectionBank(secondary: Bool, placement: SMK37Navigation.Panel) -> some View {
         let playback = state.sectionPlayback
         let id = secondary ? playback?.secondaryRegion : playback?.currentRegion
         let region = state.timelineRegions.first { $0.id == id }
@@ -2382,8 +2421,16 @@ private struct RemoteSidebarRail<Content: View>: View {
             position: secondary ? playback?.secondaryPosition ?? 0 : playback?.position ?? state.position,
             showsPosition: !secondary || state.subPlaying, positionRunning: secondary ? state.subPlaying : state.playing, queued: playback?.queuedMarker,
             trigger: playback?.nextTrigger, queueStartedAt: playback?.queueStartedAt, playbackPosition: state.position, playbackRunning: state.playing,
-            select: { action(.queueSection, target: $0) }, verticalList: verticalSections,
+            select: { id in
+                smkNavigation.selectPart(id, panel: placement, queued: secondary)
+                localShow?.smkNavigation = smkNavigation
+                action(.queueSection, target: id)
+            }, verticalList: verticalSections,
             regionID: region?.id, regionStart: region?.start ?? 0,
+            navigationSelection: {
+                if case let .parts(panel, queued, id) = smkNavigation.focus, panel == placement, queued == secondary { return id }
+                return nil
+            }(),
             editAutomatic: local ? { automaticSectionSource = $0 } : nil)
     }
     private var footer: some View {
@@ -2599,6 +2646,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     .monospacedDigit().font(.jarasSystem(size: 12, weight: .semibold))
                     .foregroundStyle(pitch ? JarasTheme.green : state.tempoNeedsRender == true ? JarasTheme.yellow : JarasTheme.text)
             }.lineLimit(1).minimumScaleFactor(0.6).frame(maxWidth: .infinity)
+                .modifier(NativeTunerTargets(show: pitch ? localShow : nil))
             Button { if pitch { stepPitch(1) } else { stepTempo(1) } } label: {
                 Image(systemName: "plus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
             }.disabled(pitch ? state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 12 : state.bpm >= 300)
@@ -2624,6 +2672,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                         Text(verbatim: "Tuner").font(.jarasSystem(size: 10))
                         Text(String(format: "%+dst", state.pitchSemitones ?? 0)).monospacedDigit()
                     }.frame(minWidth: local ? 48 : 70, maxWidth: .infinity)
+                        .modifier(NativeTunerTargets(show: localShow))
                     Button { stepPitch(1) } label: { Image(systemName: "plus").frame(width: 28, height: 32) }
                         .disabled(state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 12)
                         .accessibilityLabel("Aumentar afinação")
@@ -2864,6 +2913,126 @@ private struct RemoteSidebarRail<Content: View>: View {
             }
         }
     }
+    private func remoteSMKEvent(_ event: SMK37Session.Event) {
+        if case let .padUp(token) = event { action(.vinhetasUp, target: token); return }
+        guard !local, !observer, controlsEnabled, !RemoteMIDIActions.shared.isLearning else { return }
+        switch event {
+        case .connected: break
+        case .preset(let index): action(.vinhetasPreset, value: Double(index))
+        case .padDown(let token, let preset, let pad):
+            SMK37Link.shared.padSelected(pad)
+            send(.init(project: state.project, song: state.song, action: .vinhetasDown, target: token, pad: pad, preset: preset))
+        case .padUp: break
+        case .action(let control):
+            switch control {
+            case .padBusVolume(let value):
+                guard let track = state.tracks.first(where: { $0.role == "vinhetas" }) else { return }
+                pendingSMKAction = control; smkExpectedState = nil
+                action(.volume, target: track.id, value: SMK37Protocol.padBusGain(value))
+            case .record: smkExpectedState = !(state.recording == true); pendingSMKAction = control; action(.toggleRecord)
+            case .preview: smkExpectedState = !(state.previewActive == true); pendingSMKAction = control; action(.togglePreview)
+            case .auto: smkExpectedState = !(state.regionAuto == true); pendingSMKAction = control; action(.toggleRegionAuto)
+            case .playStop: smkExpectedState = !(state.playing || state.paused); pendingSMKAction = control; action(state.playing || state.paused ? .stop : .play)
+            case .pause: smkExpectedState = !(state.paused); pendingSMKAction = control; action(.pause)
+            case .repeatLoop: smkExpectedState = !(state.loop); pendingSMKAction = control; action(.toggleLoop)
+            case .playlist(let delta):
+                let lists = state.playlists ?? []
+                guard !lists.isEmpty, delta != 0 else { return }
+                let anchor = lists.firstIndex { $0.id == (remoteMIDIPlaylistID ?? state.selectedPlaylist) }
+                let index = anchor.map { (($0 + delta) % lists.count + lists.count) % lists.count } ?? (delta > 0 ? 0 : lists.count - 1)
+                remoteMIDIPlaylistID = lists[index].id; remoteMIDISetlistID = nil
+                smkExpectedState = nil; pendingSMKAction = control
+                action(.selectPlaylist, target: lists[index].id)
+            case .fadeout(let active):
+                guard state.playing, let fade = state.fadeout, active ? !fade.active : fade.active else { return }
+                smkExpectedState = active; pendingSMKAction = control
+                send(.init(project: state.project, song: state.song, action: .transportFadeout, enabled: active))
+            case .previewPage(let delta):
+                let page = min(5, max(0, (smkRequestedPage ?? state.previewPage ?? 0) + delta))
+                smkRequestedPage = page; pendingSMKAction = control; action(.selectPreviewPage, value: Double(page))
+            case .scrollTracks(let direction):
+                trackScrolling.step(direction)
+                SMK37Link.shared.feedback(direction < 0 ? "TRACK MIXER ACIMA" : "TRACK MIXER ABAIXO")
+            case .songs(let direction):
+                performRemoteMIDI(direction < 0 ? .setlistUp : .setlistDown)
+                let rows = setlistRowsCache.entries(in: state, expanded: [], query: "", order: local && state.selectedPlaylist == nil ? allRegionsOrder : nil).compactMap { entry -> DAWRemoteState.Region? in
+                    if case .region(let row) = entry, !row.child { return row.region }; return nil
+                }
+                if let index = rows.firstIndex(where: { $0.id == remoteMIDISetlistID }) {
+                    SMK37Link.shared.navigation(kind: 1, rows: SMK37Protocol.window(rows.map(\.name), selected: index))
+                }
+            case .currentParts(let direction): remoteSMKParts(queued: false, direction: direction)
+            case .queuedParts(let direction): remoteSMKParts(queued: true, direction: direction)
+            case .confirm:
+                if case let .parts(_, _, marker) = smkNavigation.focus { action(.queueSection, target: marker) }
+                else if let id = remoteMIDISetlistID ?? selectedSetlistEntries.first ?? state.focusedRegion { action(.selectRegion, target: id) }
+            }
+        }
+    }
+    private func remoteSMKParts(queued: Bool, direction: Int) {
+        let id = queued ? state.sectionPlayback?.secondaryRegion : state.sectionPlayback?.currentRegion
+        guard let region = state.timelineRegions.first(where: { $0.id == id }) else { return }
+        let markers = (state.markers ?? []).filter { $0.section == true && $0.position >= region.start && $0.position <= region.end }.sorted { $0.position < $1.position }
+        guard let chosen = smkNavigation.move(queued: queued, direction: direction, leftOpen: false,
+            setlistOpen: phoneLayout ? phonePanel == .sections : sectionsOpen, markers: [region.id] + markers.map(\.id)),
+            case let .parts(panel, _, _) = smkNavigation.focus else { return }
+        partsTabSelection.send(.init(secondary: queued, panel: panel))
+        let ids = [region.id] + markers.map(\.id)
+        if let index = ids.firstIndex(of: chosen) {
+            SMK37Link.shared.navigation(kind: queued ? 3 : 2, rows: SMK37Protocol.window(["INÍCIO"] + markers.map(\.name), selected: index))
+        }
+    }
+    private func remoteSMKFeedback() {
+        let link = SMK37Link.shared
+        if let pads = state.vinhetas { link.remoteLibrary(pads) }
+        link.fadeout(active: state.fadeout?.active == true, remaining: state.fadeout?.remaining ?? 0, duration: state.fadeout?.duration ?? 0)
+        let region = state.timelineRegions.first { $0.id == state.currentRegion }
+        link.playback(position: state.position, start: region?.start ?? 0, end: region?.end ?? state.duration)
+        let marker = state.loopStart.flatMap { start in
+            (state.markers ?? []).filter { $0.section == true && $0.position <= start + 0.000001 && $0.position >= (region?.start ?? 0) }.max { $0.position < $1.position }
+        }
+        link.transport(paused: state.paused, recording: state.recording == true, looping: state.loop,
+            auto: state.regionAuto == true, preview: state.previewActive == true, playing: state.playing, queued: state.queuedRegion != nil,
+            loopName: state.smkLoopName ?? marker?.name ?? region?.name ?? "", loopColor: state.smkLoopColor ?? marker?.color ?? region?.color ?? 0xffb347)
+    }
+    private func finishRemoteSMKAction() {
+        guard let control = pendingSMKAction else { return }
+        let actual: Bool?
+        switch control {
+        case .record: actual = state.recording == true
+        case .preview: actual = state.previewActive == true
+        case .auto: actual = state.regionAuto == true
+        case .playStop: actual = state.playing || state.paused
+        case .pause: actual = state.paused
+        case .repeatLoop: actual = state.loop
+        case .fadeout: actual = state.fadeout?.active == true
+        default: actual = nil
+        }
+        if let expected = smkExpectedState, let actual, expected != actual { return }
+        // State packets are authoritative: feedback describes the actual host.
+        let label: String?
+        switch control {
+        case .record: label = state.recording == true ? nil : "REC DESATIVADO"
+        case .preview: label = state.previewActive == true ? "PREVIEW ATIVADO" : "PREVIEW DESATIVADO"
+        case .auto: label = state.regionAuto == true ? "AUTO ATIVO" : "AUTO DESATIVADO"
+        case .playStop: label = state.playing ? "PLAY" : "STOP"
+        case .pause: label = state.paused ? nil : state.playing ? "PLAY" : "STOP"
+        case .repeatLoop: label = state.loop ? nil : "LOOP DESATIVADO"
+        case .fadeout: label = state.fadeout?.active == true ? nil : "FADE OUT CANCELADO"
+        case .padBusVolume(let value):
+            guard let track = state.tracks.first(where: { $0.role == "vinhetas" }), abs(track.volume - SMK37Protocol.padBusGain(value)) < 0.0001 else { return }
+            label = SMK37Protocol.padBusLabel(gain: track.volume)
+        case .playlist:
+            guard state.selectedPlaylist == remoteMIDIPlaylistID else { return }
+            label = state.playlists?.first { $0.id == state.selectedPlaylist }?.name
+        case .previewPage:
+            guard state.previewPage == smkRequestedPage else { return }
+            let first = (state.previewPage ?? 0) * 4 + 1; label = "BLOCO \(first)-\(first+3)"; smkRequestedPage = nil
+        default: label = nil
+        }
+        pendingSMKAction = nil; smkExpectedState = nil
+        if let label { SMK37Link.shared.feedback(label) }
+    }
     private func performRemoteMIDI(_ command: RemoteMIDIAction) {
         guard !local, !observer, !RemoteMIDIActions.shared.isLearning else { return }
         switch command {
@@ -2888,6 +3057,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             remoteMIDIPlaylistID = ids[next]; remoteMIDISetlistID = nil
             action(.selectPlaylist, target: ids[next])
         case .setlistUp, .setlistDown:
+            smkNavigation.selectSongs()
             let ids = setlistRowsCache.entries(in: state, expanded: [], query: "", order: local && state.selectedPlaylist == nil ? allRegionsOrder : nil).compactMap { entry -> UUID? in
                 if case .region(let row) = entry, !row.child { return row.region.id }; return nil
             }
@@ -2896,7 +3066,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             let current = remoteMIDISetlistID ?? selectedSetlistEntries.first ?? state.focusedRegion
             let next = current.flatMap { ids.firstIndex(of: $0) }.map { min(ids.count - 1, max(0, $0 + direction)) } ?? (direction > 0 ? 0 : ids.count - 1)
             remoteMIDISetlistID = ids[next]; selectedSetlistEntries = [ids[next]]
-            action(.selectRegion, target: ids[next])
+            action(.browseRegion, target: ids[next])
         case .partsUp, .partsDown:
             guard let region = state.timelineRegions.first(where: { $0.id == state.sectionPlayback?.currentRegion }) else { return }
             let markers = (state.markers ?? []).filter { $0.section == true && $0.position >= region.start && $0.position <= region.end }.sorted { $0.position < $1.position }
@@ -2943,6 +3113,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         return state.tracks.filter { ids.contains($0.id) }.map(\.id)
     }
     private func selectSetlistEntry(_ id: UUID) {
+        smkNavigation.selectSongs(); localShow?.smkNavigation.selectSongs()
         nativeKeyboardBrowsing = false
         trackScrolling.selectionScope = .setlist
         let isBlock = local && (state.setlistBlocks?.contains { $0.id == id } == true)
@@ -3061,7 +3232,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 case .region(let row):
                                 let region = row.region
                                 Button { selectSetlistEntry(region.id) } label: {
-                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: (state.showsSetlistSelection || (local && nativeKeyboardBrowsing)) && (selectedSetlistEntries.contains(region.id) || (selectedSetlistEntries.isEmpty && region.id == state.focusedRegion)),
+                                    setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: smkNavigation.focus == .songs && (state.showsSetlistSelection || (local && nativeKeyboardBrowsing)) && (selectedSetlistEntries.contains(region.id) || (selectedSetlistEntries.isEmpty && region.id == state.focusedRegion)),
                                         active: state.playing && region.id == state.setlistCurrentEntryId, queued: state.playing && region.id == (state.setlistQueuedEntryId),
                                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? (row.child ? 0xffeb3b : 0xffffff)),
                                         duration: max(0, Int(ceil(region.end - (state.playing && region.id == state.setlistCurrentEntryId ? state.position : region.start)))),
@@ -3346,6 +3517,7 @@ private struct RemoteMIDIBinding: Codable, Equatable {
     private var port: MIDIPortRef = 0
     private var sources: [MIDIEndpointRef: (Int32, String)] = [:]
     private var pressed = Set<String>()
+    var smkSourceIDs: Set<Int32> { Set(sources.values.filter { SMK37Protocol.isDeviceName($0.1) }.map { $0.0 }) }
     private init() {
         if let data = UserDefaults.standard.data(forKey: "catlive.remote.midiActions"),
            let value = try? JSONDecoder().decode([String: RemoteMIDIBinding].self, from: data) { bindings = value }
@@ -3453,9 +3625,11 @@ private struct RemoteMIDIBinding: Codable, Equatable {
         }
         let names = sources.values.map { $0.1 }.sorted()
         if deviceNames != names { deviceNames = names }
+        SMK37Link.shared.remoteInputs(smkSourceIDs)
     }
     private func receive(_ endpoint: MIDIEndpointRef, _ status: UInt8, _ number: UInt8, _ value: UInt8) {
         guard let source = sources[endpoint] else { return }
+        if SMK37Link.shared.claims(device: source.0, status: status, number: number) { return }
         let kind = status & 0xf0
         guard [0x80, 0x90, 0xb0, 0xc0].contains(kind) else { return }
         let channel = status & 15, normalized: UInt8 = kind == 0x80 ? 0x90 : kind

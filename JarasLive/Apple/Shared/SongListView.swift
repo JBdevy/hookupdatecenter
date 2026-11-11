@@ -255,6 +255,7 @@ struct SongListView: View {
                 if show.focusedRegion == nil { selectedEntries = []; entrySelectionAnchor = nil }
             }
         }
+        show.smkNavigation.selectSongs()
         show.selectSetlistBlock(selectedEntries.count == 1 ? selectedEntries.first : nil)
     }
     var body: some View {
@@ -426,7 +427,7 @@ struct SongListView: View {
                             let progress = active ? min(1, max(0, (transport.position - region.startTime) / duration)) : 0
                             let queueRemaining = queued ? max(0, playbackEnd - transport.position) : 0
                             let queueLength = max(0.001, playbackEnd - (transport.queueStartedAt ?? transport.position))
-                            RegionSetlistRow(region: region, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor.value : playlist == nil ? allRegionsTextColor.value : playlistTextColor.value), number: idMode == "region" ? (regionIDs[show.playlistRegionSourceID(region.id)] ?? number) : number, selected: visibleSelection.contains(region.id),
+                            RegionSetlistRow(region: region, fontStyle: fontStyle, nameColor: UInt32(region.parentRegionID != nil ? unifiedTextColor.value : playlist == nil ? allRegionsTextColor.value : playlistTextColor.value), number: idMode == "region" ? (regionIDs[show.playlistRegionSourceID(region.id)] ?? number) : number, selected: show.smkNavigation.focus == .songs && visibleSelection.contains(region.id),
                                              active: active, queued: queued, prepareOnly: setlist.preparesWithoutPlayback, remaining: Int(ceil(remaining)),
                                              progress: progress, queueProgress: queued ? min(1, queueRemaining / queueLength) : 0,
                                              playedLive: show.playedLiveRegionIDs.contains(show.playlistRegionSourceID(region.id)),

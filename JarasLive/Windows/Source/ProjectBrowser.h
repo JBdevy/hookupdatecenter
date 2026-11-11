@@ -25,6 +25,7 @@ struct RecentProjects {
         file.replaceWithText(JSON::toString(var(values)));
     }
     static void remember(const File &file) {
+        if (file.isAChildOf(File::getSpecialLocation(File::userDocumentsDirectory).getChildFile("catlive-temp"))) return;
         auto paths = read();
         paths.removeString(file.getFullPathName(), true);
         paths.insert(0, file.getFullPathName());
@@ -44,7 +45,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     void paint(Graphics &) override;
     void resized() override;
     void refresh();
-    std::function<void()> createEmpty, createEmptyInNewTab, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
+    std::function<void()> createEmpty, createTemporary, createEmptyInNewTab, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
         browse, resume;
     std::function<void(File)> open, openInNewTab, deleteProject;
     void setProjectOpen(bool);
@@ -79,6 +80,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     Action add{"Adicionar ao projeto", Action::plusFolder};
     Action recent{"Projetos Recentes", Action::folder};
     Action empty{"Vazio", Action::document};
+    Action temporary{"Temporary", Action::document};
     Action stems{"Adicionar stems", Action::waveform};
     Action reaper{"REAPER", Action::waveform};
     Action logic{"Logic", Action::piano};

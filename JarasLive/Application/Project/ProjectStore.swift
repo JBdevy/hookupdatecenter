@@ -257,3 +257,93 @@ public enum ProjectName {
         return name
     }
 }
+
+#if canImport(Darwin)
+import Darwin
+
+/// A disposable document owns exactly Documents/catlive-temp. The sibling lock
+/// survives cleanup and prevents another window/process from clearing live media.
+public final class TemporaryProjectSession: @unchecked Sendable {
+    public let directory: URL
+    private var descriptor: Int32 = -1
+    public init(documents: URL) throws {
+        let fm = FileManager.default
+        directory = documents.appendingPathComponent("catlive-temp", isDirectory: true).standardizedFileURL
+        try fm.createDirectory(at: documents, withIntermediateDirectories: true)
+        let lock = documents.appendingPathComponent(".catlive-temp.lock")
+        descriptor = Darwin.open(lock.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw ProjectError.invalid("Could not prepare the temporary project folder.") }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            Darwin.close(descriptor); descriptor = -1
+            throw ProjectError.invalid("Close the other temporary session before creating a new one.")
+        }
+        do {
+            try verifyDirectory()
+            if !fm.fileExists(atPath: directory.path) { try fm.createDirectory(at: directory, withIntermediateDirectories: false) }
+            try clearContents()
+        } catch { unlock(); throw error }
+    }
+    deinit { unlock() } // An interrupted session is cleaned on the next creation.
+    private func unlock() {
+        if descriptor >= 0 { flock(descriptor, LOCK_UN); Darwin.close(descriptor); descriptor = -1 }
+    }
+    private func verifyDirectory() throws {
+        if let type = try? FileManager.default.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType, type != FileAttributeType.typeDirectory {
+            throw ProjectError.invalid("The temporary project folder must be a real directory.")
+        }
+        guard directory.resolvingSymlinksInPath().path == directory.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent("catlive-temp", isDirectory: true).path else {
+            throw ProjectError.invalid("The temporary project folder must be a real directory.")
+        }
+    }
+    public func contains(_ url: URL) -> Bool {
+        url.standardizedFileURL.path.hasPrefix(directory.path + "/")
+    }
+    private func clearContents() throws {
+        try verifyDirectory()
+        for entry in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            // removeItem removes a child symlink itself, never its destination.
+            try FileManager.default.removeItem(at: entry)
+        }
+    }
+    public func discard() throws { guard descriptor >= 0 else { return }; try clearContents(); unlock() }
+    /// Commit a self-contained normal project before releasing any scratch media.
+    /// A failed/cancelled copy removes only the new folder this method created.
+    public func export(_ original: Project, to destination: URL) throws -> Project {
+        let fm = FileManager.default, folder = destination.deletingLastPathComponent()
+        let resolved = folder.resolvingSymlinksInPath().standardizedFileURL.path
+        let scratch = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        guard resolved != scratch, !resolved.hasPrefix(scratch + "/"),
+              !fm.fileExists(atPath: folder.path) else {
+            throw ProjectError.invalid("Choose a new folder outside catlive-temp.")
+        }
+        try ProjectDirectoryPolicy.validate(destination)
+        var project = original
+        project.name = try ProjectName.validated(destination.deletingPathExtension().lastPathComponent)
+        try project.validate()
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        do {
+            var paths = project.mediaPaths
+            let instruments = directory.appendingPathComponent("Instruments", isDirectory: true)
+            if fm.fileExists(atPath: instruments.path) {
+                for item in try fm.contentsOfDirectory(at: instruments, includingPropertiesForKeys: nil) {
+                    paths.insert("Instruments/" + item.lastPathComponent)
+                }
+            }
+            for path in paths.sorted() {
+                try Task.checkCancellation()
+                let source = directory.appendingPathComponent(path).standardizedFileURL
+                let target = folder.appendingPathComponent(path).standardizedFileURL
+                guard source.path.hasPrefix(directory.path + "/"), target.path.hasPrefix(folder.standardizedFileURL.path + "/"),
+                      (try source.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else {
+                    throw ProjectError.invalid("Invalid project media path.")
+                }
+                try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.copyItem(at: source, to: target)
+                guard fm.contentsEqual(atPath: source.path, andPath: target.path) else { throw CocoaError(.fileWriteUnknown) }
+            }
+            try ProjectDocumentCodec.writeEncoded(ProjectDocumentCodec.encode(project), to: destination, exclusive: true)
+            return project
+        } catch { try? fm.removeItem(at: folder); throw error }
+    }
+}
+#endif

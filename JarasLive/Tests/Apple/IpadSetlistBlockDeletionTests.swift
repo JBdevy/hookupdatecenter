@@ -5,7 +5,9 @@ private struct TestTrack { let id: UUID; var clips: [RowID] }
 private struct TestSong { let id: UUID; var tracks: [TestTrack] }
 private struct TestProject { var id: UUID }
 private struct TestSnapshot { var project: TestProject }
+private struct TestSMKNavigation { mutating func selectSongs() {} }
 private final class ShowController {
+    var smkNavigation = TestSMKNavigation()
     var snapshot: TestSnapshot
     var current: TestSong?
     var selectedRegionPlaylist: RowID?
@@ -59,6 +61,7 @@ private final class TestScrolling {
     var itemSelection = TestItemSelection()
 }
 private final class WorkspaceProbe {
+    var smkNavigation = TestSMKNavigation()
     var local = true
     var allRegionsOrder = 0
     var nativeKeyboardBrowsing = false

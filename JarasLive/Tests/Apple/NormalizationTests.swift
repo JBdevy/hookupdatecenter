@@ -64,3 +64,45 @@ precondition(NormalizationTargetPreferences.formatted(-18) == "-18.00")
 precondition(NormalizationTargetPreferences.formatted(12) == "12.00")
 precondition(NormalizationTargetPreferences.formatted(-1.25) == "-1.25")
 print("NORMALIZATION_PER_METRIC_TARGETS_PERSIST_AND_FORMAT_TWO_DECIMALS_OK")
+
+// Optional real-world compressed fixture: never rewrite or include user media in the repo.
+// Run with CATLIVE_NORMALIZATION_MP3=/path/to/file.mp3 to cover a short decoded tail.
+if let path = ProcessInfo.processInfo.environment["CATLIVE_NORMALIZATION_MP3"] {
+    let source = URL(fileURLWithPath: path)
+    let input = try AVAudioFile(forReading: source)
+    let format = input.processingFormat, declared = input.length
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16384)!
+    let reference = directory.appendingPathComponent("decoded.wav")
+    var actual: Int64 = 0
+    do {
+        let output = try AVAudioFile(forWriting: reference, settings: format.settings)
+        while actual < declared {
+            let requested = AVAudioFrameCount(min(16384, declared - actual))
+            buffer.frameLength = 0
+            try input.read(into: buffer, frameCount: requested)
+            guard buffer.frameLength > 0 else { break }
+            actual += Int64(buffer.frameLength)
+            try output.write(from: buffer)
+            if buffer.frameLength < requested { break }
+        }
+    }
+    precondition(actual > 0 && actual < declared, "Fixture must exercise a short decoded tail")
+    for variant in 0..<3 {
+        var clip = AudioClip(id: UUID(), name: "Compressed EOF", startTime: 0,
+            duration: Double(declared) / format.sampleRate, audioFile: AudioFile(path: source.lastPathComponent))
+        if variant == 1 { clip.sourceOffset = 0.1; clip.duration = 0.5 }
+        if variant == 2 { clip.loopLength = clip.duration; clip.duration *= 3 }
+        var decoded = clip
+        decoded.audioFile = AudioFile(path: reference.lastPathComponent)
+        if variant == 2 { decoded.loopLength = Double(actual) / format.sampleRate }
+        for mode in NormalizationMode.allCases {
+            var progress: [Double] = []
+            let result = try ItemNormalization.measure(clip, directory: source.deletingLastPathComponent(), mode: mode) { progress.append($0) }
+            let expected = try ItemNormalization.measure(decoded, directory: directory, mode: mode)
+            precondition(result.isFinite && abs(result - expected) < 0.05, "Compressed EOF \(variant) \(mode): \(result) vs \(expected)")
+            precondition(progress.first == 0 && progress.last == 1)
+            precondition(zip(progress, progress.dropFirst()).allSatisfy { $0 <= $1 })
+        }
+    }
+    print("NORMALIZATION_COMPRESSED_SHORT_TAIL_FULL_TRIMMED_LOOP_ALL_MODES_OK")
+}

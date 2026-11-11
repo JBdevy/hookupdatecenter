@@ -30,6 +30,12 @@
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
+<dict>
+<key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.zipfx</string>
+<key>UTTypeDescription</key><string>CatLive Pads Presets</string>
+<key>UTTypeConformsTo</key><array><string>public.zip-archive</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>zipfx</string></array></dict>
+</dict>
         <dict>
             <key>UTTypeIdentifier</key>
             <string>com.hookdeveloper.jaraslive.project</string>

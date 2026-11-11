@@ -136,7 +136,7 @@ import UniformTypeIdentifiers
 }
 
 #if os(iOS)
-private struct NativePackageExporter: UIViewControllerRepresentable {
+struct NativePackageExporter: UIViewControllerRepresentable {
     let url: URL
     let finished: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(finished) }

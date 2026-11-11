@@ -281,7 +281,7 @@ class Reader {
             start = le(z, 48, 8);
             boundary = length - 98;
         }
-        require(count >= 2 && count <= 100000 && size <= 64 * 1024 * 1024 && start <= boundary &&
+        require(count >= 1 && count <= 100000 && size <= 64 * 1024 * 1024 && start <= boundary &&
                 size == boundary - start);
         centralStart = start;
         auto central = read(start, (size_t)size);

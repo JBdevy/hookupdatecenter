@@ -696,7 +696,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 try track.fx?.validate()
                 try track.automation?.validate()
                 if track.kind.isSingleLane {
-                    let layers = track.kind.isTeleprompter ? [track.clips.filter { !$0.isProjectionMedia }, track.clips.filter(\.isProjectionMedia)] : [track.clips]
+                    let layers = track.kind.isTeleprompter ? [track.clips.filter(\.isProjectionMedia)] : [track.clips]
                     for layer in layers {
                         let clips = layer.sorted { $0.startTime < $1.startTime }
                         guard zip(clips, clips.dropFirst()).allSatisfy({ $0.startTime + $0.duration <= $1.startTime + 0.0000001 }) else {
@@ -988,10 +988,12 @@ public struct TrackLanes: Equatable {
     private var localLanes: [UUID: Int] = [:]
     public init(track: Track) {
         var ends: [Double] = []
-        let ordered = track.clips.sorted {
-            if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
-            return $0.id.uuidString < $1.id.uuidString
-        }
+        let ordered = track.clips.enumerated().sorted {
+            if $0.element.startTime != $1.element.startTime { return $0.element.startTime < $1.element.startTime }
+            // Equal-position lyrics keep their imported top-to-bottom order.
+            if track.kind.isTeleprompter { return $0.offset < $1.offset }
+            return $0.element.id.uuidString < $1.element.id.uuidString
+        }.map(\.element)
         // Lay out existing material first. A new take stays below the material
         // it overlaps, even if recording starts before that material begins.
         for clip in ordered where clip.recordingLane == nil {
@@ -1104,6 +1106,7 @@ extension Track {
         guard kind != .programChange, start.isFinite, duration.isFinite, start >= 0, duration > 0 else { return false }
         guard kind.isSingleLane else { return true }
         let media = media ?? (id.flatMap { id in clips.first { $0.id == id }?.isProjectionMedia } ?? false)
+        if kind.isTeleprompter && !media { return true }
         return !clips.contains { $0.id != id && (!kind.isTeleprompter || $0.isProjectionMedia == media) && start < $0.startTime + $0.duration - 0.0000001 && start + duration > $0.startTime + 0.0000001 }
     }
     /// Single-lane items can be dragged past one another, but never stacked.
@@ -1116,7 +1119,7 @@ extension Track {
             .min { abs($0 - proposed) < abs($1 - proposed) } ?? item.startTime
     }
     public func constrainedItemEdges(start: Double, end: Double, item: AudioClip) -> (Double, Double) {
-        guard kind.isSingleLane else { return (start, end) }
+        guard kind.isSingleLane, !kind.isTeleprompter || item.isProjectionMedia else { return (start, end) }
         let others = clips.filter { $0.id != item.id && (!kind.isTeleprompter || $0.isProjectionMedia == item.isProjectionMedia) }
         let left = others.filter { $0.startTime + $0.duration <= item.startTime + 0.0000001 }.map { $0.startTime + $0.duration }.max() ?? 0
         let right = others.filter { $0.startTime >= item.startTime + item.duration - 0.0000001 }.map(\.startTime).min() ?? .infinity

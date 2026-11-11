@@ -189,10 +189,10 @@ final class GridItemClipboardTests: XCTestCase {
         XCTAssertEqual(project.songs[0].tracks[0].clips[0].gain, 0.75)
         XCTAssertEqual(project.songs[0].tracks[0].clips[0].startTime, 80)
     }
-    func testFailedMoveIsAtomicAndRemainsAvailableToPasteElsewhere() throws {
+    func testFailedProjectionMediaMoveIsAtomicAndRemainsAvailableToPasteElsewhere() throws {
         var project = Project.empty(name: "Text")
         var track = Track(id: UUID(), name: "Teleprompter", role: TrackRole(rawValue: "teleprompt"))
-        track.clips = [AudioClip(id: UUID(), name: "One", startTime: 0, duration: 10, text: "One"), AudioClip(id: UUID(), name: "Two", startTime: 20, duration: 10, text: "Two")]
+        track.clips = [AudioClip(id: UUID(), name: "One", startTime: 0, duration: 10, audioFile: AudioFile(path: "Videos/one.mp4")), AudioClip(id: UUID(), name: "Two", startTime: 20, duration: 10, audioFile: AudioFile(path: "Videos/two.mp4"))]
         project.songs[0].tracks = [track]; project.songs[0].duration = 60
         let clipboard = try XCTUnwrap(GridItemClipboard(project: project, song: project.songs[0].id, selected: [track.clips[0].id], moving: true))
         let before = project

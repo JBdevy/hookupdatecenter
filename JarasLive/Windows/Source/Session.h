@@ -5,11 +5,16 @@
 #include "AudioExport.h"
 #include "TransportPresentation.h"
 #include <deque>
+#include "TemporaryProjectSession.h"
 namespace catlive {
 class Session final : private Timer {
   public:
     explicit Session(std::shared_ptr<AudioDeviceManager> host = {});
     ~Session() override;
+    // Declared before audio: scratch cleanup runs after its readers are destroyed.
+    std::unique_ptr<TemporaryProjectSession> temporarySession;
+    bool isTemporary() const { return temporarySession && temporarySession->contains(document); }
+    void cleanupReplacedTemporary();
     jaras::Engine core;
     AudioEngine audio;
     const jaras::Project &project() const { return core.project(); }
@@ -26,6 +31,8 @@ class Session final : private Timer {
     bool subCursorVisible() const { return presentationTransport().subPlay.playing || Time::getMillisecondCounterHiRes() < subCursorPreviewUntil; }
     static float subCursorOpacity(double seconds) { return std::fmod(seconds, .9) < .45 ? 1.f : .3f; }
     std::optional<ID> focusedRegion;
+    std::optional<ID> smkPart;
+    String smkPartPanel; bool smkQueuedParts=false;
     uint64 setlistFocusRevision = 0;
     String message;
     uint64 revision = 0;

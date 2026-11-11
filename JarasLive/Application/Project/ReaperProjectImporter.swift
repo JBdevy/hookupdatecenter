@@ -638,8 +638,9 @@ public enum ReaperProjectImporter {
                     audio = section.child("SOURCE")
                 }
                 let kind = audio?.header.dropFirst().first ?? ""
-                if let audio, ["WAVE", "MP3", "FLAC", "VORBIS", "AIFF", "AIF", "OPUS", "WAVPACK"].contains(kind), let filename = audio.value("FILE") {
-                    let ref = try reference(filename)
+                let videoSource = kind == "VIDEO" || ["mp4", "mov", "m4v", "avi", "mkv", "webm", "wmv", "mpg", "mpeg", "m2v"].contains((audio?.value("FILE") as NSString?)?.pathExtension.lowercased() ?? "")
+                if let audio, videoSource || ["WAVE", "MP3", "FLAC", "VORBIS", "AIFF", "AIF", "OPUS", "WAVPACK"].contains(kind), let filename = audio.value("FILE") {
+                    let ref = try reference(filename, projection: videoSource)
                     clip.audioFile = AudioFile(path: ref.relativePath)
                     if clip.name.isEmpty || clip.name == "Item" { clip.name = (filename.replacingOccurrences(of: "\\", with: "/") as NSString).lastPathComponent }
                     clip.sourceOffset += sectionStart
@@ -649,6 +650,9 @@ public enum ReaperProjectImporter {
                             if let cached = lengths[file.path] { length = cached }
                             else if let reader = try? AVAudioFile(forReading: file), reader.fileFormat.sampleRate > 0 {
                                 length = Double(reader.length) / reader.fileFormat.sampleRate; lengths[file.path] = length
+                            } else if videoSource {
+                                let duration = AVURLAsset(url: file).duration.seconds
+                                if duration.isFinite && duration > 0 { length = duration; lengths[file.path] = duration }
                             }
                         }
                         if let length, length > 0 {
@@ -722,6 +726,8 @@ public enum ReaperProjectImporter {
                 var rejected = Set<Int>()
                 for index in order {
                     let clip = track.clips[index]
+                    // Lyrics are allowed to overlap and occupy separate grid lanes.
+                    if track.kind.isTeleprompter && !clip.isProjectionMedia { continue }
                     let layer = track.kind.isTeleprompter && clip.isProjectionMedia ? 1 : 0
                     if ends[layer] > clip.startTime + 0.0000001 {
                         rejected.insert(index)

@@ -2912,9 +2912,11 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice *d) {
 void AudioEngine::setMIDISlot(int slot, const String &identifier) {
     if (slot < 0 || slot >= 6)
         return;
+    const auto resolved = midiDeviceCompatibility::resolve(identifier, true);
+    if (resolved != identifier) devices.setMidiInputDeviceEnabled(resolved, true);
     const ScopedLock lock(midiRoutingLock);
-    if(midiDevices[slot] != identifier)midiProgramChanges[size_t(slot)].store(0);
-    midiDevices[slot] = identifier;
+    if(midiDevices[slot] != resolved)midiProgramChanges[size_t(slot)].store(0);
+    midiDevices[slot] = resolved;
 }
 void AudioEngine::handleNoteOn(MidiKeyboardState *,int channel,int note,float velocity) {
     auto message=MidiMessage::noteOn(channel,note,velocity);

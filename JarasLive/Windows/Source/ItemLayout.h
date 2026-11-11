@@ -22,13 +22,13 @@ struct ItemLanes {
         std::vector<const jaras::AudioClip*> result;result.reserve(track.clips.size());
         for(const auto &clip:track.clips)result.push_back(&clip);return result;
     }
-    explicit ItemLanes(const jaras::Track &track):ItemLanes(references(track)) {}
-    explicit ItemLanes(std::vector<const jaras::AudioClip*> ordered) {
+    explicit ItemLanes(const jaras::Track &track):ItemLanes(references(track),jaras::isTeleprompterRole(track.role)) {}
+    explicit ItemLanes(std::vector<const jaras::AudioClip*> ordered,bool preserveOrder=false) {
         std::vector<const jaras::AudioClip *> placed, takes;
-        const auto chronological = [](const auto *a, const auto *b) {
-            return a->startTime != b->startTime ? a->startTime < b->startTime : a->id < b->id;
+        const auto chronological = [preserveOrder](const auto *a, const auto *b) {
+            return a->startTime != b->startTime ? a->startTime < b->startTime : !preserveOrder && a->id < b->id;
         };
-        std::sort(ordered.begin(), ordered.end(), chronological);
+        std::stable_sort(ordered.begin(), ordered.end(), chronological);
         std::vector<double> ends;
         for (const auto *clip : ordered) {
             if (clip->recordingLane) { takes.push_back(clip); continue; }

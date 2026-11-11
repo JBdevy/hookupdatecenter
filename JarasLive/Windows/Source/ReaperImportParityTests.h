@@ -85,6 +85,13 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 require(track.clips.size() == 3, "Text/media layers were merged or conflicting media retained");
                 require(track.clips[0].startTime == 0 && track.clips[1].startTime == 0 && track.clips[2].startTime == 4,
                         "Projection timing differs from Mac");
+            } else if(jaras::isTeleprompterRole(track.role)) {
+                require(track.clips.size()==7, "Overlapping lyrics must all survive import");
+                require(track.clips[0].text=="First" && track.clips[1].text=="Duplicate" && track.clips[2].text=="Conflicting", "Lyrics source order/timing changed");
+                require(ItemLanes(track).count==2, "Simultaneous lyrics must occupy separate grid lanes");
+                auto copy=track;copy.clips[1].startTime=1;
+                clipEditing::requireSpace(copy,copy.clips[1],1,2);
+                require(clipEditing::constrainedStart(copy,copy.clips[1],2)==2, "Lyrics drag still rejects overlap");
             } else {
                 require(track.clips.size() == 4, "Wrong special items were recovered");
                 require(track.clips[0].startTime == 0 && track.clips[0].duration == 4 && track.clips[0].text == "First" &&
@@ -255,6 +262,19 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(result.warnings.joinIntoString(" ").contains("SysEx"),
                 "Unsupported MIDI content must be reported");
     });
+    test("REAPER ordinary video preserves source sections and projection routing", [&] {
+        const auto result=read(directory,
+            "<TRACK\nNAME \"Teleprompt 1\"\n<ITEM\nPOSITION 0\nLENGTH 30\n<SOURCE VIDEO\nFILE lyrics.mov\n>\n>\n>\n"
+            "<TRACK\nNAME Opening\n<ITEM\nPOSITION 10\nLENGTH 3\nSOFFS 1\nPLAYRATE 2 1 0\nVOLPAN 0.5 -0.25 1\nLOOP 1\n"
+            "<SOURCE SECTION\nSTARTPOS 5\nLENGTH 8\n<SOURCE VIDEO\nFILE intro.mp4\n>\n>\n>\n>\n"
+            "<TRACK\nNAME Background\n<ITEM\nPOSITION 10\nLENGTH 20\n<SOURCE WAVE\nFILE backdrop.MOV\n>\n>\n>\n");
+        const auto &song=result.project.songs[0];const auto &clip=song.tracks[1].clips[0];
+        require(clip.audioFile && clip.audioFile->path=="Videos/intro.mp4" && clip.startTime==10 && clip.duration==3 && clip.sourceOffset==6 && clip.playbackRate==2 && clip.loopStart==5 && clip.loopLength==8 && clip.gain==.5 && clip.pan==-.25, "Video timing, trim or mixer state changed");
+        require(firstProjectionItem(song,10,"video")==&clip, "Top ordinary video is not selected");
+        require(firstProjectionItem(song,13,"video")==&song.tracks[2].clips[0], "Lower video does not take over at the cut");
+        require(firstProjectionItem(song,0,"video")==nullptr, "Teleprompter media leaked into video window");
+        jaras::validate(result.project);
+    });
     test("REAPER partial recovery retains supported audio and clips regions at timeline zero", [&] {
         const auto result = read(
             directory, "MARKER 1 -2 Song 1\nMARKER 1 10 \"\" 1\n"
@@ -263,8 +283,8 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                        "<ITEM\nPOSITION 0\nLENGTH 2\n<SOURCE VIDEO\nFILE source.mp4\n>\n>\n"
                        "<ITEM\nPOSITION 2\nLENGTH 3\n<SOURCE WAVE\nFILE offline.wav\n>\n>\n>\n");
         const auto &song = result.project.songs.front();
-        require(song.tracks[0].clips.size() == 1 && song.tracks[0].clips[0].audioFile,
-                "Unsupported source recovery differs from Mac");
+        require(song.tracks[0].clips.size() == 2 && song.tracks[0].clips[0].audioFile && song.tracks[0].clips[0].audioFile->path=="Videos/source.mp4",
+                "Video on an ordinary track was discarded");
         require(song.parts.front().startTime == 0 && song.parts.front().endTime == 10 &&
                     !result.warnings.isEmpty(),
                 "Negative region boundary or partial recovery failed");

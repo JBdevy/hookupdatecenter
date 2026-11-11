@@ -1,6 +1,6 @@
 ﻿param(
     [ValidateSet('Debug','Release')][string]$Configuration='Release',
-    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='1.31',
+    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='1.34',
     [string]$BuildDirectory=(Join-Path $env:LOCALAPPDATA 'CatLiveBuild/windows'),
     [switch]$SkipTests,
     [switch]$Installer,
@@ -56,7 +56,15 @@ $requiredRuntimeFiles=@(
     'Licenses/LAME/lame-3.100-source.tar.gz',
     'Licenses/LAME/config.h',
     'Licenses/LAME/BUILD.txt',
-    'Licenses/dr_libs/LICENSE'
+    'Licenses/dr_libs/LICENSE',
+    'SMK37Tools/M-Flasher.exe',
+    'SMK37/SMK37-CatLive.fwsc',
+    'SMK37/manifest.json',
+    'SMK37/Firmware-LICENSE.md',
+    'SMK37/Firmware-THIRD_PARTY.md',
+    'SMK37/SMK37-CatLive-Source.zip',
+    'SMK37/M-Flasher-LICENSE.txt',
+    'SMK37/M-Flasher-Source.zip'
 )
 # Ship the exact artwork validated alongside the executable, including clean CI builds.
 foreach ($category in @('pianos','upright','electric','keyboard','organ','strings','guitar','bass','synth','synthPad','lead','acordeon','brass','mallets','drum')) {

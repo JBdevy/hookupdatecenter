@@ -9,7 +9,7 @@ final class ReaperProjectImportTests: XCTestCase {
         try text.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
-    func testEmptyAndUnsupportedTakesDoNotBlockOpeningOrHideMissingAudio() throws {
+    func testEmptyTakesDoNotHideVideoOrMissingAudioOnOrdinaryTracks() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let source = try fixture("""
@@ -38,9 +38,74 @@ final class ReaperProjectImportTests: XCTestCase {
         >
         """, in: directory)
         let result = try ReaperProjectImporter.read(source)
-        XCTAssertEqual(result.project.songs[0].tracks[0].clips.count, 1)
-        XCTAssertEqual(result.project.songs[0].tracks[0].clips[0].audioFile?.path, "Stems/missing.wav")
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips.count, 2)
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips[0].audioFile?.path, "Videos/movie.mp4")
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips[1].audioFile?.path, "Stems/missing.wav")
         XCTAssertFalse(result.warnings.contains { $0.contains("unsupported sources") })
+    }
+    func testVideosOnCustomNamedTracksKeepSectionsAndProjectionPriority() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          <TRACK
+            NAME "Teleprompt 1"
+            <ITEM
+              POSITION 0
+              LENGTH 30
+              <SOURCE VIDEO
+                FILE "lyrics.mov"
+              >
+            >
+          >
+          <TRACK
+            NAME "Abertura do show"
+            <ITEM
+              POSITION 10
+              LENGTH 3
+              SOFFS 1
+              PLAYRATE 2 1 0
+              VOLPAN 0.5 -0.25 1
+              FADEIN 1 0.1
+              FADEOUT 1 0.2
+              LOOP 1
+              <SOURCE SECTION
+                STARTPOS 5
+                LENGTH 8
+                <SOURCE VIDEO
+                  FILE "intro.mp4"
+                >
+              >
+            >
+          >
+          <TRACK
+            NAME "Fundo do palco"
+            <ITEM
+              POSITION 10
+              LENGTH 20
+              <SOURCE WAVE
+                FILE "backdrop.MOV"
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        let song = result.project.songs[0]
+        let intro = try XCTUnwrap(song.tracks.first { $0.name == "Abertura do show" }?.clips.first)
+        XCTAssertEqual(intro.audioFile?.path, "Videos/intro.mp4")
+        XCTAssertEqual(intro.startTime, 10); XCTAssertEqual(intro.duration, 3)
+        XCTAssertEqual(intro.sourceOffset, 6); XCTAssertEqual(intro.playbackRate, 2)
+        XCTAssertEqual(intro.loopStart, 5); XCTAssertEqual(intro.loopLength, 8)
+        XCTAssertEqual(intro.gain, 0.5); XCTAssertEqual(intro.pan, -0.25)
+        XCTAssertEqual(intro.fadeIn, 0.1); XCTAssertEqual(intro.fadeOut, 0.2)
+        XCTAssertEqual(song.firstProjectionItem(at: 10)?.id, intro.id)
+        XCTAssertEqual(song.firstProjectionItem(at: 13)?.audioFile?.path, "Videos/backdrop.MOV")
+        XCTAssertNil(song.firstProjectionItem(at: 0))
+        XCTAssertEqual(song.firstProjectionItem(at: 10, trackKind: .teleprompt)?.audioFile?.path, "Videos/lyrics.mov")
+        XCTAssertEqual(result.media.count, 3)
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(result.project)), result.project)
+        XCTAssertTrue(result.warnings.isEmpty, result.warnings.joined(separator: "\n"))
     }
     func testThreeNestedFoldersKeepImmediateParentsAndCloseMultipleLevels() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -563,10 +628,18 @@ final class ReaperProjectImportTests: XCTestCase {
         let tracks = result.project.songs[0].tracks
         XCTAssertEqual(tracks.count, 5)
         for track in tracks where track.clips.contains(where: { $0.text == "First" }) {
-            XCTAssertEqual(track.clips.map(\.startTime).sorted(), [0, 4, 10, 20])
             XCTAssertEqual(track.clips.first { $0.text == "First" }?.duration, 4)
-            XCTAssertFalse(track.clips.contains { $0.text == "Conflicting" || $0.text == "Duplicate" })
+            if track.kind.isTeleprompter {
+                XCTAssertEqual(track.clips.map(\.startTime).sorted(), [0, 0, 2, 4, 10, 20, 21])
+                XCTAssertEqual(track.clips.first { $0.text == "Conflicting" }?.duration, 5)
+                XCTAssertEqual(track.clips.first { $0.text == "Duplicate" }?.startTime, 0)
+                XCTAssertEqual(TrackLanes(track: track).count, 2)
+            } else {
+                XCTAssertEqual(track.clips.map(\.startTime).sorted(), [0, 4, 10, 20])
+                XCTAssertFalse(track.clips.contains { $0.text == "Conflicting" || $0.text == "Duplicate" })
+            }
         }
+        XCTAssertFalse(result.warnings.contains { $0.contains("Teleprompter") && $0.contains("Conflicting") })
         let mediaTrack = try XCTUnwrap(tracks.first { $0.clips.contains { $0.text == "Lyrics" } })
         XCTAssertEqual(mediaTrack.clips.count, 3)
         XCTAssertEqual(mediaTrack.clips.filter(\.isProjectionMedia).map(\.startTime).sorted(), [0, 4])

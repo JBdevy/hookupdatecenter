@@ -1,5 +1,6 @@
 #include "ProjectMigration.h"
 #include "MediaPath.h"
+#include "MediaSource.h"
 #include "Automation.h"
 #include "VSHookMigration.h"
 #include "Localization.h"
@@ -667,10 +668,10 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                     source = source->child("SOURCE");
                 }
                 const auto sourceKind=source ? source->header[1] : String();
-                if (source && source->value("FILE").isNotEmpty() && StringArray{"WAVE","MP3","FLAC","VORBIS","AIFF","AIF","OPUS","WAVPACK"}.contains(sourceKind)) {
-                    auto path =
-                        reference(source->value("FILE"), importedVideo ||
-                                                             jaras::isTeleprompterRole(track.role));
+                const auto extension = source ? source->value("FILE").fromLastOccurrenceOf(".", false, false).toLowerCase() : String();
+                const bool videoSource = sourceKind == "VIDEO" || StringArray{"mp4","mov","m4v","avi","mkv","webm","wmv","mpg","mpeg","m2v"}.contains(extension);
+                if (source && source->value("FILE").isNotEmpty() && (videoSource || StringArray{"WAVE","MP3","FLAC","VORBIS","AIFF","AIF","OPUS","WAVPACK"}.contains(sourceKind))) {
+                    auto path = reference(source->value("FILE"), videoSource);
                     clip.audioFile = jaras::AudioFile{path, {}};
                     if(clip.name.empty()||clip.name=="Item")clip.name=utf8(source->value("FILE").replaceCharacter('\\','/').fromLastOccurrenceOf("/",false,false));
                     clip.sourceOffset += sectionStart;
@@ -681,6 +682,10 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                                 formats.createReaderFor(result.media[path]));
                             if (reader)
                                 length = reader->lengthInSamples / reader->sampleRate;
+                            else if (videoSource) {
+                                try { length = inspectMediaSource(result.media[path]).duration; }
+                                catch (...) { /* Keep the item and report the unresolved loop below. */ }
+                            }
                         }
                         if (length > 0) {
                             clip.loopStart = sectionStart;
@@ -748,6 +753,8 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
             std::vector<bool> accepted(track.clips.size(), true);
             for (const auto index : order) {
                 const auto &clip = track.clips[index];
+                if (jaras::isTeleprompterRole(track.role) &&
+                    (!clip.audioFile || clip.audioFile->path.rfind("Videos/", 0) != 0)) continue;
                 const int layer = jaras::isTeleprompterRole(track.role) && clip.audioFile &&
                                       clip.audioFile->path.rfind("Videos/", 0) == 0 ? 1 : 0;
                 if (ends[layer] > clip.startTime + 1e-7) {

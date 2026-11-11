@@ -25,7 +25,7 @@ enum ItemNormalization {
         let file = try AVAudioFile(forReading: directory.appendingPathComponent(source.path))
         let rate = file.processingFormat.sampleRate, channels = Int(file.processingFormat.channelCount)
         let loopFirst = max(0, AVAudioFramePosition((clip.loopStart ?? 0) * rate))
-        let loopEnd = min(file.length, loopFirst + AVAudioFramePosition((clip.loopLength ?? Double(file.length) / rate) * rate))
+        var loopEnd = min(file.length, loopFirst + AVAudioFramePosition((clip.loopLength ?? Double(file.length) / rate) * rate))
         let looping = clip.loopLength != nil
         let rawFirst = AVAudioFramePosition(clip.sourceOffset * rate)
         let first = looping && loopEnd > loopFirst ? loopFirst + ((rawFirst - loopFirst) % (loopEnd - loopFirst) + (loopEnd - loopFirst)) % (loopEnd - loopFirst) : min(file.length, rawFirst)
@@ -36,6 +36,7 @@ enum ItemNormalization {
             throw ProjectError.invalid("Could not analyze this audio item.")
         }
         defer { var owned: UnsafeMutablePointer<ebur128_state>? = meter; ebur128_destroy(&owned) }
+        var sourceEnd = file.length
         file.framePosition = first
         var interleaved = [Float](repeating: 0, count: 16384 * channels)
         var squareSum = 0.0, frames = 0
@@ -44,8 +45,11 @@ enum ItemNormalization {
         while frames < wanted {
             try Task.checkCancellation()
             if looping && file.framePosition >= loopEnd { file.framePosition = loopFirst }
-            let available = (looping ? loopEnd : file.length) - file.framePosition
-            try file.read(into: buffer, frameCount: AVAudioFrameCount(min(16384, available, wanted - Int64(frames))))
+            let available = (looping ? loopEnd : sourceEnd) - file.framePosition
+            guard available > 0 else { break }
+            let requested = AVAudioFrameCount(min(16384, available, wanted - Int64(frames)))
+            buffer.frameLength = 0
+            try file.read(into: buffer, frameCount: requested)
             let count = Int(buffer.frameLength)
             guard count > 0, let data = buffer.floatChannelData else { break }
             for channel in 0..<channels {
@@ -57,9 +61,19 @@ enum ItemNormalization {
                 throw ProjectError.invalid("Could not measure audio level.")
             }
             frames += count
+            // Compressed headers can overestimate the decoded tail. A short
+            // read ends the source; asking again may throw EOF (-39). Keep
+            // all returned samples, and use the actual end for repeated items.
+            if count < requested {
+                sourceEnd = min(sourceEnd, file.framePosition)
+                loopEnd = min(loopEnd, sourceEnd)
+                if looping && loopEnd <= loopFirst { break }
+            }
             let fraction = Double(frames) / Double(wanted)
             if fraction >= 1 || fraction-lastProgress >= 0.005 { progress(fraction); lastProgress = fraction }
         }
+        guard frames > 0 else { throw ProjectError.invalid("Could not analyze this audio item.") }
+        progress(1)
         switch mode {
         case .rms: return 10 * log10(max(1e-20, squareSum / Double(max(1, frames * channels))))
         case .lufs:
@@ -192,7 +206,9 @@ struct ItemNormalizationEditor: View {
                     NormalizationTargetPreferences.remember(value,for: selectedMode)
                     finish()
                 }
-            } catch is CancellationError {} catch { self.error = error.localizedDescription }
+            } catch is CancellationError {} catch {
+                self.error = (progress.isEmpty ? "" : progress + "\n") + error.localizedDescription
+            }
             progressJob = nil; progress = ""; worker = nil
         }
     }

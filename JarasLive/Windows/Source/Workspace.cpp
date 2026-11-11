@@ -4011,6 +4011,32 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     dockContent.addAndMakeVisible(*keyboard);
     keyboard->setVisible(false);
     vinhetasPanel = std::make_unique<VinhetasPanel>(session.audio.vinhetas, appearance);
+    smk37=std::make_unique<SMK37Connection>(session.audio.devices,appearance);
+    actions.claimedMIDI=[this](MidiInput *source,const MidiMessage &m){return smk37->claims(source,m);};
+    smk37->action=[this](int pad){perform([&]{performSMK37(pad);});};
+    smk37->previewStep=[this](int delta){if(!projectReady||loginPanel||browserVisible)return;stage.previewPage=jlimit(0,5,stage.previewPage+delta);const int first=stage.previewPage*4+1;smk37->feedback("BLOCO "+String(first)+"-"+String(first+3),0x55cfff);};
+    smk37->playlistStep=[this](int delta){if(!projectReady||loginPanel||browserVisible||!actions.learning.isEmpty()||session.busy)return;perform([&]{
+        if(!setlist->stepPlaylist(delta))return;
+        if(session.project().regionSetlist)for(const auto &p:session.project().regionSetlist->playlists)if(session.project().regionSetlist->selectedId==p.id)smk37->feedback(text(p.name),0x409cff);
+    });};
+    smk37->fadeout=[this](bool active){if(!projectReady||loginPanel||browserVisible||!actions.learning.isEmpty()||session.busy)return;perform([&]{
+        if(!session.transport().playing)return;
+        const bool was=session.transportFadeoutActive();
+        if(active==was)return;
+        if(remotePresentation->fadeout)remotePresentation->fadeout(active);
+        if(was&&!session.transportFadeoutActive())smk37->feedback("FADE OUT CANCELADO",0xffb347);
+    });};
+    smk37->padBusVolume=[this](int value){
+        if(!projectReady||loginPanel||browserVisible||!actions.learning.isEmpty()||session.busy)return;
+        if(const auto *song=session.song())for(const auto &track:song->tracks)if(track.role.id=="vinhetas"){
+            const double gain=value==0?0:std::pow(10.0,(-60.0+jlimit(0,127,value)/127.0*60.0)/20.0);
+            session.command(jaras::CommandKind::volume,track.id,gain);
+            smk37->feedback("VINHETAS FX "+(gain<=0?String("-INF"):String(std::min(0.,20.*std::log10(gain)),1))+" dB");break;
+        }
+    };
+    smk37->choosePreset=[this](int p){vinhetasPanel->select(p);};
+    smk37->padDown=[this](const ID &token,int p,int n){if(projectReady&&!loginPanel&&!browserVisible&&actions.learning.isEmpty())vinhetasPanel->remoteDown(token,p,n);};
+    smk37->padUp=[this](const ID &token){vinhetasPanel->remoteUp(token);};
     dockContent.addChildComponent(*vinhetasPanel);
     actions.rawMIDI = [this](int status,int number,int value,int channel) { return projectReady&&!loginPanel&&!browserVisible&&vinhetasPanel->midi(status,number,value,channel); };
     actions.externalMIDIConflict = [this](const var &input) { return vinhetasPanel->setlistBlockMIDIConflict(input); };
@@ -4457,6 +4483,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     projectBrowser = std::make_unique<ProjectBrowser>();
     addChildComponent(*projectBrowser);
     projectBrowser->createEmpty = [this] { createProject(false); };
+    projectBrowser->createTemporary = [this] { createTemporaryProject(); };
     projectBrowser->createEmptyInNewTab = [this] {
         if (projectReady && openInNewProjectTab) createProject(false, 0, true);
     };
@@ -4809,6 +4836,7 @@ void Workspace::activateProjectTab() {
     resized(); updateState(); repaint();
 }
 Workspace::~Workspace() {
+    if(smk37)smk37->shutdown();
     toolbarHints.reset();
     saveWorkspaceLayout();
     if(externalDropCancelled)externalDropCancelled->store(true);
@@ -5904,6 +5932,7 @@ void Workspace::updateLogin() {
     if (hadLogin != (loginPanel != nullptr)) { resized(); repaint(); }
 }
 void Workspace::timerCallback() {
+    updateSMK37();
     if (!isShowing()) { if(nativeTransport) nativeTransport->hide(); return; }
     for (const auto &spec : std::initializer_list<std::pair<const char *, int>>{{"previousProjectTab", -1}, {"nextProjectTab", 1}})
         controls[spec.first]->setEnabled(canNavigateProjectTab && canNavigateProjectTab(spec.second));
@@ -6416,6 +6445,7 @@ void Workspace::showProjectBrowser() {
         panel->setProjectOpen(projectReady);
         panel->setPlaybackRunning(session.transport().playing || session.transport().subPlay.playing);
         panel->createEmpty = projectBrowser->createEmpty;
+        panel->createTemporary = projectBrowser->createTemporary;
         panel->createEmptyInNewTab = projectBrowser->createEmptyInNewTab;
         panel->createStems = projectBrowser->createStems;
         panel->createRecording = projectBrowser->createRecording;
@@ -6603,6 +6633,22 @@ void Workspace::chooseRecordingProject() {
             if (safe) safe->createProject(false, channels);
         }), 400, 190);
 }
+void Workspace::createTemporaryProject() {
+    if (session.busy || session.isSaving() || session.audio.isRecording()) return;
+    confirmProjectReplacement(localization::translate("Temporary"), [safe = SafePointer<Workspace>(this)] {
+        if (!safe) return;
+        try {
+            if (safe->session.temporarySession) throw std::runtime_error("Close the other temporary session before creating a new one.");
+            auto lease = std::make_unique<TemporaryProjectSession>();
+            auto file = lease->directory.getChildFile("Temporary.jl");
+            auto project = Session::makeEmptyProject(localization::translate("Temporary"));
+            project.projectSyncID = uuid();
+            ProjectCodec::write(file, ProjectCodec::encode(project));
+            safe->session.temporarySession = std::move(lease);
+            safe->openProject(file, {}, true);
+        } catch (const std::exception &e) { safe->showError(String::fromUTF8(e.what())); }
+    });
+}
 void Workspace::createProject(bool withStems, int recordingChannels, bool inNewTab) {
     if (withStems) { chooseImport(false, inNewTab); return; }
     auto work = [safe = Component::SafePointer<Workspace>(this), withStems, recordingChannels, inNewTab] {
@@ -6712,13 +6758,14 @@ void Workspace::chooseSave(bool saveAs, std::function<void()> saved, std::functi
             else saved();
         }
     };
-    if (!saveAs && session.document != File()) {
+    const bool promoting = session.isTemporary();
+    if (!saveAs && !promoting && session.document != File()) {
         try { session.saveAsync(session.document, finish); }
         catch (const std::exception &error) { finish(String::fromUTF8(error.what())); }
         return;
     }
     if (session.isSaving()) {
-        if (saveAs) {
+        if (saveAs || promoting) {
             session.waitForSave([safe = SafePointer<Workspace>(this), project = session.project().id, saved, cancelled](String error) {
                 if (!safe || safe->session.project().id != project) { if (cancelled) cancelled(); return; }
                 if (error.isNotEmpty()) { if (cancelled) cancelled(); safe->showError(error); return; }
@@ -6736,9 +6783,29 @@ void Workspace::chooseSave(bool saveAs, std::function<void()> saved, std::functi
     chooser->launchAsync(
         FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
             FileBrowserComponent::warnAboutOverwriting,
-        [safe = Component::SafePointer<Workspace>(this), finish, cancelled](const FileChooser &fc) {
+        [safe = Component::SafePointer<Workspace>(this), finish, cancelled, promoting](const FileChooser &fc) {
             if (!safe || fc.getResult() == File()) { if (cancelled) cancelled(); return; }
-            try { safe->session.saveAsync(fc.getResult(), finish); }
+            try {
+                auto target = fc.getResult().withFileExtension("jl");
+                if (promoting) {
+                    if (!safe->session.isTemporary()) { if (cancelled) cancelled(); return; }
+                    auto folder = target.getParentDirectory().getNonexistentChildFile(target.getFileNameWithoutExtension(), "", false);
+                    if (folder == safe->session.temporarySession->directory || safe->session.temporarySession->contains(folder))
+                        throw std::runtime_error("Choose a new folder outside catlive-temp.");
+                    target = folder.getChildFile(target.getFileName());
+                    safe->session.saveAsync(target, [safe, finish, target, folder](String error) {
+                        if (!safe) return;
+                        if (error.isNotEmpty()) { folder.deleteRecursively(); finish(error); return; }
+                        // Reload the committed copy before deleting the scratch audio.
+                        try { safe->session.loadAsync(target, {}, [safe] {
+                            if (safe) safe->floatingWindows.clear();
+                        }, [safe, finish](String result) {
+                            if (safe && result.isEmpty()) safe->projectOpened();
+                            finish(result);
+                        }); } catch (const std::exception &e) { finish(String::fromUTF8(e.what())); }
+                    });
+                } else safe->session.saveAsync(target, finish);
+            }
             catch (const std::exception &error) { finish(String::fromUTF8(error.what())); }
         });
 }
@@ -6783,7 +6850,7 @@ void Workspace::chooseImport(bool adding, bool inNewTab) {
                                         });
                                     });
                                 };
-                                if(adding){if(safe->session.dirty)safe->chooseSave(false,launch);else launch();}
+                                if(adding){if(safe->session.dirty){if(safe->session.isTemporary())safe->session.saveAsync(safe->session.document,[safe,launch](String error){if(!safe)return;if(error.isEmpty())launch();else safe->showError(error);});else safe->chooseSave(false,launch);}else launch();}
                                 else if(inNewTab)launch();else safe->confirmProjectReplacement(target.getFileNameWithoutExtension(),launch);
                             };
                             if(adding){build(safe->session.document);return;}
@@ -6972,15 +7039,11 @@ void Workspace::openAdvanced() {
         it->second->toFront(true);
         return;
     }
-    openFloating(
-        name,
-        std::make_unique<AdvancedPanel>(appearance, session,
-                                        [self = SafePointer<Workspace>(this)](String message) {
-                                            if (self)
-                                                self->showError(message);
-                                        }),
-        760, 376);
+    auto panel=std::make_unique<AdvancedPanel>(appearance,session,[self=SafePointer<Workspace>(this)](String message){if(self)self->showError(message);});
+    panel->transferPads=[self=SafePointer<Workspace>(this), owner=SafePointer<AdvancedPanel>(panel.get())](bool importing){if(self&&owner&&self->vinhetasPanel)self->vinhetasPanel->transferPackage(importing,owner.getComponent());};
+    openFloating(name,std::move(panel),760,420);
 }
+
 void Workspace::openSettings() {
     openSettingsPage(-1);
 }
@@ -8104,7 +8167,7 @@ void Workspace::requestClose(std::function<void()> done, bool application, std::
                 }, true, application);
         return;
     }
-    if (session.dirty) {
+    if (session.dirty && !session.isTemporary()) {
         if (saveAll.has_value()) {
             if (*saveAll) chooseSave(false, done, cancelled);
             else done();
@@ -8715,6 +8778,7 @@ void Workspace::openVideo() {
 } // namespace catlive
 
 #include "WorkspaceActions.h"
+#include "WorkspaceSMK37.h"
 #include "WorkspaceMediaImportRegression.h"
 
 namespace catlive {

@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-midi-mappings.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
-python3 - "$test_dir/ControlMappings.swift" "$test_dir/MIDIMappingTests.swift" <<'PY'
+python3 - "$test_dir/ControlMappings.swift" "$test_dir/MIDIMappingTests.swift" "$test_dir/Vinhetas.swift" <<'PY'
 from pathlib import Path
 import sys
 source = Path('Apple/Shared/ControlMappings.swift').read_text().split('\nstruct ControlMappingEditor: View {')[0]
@@ -13,9 +13,11 @@ source = source.replace('private weak var show:', 'weak var show:').replace('pri
 # its active-app gate; test the production key handler and repeat dispatch below.
 source = source.replace('guard NSApp.isActive, transferRequest == nil', 'guard mappingTestApplicationActive, transferRequest == nil')
 Path(sys.argv[1]).write_text(source)
+# ZIP package I/O is covered by VinhetasPackageTests; this fixture needs only MIDI library types.
+Path(sys.argv[3]).write_text(Path('Application/Project/Vinhetas.swift').read_text().split('public enum VinhetasPackage {')[0])
 vinhetas = Path('Apple/Shared/VinhetasPanel.swift').read_text()
 helpers = vinhetas[vinhetas.index('    func setlistBlockConflicts('):vinhetas.index('    func receive(input:')]
 Path(sys.argv[2]).write_text(Path('Tests/Apple/MIDIMappingTests.swift').read_text().replace('    // INSERT_VINHETAS_BLOCK_CONFLICTS', helpers))
 PY
-swiftc -enable-actor-data-race-checks -parse-as-library Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/ControlMappings.swift" Application/Controls/ControlInput.swift Application/Controls/HardwareKeyboardInput.swift Application/Controls/DAWActions.swift Application/Controls/NativeFXParameter.swift Application/Project/NativeFXSettings.swift Application/Project/MIDIFaderValue.swift Application/Project/Vinhetas.swift "$test_dir/MIDIMappingTests.swift" -o "$test_dir/mapping-tests"
+swiftc -enable-actor-data-race-checks -parse-as-library Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/ControlMappings.swift" Application/Controls/ControlInput.swift Application/Controls/HardwareKeyboardInput.swift Application/Controls/DAWActions.swift Application/Controls/NativeFXParameter.swift Application/Project/NativeFXSettings.swift Application/Project/MIDIFaderValue.swift "$test_dir/Vinhetas.swift" "$test_dir/MIDIMappingTests.swift" -o "$test_dir/mapping-tests"
 "$test_dir/mapping-tests"

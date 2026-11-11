@@ -10,7 +10,7 @@ final class TextTrackTests: XCTestCase {
         try project.validate()
         XCTAssertEqual(TrackLanes(track: project.songs[0].tracks[2]).count, 2)
         XCTAssertTrue(project.songs[0].tracks[2].canPlaceItem(start: 15, duration: 10), "adding text ignores the media layer")
-        XCTAssertFalse(project.songs[0].tracks[2].canPlaceItem(start: 5, duration: 10), "text still cannot overlap text")
+        XCTAssertTrue(project.songs[0].tracks[2].canPlaceItem(start: 5, duration: 10), "teleprompter lyrics can overlap in separate lanes")
         XCTAssertEqual(project.songs[0].tracks[2].constrainedItemStart(5, item: media), 5)
         let data = try ProjectDocumentCodec.encode(project)
         XCTAssertEqual(try ProjectDocumentCodec.decode(data), project)

@@ -107,6 +107,7 @@ private:
     std::optional<ID> nextBlockPreparationTarget() const;
     void refreshAutomaticRegionQueue();
     void stopQueuedSubplay();
+    void clearWaitingQueue();
     double startAutomaticSubplay(double elapsed);
     void autoQueueRegion();
     void clearIgnoreNext();

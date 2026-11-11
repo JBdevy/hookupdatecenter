@@ -180,6 +180,7 @@ class ActionBindings final : public ChangeBroadcaster,
     }
     std::function<void(const String &, float, int)> invoke;
     std::function<bool(int,int,int,int)> rawMIDI;
+    std::function<bool(MidiInput *,const MidiMessage &)> claimedMIDI;
     std::function<String(const var &)> externalMIDIConflict;
     std::function<Result(const var &)> transferExternalMIDI;
     String learning, learningKind, error;
@@ -445,7 +446,8 @@ class ActionBindings final : public ChangeBroadcaster,
         return a.isObject() && b.isObject() && num(a,"status") == num(b,"status") &&
             num(a,"number") == num(b,"number") && num(a,"channel") == num(b,"channel");
     }
-    void handleIncomingMidiMessage(MidiInput *, const MidiMessage &message) override {
+    void handleIncomingMidiMessage(MidiInput *source, const MidiMessage &message) override {
+        if (claimedMIDI && claimedMIDI(source,message)) return;
         if (!inputEnabled.load(std::memory_order_relaxed)) return;
         if (!message.isNoteOnOrOff() && !message.isController())
             return;

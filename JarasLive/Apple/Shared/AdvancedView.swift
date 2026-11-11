@@ -7,12 +7,12 @@ struct AdvancedView: View {
     var presentationID: Int = 0
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
-        case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist", keyboard = "Keyboard"
-        var icon: String { switch self { case .transport: return "playpause"; case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet"; case .keyboard: return "pianokeys" } }
+        case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist", keyboard = "Keyboard", pads = "Pads"
+        var icon: String { switch self { case .transport: return "playpause"; case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet"; case .keyboard: return "pianokeys"; case .pads: return "square.grid.4x3.fill" } }
     }
     private var availableTabs: [Tab] {
         #if os(iOS)
-        [.timeline, .setlist, .transport, .video]
+        [.timeline, .setlist, .transport, .video, .pads]
         #else
         Tab.allCases.filter { $0 != .transport }
         #endif
@@ -72,6 +72,7 @@ struct AdvancedView: View {
                     if tab == .timeline { AdvancedTimelineSettings(show: show, documents: documents) }
                     if tab == .transport { AdvancedTransportSettings() }
                     if tab == .video { AdvancedVideoSettings() }
+                    if tab == .pads { AdvancedPadsSettings() }
                     if tab == .setlist { AdvancedSetlistColors() }
                     if tab == .keyboard { AdvancedKeyboardSettings() }
                     if tab == .record || tab == .reRender { MediaProcessingFormatEditor(scope: tab == .record ? "record" : "rerender").id(tab.rawValue) }

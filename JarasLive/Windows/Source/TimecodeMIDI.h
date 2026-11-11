@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include "MIDIDeviceCompatibility.h"
 #include "../../Core/Timecode/TimecodePlayback.hpp"
 #include "../../Core/MIDI/ProgramChangePlayback.hpp"
 namespace catlive {
@@ -12,6 +13,20 @@ public:
         return static_cast<int>(static_cast<uint32>(identifier.hashCode()) & 0x7fffffffu) | 1;
     }
     static int outputSlotID(int slot) { return -1000001-slot; }
+    static String outputIdentifier(int saved, const Array<MidiDeviceInfo> &devices) {
+        String identifier; int matches = 0;
+        for (const auto &device : devices)
+            if (destinationID(device.identifier) == saved) { ++matches; identifier = device.identifier; }
+        if (matches != 0) return matches == 1 ? identifier : String();
+        const auto legacy = midiDeviceCompatibility::legacyPorts(false);
+        for (const auto &device : legacy) if (destinationID(device.identifier) == saved) {
+            const auto resolved = midiDeviceCompatibility::resolve(device.identifier, devices, legacy);
+            for (const auto &current : devices) if (current.identifier == resolved) {
+                ++matches; identifier = resolved;
+            }
+        }
+        return matches == 1 ? identifier : String();
+    }
     void programChanges(const jaras::Song &song) {
         const ScopedLock guard(lock);pcMarkers.clear();pcSlot=0;pcMuted=false;
         const bool solo=std::any_of(song.tracks.begin(),song.tracks.end(),[](const auto&t){return t.solo;});
@@ -122,10 +137,8 @@ private:
                         output.reset(); destination = requested;
                         if (destination != 0) {
                             const auto devices = MidiOutput::getAvailableDevices();
-                            int matches = 0; String identifier;
-                            for (const auto& device : devices)
-                                if (destinationID(device.identifier) == destination) { ++matches; identifier = device.identifier; }
-                            if (matches == 1) output = MidiOutput::openDevice(identifier);
+                            const auto identifier = outputIdentifier(destination, devices);
+                            if (identifier.isNotEmpty()) output = MidiOutput::openDevice(identifier);
                         }
                     }
                     if (output) {

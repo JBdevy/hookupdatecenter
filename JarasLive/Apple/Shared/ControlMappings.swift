@@ -104,6 +104,7 @@ struct MappingTransferRequest: Identifiable {
     func bind(_ show: ShowController, session: UUID? = nil) {
         if self.show !== show { cancelProgramChangeScan() }
         self.show = show; bindingSession = session
+        SMK37Link.shared.bind(show)
         migrateActionMappings()
         projectSelection = show.$snapshot.map { $0.project.id }.removeDuplicates().dropFirst().sink { [weak self] _ in
             self?.cancelProgramChangeScan()
@@ -160,6 +161,7 @@ struct MappingTransferRequest: Identifiable {
         for source in sources.keys { MIDIPortDisconnectSource(port, source) }
         sources.removeAll(); pressedMIDI.removeAll(); pendingVolumes.removeAll(); pendingFX.removeAll()
         cancelProgramChangeScan()
+        if let show { SMK37Link.shared.unbind(show) }
         editing = nil; candidate = nil; show = nil; projectSelection = nil; bindingSession = nil
         return true
     }
@@ -414,6 +416,7 @@ struct MappingTransferRequest: Identifiable {
     }
     private func receive(endpoint: MIDIEndpointRef, status: UInt8, number: UInt8, value: UInt8, timestamp: Double = ProcessInfo.processInfo.systemUptime) {
         guard let source = sources[endpoint] else { return }
+        if SMK37Link.shared.claims(device: source.id, status: status, number: number) { return }
         if status & 0xf0 == 0xc0 {
             receiveProgramChange(device: source.id, status: status, number: number)
             if editing == nil { onMIDIReceived?(source.id, status, number, value, timestamp) }

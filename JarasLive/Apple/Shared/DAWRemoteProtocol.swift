@@ -130,7 +130,7 @@ struct DAWRemoteCommand: Codable {
         case remotePanel, noticeSend, noticeClear, noticePin, noticePinStopped, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStop, transportFadeout
-        case togglePreview, selectPreviewPage
+        case togglePreview, selectPreviewPage, toggleRecord, browseRegion
         case vinhetasDown, vinhetasUp, vinhetasPreset, vinhetasVolume, vinhetasGate, vinhetasPanic
         case editRegion, deleteRegion, duplicateRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
     }
@@ -175,7 +175,7 @@ struct DAWRemoteCommand: Codable {
         case .timerStart: return target == nil && (0...359999).contains(value) && value.rounded() == value
         case .transportFadeout: return target == nil && value == 0 && enabled != nil
         case .timerStop: return target == nil && value == 0
-        case .togglePreview: return target == nil && value == 0
+        case .togglePreview, .toggleRecord: return target == nil && value == 0
         case .selectPreviewPage: return target == nil && (0...5).contains(value) && value.rounded() == value
         case .requestImage: return target != nil && value == 0
         case .remotePanel: return target == nil && (0...3).contains(value) && value.rounded() == value
@@ -189,7 +189,7 @@ struct DAWRemoteCommand: Codable {
         case .noticeDestination: return target == nil && (value == 1 || value == 2) && enabled != nil
         case .openRecentProject, .openRecentProjectInNewTab, .selectProjectTab, .closeProjectTab: return target != nil && value == 0
         case .clipGain: return target != nil && (0...pow(10, 24.0 / 20)).contains(value)
-        case .clipMute, .queueSection: return target != nil && value == 0
+        case .clipMute, .queueSection, .browseRegion: return target != nil && value == 0
         case .volume: return (0...4).contains(value)
         case .pan: return (-1...1).contains(value)
         case .tempo: return (20...400).contains(value)
@@ -270,13 +270,14 @@ struct DAWRemoteState: Codable, Equatable {
         var parentTrack: UUID? = nil
         /// Presentation metadata owned by the host project, never a Remote edit.
         var instrumentIcon: String? = nil
+        var role: String? = nil
         /// Clip geometry belongs to the grid. Position packets or changes to
         /// clips must not rebuild the mixer's faders and native touch views.
         func hasSameMixerControls(as other: Self) -> Bool {
             id == other.id && name == other.name && color == other.color &&
             volume == other.volume && pan == other.pan && mute == other.mute && solo == other.solo &&
             nameColor == other.nameColor && emphasized == other.emphasized && silenced == other.silenced &&
-            linkedTrack == other.linkedTrack && peakDB == other.peakDB && canMeter == other.canMeter && parentTrack == other.parentTrack && instrumentIcon == other.instrumentIcon
+            linkedTrack == other.linkedTrack && peakDB == other.peakDB && canMeter == other.canMeter && parentTrack == other.parentTrack && instrumentIcon == other.instrumentIcon && role == other.role
         }
     }
     struct Region: Codable, Identifiable, Equatable {
@@ -403,6 +404,9 @@ struct DAWRemoteState: Codable, Equatable {
     var previewActive: Bool? = nil
     var previewPage: Int? = nil
     var vinhetas: DAWRemoteVinhetas? = nil
+    var recording: Bool? = nil
+    var smkLoopName: String? = nil
+    var smkLoopColor: UInt32? = nil
     /// Original unified songs keep their active child; only aliases replace the displayed row ID.
     var setlistCurrentEntryId: UUID? {
         if let id = currentPlaylistEntryId, regions.contains(where: { $0.id == id && $0.sourceRegionId != nil }) { return id }
@@ -411,6 +415,7 @@ struct DAWRemoteState: Codable, Equatable {
     var setlistQueuedEntryId: UUID? { queuedPlaylistEntryId ?? queuedRegion }
     static func validPeak(_ value: Double?) -> Bool { value.map { $0.isFinite && $0 >= -24 } ?? true }
     var valid: Bool {
+        (smkLoopName?.utf8.count ?? 0) <= 4096 && (smkLoopColor ?? 0) <= 0xffffff &&
         (fadeout?.valid ?? true) && position.isFinite && duration.isFinite && bpm.isFinite && masterVolume.isFinite && Self.validPeak(masterPeakDB) &&
         (masterPan == nil || (masterPan!.isFinite && (-1...1).contains(masterPan!))) &&
         (loopStart == nil || (loopStart!.isFinite && loopStart! >= 0)) &&

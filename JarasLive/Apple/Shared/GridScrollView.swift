@@ -1365,9 +1365,11 @@ struct SidebarScrollMetrics: Equatable {
         guard let scroll = scrollView, event.window === scroll.window, scroll.window?.attachedSheet == nil,
               !scroll.isHiddenOrHasHiddenAncestor,
               scroll.contentView.visibleRect.contains(scroll.contentView.convert(event.locationInWindow, from: nil)) else { return false }
-        // Trackpad/modified wheel events belong to the timeline or native scroll.
+        // Visible native scrollers keep AppKit momentum. When indicators are
+        // removed, route precise deltas here too: older AppKit can decline
+        // scrolling on that axis. Modifier gestures remain with the timeline.
         // Reject them before traversing the entire SwiftUI document for hit testing.
-        guard !event.hasPreciseScrollingDeltas,
+        guard (!event.hasPreciseScrollingDeltas || !scroll.hasVerticalScroller),
               event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { return false }
         // The outer vertical document also contains the horizontal timeline.
         // Its wheel input owns this viewport; decline before hit-testing the
@@ -1390,11 +1392,11 @@ struct SidebarScrollMetrics: Equatable {
             hit = current.superview
         }
         guard nearest === scroll else { return false }
-        let movement = -event.scrollingDeltaY * 16
+        let movement = -event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 16)
         guard movement != 0 else { return false }
         refresh()
-        // Physical wheels have no native momentum. Apply their complete step
-        // now, as Logic does; trackpads retain AppKit's own scrolling behavior.
+        // Apply each native delta once, including trackpad momentum events.
+        // No additional inertia or deferred movement is introduced here.
         applyScroll(to: metrics.offset + movement)
         return true
     }
@@ -1508,6 +1510,7 @@ final class SidebarScrollProbeView: NSView {
         super.viewDidMoveToWindow()
         if window == nil { controller?.detach(owner: self) } else { attach() }
     }
+    override func layout() { super.layout(); if window != nil { attach() } }
     func attach() {
         var parent = superview
         while let view = parent {

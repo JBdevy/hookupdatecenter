@@ -69,6 +69,11 @@ Session::~Session() {
     worker.removeAllJobs(true, 30000);
     bpmWorker.removeAllJobs(true, -1);
 }
+void Session::cleanupReplacedTemporary() {
+    if (!temporarySession || isTemporary()) return;
+    try { temporarySession->clear(); temporarySession.reset(); }
+    catch (const std::exception &e) { message = String::fromUTF8(e.what()); }
+}
 void Session::notify() {
     ++revision;
     if (changed)
@@ -122,6 +127,7 @@ void Session::newProject(String name) {
     dirty = false;
     message.clear();
     prepare();
+    cleanupReplacedTemporary();
     notify();
 }
 void Session::createRecordingProject(String name, int channels, const File &target) {
@@ -209,6 +215,7 @@ void Session::loadPrepared(const File &file, var raw, jaras::Project p) {
     undoHistory.clear();
     redoHistory.clear();
     observedMedia = mediaCleanup::references(project());
+    cleanupReplacedTemporary();
     dirty = false;
     notify();
 }
@@ -503,6 +510,8 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                     dirty=false;message=prepared->warning;importProgress=1;
                 }
             } catch(const std::exception &e) {error=String::fromUTF8(e.what());}
+            prepared.reset();
+            cleanupReplacedTemporary();
             busy=false;loadCancellation.reset();
             if(error.isNotEmpty())message=error;
             notify();
@@ -567,6 +576,7 @@ std::shared_ptr<Session::ProjectSave> Session::captureSave(const File &file) {
     operation->changesDirectory = operation->target.getParentDirectory() != mediaDirectory;
     operation->project = project();
     auto &p = operation->project;
+    if (isTemporary() && operation->changesDirectory) p.name = utf8(operation->target.getFileNameWithoutExtension());
     if (!p.projectSyncID) p.projectSyncID = utf8(Uuid().toDashedString().toUpperCase());
     if (transport().songId)
         p.savedCursor = jaras::SavedProjectCursor{*transport().songId, transport().editPosition};
@@ -1151,6 +1161,7 @@ void Session::focusTimelineRegion(double position, bool force) {
     focusSetlistRegion(std::move(next), force);
 }
 void Session::focusSetlistRegion(std::optional<ID> next, bool force) {
+    smkPart.reset(); smkPartPanel.clear();
     const auto *current = song();
     if (!current) return;
     if (next) {

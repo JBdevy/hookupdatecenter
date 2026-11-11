@@ -295,7 +295,8 @@ void validate(const Project& p) {
             const bool textTrack = isTeleprompterRole(t.role) || t.role.id == "chords";
             if (textTrack || t.role.id == "video") {
                 std::vector<const AudioClip*> ordered;
-                for (int layer = 0; layer < (isTeleprompterRole(t.role) ? 2 : 1); ++layer) {
+                // Teleprompter lyrics may stack; only its media layer is exclusive.
+                for (int layer = isTeleprompterRole(t.role) ? 1 : 0; layer < (isTeleprompterRole(t.role) ? 2 : 1); ++layer) {
                 ordered.clear();
                 for (const auto& clip : t.clips) {
                     const bool media = clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;

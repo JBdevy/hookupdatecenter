@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão pública do CatLive (ex.: 1.25)'
         required: true
-        default: '1.33'
+        default: '1.34'
       audio_only:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
@@ -211,6 +211,7 @@ jobs:
           swift test --jobs 2
           bash scripts/test-playlist-occurrences.sh
           bash scripts/test-bridge.sh
+          bash scripts/test-smk37-firmware.sh
           bash scripts/test-control-mappings.sh
           bash scripts/test-remote-midi-actions.sh
           bash scripts/test-ipad-setlist-blocks.sh

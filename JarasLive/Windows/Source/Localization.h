@@ -6,6 +6,7 @@ namespace localization {
 inline bool english = false;
 inline String translate(const String &original) {
     if(original=="BLOCOS" || original=="BLOCKS")return english?"BLOCKS":"BLOCOS";
+    if (original == "Temporary") return english ? "Temporary" : String::fromUTF8("Temporário");
     if (original == "Setlist")
         return original;
     struct Catalog {

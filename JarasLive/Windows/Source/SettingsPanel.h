@@ -6,6 +6,8 @@
 #include "Lighting.h"
 #include "VST3Catalog.h"
 #include "ShowMode.h"
+#include "SMK37Connection.h"
+#include "SMK37Firmware.h"
 namespace catlive {
 class SettingsPanel final : public Component, private Timer {
   public:
@@ -17,9 +19,9 @@ class SettingsPanel final : public Component, private Timer {
         const StringArray names{"Geral",       String::fromUTF8("Áudio"),
                                 "MIDI",        String::fromUTF8("Ações"),
                                 "Mapeamentos", "Plugins",
-                                "Conta"};
+                                "Conta", "SMK37PRO"};
         const char *icons[]{"mixer",    "speaker", "piano",  "keyboard",
-                            "mappings", "plugins", "account"};
+                            "mappings", "plugins", "account", "piano"};
         for (int i = 0; i < names.size(); ++i) {
             auto *tab = tabs.add(new TextButton(names[i]));
             addAndMakeVisible(tab);
@@ -58,8 +60,10 @@ class SettingsPanel final : public Component, private Timer {
     }
     void resized() override {
         const int tabStep = jlimit(32, 46, (getHeight() - 20) / tabs.size());
-        for (int i = 0; i < tabs.size(); ++i)
-            tabs[i]->setBounds(10, 10 + i * tabStep, 124, tabStep - 6);
+        for (int i = 0; i < tabs.size(); ++i) {
+            const int row = i == 7 ? 3 : i >= 3 ? i + 1 : i;
+            tabs[i]->setBounds(10, 10 + row * tabStep, 124, tabStep - 6);
+        }
         viewport.setBounds(145, 0, getWidth() - 145, getHeight());
         if (selected == 6) {
             page.setSize(std::max(360, viewport.getWidth()), contentHeight);
@@ -98,13 +102,36 @@ class SettingsPanel final : public Component, private Timer {
     SafePointer<Label> accountTitle, accountEmail, accountMessage;
     OwnedArray<Component> deviceFields;
     String deviceSnapshot;
+    Array<MidiDeviceInfo> midiInputs, midiOutputs;
     std::shared_ptr<ShowMode> showMode = ShowMode::shared();
     SafePointer<ComboBox> showModeChoice;
     SafePointer<Label> showModeStatus;
     SafePointer<Label> scanningPlugin;
     uint64 pluginRevision = ~uint64(0);
     std::unique_ptr<FileChooser> pluginFolderChooser;
+    std::unique_ptr<FileChooser> smkChooser;
+    bool smkChoosing = false;
+    SafePointer<Label> smkStatus;
+    std::vector<SafePointer<TextButton>> smkButtons;
+    std::shared_ptr<SMK37FirmwareTask> smkFirmware = SMK37FirmwareTask::shared();
     void timerCallback() override {
+        if (selected == 7) {
+            for (auto &b : smkButtons) if (b) b->setEnabled(!smkFirmware->busy && !smkChoosing && !locked());
+            if (smkStatus) smkStatus->setText(localization::translate(smkFirmware->message) + "\n" + localization::translate(smkFirmware->error), dontSendNotification);
+            return;
+        }
+        if (selected == 2) {
+            // WinRT discovers USB and Bluetooth ports asynchronously. Keep the
+            // ordinary selectors current without closing a menu being used.
+            for (auto *field : fields)
+                if (auto *combo = dynamic_cast<ComboBox *>(field); combo && combo->isPopupActive()) return;
+            if (MidiInput::getAvailableDevices() != midiInputs || MidiOutput::getAvailableDevices() != midiOutputs) {
+                const auto position = viewport.getViewPosition();
+                select(2);
+                viewport.setViewPosition(position);
+            }
+            return;
+        }
         if (selected == 1) {
             if (audioPageLocked != audioConfigurationLocked()) select(1);
             return;
@@ -347,6 +374,7 @@ class SettingsPanel final : public Component, private Timer {
         actionPage = nullptr;
         deviceFields.clear(); deviceSnapshot.clear();
         fields.clear();
+        smkButtons.clear(); smkStatus = nullptr;
         viewport.setScrollBarsShown(index != 6, index != 6, index == 6, false);
         contentHeight = std::max(450, getHeight());
         for (int i = 0; i < tabs.size(); ++i)
@@ -405,6 +433,8 @@ class SettingsPanel final : public Component, private Timer {
             contentHeight = std::max(450, getHeight());
         } else if (index == 5) {
             pluginRevision = ~uint64(0); updatePlugins();
+        } else if (index == 7) {
+            smkPage();
         } else {
             accountTitle = &label(auth.title, 66, 26, true);
             accountTitle->setFont(theme::font(13.f, true));
@@ -573,23 +603,25 @@ class SettingsPanel final : public Component, private Timer {
     void midiPage() {
         const auto inputs = MidiInput::getAvailableDevices(),
                    outputs = MidiOutput::getAvailableDevices();
+        midiInputs = inputs; midiOutputs = outputs;
         label(localization::translate("Entradas MIDI"), 66, 26, true);
-        if (inputs.isEmpty())
-            label(localization::translate("Nenhuma entrada MIDI"), 104, 26, false, theme::secondary);
-        StringArray choices{"Nenhum"};
+        StringArray choices{localization::translate(inputs.isEmpty() ? "Nenhuma entrada MIDI" : "Nenhum")};
         for (const auto &device : inputs)
             choices.add(device.name);
         for (int slot = 0; slot < 6; ++slot) {
             const auto key = "catlive.midi.slot" + String(slot + 1);
-            const auto current = preferences.value(key).toString();
+            const auto saved = preferences.value(key).toString();
+            const auto current = midiDeviceCompatibility::resolve(saved, true);
+            if (current != saved) session.audio.setMIDISlot(slot, saved);
             int selectedInput = 1;
             for (int i = 0; i < inputs.size(); ++i)
                 if (inputs[i].identifier == current)
                     selectedInput = i + 2;
             label("MIDI " + String(slot + 1), 112 + slot * 42);
-            choice("MIDI " + String(slot + 1), choices, selectedInput, 110, 112 + slot * 42, 350,
+            choice("midiInputSlot" + String(slot + 1), choices, selectedInput, 110, 112 + slot * 42, 350,
                    [this, inputs, key, slot](int id) {
-                       const auto previous = preferences.value(key).toString();
+                       if (id < 1 || id > inputs.size() + 1) return;
+                       const auto previous = midiDeviceCompatibility::resolve(preferences.value(key).toString(), true);
                        const String next = id > 1 ? inputs[id - 2].identifier : String();
                        const auto result = preferences.set(key, next);
                        if (result.failed()) {
@@ -600,7 +632,7 @@ class SettingsPanel final : public Component, private Timer {
                            bool used = false;
                            for (int i = 1; i <= 6; ++i)
                                used |=
-                                   preferences.value("catlive.midi.slot" + String(i)).toString() ==
+                                   midiDeviceCompatibility::resolve(preferences.value("catlive.midi.slot" + String(i)).toString(), true) ==
                                    previous;
                            if (!used)
                                session.audio.devices.setMidiInputDeviceEnabled(previous, false);
@@ -609,17 +641,20 @@ class SettingsPanel final : public Component, private Timer {
                            session.audio.devices.setMidiInputDeviceEnabled(next, true);
                        session.audio.setMIDISlot(slot, next);
                        saveAudio();
-                   });
+                   }).setEnabled(!inputs.isEmpty());
         }
         label(String::fromUTF8("Saídas MIDI"), 382, 26, true);
         choices = {"Nenhum"}; for (const auto &output : outputs) choices.add(output.name);
         for (int slot = 0; slot < 6; ++slot) {
             const auto key = "catlive.midi.outputSlot" + String(slot + 1);
-            const auto current = preferences.value(key, slot == 0 ? session.audio.devices.getDefaultMidiOutputIdentifier() : String()).toString();
+            const auto saved = preferences.value(key, slot == 0 ? session.audio.devices.getDefaultMidiOutputIdentifier() : String()).toString();
+            const auto current = midiDeviceCompatibility::resolve(saved, false);
+            if (current != saved) session.audio.setMIDIOutputSlot(slot, saved);
             int selected = 1; for (int i = 0; i < outputs.size(); ++i) if (outputs[i].identifier == current) selected = i + 2;
             label("MIDI " + String(slot + 1), 426 + slot * 42);
-            choice("MIDI " + String(slot + 1), choices, selected, 110, 426 + slot * 42, 350,
+            choice("midiOutputSlot" + String(slot + 1), choices, selected, 110, 426 + slot * 42, 350,
                 [this, outputs, key, slot](int id) {
+                    if (id < 1 || id > outputs.size() + 1) return;
                     const String next = id > 1 ? outputs[id-2].identifier : String();
                     const auto result = preferences.set(key,next); if (result.failed()) { error(result.getErrorMessage()); return; }
                     session.audio.setMIDIOutputSlot(slot,next);
@@ -629,6 +664,50 @@ class SettingsPanel final : public Component, private Timer {
         }
         button(localization::translate("Atualizar dispositivos"),24,700,190,[this]{refreshLater();});
         contentHeight = 760;
+    }
+    void smkPage() {
+        label(localization::translate("Connect one SMK-37 Pro using a USB data cable. Firmware operations are unavailable during playback or recording."),66,60,false,theme::secondary);
+        smkButtons.push_back(&button(localization::translate("Backup Firmware SMK-37 Pro"),24,150,320,[this]{smkDestination(SMK37FirmwareFlow::backup);}));
+        smkButtons.push_back(&button(localization::translate("Install SMK Integration"),24,202,320,[this]{smkConfirm(SMK37FirmwareFlow::install,{});}));
+        smkButtons.push_back(&button(localization::translate("Install Backup/Firmware…"),24,254,320,[this]{smkSource();}));
+        label(localization::translate("Choose where to save your backup. Installing firmware first saves and verifies the current firmware at the location you select. Keep the USB cable connected until the operation finishes."),310,80,false,theme::secondary);
+        label(localization::translate("Supported files: .smkbackup, .fwsc, and full .bin backups with their matching .json file. Only compatible SMK-37 Pro firmware is accepted."),400,70,false,theme::secondary);
+        smkStatus = &label({},480,150,false,theme::yellow);
+        button(localization::translate("Show saved backup"),24,650,240,[this]{if(smkFirmware->saved.existsAsFile())smkFirmware->saved.revealToUser();});
+        button(localization::translate("Show operation log"),24,694,240,[this]{if(smkFirmware->log.existsAsFile())smkFirmware->log.revealToUser();});
+        button(localization::translate("Firmware licenses and source"),24,738,320,[]{File::getSpecialLocation(File::currentExecutableFile).getSiblingFile("SMK37").revealToUser();});
+        contentHeight = 800; timerCallback();
+    }
+    void smkConfirm(SMK37FirmwareFlow::Operation operation, File source) {
+        if (locked() || smkFirmware->busy || smkChoosing) return;
+        smkChoosing = true;
+        ConfirmationPanel::show(MessageBoxIconType::WarningIcon,"Install firmware on SMK-37 Pro?",
+            "This replaces the keyboard firmware and can change its controls, sounds and settings. Choose where to save the current firmware backup before continuing.",
+            "Continue","Cancel",this,ModalCallbackFunction::create([safe=SafePointer<SettingsPanel>(this),operation,source](int result){
+                if(!safe)return; safe->smkChoosing=false;
+                if(result)MessageManager::callAsync([safe,operation,source]{if(safe)safe->smkDestination(operation,source);});
+            }));
+    }
+    void smkSource() {
+        if (locked() || smkFirmware->busy || smkChoosing) return;
+        smkChoosing = true;
+        smkChooser = std::make_unique<FileChooser>(localization::translate("Install Backup/Firmware…"),File{},"*.smkbackup;*.fwsc;*.bin");
+        smkChooser->launchAsync(FileBrowserComponent::openMode|FileBrowserComponent::canSelectFiles,
+            [safe=SafePointer<SettingsPanel>(this)](const FileChooser &picker){
+                if(!safe)return; safe->smkChoosing=false; const auto source=picker.getResult();
+                if(source.existsAsFile())MessageManager::callAsync([safe,source]{if(safe)safe->smkConfirm(SMK37FirmwareFlow::installFile,source);});
+            });
+    }
+    void smkDestination(SMK37FirmwareFlow::Operation operation, File source = {}) {
+        if (locked() || smkFirmware->busy || smkChoosing) return;
+        smkChoosing = true;
+        const auto name="SMK37-Pro-Backup-"+Time::getCurrentTime().formatted("%Y-%m-%d-%H%M%S")+".smkbackup";
+        smkChooser = std::make_unique<FileChooser>(localization::translate("Save current firmware backup"),File::getSpecialLocation(File::userDocumentsDirectory).getChildFile(name),"*.smkbackup");
+        smkChooser->launchAsync(FileBrowserComponent::saveMode|FileBrowserComponent::canSelectFiles|FileBrowserComponent::warnAboutOverwriting,
+            [safe=SafePointer<SettingsPanel>(this),operation,source](const FileChooser &picker){
+                if(!safe)return; safe->smkChoosing=false; const auto destination=picker.getResult();
+                if(destination!=File{} && !safe->locked())safe->smkFirmware->start(operation,destination,source);
+            });
     }
 };
 } // namespace catlive

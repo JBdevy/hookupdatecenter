@@ -2258,3 +2258,47 @@
 "Connect your MIDI controller here, even if it is already paired in Bluetooth settings." = "Connect your MIDI controller here, even if it is already paired in Bluetooth settings.";
 
 "The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone." = "The entire project folder and everything inside it will be permanently deleted, including media, presets, waveform caches, backups and unused files. This cannot be undone.";
+
+"Temporary" = "Temporary";
+
+// SMK37 desktop firmware manager
+"Backup Firmware SMK-37 Pro" = "Backup Firmware SMK-37 Pro";
+"Install SMK Integration" = "Install SMK Integration";
+"Install Backup/Firmware…" = "Install Backup/Firmware…";
+"Connect one SMK-37 Pro using a USB data cable. Firmware operations are unavailable during playback or recording." = "Connect one SMK-37 Pro using a USB data cable. Firmware operations are unavailable during playback or recording.";
+"Choose where to save your backup. Installing firmware first saves and verifies the current firmware at the location you select. Keep the USB cable connected until the operation finishes." = "Choose where to save your backup. Installing firmware first saves and verifies the current firmware at the location you select. Keep the USB cable connected until the operation finishes.";
+"Supported files: .smkbackup, .fwsc, and full .bin backups with their matching .json file. Only compatible SMK-37 Pro firmware is accepted." = "Supported files: .smkbackup, .fwsc, and full .bin backups with their matching .json file. Only compatible SMK-37 Pro firmware is accepted.";
+"Install firmware on SMK-37 Pro?" = "Install firmware on SMK-37 Pro?";
+"This replaces the keyboard firmware and can change its controls, sounds and settings. Choose where to save the current firmware backup before continuing." = "This replaces the keyboard firmware and can change its controls, sounds and settings. Choose where to save the current firmware backup before continuing.";
+"Save current firmware backup" = "Save current firmware backup";
+"Show saved backup" = "Show saved backup";
+"Show operation log" = "Show operation log";
+"Firmware licenses and source" = "Firmware licenses and source";
+"Preparing firmware backup…" = "Preparing firmware backup…";
+"Connecting to SMK-37 Pro…" = "Connecting to SMK-37 Pro…";
+"Reading and verifying the current firmware…" = "Reading and verifying the current firmware…";
+"Backup saved. Restarting the keyboard…" = "Backup saved. Restarting the keyboard…";
+"Installing firmware. Keep the USB cable connected…" = "Installing firmware. Keep the USB cable connected…";
+"Restoring the backup. Keep the USB cable connected…" = "Restoring the backup. Keep the USB cable connected…";
+"Operation completed. The firmware backup is saved." = "Operation completed. The firmware backup is saved.";
+"Operation stopped. See the details below." = "Operation stopped. See the details below.";
+"Invalid or damaged SMK backup." = "Invalid or damaged SMK backup.";
+"The connected firmware could not be identified as SMK-37 Pro. Nothing was installed." = "The connected firmware could not be identified as SMK-37 Pro. Nothing was installed.";
+"The saved backup could not be verified." = "The saved backup could not be verified.";
+"The bundled SMK firmware is missing or damaged." = "The bundled SMK firmware is missing or damaged.";
+"Choose a different file for the current firmware backup." = "Choose a different file for the current firmware backup.";
+"The SMK firmware utility is not compatible." = "The SMK firmware utility is not compatible.";
+"Connect only one SMK-37 Pro using a USB data cable." = "Connect only one SMK-37 Pro using a USB data cable.";
+"The keyboard did not enter USB download mode. Reconnect it and try again." = "The keyboard did not enter USB download mode. Reconnect it and try again.";
+"This backup belongs to another keyboard. Nothing was restored." = "This backup belongs to another keyboard. Nothing was restored.";
+"Choose a compatible SMK-37 Pro .fwsc firmware file." = "Choose a compatible SMK-37 Pro .fwsc firmware file.";
+"The SMK firmware utility is missing. Reinstall CatLive." = "The SMK firmware utility is missing. Reinstall CatLive.";
+"Cannot create the firmware workspace." = "Cannot create the firmware workspace.";
+"Cannot create the firmware log." = "Cannot create the firmware log.";
+"Cannot start the SMK firmware utility." = "Cannot start the SMK firmware utility.";
+"Cannot save the firmware backup." = "Cannot save the firmware backup.";
+"Cannot read the firmware backup." = "Cannot read the firmware backup.";
+"Cannot read the firmware file." = "Cannot read the firmware file.";
+"Cannot copy the firmware file." = "Cannot copy the firmware file.";
+"Cannot save the firmware backup at this location." = "Cannot save the firmware backup at this location.";
+"Cannot prepare the firmware backup." = "Cannot prepare the firmware backup.";

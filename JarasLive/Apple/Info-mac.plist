@@ -52,7 +52,13 @@
 <key>UTTypeConformsTo</key><array><string>public.plain-text</string></array>
 <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><string>rpp</string></dict>
 </dict></array>
-<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTExportedTypeDeclarations</key><array>
+<dict>
+<key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.zipfx</string>
+<key>UTTypeDescription</key><string>CatLive Pads Presets</string>
+<key>UTTypeConformsTo</key><array><string>public.zip-archive</string></array>
+<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>zipfx</string></array></dict>
+</dict><dict>
 <key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.ziplive</string>
 <key>UTTypeDescription</key><string>CatLive Portable Project</string>
 <key>UTTypeConformsTo</key><array><string>public.zip-archive</string></array>

@@ -27,11 +27,13 @@ enum PortableProjectImportPrompt: String, Identifiable {
     var canChangeProject: () -> Bool = { true }
     #endif
     var navigateProjectTab: ((Int) -> Void)?
+    private var temporarySession: TemporaryProjectSession?
+    var isTemporary: Bool { currentURL.map { temporarySession?.contains($0) == true } ?? false }
     @Published var projectTabCount = 1
     @Published var projectTabIndex = 0
 
     #if os(iOS)
-    enum NativePicker: String, Identifiable { case project, projectFolder, package, packageDestination, stems, trackAudio, trackMedia, storage; var id: String { rawValue } }
+    enum NativePicker: String, Identifiable { case project, projectFolder, package, packageDestination, stems, trackAudio, trackMedia, storage, temporaryDestination; var id: String { rawValue } }
     @Published var nativePicker: NativePicker?
     @Published var nativePackagePrompt: PortableProjectImportPrompt?
     @Published private(set) var nativeStorageDirectory: URL?
@@ -229,6 +231,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         nativePicker = nil
         if kind == .project { if let url = urls.first { receiveNativeProject(url) }; return }
         if kind == .projectFolder { if let url = urls.first { receiveNativeProjectFolder(url) } else { cancelNativeProjectOpen() }; return }
+        if kind == .temporaryDestination { if let root = urls.first { receiveTemporaryDestination(root) }; return }
         if kind == .storage { if let root = urls.first { receiveNativeStorage(root) }; return }
         if kind == .packageDestination { if let root = urls.first { receiveNativePackageDestination(root) }; return }
         if kind == .trackAudio || kind == .trackMedia {
@@ -266,6 +269,11 @@ enum PortableProjectImportPrompt: String, Identifiable {
         }
     }
     func confirmNativeProjectName(presentPrompt: Bool = true) {
+        if isTemporary && nativePendingCreation == nil {
+            do { _ = try ProjectName.validated(nativeProjectName) }
+            catch { self.error = error.localizedDescription; nativeNamePrompt = true; return }
+            nativePicker = .temporaryDestination; return
+        }
         guard let pending = nativePendingCreation else { return }
         let name = nativeProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name != ".", name != "..", name.count <= 128,
@@ -676,6 +684,10 @@ enum PortableProjectImportPrompt: String, Identifiable {
     #endif
     init(store: DocumentProjectStore, show: ShowController, preview: Bool) {
         self.store = store; self.show = show; ready = preview
+        show.explicitSaveHandler = { [weak self] in
+            guard let self, self.isTemporary else { return false }
+            await self.saveTemporary(); return true
+        }
         let stored = UserDefaults.standard.stringArray(forKey: "jaras.recentProjects") ?? []
         #if os(iOS)
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -699,6 +711,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         UserDefaults.standard.set(paths, forKey: "jaras.recentProjects")
     }
     private func remember(_ url: URL) {
+        guard temporarySession?.contains(url) != true else { return }
         ProjectDocumentAppearance.apply(to: url)
         recent.removeAll { $0 == url }; recent.insert(url, at: 0); recent = Array(recent.prefix(20))
         persistRecentProjects()
@@ -886,7 +899,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         show.canExecute = { false }
         defer { show.canExecute = canExecute; busy = false; status = "" }
         await TrackRecording.shared.finishAndWait()
-        if ready {
+        if ready && !isTemporary {
             try await show.saveForClosing()
             try await rememberProjectMedia()
         }
@@ -907,6 +920,7 @@ enum PortableProjectImportPrompt: String, Identifiable {
         warnings = []; missingAudioPaths = []; missingAudioPrompt = nil
         migrationNotice = ""; pendingDeletion = nil
         await TimelineAudioWaveform.shared.closeProject()
+        try discardTemporarySession()
     }
     #endif
     private func activate(_ project: Project, at url: URL, unreadableAudioPaths: Set<String> = []) async throws {
@@ -955,6 +969,12 @@ enum PortableProjectImportPrompt: String, Identifiable {
         show.preparePlayback()
         missingAudioPaths = missing
         currentURL = url; remember(url); ready = true; opened = UUID()
+        if let temporarySession, !temporarySession.contains(url) {
+            // Playback/readers now point at the new directory. Cleanup failure
+            // must not invalidate an already committed/opened normal project.
+            do { try temporarySession.discard(); self.temporarySession = nil }
+            catch { self.error = error.localizedDescription }
+        }
     }
     private func finishOpening(_ project: Project, at url: URL) async throws {
         status = "Preparing waveforms…"
@@ -1234,6 +1254,98 @@ enum PortableProjectImportPrompt: String, Identifiable {
             } catch { self.error = error.localizedDescription.components(separatedBy: "\n").map(localizedStemWarning).joined(separator: "\n") }
         }
     }
+    func discardTemporarySession() throws {
+        guard let temporarySession else { return }
+        try temporarySession.discard()
+        self.temporarySession = nil
+    }
+    func createTemporary() {
+        guard show.canControl(), !busy, !importingAudio, !show.saving,
+              !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        guard temporarySession == nil else {
+            error = "Close the other temporary session before creating a new one."; return
+        }
+        busy = true; error = ""
+        Task {
+            defer { busy = false; status = "" }
+            do {
+                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let lease = try await Task.detached(priority: .userInitiated) {
+                    try TemporaryProjectSession(documents: documents)
+                }.value
+                temporarySession = lease
+                let url = lease.directory.appendingPathComponent("Temporary.jl")
+                var project = Project.empty(name: JarasLocalization.string("Temporary"))
+                project.projectSyncID = UUID()
+                try ProjectDocumentCodec.writeEncoded(ProjectDocumentCodec.encode(project), to: url, exclusive: true)
+                try await activate(project, at: url)
+            } catch {
+                if !isTemporary { try? discardTemporarySession() }
+                self.error = error.localizedDescription
+            }
+        }
+    }
+    private func saveTemporary() async {
+        guard isTemporary, !busy, !importingAudio, !show.saving,
+              !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        #if os(macOS)
+        let panel = NSSavePanel()
+        panel.title = JarasLocalization.string("Save Project")
+        panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
+        panel.nameFieldStringValue = "Untitled.jl"; panel.canCreateDirectories = true
+        let accepted: NSApplication.ModalResponse = await withCheckedContinuation { continuation in
+            if let window = NSApp.keyWindow { panel.beginSheetModal(for: window) { continuation.resume(returning: $0) } }
+            else { panel.begin { continuation.resume(returning: $0) } }
+        }
+        guard accepted == .OK, let selected = panel.url, isTemporary else { return }
+        let name = selected.deletingPathExtension().lastPathComponent
+        // Always own a new directory: a failed promotion cannot remove existing files.
+        let destination = ProjectDirectoryPolicy.availableFolder(named: name, in: selected.deletingLastPathComponent())
+            .appendingPathComponent(name).appendingPathExtension("jl")
+        await promoteTemporary(to: destination)
+        #else
+        nativeProjectName = ""; nativePendingCreation = nil; nativeNamePrompt = true
+        #endif
+    }
+    #if os(iOS)
+    private func receiveTemporaryDestination(_ root: URL) {
+        guard isTemporary else { return }
+        let scoped = root.startAccessingSecurityScopedResource()
+        let name: String
+        do { name = try ProjectName.validated(nativeProjectName) }
+        catch { if scoped { root.stopAccessingSecurityScopedResource() }; self.error = error.localizedDescription; return }
+        Task {
+            let destination = ProjectDirectoryPolicy.availableFolder(named: name, in: root)
+                .appendingPathComponent(name).appendingPathExtension("jl")
+            await promoteTemporary(to: destination)
+            if currentURL == destination {
+                if scoped { nativeStorageScopes.append(root) }
+                if let bookmark = try? root.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+                    var bookmarks = UserDefaults.standard.array(forKey: "jaras.nativeImportedProjectBookmarks") as? [Data] ?? []
+                    bookmarks.append(bookmark); UserDefaults.standard.set(bookmarks, forKey: "jaras.nativeImportedProjectBookmarks")
+                }
+            } else if scoped { root.stopAccessingSecurityScopedResource() }
+        }
+    }
+    #endif
+    private func promoteTemporary(to destination: URL) async {
+        guard isTemporary, let lease = temporarySession, !busy, !importingAudio,
+              !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
+        busy = true; error = ""; status = "Copying audio and saving project…"
+        let canExecute = show.canExecute; show.canExecute = { false }
+        defer { busy = false; status = ""; show.canExecute = canExecute }
+        do {
+            closeProjectEditors()
+            try await show.flushProject()
+            guard let saved = try await store.load() else { throw ProjectError.invalid("Project not found") }
+            let result = try await Task.detached(priority: .userInitiated) {
+                try lease.export(saved, to: destination)
+            }.value
+            try await activate(result, at: destination)
+            show.message = "Projeto salvo."
+        } catch { self.error = error.localizedDescription; show.modalNotice = error.localizedDescription }
+    }
+
     func createEmpty() { finish(scan: nil, detectBPM: false) }
     #if os(macOS)
     func createEmptyInNewTab() -> Bool {
@@ -1610,6 +1722,7 @@ struct ProjectBrowserView: View {
                                     #endif
                                 action("REC Multitrack", icon: "record.circle") { recordingSetup = true }
                             }
+                            action("Temporary", icon: "clock") { documents.createTemporary() }
                             #if os(macOS)
                             HStack {
                                 action("REAPER", icon: "waveform.path") { documents.chooseMigration("rpp") }

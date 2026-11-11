@@ -57,7 +57,7 @@ a=scroll.index('enum TimelineLayoutDiagnostics');parts.append(scroll[a:scroll.in
 a=scroll.index('final class GridNativeScrollView: NSScrollView');parts.append(scroll[a:scroll.index('\n#endif',a)])
 gate=Path('Apple/Shared/NativeTimelineInputGate.swift').read_text()
 gate=gate.replace('private static let inputs =', 'static var testEnabled = true\n    private static let inputs =')
-gate=gate.replace('guard let window = host.window', 'guard testEnabled else { return nil }\n        guard let window = host.window')
+gate=gate.replace('guard let window = host.window, !host.isHiddenOrHasHiddenAncestor', 'guard testEnabled else { return nil }\n        guard let window = host.window, !host.isHiddenOrHasHiddenAncestor')
 root.joinpath('Gate.swift').write_text(gate)
 fixture=Path('Tests/Apple/TrackMixerNativeControlsTests.swift').read_text().split('@MainActor private func run()')[0]
 # Share the existing genuine SwiftUI controls; add only real production input
@@ -74,3 +74,5 @@ PY
 python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
 swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 -O -target "$(uname -m)-apple-macos12.0" Apple/Shared/JarasLegacyLayout.swift "$test_dir/Gate.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test" --shortcut
+
+"$test_dir/test" --shortcut --catlive-test-macos12

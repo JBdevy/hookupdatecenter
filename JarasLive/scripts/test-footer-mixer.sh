@@ -30,7 +30,7 @@ model = meter[meter.index('@MainActor final class TrackMeterLevel'):meter.index(
 native = meter[meter.index('/// Uses the existing stereo readings'):meter.index('private final class PreparedSoundFont')]
 # The isolated meter/scroll fixture exercises geometry and levels, not bundled font registration.
 native = native.replace('NSFont.jarasMonospacedSystemFont', 'NSFont.monospacedSystemFont')
-(out / 'scroll.swift').write_text('import SwiftUI\nimport AppKit\nimport Combine\n' + model + '\n' + native + '\n' + body + '\n' + Path('Tests/Apple/' + ('FooterMixerPostedWheelTests.swift' if posted else 'FooterMixerScrollTests.swift')).read_text())
+(out / 'scroll.swift').write_text('import SwiftUI\nimport AppKit\nimport Combine\n' + 'extension Color { init(hex: UInt32) { self.init(red: Double((hex >> 16) & 255)/255, green: Double((hex >> 8) & 255)/255, blue: Double(hex & 255)/255) } }\n' + model + '\n' + native + '\n' + body + '\n' + Path('Tests/Apple/' + ('FooterMixerPostedWheelTests.swift' if posted else 'FooterMixerScrollTests.swift')).read_text())
 PYTHON
 swiftc -parse-as-library "$build_dir/midi.swift" -o "$build_dir/midi"
 "$build_dir/midi"

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.33" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "1.34" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -188,7 +188,7 @@ target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame Ca
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="CatLive" JUCE_APPLICATION_VERSION_STRING="${CATLIVE_VERSION}"
-    JUCE_ASIO=1 JUCE_WASAPI=1 JUCE_USE_MP3AUDIOFORMAT=1 JUCE_WIN_PER_MONITOR_DPI_AWARE=1
+    JUCE_ASIO=1 JUCE_WASAPI=1 JUCE_USE_WINRT_MIDI=1 JUCE_USE_MP3AUDIOFORMAT=1 JUCE_WIN_PER_MONITOR_DPI_AWARE=1
     JUCE_MODAL_LOOPS_PERMITTED=0 NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_compile_options(CatLive PRIVATE /utf-8 /bigobj)
 enable_testing()
@@ -227,6 +227,14 @@ if(CATLIVE_NODE)
     set_tests_properties(DAWImportCompatibility PROPERTIES TIMEOUT 120)
 endif()
 install(TARGETS CatLive RUNTIME DESTINATION . RESOURCE DESTINATION .)
+
+# Offline SMK37 firmware installer. The helper and firmware are separate
+# programs; retain their notices and corresponding firmware source.
+add_custom_command(TARGET CatLive POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/Resources/SMK37" "$<TARGET_FILE_DIR:CatLive>/SMK37"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/Resources/SMK37Tools" "$<TARGET_FILE_DIR:CatLive>/SMK37Tools")
+install(DIRECTORY "${CATLIVEROOT}/Resources/SMK37" DESTINATION .)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Resources/SMK37Tools" DESTINATION .)
 
 # Category artwork is decoded once per open editor, never in the audio callback.
 foreach(category pianos upright electric keyboard organ strings guitar bass synth synthPad lead acordeon brass mallets drum)

@@ -5,6 +5,7 @@
 #include "RemoteHost.h"
 #include "StartupSplash.h"
 #include "ShowMode.h"
+#include "SMK37Firmware.h"
 #include "ProjectMigration.h"
 #include "DesktopLayout.h"
 #include "NativeWindowBounds.h"
@@ -396,6 +397,10 @@ class CatLiveApplication final : public JUCEApplication {
         setApplicationReturnValue(testResult);
     }
     void systemRequestedQuit() override {
+        if (SMK37FirmwareTask::shared()->busy) {
+            if (tabHost && tabHost->current) tabHost->current->showError(String::fromUTF8("Aguarde a operação de firmware do SMK-37 Pro terminar."));
+            return;
+        }
 #if CATLIVE_NATIVE_FRONTEND || CATLIVE_IMGUI_FRONTEND
         if (nativeBridge && !closing) { nativeBridge->requestClose(); return; }
 #endif
@@ -858,7 +863,7 @@ class CatLiveApplication final : public JUCEApplication {
         closingInitialTab = selectedTab;
         const bool multiple = tabSessions.size() > 1;
         const bool needsSave = std::any_of(tabSessions.begin(), tabSessions.end(), [](auto *tab) {
-            return tab->dirty || tab->isSaving() || tab->audio.isRecording();
+            return (tab->dirty && !tab->isTemporary()) || tab->isSaving() || tab->audio.isRecording();
         });
         if (!multiple || !needsSave) { requestTabClosing(0); return; }
         CloseProjectSheet::open(workspace, [this](int action) {

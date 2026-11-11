@@ -57,6 +57,7 @@ class Presentation final {
                 put(v, "mute", track.mute);
                 put(v, "solo", track.solo);
                 put(v, "heightScale", track.heightScale.value_or(1));
+                put(v, "role", text(track.role.id));
                 if (track.instrumentIcon)
                     put(v, "instrumentIcon", text(*track.instrumentIcon));
                 if (track.parentTrackID)
@@ -221,6 +222,7 @@ class Presentation final {
         put(fade, "remaining", session.transportFadeoutActive() ? std::clamp(session.transportFadeoutRemaining(), 0., session.transportFadeoutDuration()) : 0.);
         if (!fadeoutCommand.empty()) put(fade, "lastCommandID", wireID(fadeoutCommand));
         put(result, "fadeout", fade);
+        put(result, "recording", session.audio.isRecording());
         put(result, "previewActive", stage.preview);
         put(result, "previewPage", stage.previewPage);
         if (timerTarget != stage.target || timerRunning != stage.running ||
@@ -251,6 +253,14 @@ class Presentation final {
         if (wireID(c.project) != wireID(session.project().id))
             return false;
         const auto a = c.action;
+        if (a == "toggleRecord") { session.toggleRecording(); return true; }
+        if (a == "browseRegion") {
+            if (session.song() && std::any_of(session.song()->parts.begin(), session.song()->parts.end(), [&](const auto& part) { return wireID(part.id) == wireID(c.target); })) {
+                session.focusedRegion = c.target;
+                if (!session.transport().playing) session.command(jaras::CommandKind::selectRegion, c.target);
+            }
+            return true;
+        }
         if (a == "togglePreview") {
             stage.preview = !stage.preview;
             return true;

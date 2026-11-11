@@ -22,6 +22,7 @@
 #include "TimecodeMIDI.h"
 #include "TransportFadeout.h"
 #include "RealtimeMIDIInput.h"
+#include "MIDIDeviceCompatibility.h"
 #include "AudioCallbackMetrics.h"
 namespace catlive {
 class ClipAudio;
@@ -73,7 +74,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void refreshStemLatency();
     unsigned exportLatencyFrames()const;
     void setMIDISlot(int, const String &);
-    void setMIDIOutputSlot(int slot, const String &device) { timecodeMIDI.setOutputSlot(slot, device); }
+    void setMIDIOutputSlot(int slot, const String &device) { timecodeMIDI.setOutputSlot(slot, midiDeviceCompatibility::resolve(device, false)); }
     uint64 latestProgramChange(int slot) const {
         if(slot == -1) { uint64 latest=0;for(const auto &packet:midiProgramChanges)latest=std::max(latest,packet.load());return latest; }
         return slot>=1 && slot<=6 ? midiProgramChanges[size_t(slot-1)].load() : 0;

@@ -25,7 +25,7 @@ struct TrackAutomation {
  var visibleEnvelopes: [Envelope] { !enabled || lanesVisible == false ? [] : envelopes.filter(\\.visible) }
  struct Envelope { var visible = true }
 }
-enum TrackKind { case standard, programChange }
+enum TrackKind { case standard, programChange, teleprompt, teleprompt2; var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 } }
 struct Track { var kind: TrackKind = .standard; var programChangeLaneCount = 1; var automation: TrackAutomation? = nil; var id = UUID(); var heightScale: Double? = nil; var clips: [AudioClip] = [] }
 struct AudioClip: Equatable { var id = UUID(); var startTime: Double; var duration: Double; var recordingLane: Int? = nil }
 struct Part: Equatable { var id = UUID(); var parentRegionID: UUID? = nil; var startTime: Double; var endTime: Double }

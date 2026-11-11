@@ -1,3 +1,5 @@
+#include "SMK37Connection.h"
+#include "SMK37FirmwareTests.h"
 #include "SystemAudioDefaultsTests.h"
 #include "NativeAudioDeviceHostTests.h"
 #include "ProjectTabTransportTests.h"
@@ -175,6 +177,38 @@ int runTests(const File &directory) {
             failed += name + ": " + String::fromUTF8(e.what()) + "\n";
         }
     };
+    smk37FirmwareTests::run(directory,test);
+    test("Temporary project cleanup and live session protection", [&] {
+        const auto root = directory.getNonexistentChildFile("temporary-session", "", false);
+        root.createDirectory();
+        const auto normal = root.getChildFile("normal/keep.wav");
+        normal.getParentDirectory().createDirectory(); normal.replaceWithText("keep");
+        const auto scratch = root.getChildFile("catlive-temp");
+        scratch.createDirectory(); scratch.getChildFile("crashed.wav").replaceWithText("old");
+        {
+            TemporaryProjectSession lease(root);
+            expect(!scratch.getChildFile("crashed.wav").exists(), "Crash residue remains");
+            auto source = scratch.getChildFile("playing.wav"); source.replaceWithText("live");
+            bool rejected=false;
+            try { TemporaryProjectSession other(root); } catch (...) { rejected=true; }
+            expect(rejected && source.loadFileAsString()=="live", "Second session deleted live media");
+            expect(lease.contains(source) && !lease.contains(normal), "Temporary boundary changed");
+        }
+        expect(scratch.findChildFiles(File::findFilesAndDirectories,false).isEmpty(), "Close left temporary files");
+        expect(normal.loadFileAsString()=="keep", "Cleanup touched a normal project");
+        root.deleteRecursively();
+    });
+    test("SMK37 display navigation and playback", [&] {
+        auto wire=SMK37Connection::navigationFrame(1,{"A","B","B","C"},2);
+        expect(SMK37Connection::valid(wire),"Invalid list frame");
+        expect(wire==SMK37Connection::frame(23,{1,1,'A',1,'B',1,'B',1,'C',0}),"Centered rows or empty edge changed");
+        auto longest=SMK37Connection::navigationFrame(3,std::vector<String>(5,String::repeatedString("A",100)),2);
+        expect(SMK37Connection::valid(longest)&&longest.size()==95,"Long list exceeds firmware packet");
+        expect(SMK37Connection::navigationFrame(1,{},0).empty(),"Empty list accepted");
+        expect(SMK37Connection::playbackFrame(130,100,160)==SMK37Connection::frame(24,{100,0,30,0,0,60,0,0}),"Progress must be relative to playing region");
+        expect(SMK37Connection::playbackFrame(200,100,160)==SMK37Connection::frame(24,{72,1,60,0,0,60,0,0}),"Progress not clamped");
+        expect(SMK37Connection::playbackFrame(0,0,0)==SMK37Connection::frame(24,SMK37Connection::Bytes(8,0)),"Invalid duration must clear progress");
+    });
     test("Multiple track drag preserves ordered roots, descendants and group routing", [&] {
         jaras::Project p;jaras::Song song;song.id=uuid();
         for(int i=0;i<7;++i){jaras::Track t;t.id=std::to_string(i);t.name=t.id;t.role.id="other";song.tracks.push_back(t);}
@@ -3698,6 +3732,20 @@ int runTests(const File &directory) {
         buffer.clear();
         piano.render(buffer, notes, 1024);
         expect(buffer.getMagnitude(0, 1024) == 0, "Empty instrument panic emitted audio");
+    });
+    test("MIDI backend migration preserves assignments without guessing between identical controllers",[&] {
+        const Array<MidiDeviceInfo> legacy{MidiDeviceInfo{"Keyboard", "winmm-keyboard"}, MidiDeviceInfo{"Pedal", "winmm-pedal"}};
+        const Array<MidiDeviceInfo> current{MidiDeviceInfo{"Pedal", "winrt-pedal"}, MidiDeviceInfo{"Keyboard", "winrt-keyboard"}, MidiDeviceInfo{"Bluetooth", "ble-keyboard"}};
+        const auto resolve = [&](const String &saved) { return midiDeviceCompatibility::resolve(saved, current, legacy); };
+        expect(resolve("winmm-keyboard") == "winrt-keyboard", "Saved input moved to a different device after enumeration reordered");
+        expect(resolve("winmm-pedal") == "winrt-pedal", "Saved output did not migrate");
+        expect(resolve("ble-keyboard") == "ble-keyboard" && resolve("").isEmpty(), "Native BLE ID or unassigned slot changed");
+        expect(resolve("offline-controller") == "offline-controller", "Offline assignment was discarded");
+        auto duplicateLegacy = legacy; duplicateLegacy.add({"Keyboard", "winmm-other"});
+        expect(midiDeviceCompatibility::resolve("winmm-keyboard", current, duplicateLegacy) == "winmm-keyboard", "Ambiguous old controller was guessed");
+        auto duplicateCurrent = current; duplicateCurrent.add({"Keyboard", "winrt-other"});
+        expect(midiDeviceCompatibility::resolve("winmm-keyboard", duplicateCurrent, legacy) == "winmm-keyboard", "Ambiguous new controller was guessed");
+        expect(midiDeviceCompatibility::resolve("winrt-keyboard", duplicateCurrent, duplicateLegacy) == "winrt-keyboard", "Exact identifier lost priority");
     });
     test("Realtime MIDI ingress preserves short events without growing callback buffers",[&] {
         auto input=std::make_unique<RealtimeMIDIInput>();

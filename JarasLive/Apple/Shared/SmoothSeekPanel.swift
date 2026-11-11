@@ -42,6 +42,7 @@ private struct SectionCancelButtonStyle: ButtonStyle {
 @MainActor private final class SectionPanelObserver: ObservableObject {
     private struct State: Equatable {
         let controls: ShowPresentationState
+        let navigation: SMK37Navigation
         let section: UUID?
         let secondarySection: UUID?
         let trigger: Double?
@@ -74,7 +75,7 @@ private struct SectionCancelButtonStyle: ButtonStyle {
         }
         let main = song.flatMap { song in song.sectionPlaybackRegion(for: transport).map { song.sectionMarkers(in: $0) } } ?? []
         let sub = transport.subPlay.playing ? sections(at: transport.subPlay.position) : []
-        return State(controls: show.presentationState,
+        return State(controls: show.presentationState, navigation: show.smkNavigation,
             section: main.last(where: { $0.position <= transport.position })?.id,
             secondarySection: sub.last(where: { $0.position <= transport.subPlay.position })?.id,
             trigger: transport.queuedSectionMarkerId == nil ? nil : song?.nextSectionTrigger(for: transport),
@@ -198,6 +199,7 @@ private final class NativeSectionProgressView: NSView {
 
 /// Transport updates stay in this small panel, independently of the grid canvas.
 struct SmoothSeekPanel: View {
+    let placement: SMK37Navigation.Panel
     @State private var automaticSection: TimelineMarker?
     #if os(macOS)
     let show: ShowController
@@ -205,7 +207,8 @@ struct SmoothSeekPanel: View {
     #else
     @ObservedObject var show: ShowController
     #endif
-    init(show: ShowController) {
+    init(show: ShowController, placement: SMK37Navigation.Panel = .setlist) {
+        self.placement = placement
         #if os(macOS)
         self.show = show
         _updates = StateObject(wrappedValue: SectionPanelObserver(show: show))
@@ -237,7 +240,7 @@ struct SmoothSeekPanel: View {
                 .accessibilityLabel("Cancel queued section")
                 .padding(4)
             #endif
-            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing, playing: transport.playing, selectionRequests: show.partsTabSelection.compactMap { $0 }.eraseToAnyPublisher()) { secondary in
+            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing, playing: transport.playing, selectionRequests: show.partsTabSelection.compactMap { $0 }.filter { $0.panel == nil || $0.panel == placement }.eraseToAnyPublisher()) { secondary in
                 bank(region: secondary ? queued : current, secondary: secondary)
             }
         }.background(JarasTheme.panel)
@@ -256,8 +259,12 @@ struct SmoothSeekPanel: View {
             position: secondary && transport.subPlay.playing ? transport.subPlay.position : transport.playing ? transport.position : transport.editPosition ?? transport.position,
             showsPosition: !secondary || transport.subPlay.playing, positionRunning: secondary ? transport.subPlay.playing : transport.playing, queued: transport.queuedSectionMarkerId,
             trigger: trigger, queueStartedAt: transport.sectionQueueStartedAt, playbackPosition: transport.position, playbackRunning: transport.playing,
-            select: { show.send(.queueSection, target: $0) }, verticalList: true,
+            select: { show.smkNavigation.selectPart($0, panel: placement, queued: secondary); show.send(.queueSection, target: $0) }, verticalList: true,
             regionID: region?.id, regionStart: region?.startTime ?? 0,
+            navigationSelection: {
+                if case let .parts(panel, queued, id) = show.smkNavigation.focus, panel == placement, queued == secondary { return id }
+                return nil
+            }(),
             livePosition: { [weak show] in
                 guard let show else { return (0, ProcessInfo.processInfo.systemUptime) }
                 return (secondary && show.snapshot.transport.subPlay.playing ? show.snapshot.transport.subPlay.position : show.snapshot.transport.position, show.timelinePlaybackSampleTime)
@@ -286,6 +293,7 @@ struct SmoothSeekBankView: View {
     var verticalList = false
     var regionID: UUID? = nil
     var regionStart: Double = 0
+    var navigationSelection: UUID? = nil
     var livePosition: (() -> (position: Double, time: Double))? = nil
     var livePlayback: (() -> (position: Double, time: Double))? = nil
     var editAutomatic: ((UUID) -> Void)? = nil
@@ -306,9 +314,10 @@ struct SmoothSeekBankView: View {
 
     var body: some View {
         if verticalList {
+            ScrollViewReader { reader in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 5) {
-                    ForEach(displayMarkers) { marker in sectionButton(marker).frame(height: buttonHeight) }
+                    ForEach(displayMarkers) { marker in sectionButton(marker).frame(height: buttonHeight).id(marker.id) }
                 }.padding(5)
                     #if os(macOS)
                     .padding(.trailing, 8)
@@ -319,6 +328,9 @@ struct SmoothSeekBankView: View {
                 #if os(macOS)
                 .overlay(alignment: .trailing) { PartsScrollbar(controller: scrollController).frame(width: 10) }
                 #endif
+                .onChange(of: navigationSelection) { id in if let id { reader.scrollTo(id) } }
+                .onAppear { if let id = navigationSelection { reader.scrollTo(id) } }
+            }
         } else {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
@@ -374,6 +386,9 @@ struct SmoothSeekBankView: View {
                     RoundedRectangle(cornerRadius: 5).strokeBorder(selected ? JarasTheme.green : JarasTheme.line,
                                                                                 lineWidth: selected ? 1.5 : 0.5)
                         .allowsHitTesting(false)
+                }
+                if navigationSelection == marker.id {
+                    RoundedRectangle(cornerRadius: 5).strokeBorder(Color(hex: 0x409cff), lineWidth: 3).allowsHitTesting(false)
                 }
             }.contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(isStart ? JarasLocalization.string("Section start") : marker.name.uppercased()).accessibilityValue(queued ? "Queued" : active ? "Playing" : "")

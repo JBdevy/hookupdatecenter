@@ -141,7 +141,8 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
 public struct PartsTabSelectionRequest: Equatable, Sendable {
     public let id = UUID()
     public let secondary: Bool
-    public init(secondary: Bool) { self.secondary = secondary }
+    public let panel: SMK37Navigation.Panel?
+    public init(secondary: Bool, panel: SMK37Navigation.Panel? = nil) { self.secondary = secondary; self.panel = panel }
 }
 
 public struct DAWActionBinding: Codable, Equatable, Identifiable {

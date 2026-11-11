@@ -93,7 +93,7 @@ inline void split(jaras::Song &song, const ID &selected, double at) {
 }
 inline void requireSpace(const jaras::Track &track, const jaras::AudioClip &clip, double start,
                          double end) {
-    if (!singleLane(track))
+    if (!singleLane(track) || (jaras::isTeleprompterRole(track.role) && !projection(clip)))
         return;
     for (const auto &other : track.clips)
         if (other.id != clip.id &&
@@ -117,7 +117,7 @@ inline double constrainedStart(const jaras::Track &track, const jaras::AudioClip
     return best;
 }
 inline std::pair<double,double> constrainedEdges(const jaras::Track &track,const jaras::AudioClip &clip,double start,double end) {
-    if(!singleLane(track)) return {start,end};
+    if(!singleLane(track) || (jaras::isTeleprompterRole(track.role) && !projection(clip))) return {start,end};
     double left=0,right=std::numeric_limits<double>::infinity();
     for(const auto &other:track.clips) if(other.id!=clip.id && (!jaras::isTeleprompterRole(track.role) || projection(other)==projection(clip))) {
         if(other.startTime+other.duration<=clip.startTime+1e-7) left=std::max(left,other.startTime+other.duration);

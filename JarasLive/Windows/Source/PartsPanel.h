@@ -31,6 +31,10 @@ class PartsPanel final : public Component, private Timer {
         startTimerHz(60);
     }
     void selectTab(bool secondary) { secondaryTab = secondary; resized(); }
+    std::optional<jaras::TimelineMarker> navigate(bool secondary,int direction) {
+        selectTab(secondary); return (secondary?queued:current).navigate(direction);
+    }
+    std::pair<std::vector<String>,int> smkList(bool secondary) const { return (secondary?queued:current).smkList(); }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         g.setColour(theme::secondary.withAlpha(.35f));
@@ -116,6 +120,20 @@ class PartsPanel final : public Component, private Timer {
             }
             put(result, "pads", pads);
             return result;
+        }
+        std::pair<std::vector<String>,int> smkList() const {
+            std::vector<String> names;int selected=-1;
+            for(const auto &marker:markers){if(panel.session.smkPart==marker.id)selected=(int)names.size();names.push_back(text(marker.name));}
+            return {names,selected};
+        }
+        std::optional<jaras::TimelineMarker> navigate(int direction) {
+            refresh();if(markers.empty())return {};
+            int index=0;
+            if(panel.session.smkQueuedParts==secondary && panel.session.smkPart)
+                for(size_t i=0;i<markers.size();++i)if(markers[i].id==*panel.session.smkPart)index=jlimit(0,(int)markers.size()-1,(int)i+direction);
+            const auto marker=markers[(size_t)index];
+            panel.session.smkPart=marker.id;panel.session.smkPartPanel=panel.getComponentID();panel.session.smkQueuedParts=secondary;
+            refresh();view.setViewPosition(0,std::max(0,buttons[index]->getY()-view.getHeight()/3));return marker;
         }
         void refresh() {
             const auto *song = panel.session.song();
@@ -223,6 +241,8 @@ class PartsPanel final : public Component, private Timer {
                 button.active = active == i;
                 button.queued = state.queuedSectionMarkerId == markers[(size_t)i].id;
                 button.selected = button.queued || (!state.queuedSectionMarkerId && button.active);
+                const bool blue=panel.session.smkPart==markers[(size_t)i].id && panel.session.smkPartPanel==panel.getComponentID() && panel.session.smkQueuedParts==secondary;
+                if(button.blue!=blue){button.blue=blue;button.repaint();}
                 double end = regionEnd;
                 for (const auto &marker : markers)
                     if (marker.position > markers[(size_t)i].position) {
@@ -254,6 +274,7 @@ class PartsPanel final : public Component, private Timer {
                 setWantsKeyboardFocus(false);
                 onClick = [this] {
                     try {
+                        panel.session.smkPart=id;panel.session.smkPartPanel=panel.getComponentID();panel.session.smkQueuedParts=panel.secondaryTab;
                         panel.session.command(jaras::CommandKind::queueSection, id);
                     } catch (const std::exception &e) {
                         panel.error(String::fromUTF8(e.what()));
@@ -271,7 +292,7 @@ class PartsPanel final : public Component, private Timer {
             void mouseUp(const MouseEvent& event) override { if(!event.mods.isPopupMenu()) Button::mouseUp(event); }
             String label;
             Colour colour;
-            bool start = false, active = false, queued = false, selected = false, loop = false;
+            bool start = false, active = false, queued = false, selected = false, loop = false, blue=false;
             double progress = 0;
             void paintButton(Graphics &g, bool over, bool down) override {
                 auto bounds = getLocalBounds().toFloat().reduced(.8f);
@@ -302,6 +323,7 @@ class PartsPanel final : public Component, private Timer {
                     g.setColour(selected ? theme::green : theme::line);
                     g.drawRoundedRectangle(bounds, 5, selected ? 1.5f : .5f);
                 }
+                if(blue){g.setColour(Colour(0xff409cff));g.drawRoundedRectangle(bounds.reduced(2),4,3);}
                 g.setColour(theme::surfaceText(colour));
                 g.setFont(start ? theme::semiboldFont(16) : theme::semiboldFont(12));
                 g.drawFittedText((queued ? String::fromUTF8("↰ ") : String()) + label,

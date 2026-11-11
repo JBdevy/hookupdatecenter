@@ -14,6 +14,7 @@ import AVFoundation
     @Published var learningPad: Int?
     @Published var learningPreset: Int?
     @Published var error = ""
+    @Published private(set) var transferring = false
     var startVoice: ((VinhetasTriggers.Voice, URL, Double) -> Void)?
     var stopVoice: ((UUID) -> Void)?
     var releaseVoice: ((UUID) -> Void)?
@@ -112,6 +113,7 @@ import AVFoundation
         } catch { self.error = error.localizedDescription }
     }
     func update(_ edit: (inout VinhetasLibrary) -> Void) {
+        guard !transferring else { return }
         var next = library; edit(&next)
         do {
             try next.validate(); library = next
@@ -123,6 +125,49 @@ import AVFoundation
         }
         catch { self.error = error.localizedDescription }
     }
+    func exportPresets(to url: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
+        guard !transferring else { throw ProjectError.invalid("Aguarde a transferência atual.") }
+        transferring = true; defer { transferring = false }
+        let snapshot = library, folder = directory
+        try await Task.detached(priority: .userInitiated) {
+            try VinhetasPackage.export(snapshot, directory: folder, to: url, progress: progress)
+        }.value
+    }
+    func importPresets(from url: URL, progress: @escaping @Sendable (Double) -> Void) async throws {
+        guard !transferring else { throw ProjectError.invalid("Aguarde a transferência atual.") }
+        transferring = true; defer { transferring = false }
+        let folder = directory, destination = file, old = library
+        let staging = directory.appendingPathComponent(".import-" + UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let next = try await Task.detached(priority: .userInitiated) {
+            let next = try VinhetasPackage.prepareImport(url, into: staging, progress: progress)
+            for name in Set(next.presets.flatMap(\.pads).compactMap(\.audioFile)) {
+                let audio = try AVAudioFile(forReading: staging.appendingPathComponent(name))
+                guard VinhetasPad.acceptsDuration(frames: audio.length, sampleRate: audio.processingFormat.sampleRate) else {
+                    throw ProjectError.invalid("Os pads aceitam áudios de até 60 segundos.")
+                }
+            }
+            return next
+        }.value
+        // Serialize behind pending slider/name saves. Publish the new library
+        // only when media and the durable JSON are both committed.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            persistence.async {
+                var moved: [URL] = []
+                do {
+                    for name in Set(next.presets.flatMap(\.pads).compactMap(\.audioFile)) {
+                        let target = folder.appendingPathComponent(name)
+                        try FileManager.default.moveItem(at: staging.appendingPathComponent(name), to: target); moved.append(target)
+                    }
+                    try JSONEncoder().encode(old).write(to: folder.appendingPathComponent("Vinhetas-before-import.json"), options: .atomic)
+                    try JSONEncoder().encode(next).write(to: destination, options: .atomic)
+                    continuation.resume()
+                } catch { for file in moved { try? FileManager.default.removeItem(at: file) }; continuation.resume(throwing: error) }
+            }
+        }
+        panic(); learningPad = nil; learningPreset = nil
+        library = next; buffers.removeAll(); preload()
+    }
     func unlearnPad(_ index: Int) {
         guard library.padMappings.indices.contains(index) else { return }
         if learningPad == index { learningPad = nil }
@@ -130,10 +175,12 @@ import AVFoundation
     }
     func select(_ index: Int) { update { $0.select(index) }; preload() }
     func volume(preset: Int, pad: Int, value: Double) {
+        guard !transferring else { return }
         update { $0.presets[preset].pads[pad].volume = value }
         changeVolume?(preset, pad, value)
     }
     func gate(preset: Int, pad: Int, enabled: Bool) {
+        guard !transferring else { return }
         if enabled && !library.presets[preset].pads[pad].gate {
             let ids = voices.values.filter { $0.preset == preset && $0.pad == pad }.map(\.id)
             for id in ids { (releaseVoice ?? stopVoice)?(id); finished(id) }
@@ -176,7 +223,12 @@ import AVFoundation
         default: break
         }
     }
-    func down(_ pad: Int) { dispatch(triggers.mouseDown(pad: pad, library: library)) }
+    func controllerDown(token: UUID, preset: Int, pad: Int) {
+        guard available else { return }
+        dispatch(triggers.remoteDown(id: token, preset: preset, pad: pad, library: library))
+    }
+    func controllerUp(token: UUID) { dispatch(triggers.remoteUp(id: token)) }
+    func down(_ pad: Int) { SMK37Link.shared.padSelected(pad); dispatch(triggers.mouseDown(pad: pad, library: library)) }
     func up(_ pad: Int) { dispatch(triggers.mouseUp(pad: pad)) }
     func finished(_ id: UUID) { triggers.finished(id); voices[id] = nil; voiceEngines[id] = nil }
     /// A block shortcut must not be saved behind a pad/preset that consumes it.
@@ -387,18 +439,24 @@ private struct VinhetasFader: NSViewRepresentable {
     }
     final class Fader: NSView {
         var value = 1.0; var changed: ((Double) -> Void)?
-        override func mouseDown(with event: NSEvent) { move(event) }
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 { value = 1; changed?(value); needsDisplay = true }
+            else { move(event) }
+        }
         override func mouseDragged(with event: NSEvent) { move(event) }
         private func move(_ event: NSEvent) {
             let point = convert(event.locationInWindow, from: nil)
-            value = min(2, max(0, Double((point.x - 7) / max(1, bounds.width - 14)) * 2))
+            value = min(2, max(0, Double((point.x - 6) / max(1, bounds.width - 12)) * 2))
             changed?(value); needsDisplay = true
         }
         override func draw(_ dirtyRect: NSRect) {
-            NSColor(white: 0.5, alpha: 1).setFill()
-            NSBezierPath(roundedRect: NSRect(x: 7, y: (bounds.height - 4) / 2, width: max(0, bounds.width - 14), height: 4), xRadius: 2, yRadius: 2).fill()
-            NSColor(white: 0.85, alpha: 1).setFill()
-            NSBezierPath(ovalIn: NSRect(x: max(0, bounds.width - 14) * value / 2, y: (bounds.height - 14) / 2, width: 14, height: 14)).fill()
+            NSColor.white.withAlphaComponent(0.22).setFill()
+            NSBezierPath(roundedRect: NSRect(x: 6, y: bounds.midY - 3, width: max(0, bounds.width - 12), height: 6), xRadius: 3, yRadius: 3).fill()
+            let x = 6 + max(0, bounds.width - 12) * min(1, max(0, value / 2))
+            NSColor(white: 0.88, alpha: 1).setFill()
+            NSBezierPath(roundedRect: NSRect(x: x - 6, y: bounds.midY - 9, width: 12, height: 18), xRadius: 2, yRadius: 2).fill()
+            NSColor.darkGray.setFill()
+            NSRect(x: x - 0.5, y: bounds.midY - 6, width: 1, height: 12).fill()
         }
     }
 }
@@ -617,3 +675,106 @@ struct IpadVinhetasFloatingPanel: View {
     }
 }
 #endif
+
+#if os(macOS)
+private final class PadsPickerWindowReference { weak var window: NSWindow? }
+private struct PadsPickerWindowCapture: NSViewRepresentable {
+    let reference: PadsPickerWindowReference
+    final class CaptureView: NSView {
+        var reference: PadsPickerWindowReference?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); reference?.window = window }
+    }
+    func makeNSView(context: Context) -> CaptureView { let view = CaptureView(); view.reference = reference; return view }
+    func updateNSView(_ view: CaptureView, context: Context) { view.reference = reference; reference.window = view.window }
+}
+#endif
+
+struct AdvancedPadsSettings: View {
+    #if os(macOS)
+    @State private var pickerWindow = PadsPickerWindowReference()
+    @State private var choosingFile = false
+    #endif
+    @ObservedObject private var model = VinhetasController.shared
+    @State private var progress = 0.0
+    @State private var message = ""
+    @State private var failed = false
+    @State private var importing = false
+    private struct Exported: Identifiable { let url: URL; var id: URL { url } }
+    @State private var exported: Exported?
+    @State private var temporary: URL?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Transfira os seis presets completos, com nomes, cores, volumes, Gate, mapeamentos MIDI e áudios, em um arquivo .zipfx.")
+                .font(.jarasCallout).fixedSize(horizontal: false, vertical: true)
+            Text("Import Presets substitui os seis presets atuais. Uma cópia da configuração anterior é guardada no dispositivo.")
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 16) {
+                Button("Export Preset", action: export).accessibilityIdentifier("pads-export-presets")
+                Button("Import Presets", action: chooseImport).accessibilityIdentifier("pads-import-presets")
+            }.disabled(model.transferring)
+            if model.transferring { ProgressView(value: progress); Text("Transferindo…").font(.jarasCaption) }
+            if !message.isEmpty { Text(verbatim: message).font(.jarasCaption).foregroundStyle(failed ? .red : JarasTheme.green) }
+        }
+        #if os(macOS)
+        .background(PadsPickerWindowCapture(reference: pickerWindow).frame(width: 0, height: 0))
+        .disabled(choosingFile)
+        #else
+        .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "zipfx") ?? .data]) { result in
+            switch result { case .success(let url): run(url, importing: true); case .failure(let error): finish(error) }
+        }
+        .sheet(item: $exported, onDismiss: cleanup) { file in
+            NativePackageExporter(url: file.url, finished: { exported = nil })
+        }
+        #endif
+    }
+    private func finish(_ error: Error?) { failed = error != nil; message = error?.localizedDescription ?? "Concluído." }
+    private func cleanup() { if let temporary { try? FileManager.default.removeItem(at: temporary) }; temporary = nil }
+    private func export() {
+        guard !model.transferring else { return }
+        #if os(macOS)
+        guard !choosingFile, let owner = pickerWindow.window else { return }
+        let picker = NSSavePanel(); picker.allowedFileTypes = ["zipfx"]; picker.nameFieldStringValue = "CatLive-Pads.zipfx"
+        choosingFile = true
+        picker.beginSheetModal(for: owner) { response in
+            choosingFile = false
+            if response == .OK, let url = picker.url { run(url, importing: false) }
+        }
+        #else
+        cleanup()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CatLive-Pads-" + UUID().uuidString)
+        do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true); temporary = directory }
+        catch { finish(error); return }
+        run(directory.appendingPathComponent("CatLive-Pads.zipfx"), importing: false)
+        #endif
+    }
+    private func chooseImport() {
+        guard !model.transferring else { return }
+        #if os(macOS)
+        guard !choosingFile, let owner = pickerWindow.window else { return }
+        let picker = NSOpenPanel(); picker.allowedFileTypes = ["zipfx"]; picker.canChooseDirectories = false; picker.allowsMultipleSelection = false
+        choosingFile = true
+        picker.beginSheetModal(for: owner) { response in
+            choosingFile = false
+            if response == .OK, let url = picker.url { run(url, importing: true) }
+        }
+        #else
+        importing = true
+        #endif
+    }
+    private func run(_ url: URL, importing: Bool) {
+        message = ""; failed = false; progress = 0
+        Task {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let report: @Sendable (Double) -> Void = { value in Task { @MainActor in progress = value } }
+                if importing { try await model.importPresets(from: url, progress: report) }
+                else { try await model.exportPresets(to: url, progress: report) }
+                finish(nil)
+                #if os(iOS)
+                if !importing { exported = Exported(url: url) }
+                #endif
+            } catch { finish(error) }
+        }
+    }
+}

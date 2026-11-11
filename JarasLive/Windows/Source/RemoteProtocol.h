@@ -110,7 +110,7 @@ struct Command {
                  a == "queueSection")
             valid = target && zero;
         else if (a == "toggleMultiLoopBypass" || a == "toggleSetlistLive" || a == "cancelSection" ||
-                 a == "timerStop" || a == "noticeClear" || a == "togglePreview")
+                 a == "timerStop" || a == "noticeClear" || a == "togglePreview" || a == "toggleRecord")
             valid = !target && zero;
         else if (a == "selectPreviewPage")
             valid = !target && range(0, 5) && integral;
@@ -139,7 +139,7 @@ struct Command {
             valid = target && range(-12, 12) && integral;
         else if (a == "seek")
             valid = range(0, 604800);
-        else if (a == "selectRegion" || a == "selectSong")
+        else if (a == "selectRegion" || a == "selectSong" || a == "browseRegion")
             valid = target;
         else if (StringArray{"play", "pause", "stop", "subPlay", "subStop", "toggleLoop", "mute",
                              "solo", "masterMono", "resetMeterPeak", "save", "toggleRegionAuto",

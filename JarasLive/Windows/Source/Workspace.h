@@ -6,6 +6,7 @@
 #include "SetlistRows.h"
 #include "Appearance.h"
 #include "ActionBindings.h"
+#include "SMK37Connection.h"
 #include "StageState.h"
 #include "TempoControl.h"
 #include "MixerPanel.h"
@@ -181,6 +182,9 @@ class Workspace final : public Component,
     void setTrackVisibility(TrackVisibility::Panel,const ID &,bool);
     void pruneTrackVisibilitySelection(bool footer);
     void refreshTrackVisibility();
+    std::unique_ptr<SMK37Connection> smk37;
+    void performSMK37(int);
+    void updateSMK37();
     ActionBindings actions;
     EditorSelectionAreas selectionAreas;
     bool selectAllTracks(bool footer = false);
@@ -323,6 +327,7 @@ class Workspace final : public Component,
     void confirmTrackDeletion(const std::set<ID> &, std::function<void()>);
     void newProject();
     void deleteRecentProject(const File &);
+    void createTemporaryProject();
     void createProject(bool withStems, int recordingChannels = 0, bool inNewTab = false);
     void chooseRecordingProject();
     void choosePackage();

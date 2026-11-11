@@ -29,7 +29,7 @@ void Engine::applyProjectEdit(Project project) {
 void Engine::commitProjectEdit(Project project) {
     if (project_.projectSyncID) project.projectSyncID = project_.projectSyncID;
     if (project_.regionSetlist && project_.regionSetlist->autoAdvance &&
-        (!project.regionSetlist || !project.regionSetlist->autoAdvance)) stopQueuedSubplay();
+        (!project.regionSetlist || !project.regionSetlist->autoAdvance)) clearWaitingQueue();
     const bool liveChanged = project_.regionSetlist && project_.regionSetlist->liveEnabled.value_or(false) !=
         (project.regionSetlist && project.regionSetlist->liveEnabled.value_or(false));
     project_ = std::move(project);
@@ -117,7 +117,7 @@ void Engine::configureRegionSetlist(RegionSetlist state) {
     validateRegionSetlist(project_, state);
     const auto& previous = project_.regionSetlist;
     const auto previousTarget = automaticRegionQueueTarget();
-    if (previous && previous->autoAdvance && !state.autoAdvance) stopQueuedSubplay();
+    if (previous && previous->autoAdvance && !state.autoAdvance) clearWaitingQueue();
     const bool playbackChanged = !previous || previous->selectedId != state.selectedId || previous->autoAdvance != state.autoAdvance ||
         previous->autoUntilBlockEnd != state.autoUntilBlockEnd || previous->playlists.size() != state.playlists.size() ||
         !std::equal(previous->playlists.begin(), previous->playlists.end(), state.playlists.begin(), [](const auto& a, const auto& b) {
@@ -190,9 +190,18 @@ void Engine::stopQueuedSubplay() {
         !(queued && secondary && queued->id == secondary->id) && !startsInQueue) return;
     execute({CommandKind::subStop});
     resumeSub_ = false;
-    // Auto may leave a manually chosen queue in place. Do not immediately
-    // retrigger its canceled pre-roll; a fresh queue request rearms it.
+    // Do not immediately retrigger canceled pre-roll while callers update
+    // the queue; a fresh queue request rearms it.
     automaticSubplayQueue_ = transport_.queuedRegionId;
+}
+void Engine::clearWaitingQueue() {
+    // Disabling Auto cancels every waiting song, including manual requests
+    // made before Auto was enabled. Only a queue-owned secondary head stops.
+    stopQueuedSubplay();
+    automaticSubplayQueue_.reset();
+    transport_.queuedRegionId.reset(); transport_.queuedPlaylistEntryId.reset();
+    transport_.queue.songId.reset(); transport_.queueStartedAt = 0;
+    autoRegionQueue_ = false;
 }
 void Engine::refreshAutomaticRegionQueue() {
     const auto occurrence = transport_.queuedPlaylistEntryId ? transport_.queuedPlaylistEntryId : transport_.queuedRegionId;

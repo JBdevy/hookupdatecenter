@@ -56,7 +56,7 @@ void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
 ProjectBrowser::ProjectBrowser() {
     setOpaque(true);
     for (auto *button :
-         {&create, &add, &recent, &empty, &stems, &reaper, &logic, &recording, &package, &back}) {
+         {&create, &add, &recent, &empty, &temporary, &stems, &reaper, &logic, &recording, &package, &back}) {
         addAndMakeVisible(*button);
         button->setComponentID(button->getName());
     }
@@ -87,6 +87,7 @@ ProjectBrowser::ProjectBrowser() {
         if (createEmpty)
             createEmpty();
     };
+    temporary.onClick = [this] { if (createTemporary) createTemporary(); };
     empty.contextMenu = [this](const MouseEvent &event) {
         if (!projectOpen || loading || !createEmptyInNewTab) return;
         PopupMenu menu;
@@ -188,7 +189,7 @@ void ProjectBrowser::finishLoading(const String &error) {
     repaint();
 }
 void ProjectBrowser::updateEnabled() {
-    for (auto *button : {&create, &add, &recent, &empty, &stems, &reaper,
+    for (auto *button : {&create, &add, &recent, &empty, &temporary, &stems, &reaper,
                          &logic, &recording, &package, &back})
         button->setEnabled(!loading);
     browseButton.setEnabled(!loading);
@@ -197,7 +198,7 @@ void ProjectBrowser::updateEnabled() {
     recents.setEnabled(!loading);
 }
 void ProjectBrowser::refresh() {
-    for (auto *button : {&create, &add, &recent, &empty, &stems, &reaper, &logic, &recording, &package, &back})
+    for (auto *button : {&create, &add, &recent, &empty, &temporary, &stems, &reaper, &logic, &recording, &package, &back})
         button->setButtonText(localization::translate(button->getName()));
     browseButton.setButtonText(localization::translate(String::fromUTF8("Browse…")));
     search.setTextToShowWhenEmpty(localization::translate("Search recent projects"), theme::secondary);
@@ -259,6 +260,7 @@ void ProjectBrowser::resized() {
     recent.setBounds(44 + 2 * cell, 60, width - 2 * cell - 20, 38);
     stems.setVisible(mode == creating || mode == adding);
     empty.setVisible(mode == creating);
+    temporary.setVisible(mode == creating);
     package.setVisible(mode == adding);
     reaper.setVisible(mode == creating);
     logic.setVisible(mode == creating);
@@ -270,9 +272,10 @@ void ProjectBrowser::resized() {
         stems.setBounds(24, 114, creationWidth, 38);
         empty.setBounds(32 + creationWidth, 114, creationWidth, 38);
         recording.setBounds(40 + 2 * creationWidth, 114, width - 2 * creationWidth - 16, 38);
+        temporary.setBounds(24, 160, width, 38);
         const int importWidth = (width - 8) / 2;
-        reaper.setBounds(24, 160, importWidth, 38);
-        logic.setBounds(32 + importWidth, 160, width - importWidth - 8, 38);
+        reaper.setBounds(24, 206, importWidth, 38);
+        logic.setBounds(32 + importWidth, 206, width - importWidth - 8, 38);
     } else if (mode == adding) {
         const int optionWidth = (width - 10) / 2;
         stems.setBounds(24, 114, optionWidth, 38);

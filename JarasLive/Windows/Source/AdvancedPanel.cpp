@@ -24,7 +24,7 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
                             "Gravar",
                             String::fromUTF8("Re-renderizar"),
                             String::fromUTF8("Vídeo"),
-                            "Setlist", "Keyboard"};
+                            "Setlist", "Keyboard", "Pads"};
     for (int i = 0; i < names.size(); ++i) {
         auto *tab = tabs.add(new TextButton(names[i]));
         addAndMakeVisible(tab);
@@ -35,7 +35,7 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
         tab->getProperties().set("fontSize", 13);
         tab->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.15f));
         tab->setColour(TextButton::textColourOnId, Colours::white);
-        const char *icons[]{"metronome", "grid", "record.circle", "waveform", "video", "setlist", "piano"};
+        const char *icons[]{"metronome", "grid", "record.circle", "waveform", "video", "setlist", "piano", "grid"};
         tab->getProperties().set("leadingIcon", icons[i]);
         tab->onClick = [this, i] { select(i); };
     }
@@ -332,6 +332,12 @@ void AdvancedPanel::select(int index) {
         StringArray channels{"Omni"}; for (int i=1;i<=16;++i) channels.add(String(i));
         choice("MIDI channel", channels, jlimit(0,16,(int)appearance.value("jaras.keyboard.channel",0))+1,
             330, 105, 190, [this](int id) { save("jaras.keyboard.channel", id-1); });
+    }
+    if(index==7){
+        label(String::fromUTF8("Exporte os 6 presets, cores, volumes, Gate, MIDI e áudios em .zipfx."),18,58,560);
+        label(String::fromUTF8("Importar substitui os presets atuais e guarda a configuração anterior."),18,90,560);
+        for(int n=0;n<2;++n){auto *button=new TextButton(n?"Import Presets":"Export Preset");fields.add(button);page.addAndMakeVisible(button);
+            button->setBounds(18+n*185,140,170,32);button->onClick=[this,n]{if(transferPads)transferPads(n==1);};}
     }
     apply.setVisible(selected == 0);
     localization::panel(*this);

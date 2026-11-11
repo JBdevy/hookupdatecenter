@@ -15,7 +15,7 @@ class Workspace::Setlist final : public Component,
         const auto found = std::find(ids.begin(), ids.end(), state.selectedId.value_or(jaras::ID{}));
         const int count = (int)ids.size();
         const int index = found == ids.end() ? (direction > 0 ? 0 : count - 1)
-            : ((int)std::distance(ids.begin(), found) + direction + count) % count;
+            : (((int)std::distance(ids.begin(), found) + direction) % count + count) % count;
         state.selectedId = ids[(size_t)index];
         apply(std::move(state));
         return true;
@@ -203,7 +203,13 @@ class Workspace::Setlist final : public Component,
         w.selectionAreas.activate(*this);
         refresh();
     }
+    std::pair<std::vector<String>,int> smkList() const {
+        std::vector<String> names;int selected=-1;
+        for(const auto &entry:entries)if(!entry.block){if(w.session.focusedRegion==entry.id)selected=(int)names.size();names.push_back(entry.name);}
+        return {names,selected};
+    }
     bool activateSelection() {
+        w.session.smkPart.reset();w.session.smkPartPanel.clear();
         ++navigationSerial;
         auto target = w.session.focusedRegion ? w.session.focusedRegion : keyboardTarget;
         if (!target || w.session.busy) return false;
@@ -877,6 +883,7 @@ class Workspace::Setlist final : public Component,
         return drawer;
     }
     void paintListBoxItem(int row, Graphics &g, int width, int height, bool selected) override {
+        selected = selected && !w.session.smkPart;
         if (row < 0 || row >= getNumRows())
             return;
         const auto &entry = entries[(size_t)row];

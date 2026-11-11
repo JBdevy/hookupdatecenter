@@ -60,6 +60,8 @@ struct TestSnapshot { var project = TestProject() }
     @Published var busy = false
     @Published var ready = true
     @Published var missingAudioPrompt: Bool?
+    var isTemporary = false
+    func discardTemporarySession() throws { isTemporary = false }
     var importingAudio = false, error = ""
     var projectTabCount = 1
     var projectTabIndex = 0

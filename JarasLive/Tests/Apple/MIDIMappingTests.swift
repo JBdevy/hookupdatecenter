@@ -556,3 +556,13 @@ enum ProjectError: Error { case invalid(String) }
         StemAudioPlayback.shared.receiveMIDI(device: device, status: status, number: number, value: value)
     }
 }
+
+// No physical SMK is attached to this generic MIDI mapping fixture.
+@MainActor final class SMK37Link {
+ static let shared = SMK37Link()
+ func bind(_ show: ShowController) {}
+ func unbind(_ show: ShowController) {}
+ func claims(device: Int32, status: UInt8, number: UInt8) -> Bool { false }
+}
+
+public enum SMK37Navigation { public enum Panel: Equatable { case setlist, left } }

@@ -159,3 +159,94 @@ public struct VinhetasTriggers {
         }
     }
 }
+
+/// Portable six-bank library, shared with the desktop ZIP writer. Media is
+/// streamed and verified before any installed pad configuration is replaced.
+public enum VinhetasPackage {
+    struct Manifest: Codable {
+        var format = "catlive-zipfx"
+        var version = 1
+        var library: VinhetasLibrary
+        var files: [PortableProjectPackage.FileRecord]
+    }
+    static var limits: PortableProjectPackage.Limits {
+        var value = PortableProjectPackage.Limits()
+        value.maximumFiles = 97; value.maximumBytes = 8 * 1024 * 1024 * 1024
+        value.maximumManifestBytes = 2 * 1024 * 1024
+        return value
+    }
+    static func invalid(_ message: String) -> Error { ProjectError.invalid(message) }
+    public static func export(_ original: VinhetasLibrary, directory: URL, to destination: URL,
+                              progress: @escaping @Sendable (Double) -> Void = { _ in }) throws {
+        var library = original; try library.validate()
+        guard destination.pathExtension.lowercased() == "zipfx" else { throw invalid("Use a extensão .zipfx.") }
+        var paths: [URL: String] = [:], sources: [String: URL] = [:], records: [PortableProjectPackage.FileRecord] = []
+        for p in library.presets.indices { for n in library.presets[p].pads.indices {
+            guard let name = library.presets[p].pads[n].audioFile, !name.isEmpty else { library.presets[p].pads[n].audioFile = nil; continue }
+            let source = directory.appendingPathComponent(name).standardizedFileURL
+            guard source.deletingLastPathComponent() == directory.standardizedFileURL, VinhetasPad.accepts(source) else { throw invalid("Arquivo de pad inválido: \(name)") }
+            try PortableProjectPackage.validateRegularFile(source)
+            if paths[source] == nil {
+                var record = try PortableProjectPackage.fingerprint(source)
+                record.path = "Audio/" + UUID().uuidString + "." + source.pathExtension.lowercased()
+                paths[source] = record.path; sources[record.path] = source; records.append(record)
+            }
+            library.presets[p].pads[n].audioFile = paths[source]
+        }}
+        let total = records.reduce(UInt64(0)) { $0 + $1.bytes }
+        guard total <= limits.maximumBytes else { throw invalid("O banco de pads excede o limite de 8 GB.") }
+        let temp = destination.deletingLastPathComponent().appendingPathComponent("." + UUID().uuidString + ".zipfx")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let writer = try StoredProjectZIPWriter(url: temp)
+        let manifest = try JSONEncoder().encode(Manifest(library: library, files: records))
+        guard manifest.count <= limits.maximumManifestBytes else { throw invalid("A configuração dos pads é muito grande.") }
+        try writer.add(path: "manifest.json", data: manifest)
+        var copied: UInt64 = 0
+        for record in records {
+            let base = copied
+            try writer.add(path: record.path, source: sources[record.path]!, expected: record) { bytes in progress(Double(base + bytes) / Double(max(1, total))) }
+            copied += record.bytes
+        }
+        try writer.finish()
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try PortableProjectPackage.validateRegularFile(destination)
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temp)
+        } else { try FileManager.default.moveItem(at: temp, to: destination) }
+        progress(1)
+    }
+    /// Extract into a new staging directory. The caller validates audio duration
+    /// and commits the library only after every file has passed its hash check.
+    public static func prepareImport(_ archive: URL, into staging: URL,
+                                     progress: @escaping @Sendable (Double) -> Void = { _ in }) throws -> VinhetasLibrary {
+        guard archive.pathExtension.lowercased() == "zipfx" else { throw invalid("Selecione um arquivo .zipfx.") }
+        try PortableProjectPackage.validateRegularFile(archive)
+        let zip = try StoredProjectZIPReader(url: archive, limits: limits)
+        var manifest = try JSONDecoder().decode(Manifest.self, from: zip.data("manifest.json", maximum: limits.maximumManifestBytes))
+        guard manifest.format == "catlive-zipfx", manifest.version == 1 else { throw invalid("Formato de presets não suportado.") }
+        try manifest.library.validate()
+        let names = manifest.files.map(\.path)
+        let references = Set(manifest.library.presets.flatMap(\.pads).compactMap(\.audioFile))
+        guard Set(names).count == names.count, Set(names) == references,
+              Set(zip.entries.keys) == references.union(["manifest.json"]) else { throw invalid("O pacote de pads está incompleto.") }
+        for record in manifest.files {
+            let path = record.path.split(separator: "/", omittingEmptySubsequences: false)
+            guard path.count == 2, path[0] == "Audio", path[1] != ".", path[1] != "..",
+                  VinhetasPad.accepts(URL(fileURLWithPath: record.path)), zip.entries[record.path]?.size == record.bytes else { throw invalid("Mídia inválida no pacote de pads.") }
+        }
+        guard !FileManager.default.fileExists(atPath: staging.path) else { throw invalid("A pasta temporária já existe.") }
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        do {
+            var mapped: [String: String] = [:], copied: UInt64 = 0
+            for record in manifest.files {
+                let name = UUID().uuidString + "." + URL(fileURLWithPath: record.path).pathExtension.lowercased()
+                let base = copied
+                try zip.extract(record.path, to: staging.appendingPathComponent(name), expected: record) { bytes in progress(Double(base + bytes) / Double(max(1, zip.totalBytes))) }
+                mapped[record.path] = name; copied += record.bytes
+            }
+            for p in manifest.library.presets.indices { for n in manifest.library.presets[p].pads.indices {
+                if let name = manifest.library.presets[p].pads[n].audioFile { manifest.library.presets[p].pads[n].audioFile = mapped[name] }
+            }}
+            progress(1); return manifest.library
+        } catch { try? FileManager.default.removeItem(at: staging); throw error }
+    }
+}

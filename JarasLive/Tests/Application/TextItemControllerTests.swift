@@ -123,10 +123,10 @@ final class TextItemControllerTests: XCTestCase {
         XCTAssertEqual(bounded.snapshot.project, saved); XCTAssertEqual(bounded.projectRevision, revision)
         XCTAssertEqual(executor.textEdits, 1)
     }
-    @MainActor func testAddRejectsOverlapWithoutExecutingOrAddingUndo() throws {
+    @MainActor func testChordsRejectOverlapWithoutExecutingOrAddingUndo() throws {
         let executor = TextItemExecutor()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: fixture())
-        let track = try XCTUnwrap(show.current?.tracks.first?.id)
+        let track = try XCTUnwrap(show.current?.tracks.first { $0.kind == .chords }?.id)
         _ = try XCTUnwrap(show.addTextItem(track: track))
         show.send(.editSeek, value: 27)
         let original = show.snapshot.project, revision = show.projectRevision, insertions = executor.insertions

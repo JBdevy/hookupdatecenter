@@ -730,6 +730,11 @@ private struct TimelineGridContent: View, Equatable {
             }
         }
         #if os(macOS)
+        .onReceive(show.smkTrackScroll) { direction in
+            guard !remotePresentation else { return }
+            mixerScrollController.refresh()
+            mixerScrollController.scroll(to: mixerScrollController.metrics.offset + CGFloat(direction) * 72)
+        }
         .background(EditorSelectionArea(scope: .grid, moveCursor: moveEditingCursor) { selectAllItems() })
         .background(RegionShortcut(show: show, hasDeletionSelection: { show.selectedProgramChange != nil || deleteTarget != .none }, delete: { deleteSelection() }, undo: { show.undo() }, redo: { show.redo() }, create: {
             if let range = TimelineAreaSelection.shared.range, range.song == show.current?.id {

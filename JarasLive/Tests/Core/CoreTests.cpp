@@ -581,13 +581,36 @@ static void testQueuedSubplayCancellationAndRequeue() {
         auto next = engine.project(); next.regionSetlist->autoAdvance = false;
         if (wholeProject) engine.applyProjectEdit(next); else engine.configureRegionSetlist(*next.regionSetlist);
         engine.execute({CommandKind::play}); engine.advance(.01);
-        expect(engine.transport().playing && !engine.transport().subPlay.playing && engine.transport().queuedRegionId == "c",
-               "Auto off cancels a manual queue's paused Sub Play and prevents both resume and automatic retrigger");
-        engine.execute({CommandKind::queueRegion, "c"});
+        expect(engine.transport().playing && !engine.transport().subPlay.playing && !engine.transport().queuedRegionId,
+               "Auto off clears a manual queue and cancels its paused Sub Play without resuming it");
         engine.execute({CommandKind::queueRegion, "c"});
         expect(engine.transport().subPlay.playing && engine.transport().subPlay.position == 400,
-               "explicitly removing and readding the same manual queue rearms its elapsed pre-roll with Auto off");
+               "explicitly readding the cleared manual queue rearms its elapsed pre-roll with Auto off");
     }
+    for (bool queuedBeforeAuto : {false, true}) for (bool playing : {false, true})
+        for (bool wholeProject : {false, true}) {
+            auto p = project; p.regionSetlist->autoAdvance = false;
+            p.regionSetlist->automaticSubplay = false;
+            Engine engine; engine.loadProject(p);
+            engine.execute({CommandKind::selectRegion, "a"});
+            engine.execute({CommandKind::play}); engine.advance(20);
+            if (queuedBeforeAuto) engine.execute({CommandKind::queueRegion, "c"});
+            auto state = *engine.project().regionSetlist; state.autoAdvance = true;
+            engine.configureRegionSetlist(state);
+            if (!queuedBeforeAuto) engine.execute({CommandKind::queueRegion, "c"});
+            expect(engine.transport().queuedRegionId == "c", "manual waiting song fixture");
+            if (!playing) engine.execute({CommandKind::pause});
+            const auto before = engine.transport();
+            auto edited = engine.project(); edited.regionSetlist->autoAdvance = false;
+            if (wholeProject) engine.applyProjectEdit(edited); else engine.configureRegionSetlist(*edited.regionSetlist);
+            expect(!engine.transport().queuedRegionId && !engine.transport().queuedPlaylistEntryId &&
+                   !engine.transport().queue.songId && engine.transport().queueStartedAt == 0,
+                   "Auto off clears manually queued songs before/after Auto, playing/paused and both edit paths");
+            expect(engine.transport().playing == before.playing && engine.transport().position == before.position,
+                   "clearing Auto queue preserves main transport");
+            engine.advance(.01);
+            expect(!engine.transport().queuedRegionId, "Auto off cannot recreate the waiting song on the next tick");
+        }
     for (bool nextInit : {false, true}) for (bool bars : {false, true}) for (const ID target : {ID("b"), ID("c")}) {
         auto p = project; p.regionSetlist->automaticSubplayNext = nextInit;
         if (nextInit) for (auto& part : p.songs[0].parts) {
@@ -831,6 +854,24 @@ int main() {
     auto oldSpecial = std::move(oldTrackOrder.songs[0].tracks[0]);
     oldTrackOrder.songs[0].tracks.erase(oldTrackOrder.songs[0].tracks.begin());
     oldTrackOrder.songs[0].tracks.push_back(std::move(oldSpecial));
+
+    for (const auto* role : {"teleprompt", "teleprompt2"}) {
+        auto stacked = editable;
+        auto& track = stacked.songs[0].tracks[0];
+        track.role = {role}; track.name = fixedTrackName(track.role);
+        track.clips = {{"lyrics-first", {}, "First", 1, 2}, {"lyrics-second", {}, "Second", 1, 2}};
+        for (auto& clip : track.clips) clip.text = clip.name;
+        Engine lyrics; lyrics.loadProject(stacked);
+        lyrics.execute({CommandKind::play}); lyrics.advance(.25);
+        lyrics.execute({CommandKind::subSeek, "", 8}); lyrics.execute({CommandKind::subPlay});
+        lyrics.moveClip("lyrics-second", 2);
+        auto added = track.clips[0]; added.id = "lyrics-third";
+        lyrics.addRecordedClip("track", added);
+        expect(lyrics.project().songs[0].tracks[0].clips.size() == 3, "overlapping TP lyrics are retained during edits");
+        expect(lyrics.transport().playing && lyrics.transport().position == .25 && lyrics.transport().subPlay.playing && lyrics.transport().subPlay.position == 8,
+               "stacked lyrics edits preserve both live clocks");
+        validate(lyrics.project());
+    }
     fixedTrackOrder.applyProjectEdit(oldTrackOrder);
     expect(fixedTrackOrder.project().songs[0].tracks[0].id == "timecode", "project edits and undo normalize older special track order");
     expect(fixedTrackOrder.transport().playing && fixedTrackOrder.transport().position == 0.5, "ordering preserves live transport");
@@ -932,7 +973,7 @@ int main() {
         bool rejected = false; try { validate(repeatedText); } catch (...) { rejected = true; }
         expect(rejected, "visual text repetition cannot permit audio media on text items");
     }
-    for (const auto* role : {"teleprompt", "video", "chords"}) {
+    for (const auto* role : {"video", "chords"}) {
         auto singleLane = editable;
         auto& track = singleLane.songs[0].tracks[0];
         track.role = {role}; track.name = fixedTrackName(track.role);

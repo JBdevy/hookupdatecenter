@@ -6,6 +6,7 @@ namespace catlive {
 class AdvancedPanel final : public Component, private Timer {
   public:
     AdvancedPanel(Appearance &, Session &, std::function<void(String)>);
+    std::function<void(bool)> transferPads;
     void paint(Graphics &) override;
     void resized() override;
     bool keyPressed(const KeyPress &key) override {

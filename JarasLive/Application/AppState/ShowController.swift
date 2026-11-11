@@ -232,6 +232,7 @@ public struct ShowTimelinePresentationState: Equatable {
     private var regionNavigationTask: Task<Void, Never>?
     private var lastSetlistNavigationID: UUID?
     public func stepRegion(_ direction: Int, entries: [SetlistEntry]? = nil, commitAfterDelay: Bool = true) {
+        smkNavigation.selectSongs()
         selectedSetlistBlock = nil
         regionNavigationTask?.cancel(); regionNavigationTask = nil
         let regions = entries?.compactMap { entry -> Part? in
@@ -244,8 +245,9 @@ public struct ShowTimelinePresentationState: Equatable {
         let index: Int
         if let selected = regions.firstIndex(where: { $0.id == anchor }) {
             index = min(regions.count - 1, max(0, selected + direction))
-            guard index != selected else { if commitAfterDelay { finishRegionNavigation() }; return }
+            guard index != selected else { smkListFeedback(1, SMK37Protocol.window(regions.map(\.displayName), selected: index)); if commitAfterDelay { finishRegionNavigation() }; return }
         } else { index = direction < 0 ? regions.count - 1 : 0 }
+        smkListFeedback(1, SMK37Protocol.window(regions.map(\.displayName), selected: index))
         let id = regions[index].id
         focusedRegion = id
         lastSetlistNavigationID = id
@@ -278,7 +280,13 @@ public struct ShowTimelinePresentationState: Equatable {
         lastSetlistNavigationID = id
         return true
     }
+    public func browseRegion(_ id: UUID) {
+        guard playlistRegion(id) != nil else { return }
+        smkNavigation.selectSongs(); focusedRegion = id; lastSetlistNavigationID = id
+        setlistFocusRequest = UUID(); finishRegionNavigation()
+    }
     public func focusRegion(_ id: UUID) {
+        smkNavigation.selectSongs()
         lastSetlistNavigationID = nil
         selectedSetlistBlock = nil
         restoredCursorPosition = nil
@@ -760,6 +768,7 @@ public struct ShowTimelinePresentationState: Equatable {
         case .subPlayStop: send(snapshot.transport.subPlay.playing ? .subStop : .subPlay)
         case .addTrack: addTrackRequest &+= 1
         case .setlistUp, .setlistDown:
+            smkNavigation.selectSongs()
             let request = SetlistNavigationRequest(id: UUID(), direction: action == .setlistUp ? -1 : 1)
             setlistNavigationRequest = request
             setlistNavigationEvents.send(request)
@@ -794,6 +803,75 @@ public struct ShowTimelinePresentationState: Equatable {
     public var isPlaying: Bool { snapshot.transport.playing || snapshot.transport.subPlay.playing }
     public var canExecute: () -> Bool = { true }
     public var onStop: () -> Void = {}
+    @Published public var smkNavigation = SMK37Navigation()
+    public var smkPartsVisibility: () -> (left: Bool, setlist: Bool) = { (false, false) }
+    public var smkRecord: () -> Void = {}
+    public var smkPreviewPage: (Int) -> Void = { _ in }
+    public let smkTrackScroll = PassthroughSubject<Int, Never>()
+    public var smkListFeedback: (Int, [String]) -> Void = { _, _ in }
+    public var smkFeedback: (String, UInt32) -> Void = { _, _ in }
+    public func performSMKAction(_ action: SMK37Action) {
+        guard canExecute() else { return }
+        switch action {
+        case .padBusVolume(let value):
+            guard let track = current?.tracks.first(where: { $0.role.rawValue == "vinhetas" }) else { return }
+            send(.volume, target: track.id, value: SMK37Protocol.padBusGain(value))
+        case .record: smkRecord()
+        case .preview: togglePreview()
+        case .previewPage(let step): smkPreviewPage(step)
+        case .playlist(let step):
+            let lists = regionSetlist.playlists.filter { $0.songId == current?.id }
+            guard !lists.isEmpty, step != 0 else { return }
+            let anchor = lists.firstIndex { $0.id == selectedRegionPlaylist?.id }
+            let index = anchor.map { (($0 + step) % lists.count + lists.count) % lists.count } ?? (step > 0 ? 0 : lists.count - 1)
+            selectRegionPlaylist(lists[index].id)
+            if selectedRegionPlaylist?.id == lists[index].id { smkFeedback(lists[index].name, 0x409cff) }
+        case .fadeout(let active):
+            guard snapshot.transport.playing else { return }
+            if active { if !transportFadeout.active { triggerTransportFadeout(explicit: true) } }
+            else if transportFadeout.active {
+                cancelTransportFadeout(); smkFeedback("FADE OUT CANCELADO", 0xffb347)
+            }
+        case .scrollTracks(let direction): smkTrackScroll.send(direction)
+        case .playStop: performAction(.playStop)
+        case .pause: performAction(.pause)
+        case .repeatLoop: performAction(.repeatPlayback)
+        case .auto: toggleRegionAuto()
+        case .songs(let direction):
+            smkNavigation.selectSongs()
+            performAction(direction < 0 ? .setlistUp : .setlistDown)
+        case .currentParts(let direction): navigateSMKParts(queued: false, direction: direction)
+        case .queuedParts(let direction): navigateSMKParts(queued: true, direction: direction)
+        case .confirm:
+            switch smkNavigation.focus {
+            case .songs: _ = activateSetlistSelection()
+            case .parts(_, _, let marker):
+                guard current?.parts.contains(where: { $0.id == marker }) == true ||
+                    current?.markers?.contains(where: { $0.id == marker }) == true else { return }
+                send(.queueSection, target: marker)
+            }
+        }
+    }
+    public func navigateSMKParts(queued: Bool, direction: Int) {
+        guard let song = current else { return }
+        let transport = snapshot.transport
+        let region: Part?
+        if queued {
+            region = transport.subPlay.playing ? song.sectionRegion(at: transport.subPlay.position) :
+                song.parts.first { $0.id == transport.queuedRegionId }
+        } else {
+            region = transport.playing ? song.sectionPlaybackRegion(for: transport) :
+                song.parts.first { $0.id == focusedRegion.map(playlistRegionSourceID) } ?? song.sectionRegion(at: transport.editPosition ?? transport.position)
+        }
+        guard let region else { return }
+        let markers = [TimelineMarker(id: region.id, name: "INÍCIO", position: region.startTime, color: 0x409cff, section: true)] + song.sectionMarkers(in: region)
+        let visible = smkPartsVisibility()
+        guard let selected = smkNavigation.move(queued: queued, direction: direction,
+            leftOpen: visible.left, setlistOpen: visible.setlist, markers: markers.map(\.id)),
+            case let .parts(panel, _, _) = smkNavigation.focus else { return }
+        partsTabSelection.send(.init(secondary: queued, panel: panel))
+        if let index = markers.firstIndex(where: { $0.id == selected }) { smkListFeedback(queued ? 3 : 2, SMK37Protocol.window(markers.map(\.name), selected: index)) }
+    }
     public var togglePreview: () -> Void = {}
     public var toggleVideoWindow: () -> Void = {}
     public var toggleWorkspaceFullscreen: () -> Void = {}
@@ -3618,7 +3696,9 @@ public struct ShowTimelinePresentationState: Equatable {
         snapshot = try executor.snapshot()
         markChanged(refreshAudio: false); onProjectEdited()
     }
+    public var explicitSaveHandler: (() async -> Bool)?
     public func save() async {
+        if await explicitSaveHandler?() == true { return }
         let session = projectSessionID
         do { try await flushProject(); if projectSessionID == session { message = "Projeto salvo." } }
         catch {
