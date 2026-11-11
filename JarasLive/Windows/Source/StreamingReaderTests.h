@@ -259,13 +259,16 @@ void registerTests(const File& directory, Register&& test) {
             AudioBuffer<float> probe(2,64);
             if(blocked)require(until([&]{return fixture.readEntered.load();}),"Writer did not acquire the initial page");
             else require(until([&]{return reader.read(&probe,0,64,0,true,true);}),"Concurrent fixture did not warm its page");
-            std::atomic<bool> begin{false};
+            std::atomic<bool> begin{false}, writerPublished{!blocked};
             std::atomic<int> reads{0},successes{0},misses{0},invalid{0};
             std::vector<std::thread> readers;
             for(int lane=0;lane<8;++lane)readers.emplace_back([&] {
                 AudioBuffer<float> pcm(2,64);
                 while(!begin.load())std::this_thread::yield();
                 for(int block=0;block<20000;++block) {
+                    // Give the deliberately blocked worker a deterministic publication
+                    // phase even when a CI runner drains all rejected reads immediately.
+                    if(block==1000)while(!writerPublished.load())Thread::sleep(1);
                     const bool ok=reader.read(&pcm,0,64,0,true,true);
                     if(ok)++successes;else ++misses;
                     for(int ch=0;ch<2;++ch)for(int n=0;n<64;++n) {
@@ -276,11 +279,16 @@ void registerTests(const File& directory, Register&& test) {
                 }
             });
             begin=true;
+            bool published=true;
             if(blocked) {
                 while(reads.load()<1000)Thread::sleep(1);
                 fixture.holdRead=false;fixture.releaseRead.signal();
+                published=until([&]{return reader.read(&probe,0,64,0,true,true);});
+                // Always release/join readers before reporting a failed publication.
+                writerPublished=true;
             }
             for(auto &thread:readers)thread.join();
+            require(published,"Writer did not publish its page after being released");
             require(invalid.load()==0,"Concurrent readers observed PCM before its writer published it");
             require(successes.load()>0,"Rejected reader leases prevented the writer from publishing its page");
             if(blocked)require(misses.load()>0,"The writer-contention fixture never exercised a rejected lease");
