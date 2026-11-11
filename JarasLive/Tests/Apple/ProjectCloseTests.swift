@@ -33,6 +33,9 @@ enum CloseTestCommand { case stopAll }
     }
 }
 @MainActor final class ProjectDocuments {
+    var isTemporary = false
+    var documents: ProjectDocuments { self }
+    func discardTemporarySession() throws { isTemporary = false }
     struct RemoteOpening { var id = UUID() }
     var remoteOpening: RemoteOpening?
     static func finishRemoteProjectOpening(_ id: UUID, state: String) {}

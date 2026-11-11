@@ -1,4 +1,8 @@
 import AppKit
+@MainActor final class SMK37FirmwareTask {
+ static let shared = SMK37FirmwareTask()
+ var busy = false
+}
 @MainActor enum ProjectSyncControl { static var following = false }
 @MainActor final class CloseDocuments { var closeNotice = "" }
 @MainActor final class CloseProject { var documents = CloseDocuments() }
@@ -25,6 +29,11 @@ Task { @MainActor in
  let app = CloseApplication()
  let delegate = JarasApplicationDelegate(); app.delegate = delegate
  let guardClose = ProjectCloseGuard.shared
+ SMK37FirmwareTask.shared.busy = true
+ precondition(delegate.applicationShouldTerminate(app) == .terminateCancel,
+              "Firmware installation must prevent application termination")
+ precondition(guardClose.requests == 0 && !guardClose.pending)
+ SMK37FirmwareTask.shared.busy = false
  precondition(delegate.applicationShouldTerminate(app) == .terminateCancel,
               "A save decision must not enter AppKit's termination run loop and suspend audio scheduling")
  while !guardClose.pending { await Task.yield() }
