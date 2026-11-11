@@ -23,4 +23,12 @@ clang++ -std=c++17 -fobjc-arc -fsanitize=address,undefined -fno-sanitize-recover
     Core/ThirdParty/VST3/pluginterfaces/base/*.cpp \
     -framework AVFoundation -framework AppKit -framework AudioToolbox \
     -o "$test_build/test"
+# Keep ASan on both sides while testing PCM/state/thread ownership. The
+# ordinary-plugin pass below separately covers physical image unload/reload.
+CATLIVE_PIN_SANITIZED_FIXTURE=1 "$test_build/test" "$plugin"
+clang++ -std=c++17 -fPIC -bundle -DCATLIVE_MODULE_LIFECYCLE_DIAGNOSTICS \
+    -ICore/ThirdParty/VST3 Tests/Apple/VST3/GainFixture.cpp \
+    Core/ThirdParty/VST3/pluginterfaces/base/funknown.cpp \
+    Core/ThirdParty/VST3/pluginterfaces/base/ustring.cpp -framework CoreFoundation \
+    -o "$plugin/Contents/MacOS/GainFixture"
 "$test_build/test" "$plugin"

@@ -16,6 +16,15 @@ static void pauseModuleExit(){
 }
 
 int main(int argc,char **argv) { @autoreleasepool {
+    // ASan's image-global registrations may retain poisoned shadow addresses
+    // when a fully instrumented bundle is unloaded/reloaded across threads.
+    // Pin only that fixture in the fully instrumented pass. A second pass
+    // exercises real unloads with the host sanitized and a normal plugin.
+    void *sanitizedFixture=nullptr;
+    if(argc>1 && getenv("CATLIVE_PIN_SANITIZED_FIXTURE")) {
+        NSString *binary=[@(argv[1]) stringByAppendingPathComponent:@"Contents/MacOS/GainFixture"];
+        sanitizedFixture=dlopen(binary.UTF8String,RTLD_NOW|RTLD_LOCAL);assert(sanitizedFixture);
+    }
     // Intel/macOS 12 and ARM must both flush subnormal DSP tails, including
     // nested source/effect calls, and restore the caller's exact control word.
 #if defined(__x86_64__)
