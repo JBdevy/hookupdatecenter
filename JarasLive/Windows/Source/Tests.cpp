@@ -6375,7 +6375,7 @@ int runTests(const File &directory) {
                    song.tracks[1].clips[0].startTime == 15,
                "Drag did not transfer the item to its target track");
         auto &textTrack = song.tracks[1];
-        textTrack.role.id = "teleprompt";
+        textTrack.role.id = "chords";
         textTrack.name = jaras::fixedTrackName(textTrack.role);
         textTrack.clips[0].text = "A";
         textTrack.clips[0].audioFile.reset();
@@ -6393,7 +6393,7 @@ int runTests(const File &directory) {
         } catch (...) {
             rejected = true;
         }
-        expect(rejected && textTrack.clips[0].duration == 12, "Text trim overlapped its neighbour");
+        expect(rejected && textTrack.clips[0].duration == 12, "Chord trim overlapped its neighbour");
         rejected = false;
         try {
             clipEditing::move(p, id, 0, song.tracks[0].id);
@@ -6401,6 +6401,14 @@ int runTests(const File &directory) {
             rejected = true;
         }
         expect(rejected && textTrack.clips.size() == 2, "Text item escaped its own track");
+        for (const auto *role : {"teleprompt", "teleprompt2"}) {
+            textTrack.role.id = role;
+            textTrack.name = jaras::fixedTrackName(textTrack.role);
+            textTrack.clips[0].duration = 12;
+            clipEditing::resize(p, id, 15, 30);
+            expect(textTrack.clips[0].duration == 15 && textTrack.clips[1].startTime == 28,
+                   "Teleprompter lyric trim must allow overlap without moving its neighbour");
+        }
         jaras::validate(p);
     });
     test("Remote cipher authenticates directions, counters and fragmented frames", [&] {
