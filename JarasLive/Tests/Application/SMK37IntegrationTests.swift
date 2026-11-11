@@ -2,6 +2,20 @@ import XCTest
 @testable import JarasApplication
 
 final class SMK37IntegrationTests: XCTestCase {
+    func testPlayingAndQueuedSongTitlesAreAtomicBoundedAndClearable() throws {
+        let packet = try XCTUnwrap(SMK37Protocol.decode(SMK37Protocol.songTitles(playing: "Body Splash", queued: "Next song")))
+        XCTAssertEqual(packet.command, 0x1a)
+        XCTAssertEqual(packet.payload[0], 11)
+        XCTAssertEqual(String(bytes: packet.payload[1..<12], encoding: .ascii), "Body Splash")
+        XCTAssertEqual(packet.payload[12], 9)
+        XCTAssertEqual(String(bytes: packet.payload[13...], encoding: .ascii), "Next song")
+        let long = try XCTUnwrap(SMK37Protocol.decode(SMK37Protocol.songTitles(playing: String(repeating: "A", count: 100), queued: String(repeating: "B", count: 100))))
+        XCTAssertEqual(long.payload.count, 74)
+        XCTAssertEqual(long.payload[0], 36); XCTAssertEqual(long.payload[37], 36)
+        XCTAssertLessThanOrEqual(long.payload.count + 9, 96)
+        XCTAssertEqual(SMK37Protocol.decode(SMK37Protocol.songTitles(playing: "", queued: ""))?.payload, [0,0])
+    }
+
     func testPlaylistHeaderIsPersistentBoundedAndChecksummed() throws {
         let all = try XCTUnwrap(SMK37Protocol.decode(SMK37Protocol.playlist("All regions")))
         XCTAssertEqual(all.command, 0x19)

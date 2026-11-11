@@ -190,6 +190,9 @@ import CoreMIDI
         pending["action"] = nil
         queue("navigation", SMK37Protocol.navigation(kind: kind, rows: rows), force: true); flush()
     }
+    func songTitles(playing: String, queued: String) {
+        queue("songs", SMK37Protocol.songTitles(playing: playing, queued: queued))
+    }
     func playlist(_ name: String) { queue("playlist", SMK37Protocol.playlist(name)) }
     func playback(position: Double, start: Double, end: Double) {
         queue("playback", SMK37Protocol.playback(position: position, start: start, end: end))
@@ -239,6 +242,8 @@ import CoreMIDI
             let run = show.transportFadeout.run
             fadeout(active: run != nil, remaining: run?.remaining ?? 0, duration: run?.duration ?? 0)
             let region = show.current?.sectionPlaybackRegion(for: t)
+            let waiting = show.current?.parts.first { $0.id == t.queuedRegionId }
+            songTitles(playing: region?.name ?? "", queued: waiting?.name ?? "")
             playback(position: t.position, start: region?.startTime ?? 0, end: region?.endTime ?? show.current?.duration ?? 0)
             let loop = Self.loopLabel(show)
             transport(paused: t.paused == true, recording: TrackRecording.shared.recording,
@@ -285,7 +290,7 @@ import CoreMIDI
     }
     private func flush() {
         guard session.connected else { return }
-        let priority = ["action", "navigation", "transport", "fadeout", "playback", "loop", "selection"]
+        let priority = ["action", "navigation", "transport", "fadeout", "songs", "playback", "loop", "selection"]
         let keys = priority.filter { pending[$0] != nil } + pending.keys.filter { !priority.contains($0) }.sorted()
         for key in keys.prefix(4) {
             guard let bytes = pending[key], write(bytes) else { return }

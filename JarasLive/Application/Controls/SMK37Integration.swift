@@ -78,6 +78,15 @@ public enum SMK37Protocol {
         if bytes.count > 36 { bytes = Array(bytes.prefix(33)) + [46,46,46] }
         return encode(0x19, bytes)
     }
+    public static func songTitles(playing: String, queued: String) -> [UInt8] {
+        var payload: [UInt8] = []
+        for value in [playing, queued] {
+            var bytes = text(value)
+            if bytes.count > 36 { bytes = Array(bytes.prefix(33)) + [46,46,46] }
+            payload.append(UInt8(bytes.count)); payload += bytes
+        }
+        return encode(0x1a, payload)
+    }
     public static func playback(position: Double, start: Double, end: Double) -> [UInt8] {
         guard position.isFinite, start.isFinite, end.isFinite, end > start else { return encode(0x18, Array(repeating: 0, count: 8)) }
         let duration = end - start, elapsed = min(duration, max(0, position - start))

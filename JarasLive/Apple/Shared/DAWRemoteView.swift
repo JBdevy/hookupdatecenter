@@ -2988,6 +2988,7 @@ private struct RemoteSidebarRail<Content: View>: View {
         if let pads = state.vinhetas { link.remoteLibrary(pads) }
         link.fadeout(active: state.fadeout?.active == true, remaining: state.fadeout?.remaining ?? 0, duration: state.fadeout?.duration ?? 0)
         let region = state.timelineRegions.first { $0.id == state.currentRegion }
+        link.songTitles(playing: region?.name ?? "", queued: state.timelineRegions.first { $0.id == state.queuedRegion }?.name ?? "")
         link.playback(position: state.position, start: region?.start ?? 0, end: region?.end ?? state.duration)
         let marker = state.loopStart.flatMap { start in
             (state.markers ?? []).filter { $0.section == true && $0.position <= start + 0.000001 && $0.position >= (region?.start ?? 0) }.max { $0.position < $1.position }

@@ -53,6 +53,13 @@ public:
         return frame(24,data);
     }
     void playback(double position,double start,double end){queue("playback",playbackFrame(position,start,end));}
+    void songTitles(const String &playing,const String &queued) {
+        Bytes data;
+        for(auto name:{playing,queued}) {
+            auto bytes=textBytes(name);if(bytes.size()>36){bytes.resize(33);bytes.insert(bytes.end(),{46,46,46});}data.push_back((uint8_t)bytes.size());data.insert(data.end(),bytes.begin(),bytes.end());
+        }
+        queue("songs",frame(26,data));
+    }
     void playlist(const String &name) {
         auto bytes=textBytes(name);if(bytes.size()>36){bytes.resize(33);bytes.insert(bytes.end(),{46,46,46});}
         queue("playlist",frame(25,bytes));
@@ -130,6 +137,6 @@ private:
     }
     void queue(const String &key,const Bytes &b,bool force=false){if(!linked.load())return;if(force||sent[key]!=b)pending[key]=b;else pending.erase(key);}
     void send(const Bytes &b){if(output)output->sendMessageNow(MidiMessage(b.data(),(int)b.size(),0));}
-    void flush(){if(!linked.load())return;int count=0;for(const auto *key:{"action","navigation","transport","fadeout","playback","loop","selection"}){auto it=pending.find(key);if(it!=pending.end()){send(it->second);sent[it->first]=it->second;pending.erase(it);++count;}}while(count++<4&&!pending.empty()){auto it=pending.begin();send(it->second);sent[it->first]=it->second;pending.erase(it);}}
+    void flush(){if(!linked.load())return;int count=0;for(const auto *key:{"action","navigation","transport","fadeout","songs","playback","loop","selection"}){auto it=pending.find(key);if(it!=pending.end()){send(it->second);sent[it->first]=it->second;pending.erase(it);++count;}}while(count++<4&&!pending.empty()){auto it=pending.begin();send(it->second);sent[it->first]=it->second;pending.erase(it);}}
 };
 }

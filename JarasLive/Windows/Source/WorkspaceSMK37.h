@@ -29,6 +29,8 @@ void Workspace::updateSMK37() {
     smk37->library(vinhetasPanel->remoteSnapshot(true));
     smk37->fadeoutProgress(session.transportFadeoutActive(),session.transportFadeoutRemaining(),session.transportFadeoutDuration());
     const auto t=session.presentationTransport();const auto *song=session.song();const auto *region=session.core.sectionPlaybackRegion();
+    String queuedName;if(song&&t.queuedRegionId)for(const auto &part:song->parts)if(part.id==*t.queuedRegionId){queuedName=text(part.name);break;}
+    smk37->songTitles(region?text(region->name):String(),queuedName);
     smk37->playback(t.position,region?region->startTime:0,region?region->endTime:song?song->duration:0);
     String label=region?text(region->name):String();unsigned colour=region?region->color.value_or(0xffb347):0xffb347;
     const bool looping=t.loop.enabled||(t.multiLoop&&t.multiLoop->gates&&!t.multiLoop->released);
