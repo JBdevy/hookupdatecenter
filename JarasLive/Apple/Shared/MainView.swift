@@ -493,6 +493,10 @@ struct MainView: View {
                 presentedSessionID = show.projectSessionID
                 #if os(macOS)
                 restoreGlobalPanels()
+                // MIDI/SMK/Remote pads must be ready before their UI is opened.
+                if DesktopProjectTabs.shared.isForeground(show) {
+                    VinhetasController.shared.bind(show: show)
+                }
                 DAWRemoteHostBridge.bind(show)
                 ResolumeController.shared.bind(show)
                 #endif
