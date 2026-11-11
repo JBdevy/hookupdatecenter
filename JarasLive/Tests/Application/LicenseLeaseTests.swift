@@ -23,6 +23,7 @@ private actor SignedTrialBackend: BackendClient {
     var lastActivationProof: LicenseLeaseProof?
     init(result: LoginResult) { self.result = result }
     func setOffline() { offline = true }
+    func replaceResult(_ value: LoginResult) { result = value }
     func available() throws { requests += 1; if let failure { throw failure }; if offline { throw BackendFailure.unavailable } }
     func login(email: String, password: String, device: AuthorizedDevice) throws -> LoginResult { try available(); return result }
     func trial(device: AuthorizedDevice, hardwareID: String) throws -> LoginResult { try available(); return result }
@@ -418,5 +419,32 @@ extension LicenseLeaseTests {
         XCTAssertFalse(auth.allowed)
         XCTAssertFalse(auth.licenseTitle?.contains("Acesso Vitalício") == true)
         XCTAssertEqual(auth.licenseTitle, "Dispositivo não autorizado — faça login")
+    }
+}
+
+extension LicenseLeaseTests {
+    @MainActor func testExpiredTrialCanFetchAnAdminRenewalWithoutRestartingItsOwnDeadline() async throws {
+        let key = Curve25519.Signing.PrivateKey(), store = MemorySecureStore(), now = Date()
+        let device = try DeviceAuthorizationService.installation(store: store, name: "Renewed trial", platform: "macOS")
+        let account = UserAccount(id: UUID(), name: "Trial", email: "renewed@trial.invalid")
+        func result(expiresAt: Date) throws -> LoginResult {
+            let lease = Entitlement(status: "active", planId: "trial", expiresAt: expiresAt,
+                offlineValidUntil: expiresAt, serverTime: now, maxDevices: 1, features: ["desktop"])
+            return LoginResult(account: account,
+                session: AuthSession(accessToken: "trial-access", refreshToken: "trial-refresh", expiresAt: now.addingTimeInterval(900)),
+                entitlement: try signedLease(lease, key: key, account: account.id, device: device.id), device: device)
+        }
+        let expired = try result(expiresAt: now.addingTimeInterval(-60))
+        let backend = SignedTrialBackend(result: expired)
+        let auth = AuthService(backend: backend, store: store, installation: device, feature: "desktop",
+            verifier: LicenseLeaseVerifier(publicKey: key.publicKey.rawRepresentation))
+        _ = await auth.startTrial(hardwareID: "renewal-test-hardware")
+        XCTAssertFalse(auth.allowed, "Retrying an expired trial must not invent another seven days")
+        let renewed = try result(expiresAt: now.addingTimeInterval(7*86400))
+        await backend.replaceResult(renewed)
+        let success = await auth.startTrial(hardwareID: "renewal-test-hardware")
+        XCTAssertTrue(success)
+        XCTAssertTrue(auth.allowed)
+        XCTAssertEqual(auth.loginResult?.entitlement.expiresAt, renewed.entitlement.expiresAt)
     }
 }

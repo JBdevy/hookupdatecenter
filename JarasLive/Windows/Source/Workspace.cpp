@@ -808,7 +808,7 @@ class LoginPanel final : public Panel {
             resized();
             email->grabKeyboardFocus();
         });
-        trial = &button(String::fromUTF8("Trial teste · 7 dias"), 226, 261, 184,
+        trial = &button(auth.trialFinished ? String::fromUTF8("Verificar teste") : String::fromUTF8("Trial teste · 7 dias"), 226, 261, 184,
                         [this, offersTrial] { if (offersTrial) auth.trial(auth.deviceName); else ModalSheet::dismiss(*this); });
         if (!offersTrial) trial->setButtonText(localization::translate("Fechar"));
         manage = &button("Gerenciar dispositivos", 30, 443, 380, [this] { devices(); });
@@ -968,7 +968,7 @@ class LoginPanel final : public Panel {
 };
 class LoginBackdrop final : public Component {
   public:
-    explicit LoginBackdrop(Auth &auth) : panel(auth, !auth.trialFinished) {
+    explicit LoginBackdrop(Auth &auth) : panel(auth, true) {
         setOpaque(true);
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);

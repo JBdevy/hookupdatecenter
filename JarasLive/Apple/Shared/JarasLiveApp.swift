@@ -178,7 +178,7 @@ struct RootView: View {
                 StartupView(progress: nil, stage: [.launching, .checkingSession].contains(auth.phase) ? "Restaurando ativação…" : "Validando acesso…")
             } else {
                 LoginView(auth: auth, backend: container.backend,
-                          offersTrial: auth.trialDaysRemaining != 0,
+                          offersTrial: true,
                           showsCloseButton: false)
             }
         }

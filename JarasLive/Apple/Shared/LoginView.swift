@@ -46,7 +46,7 @@ struct LoginView: View {
             HStack(spacing: 12) {
                 Button("Login") { login = true; field = 1 }
                     .buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: login))
-                if offersTrial { Button("Trial teste · 7 dias") {
+                if offersTrial { Button(auth.trialDaysRemaining == 0 ? "Verificar teste de 7 dias" : "Trial teste · 7 dias") {
                     Task { if await auth.startTrial(hardwareID: hardwareID) { onAuthorized() } }
                 }.buttonStyle(StageButtonStyle(color: JarasTheme.accent, active: false)) }
                 if !offersTrial && showsCloseButton { Button("Fechar") { dismiss() }.buttonStyle(StageButtonStyle()) }
