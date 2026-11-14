@@ -2133,7 +2133,7 @@ int runTests(const File &directory) {
             song.beatsPerBar=beats; song.beatUnit=unit;
             const double beat=60./song.bpm*4/unit,bar=beat*beats;
             const auto distantTicks=timelineGrid::ticks(song,0,bar,15.9/beat);
-            expect(std::all_of(distantTicks.begin(),distantTicks.end(),[](const auto &tick){return tick.primary;}),"Beats appeared before there was room for each one");
+            expect(std::all_of(distantTicks.begin(),distantTicks.end(),[&](const auto &tick){return tick.primary || std::abs(tick.time/(2*beat)-std::round(tick.time/(2*beat)))<1e-9;}),"Intermediate lines must follow the visible two-beat division before every beat fits");
             const auto closeTicks=timelineGrid::ticks(song,0,bar,16.1/beat);
             expect(closeTicks.size()==(size_t)beats+1,"Each beat must enter together");
             for(size_t i=0;i<closeTicks.size();++i)expect(closeTicks[i].time==i*beat,"Beat line shifted off its musical position");

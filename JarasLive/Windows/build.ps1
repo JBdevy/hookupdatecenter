@@ -41,7 +41,14 @@ if($LASTEXITCODE){throw 'Falha ao preparar o runtime FFmpeg do vídeo.'}
 if (-not $SkipTests) {
     $catCtest=Join-Path (Split-Path $catCmake) 'ctest.exe'
     & $catCtest --test-dir $BuildDirectory -C $Configuration --output-on-failure
-    if ($LASTEXITCODE) { throw 'Os testes falharam. O pacote não foi gerado.' }
+    if ($LASTEXITCODE) {
+        $reportPath=Join-Path $BuildDirectory 'test-results/results.json'
+        if (Test-Path -LiteralPath $reportPath) {
+            $report=Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+            if ($report.failed) { Write-Host $report.failed }
+        }
+        throw 'Os testes falharam. O pacote não foi gerado.'
+    }
 }
 $packageDirectory=Join-Path $BuildDirectory "package/CatLive-Windows-x64"
 New-Item -ItemType Directory -Force $packageDirectory | Out-Null

@@ -237,7 +237,7 @@ inline void MasterMixerTests::run(const File &directory) {
         };
         for(bool right:{false,true}) {
             auto &panel=*workspace.footerMixer;panel.setMasterRight(right);
-            int previousFader=0;
+            int previousFader=0; bool previousExpanded=false;
             for(int height:{232,240,255,256,300,480,724}) {
                 panel.setSize(640,height);
                 for(auto *strip:{panel.master.get(),panel.strips[0]}) {
@@ -255,14 +255,16 @@ inline void MasterMixerTests::run(const File &directory) {
                         require(GlyphArrangement::getStringWidth(theme::semiboldFont(8),value)+4.f<=strip->peak->getWidth(),
                                 "Peak readout clips its two-decimal value at the minimum text size");
                     require(strip->fader.getHeight()>=115,"Compact mixer sacrificed the fader to keep FX slots");
-                    if(height<=255)require(geometry.slots.isEmpty()&&strip->visibleSlots()==0&&strip->slotAt({20,20})<0,
+                    const bool expanded = strip->getHeight() - (panel.showsIcons ? 30 : 0) > 253;
+                    if(!expanded)require(geometry.slots.isEmpty()&&strip->visibleSlots()==0&&strip->slotAt({20,20})<0,
                         "Compact mixer still paints or hit-tests hidden FX slots");
                     else require(!geometry.slots.isEmpty()&&strip->slotAt({20,geometry.slots.getY()})==0,
                         "Expanded mixer failed to restore FX slots");
                 }
                 const int currentFader=panel.strips[0]->fader.getHeight();
-                if(height>255)require(currentFader==previousFader,"Expanded mixer stretched controls instead of revealing slots");
-                previousFader=currentFader;
+                const bool expanded = panel.strips[0]->getHeight() - (panel.showsIcons ? 30 : 0) > 253;
+                if(expanded && previousExpanded)require(currentFader==previousFader,"Expanded mixer stretched controls instead of revealing slots");
+                previousFader=currentFader; previousExpanded=expanded;
             }
         }
         workspace.resized();workspace.footerMixer->setMasterRight(false);
