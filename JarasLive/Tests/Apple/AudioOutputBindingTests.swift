@@ -157,11 +157,18 @@ struct OutputDevice: Identifiable, Equatable {
     /* OUTPUT_BINDING_METHODS */
 }
 typealias AudioDeviceSettings = AudioOutputBindingHarness
+@MainActor final class BufferedOutputHarness {
+    let hardwareEngine = AudioDeviceSettings.shared.engine
+    func start() throws {}
+    func stop() {}
+    func setOutputEnabled(_ enabled: Bool) {}
+}
 @MainActor final class OutputStartupHarness {
     let engine = AudioDeviceSettings.shared.engine
     var usesSelectedHardware = true
     var auxiliarySelectedHardware = false
     var mobileOutput: OutputEngine?
+    var bufferedOutput: BufferedOutputHarness?
     var outputAllowed = true
     var licenseAllowed = true
     /* OUTPUT_STARTUP_METHODS */

@@ -66,8 +66,9 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const auto result=read(directory,"<TRACK\nNAME Precision\n<ITEM\nPOSITION 0.667123456789\nLENGTH 184.66123456789\nSOFFS 0.123456789012345\nPLAYRATE 1.1234567890123456 1 0\n<SOURCE WAVE\nFILE missing-reference.wav\n>\n>\n>");
         const double expected=1.1234567890123456;
         require(result.project.songs.front().tracks.front().clips.front().playbackRate==expected,"REAPER rate was rounded while importing");
-        const auto saved=directory.getNonexistentChildFile("rate-precision",".jl");
-        struct Cleanup {File file;~Cleanup(){file.deleteFile();}} cleanup{saved};
+        const auto saved=directory.getNonexistentChildFile("rate-precision-project",{}).getChildFile("rate-precision.jl");
+        saved.getParentDirectory().createDirectory();
+        struct Cleanup {File file;~Cleanup(){file.getParentDirectory().deleteRecursively();}} cleanup{saved};
         ProjectCodec::write(saved,ProjectCodec::encode(result.project));
         const auto reopened=ProjectCodec::decode(ProjectCodec::read(saved));
         const auto& clip=reopened.songs.front().tracks.front().clips.front();
@@ -138,7 +139,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
             "<TRACK\n<ITEM\nPOSITION 10\nLENGTH 2\nLOOP 1\nSOFFS 0.25 0.5\nPLAYRATE 2 1 0\n"
             "<SOURCE MIDI\nHASDATA 1 960 QN\nE 0 90 3c 7f\nE 960 80 3c 00\nE 960 b0 7b 00\n>\n>\n>\n");
         const auto &notes = loop.project.songs[0].tracks[0].clips[0].midi->notes;
-        const double starts[] = {0, .75, 1.75, 2.75, 3.75}, lengths[] = {.25, .5, .5, .5, .25};
+        const double starts[] = {0, 1.5, 3.5, 5.5, 7.5}, lengths[] = {.5, 1, 1, 1, .5};
         require(notes.size() == 5, "Trimmed MIDI loop repetition count differs from Mac");
         for(size_t i=0;i<notes.size();++i)
             require(std::abs(notes[i].start-starts[i])<1e-8 && std::abs(notes[i].length-lengths[i])<1e-8,

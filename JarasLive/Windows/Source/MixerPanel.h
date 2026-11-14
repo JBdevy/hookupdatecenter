@@ -624,7 +624,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         }
         int slotAt(Point<int> point) const {
             const auto bounds=layout().slots;
-            if (!track() || !jaras::fixedTrackName(track()->role).empty() || !bounds.contains(point))return -1;
+            if ((track() && !jaras::fixedTrackName(track()->role).empty()) || !bounds.contains(point))return -1;
             const int slot=firstSlot+(point.y-bounds.getY())/21;
             return slot<totalSlots()?slot:-1;
         }

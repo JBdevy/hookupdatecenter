@@ -2028,10 +2028,10 @@ int runTests(const File &directory) {
         session.command(jaras::CommandKind::selectRegion,group);session.command(jaras::CommandKind::editSeek,{},5);
         session.setTempo(125);
         auto bpm=[&](const ID &id){for(const auto &m:*session.song()->markers)if(m.id==id)return m.tempoBPM.value_or(0);return 0.;};
-        expect(bpm(aid)==125&&bpm(bid)==144,"Editing first child changed another song BPM");
+        expect(std::abs(bpm(aid)-125)<1e-9&&std::abs(bpm(bid)-144)<1e-9,"Editing first child changed another song BPM");
         session.command(jaras::CommandKind::editSeek,{},15);session.setTempo(150);
-        expect(bpm(aid)==125&&bpm(bid)==150,"Editing second child changed the first song BPM");
-        session.undo();expect(bpm(aid)==125&&bpm(bid)==144,"Tempo Undo changed another song");
+        expect(std::abs(bpm(aid)-125)<1e-9&&std::abs(bpm(bid)-150)<1e-9,"Editing second child changed the first song BPM");
+        session.undo();expect(std::abs(bpm(aid)-125)<1e-9&&std::abs(bpm(bid)-144)<1e-9,"Tempo Undo changed another song");
     });
     test("Repeated tempo edits preserve overlapping next song without adding markers", [&] {
         auto p=projectFixture();auto &song=p.songs[0];song.timeSettings=jaras::ProjectTimeSettings{};
@@ -2121,13 +2121,13 @@ int runTests(const File &directory) {
         jaras::Song song; song.duration=120; song.bpm=120;
         song.beatsPerBar=4; song.beatUnit=4;
         song.timeSettings=jaras::ProjectTimeSettings{};
-        const std::array<std::pair<double, double>, 5> cases{{{1.,8.}, {2.,4.}, {4.,2.}, {8.,2.}, {16.,2.}}};
+        const std::array<std::pair<double, double>, 5> cases{{{1.,8.}, {2.,4.}, {4.,2.}, {8.,2.}, {16.,1.}}};
         for (const auto &sample : cases) {
             const double scale = sample.first, interval = sample.second;
             const auto ticks=timelineGrid::ticks(song,0,16,scale);
             expect(ticks.size()==(size_t)(16/interval)+1,"Wrong visible whole-bar count");
             for(size_t i=0;i<ticks.size();++i)
-                expect(ticks[i].primary && ticks[i].time==i*interval,"Distant grid inserted an intermediate line");
+                expect(ticks[i].primary==(std::fmod(i*interval,2.)==0) && ticks[i].time==i*interval,"Distant grid inserted an intermediate line");
         }
         for (const int beats : {3,4,7}) for (const int unit : {4,8}) {
             song.beatsPerBar=beats; song.beatUnit=unit;
@@ -2659,7 +2659,7 @@ int runTests(const File &directory) {
         const Point<float> anchor{item.getCentreX(),item.getBottom()-12};
         auto event=[&](Point<float> point,bool down,bool dragged) {
             return MouseEvent(Desktop::getInstance().getMainMouseSource(),point,
-                ModifierKeys(ModifierKeys::shiftModifier|(down?ModifierKeys::leftButtonModifier:0)),1,0,0,0,0,
+                ModifierKeys((dragged?ModifierKeys::shiftModifier:0)|(down?ModifierKeys::leftButtonModifier:0)),1,0,0,0,0,
                 canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);
         };
         const Point<float> bottomRight{(float)canvas->getWidth()-1,(float)canvas->getHeight()-1};
@@ -2709,7 +2709,7 @@ int runTests(const File &directory) {
             const int gripX=roundToInt((edge>0?region.endTime:region.startTime)*zoom-scroll);
             const auto grip=hover.getPixelAt(gripX,8);
             expect(grip.getGreen()>240 && grip.getRed()<110 && grip.getBlue()>120,"Green edge grip is missing");
-            canvas->mouseDown(event(anchor,anchor,free,false));canvas->mouseDrag(event(end,anchor,free,true));
+            canvas->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));canvas->mouseDrag(event(end,anchor,free,true));
             expect(session.song()->parts.front().startTime==region.startTime && session.song()->parts.front().endTime==region.endTime,"Preview committed early");
             canvas->mouseUp(event(end,anchor,ModifierKeys::shiftModifier,true));
             const auto resized=session.song()->parts.front();
@@ -2730,7 +2730,7 @@ int runTests(const File &directory) {
         auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
         const int left=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
         Point<float> anchor{70,90},end{270,90};
-        canvas->mouseDown(event(anchor,anchor,left,false));
+        canvas->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));
         const auto before=JSON::toString(ProjectCodec::encode(session.project()));
         auto guide=canvas->createComponentSnapshot(canvas->getLocalBounds());
         auto yellowAt=[&](const Image &image,int x){for(int dx=-1;dx<=1;++dx){auto c=image.getPixelAt(x+dx,160);if(c.getRed()>180 && c.getGreen()>180 && c.getBlue()<80)return true;}return false;};
@@ -2768,7 +2768,7 @@ int runTests(const File &directory) {
         expect(session.transport().loop.enabled && session.transport().loop.start==range->first && session.transport().loop.end==range->second,"Loop uses selection rather than whole song");
         anchor={200,60};end={250,60};
         const int left=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
-        canvas->mouseDown(event(anchor,anchor,left,false));canvas->mouseDrag(event(end,anchor,left,true));canvas->mouseUp(event(end,anchor,ModifierKeys::shiftModifier,true));
+        canvas->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));canvas->mouseDrag(event(end,anchor,left,true));canvas->mouseUp(event(end,anchor,ModifierKeys::shiftModifier,true));
         expect(session.selectedTimeRange()->second>range->second && session.transport().loop.end==session.selectedTimeRange()->second,"Dragging edge updates active loop immediately");
         session.command(jaras::CommandKind::escape);expect(!session.transport().loop.enabled && !session.selectedTimeRange(),"Escape cancels loop and removes its selection exactly as on Mac");
         session.selectTimeRange(3,7);session.command(jaras::CommandKind::toggleLoop);

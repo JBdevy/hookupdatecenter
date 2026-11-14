@@ -8,7 +8,7 @@ using floatingControlTests::require;
 
 inline MouseEvent mouse(Component &canvas, Point<float> at, Point<float> anchor, bool down, bool dragged = false) {
     return MouseEvent(Desktop::getInstance().getMainMouseSource(), at,
-        ModifierKeys(ModifierKeys::shiftModifier | (down ? ModifierKeys::leftButtonModifier : 0)),
+        ModifierKeys((dragged ? ModifierKeys::shiftModifier : 0) | (down ? ModifierKeys::leftButtonModifier : 0)),
         1, 0, 0, 0, 0, &canvas, &canvas, Time::getCurrentTime(), anchor, Time::getCurrentTime(), 1, dragged);
 }
 inline int differences(const Image &a, const Image &b, juce::Rectangle<int> area) {

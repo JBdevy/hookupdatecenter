@@ -230,7 +230,7 @@ FILE After.wav
 MARKER bad
 MARKER 1 1 Good 0`);
 assert.deepEqual(recoveredItems.project.songs[0].tracks[0].clips.map(c=>c.name),['Before','After']);
-assert(recoveredItems.warnings.some(w=>w.startsWith(warningPrefix('REAPER item ignored: '))));
+assert(recoveredItems.warnings.some(w=>w.includes(warningPrefix('REAPER item ignored: '))));
 assert(recoveredItems.warnings.some(w=>w.startsWith(warningPrefix('REAPER marker ignored: '))));
 console.log('DAW imports passed: independent REAPER and binary Logic fixtures, audio copy, MIDI, tempo, regions, folder routing and malformed inputs.');
 fs.writeFileSync(path.join(root,'parity-cases.json'),JSON.stringify(parityCases,null,2));

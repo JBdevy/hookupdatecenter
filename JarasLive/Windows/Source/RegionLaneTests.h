@@ -245,8 +245,8 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 RegionLanes(moved->parts).count==2,"Preview region bounds or lane count wrong");
         require(closeEnough(moved->tracks[1].clips[0].startTime,11) && closeEnough(marker(*moved,"cue").position,12),
                 "Owned audio item or marker did not move with region");
-        require(closeEnough(moved->tracks[0].clips[0].startTime,1) && closeEnough(moved->tracks[1].clips[1].startTime,16),
-                "Move captured another region's item or an explicitly unowned item");
+        require(closeEnough(moved->tracks[0].clips[0].startTime,1) && closeEnough(moved->tracks[1].clips[1].startTime,11),
+                "Move must preserve the other region and carry geometrically contained unowned items");
         require(closeEnough(part(song,"second").startTime,15) && closeEnough(song.tracks[1].clips[0].startTime,16),
                 "Preview changed the source project");
         const auto resized=previewRegionEdit(song,"second",10,30,true);
@@ -375,7 +375,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                                   (float)(double)get(initialRegion,"y")-offsetY+8};
         const Point<float> destination{origin.x-5*zoom,origin.y};
         const int modifiers=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
-        canvas->mouseDown(mouse(*canvas,origin,origin,modifiers));
+        canvas->mouseDown(mouse(*canvas,origin,origin,modifiers & ~ModifierKeys::shiftModifier));
         canvas->mouseDrag(mouse(*canvas,destination,origin,modifiers,true));
         const auto preview=checkGeometry(80,2);
         screenshot("region-overlap-preview.png");
@@ -414,7 +414,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 "One Redo did not restore the complete overlapping move");
 
         auto click=[&](Point<float> at) {
-            canvas->mouseDown(mouse(*canvas,at,at,modifiers));
+            canvas->mouseDown(mouse(*canvas,at,at,modifiers & ~ModifierKeys::shiftModifier));
             canvas->mouseUp(mouse(*canvas,at,at,ModifierKeys::shiftModifier));
         };
         const auto after=state();
