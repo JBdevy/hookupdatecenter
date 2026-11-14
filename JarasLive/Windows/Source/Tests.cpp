@@ -7489,6 +7489,28 @@ int runTests(const File &directory) {
                    "Parts loop scheduled a second seek after the callback jump");
         }
     });
+    test("Live tempo shares a 500 ms admission window and rejects typed changes while playing", [&] {
+        jaras::Project project;project.id=uuid();project.name="Tempo gate";
+        jaras::Song song;song.id=uuid();song.name="Song";song.duration=60;
+        song.timeSettings=jaras::ProjectTimeSettings{};song.timeSettings->timebase=jaras::ProjectTimebase::free;
+        project.songs={song};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        double now=100;session.tempoEditClock=[&]{return now;};
+        session.command(jaras::CommandKind::play);
+        session.setTempo(121);expect(session.tempoBPM()==121,"First live step was delayed");
+        session.setTempo(122);session.setTempo(120);
+        expect(session.tempoBPM()==121,"Live controls bypassed the shared admission window");
+        now+=.499;session.setTempo(120);expect(session.tempoBPM()==121,"Accepted before 500 ms");
+        now+=.001;session.setTempo(120);expect(session.tempoBPM()==120,"Rejected exact 500 ms boundary");
+        session.setTypedTempo(180);expect(session.tempoBPM()==120,"Typed tempo changed during playback");
+        now+=10;expect(session.tempoBPM()==120,"Rejected commands accumulated");
+        session.command(jaras::CommandKind::stopAll);
+        session.setTypedTempo(180);session.setTempo(181);session.setTempo(182);
+        expect(session.tempoBPM()==182,"Stopped edits were throttled");
+        session.command(jaras::CommandKind::play);session.setTempo(183);
+        expect(session.tempoBPM()==183,"New playback inherited the old admission deadline");
+    });
     auto report = object();
     Array<var> names;
     for (auto &name : passed)

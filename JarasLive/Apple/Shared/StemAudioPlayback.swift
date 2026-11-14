@@ -1217,11 +1217,11 @@ struct TimecodePlaybackSpan {
         self.auxiliarySelectedHardware = auxiliarySelectedHardware
         self.realtime = realtime
         #if os(macOS)
-        // Explicit test switch until transport, live input and device recovery
-        // have been checked on the older Intel hardware with the real project.
+        // Hardware playback uses the preallocated PCM ring by default. Keep an
+        // explicit diagnostic opt-out; manual/offline engines retain their clock.
         if realtime, !engine.isInManualRenderingMode,
            engine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware,
-           ProcessInfo.processInfo.environment["CATLIVE_BUFFERED_MAC_AUDIO"] == "1" {
+           ProcessInfo.processInfo.environment["CATLIVE_BUFFERED_MAC_AUDIO"] != "0" {
             let graph = AVAudioEngine()
             self.engine = graph
             bufferedOutput = JarasBufferedAudioOutput(engine: graph, hardwareEngine: engine)

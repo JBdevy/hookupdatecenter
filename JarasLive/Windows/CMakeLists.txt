@@ -305,3 +305,7 @@ target_compile_options(LoopbackDeviceTests PRIVATE /utf-8 /bigobj)
 
 target_link_libraries(CatLive PRIVATE qjs)
 install(FILES "${catlive_quickjs_SOURCE_DIR}/LICENSE" DESTINATION . RENAME QuickJS-LICENSE.txt)
+
+add_executable(LiveTempoEditGateTests "${CATLIVEROOT}/Tests/Core/LiveTempoEditGateTests.cpp")
+target_compile_features(LiveTempoEditGateTests PRIVATE cxx_std_17)
+add_test(NAME LiveTempoEditGateTests COMMAND LiveTempoEditGateTests)

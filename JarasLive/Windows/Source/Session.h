@@ -1,5 +1,6 @@
 #pragma once
 #include "AudioEngine.h"
+#include "../../Core/Transport/TempoEditGate.hpp"
 #include "MediaDropLayout.h"
 #include "ProjectCodec.h"
 #include "AudioExport.h"
@@ -87,6 +88,9 @@ class Session final : private Timer {
     ID duplicatePlaylistRegion(const ID &playlist, const ID &entry);
     double tempoBPM() const;
     void setTempo(double bpm);
+    bool tempoInputAllowed() const { return !transport().playing && !transport().subPlay.playing; }
+    void setTypedTempo(double bpm) { if (tempoInputAllowed()) setTempo(bpm); }
+    std::function<double()> tempoEditClock = [] { return Time::getMillisecondCounterHiRes() / 1000.; };
     void configureTiming(double bpm, int beats, int unit, jaras::ProjectTimeSettings);
     void configureEffects(const ID &, const var &);
     void configureEffects(const std::map<ID, var> &);
@@ -257,6 +261,7 @@ class Session final : private Timer {
     ThreadPool bpmWorker{1};
     std::shared_ptr<std::atomic<bool>> bpmCancellation;
     std::shared_ptr<std::atomic<bool>> loadCancellation;
+    jaras::LiveTempoEditGate liveTempoEdits;
     std::shared_ptr<std::atomic<bool>> graphCancellation;
     std::shared_ptr<int> alive = std::make_shared<int>(0);
     ID preparedSong;

@@ -9,4 +9,4 @@ CATLIVE_EXPORT_TEST_OPTIMIZED=1 bash scripts/test-offline-export.sh
 # Selected hardware clock; the fixture mutes physical output.
 CATLIVE_TEST_VOICES="${CATLIVE_TEST_VOICES:-200}" \
 CATLIVE_TEST_SOURCE_RATE="${CATLIVE_TEST_SOURCE_RATE:-44100}" \
-CATLIVE_BUFFERED_MAC_AUDIO="${CATLIVE_BUFFERED_MAC_AUDIO:-1}" "$test_dir/test"
+"$test_dir/test"

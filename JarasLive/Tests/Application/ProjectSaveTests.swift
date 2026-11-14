@@ -697,16 +697,17 @@ final class ProjectSaveTests: XCTestCase {
         let executor = SaveTestExecutor(); executor.playing = true
         var now = 100.0
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project, playbackClock: { now })
+        show.tempoEditClock = { now }
         var audioUpdates = 0
         show.audioUpdate = { _, _ in audioUpdates += 1 }
         for _ in 0..<20 {
-            now += 0.04
+            now += 0.5
             show.adjustTempo(-1)
             XCTAssertEqual(executor.timeAtTempoEdit, now - 100, accuracy: 0.000001)
         }
         XCTAssertEqual(audioUpdates, 20, "Publish only the new tempo, not an obsolete audio update before it")
         show.tick()
-        XCTAssertEqual(executor.advancedTime, 0.8, accuracy: 0.000001, "The next timer tick must not consume edit time twice")
+        XCTAssertEqual(executor.advancedTime, 10, accuracy: 0.000001, "The next timer tick must not consume edit time twice")
     }
     @MainActor func testRegionTempoShiftsAllMarkersAndKeepsNextSong() throws {
         var project = Project.empty(name: "Tempo batch")
@@ -1735,5 +1736,36 @@ extension ProjectSaveTests {
         XCTAssertTrue(try XCTUnwrap(stored).songs[0].tracks.contains { $0.id == track })
         XCTAssertFalse(show.hasUnsavedChanges)
         XCTAssertFalse(show.needsSave)
+    }
+}
+
+extension ProjectSaveTests {
+    @MainActor func testLiveTempoSharesAdmissionAcrossButtonsMIDIAndRemoteWithoutQueue() throws {
+        var project = Project.empty(name: "Live tempo gate")
+        project.songs[0].markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0, color: 0, tempoBPM: 120)]
+        let executor = SaveTestExecutor(); executor.playing = true
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        var now = 100.0; show.tempoEditClock = { now }
+        show.adjustTempo(1)
+        XCTAssertEqual(show.tempoControlBPM, 121)
+        show.performAction(.tempoUp, midiValue: 127)
+        show.setTempo(122) // Native Remote and remote host dispatch use this same entry.
+        show.adjustTempo(-1)
+        XCTAssertEqual(show.tempoControlBPM, 121)
+        now += 0.499; show.adjustTempo(-1)
+        XCTAssertEqual(show.tempoControlBPM, 121)
+        now += 0.001; show.performAction(.tempoDown, midiValue: 127)
+        XCTAssertEqual(show.tempoControlBPM, 120)
+        show.setTypedTempo(180)
+        XCTAssertEqual(show.tempoControlBPM, 120)
+        now += 10 // Advancing the clock alone cannot replay any discarded command.
+        XCTAssertEqual(show.tempoControlBPM, 120)
+        executor.playing = false; show.send(.stopAll)
+        XCTAssertTrue(show.tempoInputAllowed)
+        show.setTypedTempo(180); show.adjustTempo(1); show.adjustTempo(1)
+        XCTAssertEqual(show.tempoControlBPM, 182)
+        executor.playing = true; show.send(.play)
+        show.adjustTempo(1)
+        XCTAssertEqual(show.tempoControlBPM, 183)
     }
 }

@@ -146,6 +146,7 @@ public struct ShowTimelinePresentationState: Equatable {
     private var publishingTimelinePlaybackTick = false
     @Published public private(set) var snapshot: ShowSnapshot {
         didSet {
+            if !snapshot.transport.playing && !snapshot.transport.subPlay.playing { liveTempoEdits.reset() }
             if oldValue.project.effectiveTimelineLocks & 4 == 0 && snapshot.project.effectiveTimelineLocks & 4 != 0,
                let song = current {
                 // A lock can arrive during a live knob preview, including Undo
@@ -1965,9 +1966,18 @@ public struct ShowTimelinePresentationState: Equatable {
             return true
         } catch { message = error.localizedDescription; return false }
     }
+    private var liveTempoEdits = LiveTempoEditGate()
+    var tempoEditClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    public var tempoInputAllowed: Bool { !snapshot.transport.playing && !snapshot.transport.subPlay.playing }
+    public func setTypedTempo(_ bpm: Double) {
+        guard tempoInputAllowed else { return }
+        setTempo(bpm)
+    }
     public func setTempo(_ bpm: Double) {
-        guard bpm.isFinite else { return }
+        guard bpm.isFinite, canControl(), !finishing else { return }
         let value = min(300, max(60, bpm))
+        guard abs(value - tempoControlBPM) > 1e-9,
+              liveTempoEdits.accept(running: !tempoInputAllowed, at: tempoEditClock()) else { return }
         if let region = tempoControlRegion {
             adjustRegionTempo(value - tempoControlBPM, region: region)
         } else if var marker = current?.activeTempoMarker(at: tempoControlPosition), let previous = marker.tempoBPM {

@@ -117,9 +117,10 @@ class TempoControl final : public Component {
         refreshMeter();
     }
     void editBPM() {
+        if (!session.tempoInputAllowed()) return;
         auto *parent = getTopLevelComponent();
         ModalSheet::open(*parent,"BPM",std::make_unique<BPMInputPanel>(bpm.getButtonText(),
-            [safe=SafePointer<TempoControl>(this)](double value){if(safe)safe->apply(value,0,0);},error),390,188);
+            [safe=SafePointer<TempoControl>(this)](double value){if(safe && safe->session.tempoInputAllowed())safe->apply(value,0,0);},error),390,188);
     }
 
     int signatureWidth() const { return roundToInt(81 * getWidth() / 171.f); }

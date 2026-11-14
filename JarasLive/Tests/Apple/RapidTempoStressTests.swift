@@ -48,6 +48,9 @@ func require(_ value: @autoclosure () -> Bool, _ message: @autoclosure () -> Str
     if let preparation = try audio.pendingPlaybackPreparation(state, revision: 1) { await preparation.value }
     try await Task.sleep(nanoseconds: 250_000_000)
     for track in project.songs[0].tracks { _ = audio.meter(for: track.id) }
+    if ProcessInfo.processInfo.environment["CATLIVE_BUFFERED_MAC_AUDIO"] != "0" {
+        require(audio.bufferedAudioDiagnostics() != nil, "Normal hardware playback must use the buffered output without a test opt-in")
+    }
     print("STRESS_PREPARED", voiceCount, audio.bufferedAudioDiagnostics() ?? [:])
     let ring = JarasCaptureRing(channels: 2, capacity: 262144); ring.beginCapture()
     _ = try audio.attachOutputCapture(track.id, postFX: true, postFader: true, ring: ring)

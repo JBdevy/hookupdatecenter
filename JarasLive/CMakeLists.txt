@@ -41,3 +41,7 @@ else()
     target_compile_options(MatrixPatchTests PRIVATE -UNDEBUG)
 endif()
 add_test(NAME MatrixPatchTests COMMAND MatrixPatchTests)
+
+add_executable(LiveTempoEditGateTests "Tests/Core/LiveTempoEditGateTests.cpp")
+target_compile_features(LiveTempoEditGateTests PRIVATE cxx_std_17)
+add_test(NAME LiveTempoEditGateTests COMMAND LiveTempoEditGateTests)

@@ -683,7 +683,7 @@ private struct TempoControl: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel("BPM · Tap tempo")
                 .jarasHelp("Tap tempo · Right-click to edit BPM")
-                .immediateRightClick { bpmDraft = bpmText; invalidBPM = false; editing = true }
+                .immediateRightClick { guard show.tempoInputAllowed else { return }; bpmDraft = bpmText; invalidBPM = false; editing = true }
             VStack(spacing: 2) {
                 tempoStep(1, symbol: "plus")
                 tempoStep(-1, symbol: "minus")
@@ -695,6 +695,7 @@ private struct TempoControl: View {
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(JarasTheme.line).allowsHitTesting(false))
             .onAppear(perform: refreshMeter)
             .onChange(of: meterFocus) { _ in commitMeter() }
+            .onChange(of: show.tempoInputAllowed) { if !$0 { editing = false } }
             .onChange(of: show.current?.meterBeats) { _ in refreshMeter() }
             .onChange(of: show.current?.meterUnit) { _ in refreshMeter() }
             .onChange(of: show.snapshot.project.id) { _ in show.resetTapTempo(); refreshMeter() }
@@ -730,12 +731,13 @@ private struct TempoControl: View {
         refreshMeter()
     }
     private func commitBPM() {
+        guard show.tempoInputAllowed else { editing = false; return }
         guard let value = Double(bpmDraft.replacingOccurrences(of: ",", with: ".")), value.isFinite else {
             rejectBPM(bpmText); return
         }
         let limited = min(300, max(60, value))
         guard limited == value else { rejectBPM(String(format: "%g", limited)); return }
-        show.resetTapTempo(); show.setTempo(value); editing = false
+        show.resetTapTempo(); show.setTypedTempo(value); editing = false
     }
     private func rejectBPM(_ replacement: String) {
         bpmDraft = replacement; invalidBPM = true; bpmFocus = true

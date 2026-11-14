@@ -1022,6 +1022,8 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var pendingFadeout: (id: UUID, active: Bool, sent: Date)?
     @State private var fadeoutReceivedAt = Date()
     @State private var tempoStepPending = false
+    @State private var tempoStepGate = LiveTempoEditGate()
+    @State private var tempoStepRequest = UUID()
     @State private var pitchStepPending = false
     @State private var selectedTracks: Set<UUID> = []
     @State private var trackActionsOpen = false
@@ -1405,7 +1407,7 @@ private struct RemoteSidebarRail<Content: View>: View {
             if !visible { selectedSetlistEntries = []; setlistSelectionAnchor = nil }
         }
         .onChange(of: state.selectedPlaylist) { _ in selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; nativeSetlistRemoval = nil; confirmingRemoval = false; localShow?.selectSetlistBlock(nil) }
-        .onChange(of: state.project) { _ in remoteVinhetasFeedback.reset(); selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; pitchStepPending = false }
+        .onChange(of: state.project) { _ in remoteVinhetasFeedback.reset(); selectedSetlistEntries = []; draggingSetlistEntries = []; setlistSelectionAnchor = nil; editingTracks = false; selectedTracks.removeAll(); regionMovePreview = nil; trackReordering.cancel(); trackScrolling.selectedItem = nil; trackScrolling.pointerReset = UUID(); deletingTracks = nil; splittingItems = nil; nativeMarker = nil; nativeNormalization = false; tempoStepPending = false; tempoStepGate.reset(); tempoStepRequest = UUID(); pitchStepPending = false }
         .onAppear {
             if !local && !observer {
                 RemoteMIDIActions.shared.start()
@@ -1457,6 +1459,9 @@ private struct RemoteSidebarRail<Content: View>: View {
             trackScrolling.itemSelection.replace([]); trackScrolling.selectionScope = .grid
             selectedTracks = []; localShow?.setMixerTrackSelection([], anchor: nil)
             TimelineAreaSelection.shared.clear()
+        }
+        .onChange(of: state.playing || state.subPlaying) { running in
+            if !running { tempoStepGate.reset(); tempoStepPending = false; tempoStepRequest = UUID() }
         }
         .onChange(of: state.bpm) { _ in tempoStepPending = false }
         .onChange(of: state.pitchSemitones) { _ in pitchStepPending = false }
@@ -2712,8 +2717,14 @@ private struct RemoteSidebarRail<Content: View>: View {
         guard !tempoStepPending else { return }
         let next = min(300, max(60, state.bpm + delta))
         guard next != state.bpm else { return }
+        guard tempoStepGate.accept(running: state.playing || state.subPlaying, at: ProcessInfo.processInfo.systemUptime) else { return }
         tempoStepPending = true
+        let request = UUID(); tempoStepRequest = request
         action(.tempo, value: next)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if tempoStepRequest == request { tempoStepPending = false }
+        }
     }
     private var fadeoutActive: Bool {
         if let pendingFadeout, Date().timeIntervalSince(pendingFadeout.sent) < 2 { return pendingFadeout.active }

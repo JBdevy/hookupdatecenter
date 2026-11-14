@@ -900,6 +900,7 @@ void Session::syncClock() {
 }
 void Session::publishTransport(bool preserveLatency, bool routingOnly, bool followMainClock) {
     const auto &t = transport();
+    if (tempoInputAllowed()) liveTempoEdits.reset();
     audio.setLoopMixer(t.multiLoop);
     AudioEngine::State state;
     state.preserveLatency = preserveLatency;
@@ -2141,6 +2142,10 @@ void Session::setTempo(double value) {
     if (jaras::projectSync::readOnly()) return;
     if (busy || !song() || !std::isfinite(value)) return;
     if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de alterar o andamento.");
+    const auto now = tempoEditClock();
+    const auto requested = jlimit(60., 300., value);
+    if (std::abs(requested - tempoBPM()) < 1e-9) return;
+    if (!liveTempoEdits.accept(!tempoInputAllowed(), now)) return;
     const auto profile=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_TEMPO",{});
     auto measurements=object();auto stage=Time::getMillisecondCounterHiRes();
     const auto mark=[&](const char* name){if(profile.isNotEmpty()){const auto now=Time::getMillisecondCounterHiRes();put(measurements,name,now-stage);stage=now;}};

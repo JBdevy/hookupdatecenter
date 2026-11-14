@@ -1036,3 +1036,16 @@ public enum TimelineTimeRuler {
         return milliseconds % 1000 == 0 ? base : base + String(format: ".%03d", milliseconds % 1000)
     }
 }
+
+/// Admission only: rejected controls never create delayed work or move the deadline.
+struct LiveTempoEditGate {
+    private var lastAccepted: TimeInterval?
+    mutating func reset() { lastAccepted = nil }
+    mutating func accept(running: Bool, at now: TimeInterval) -> Bool {
+        guard now.isFinite else { return false }
+        guard running else { reset(); return true }
+        if let lastAccepted, now >= lastAccepted, now - lastAccepted < 0.5 - 1e-9 { return false }
+        lastAccepted = now
+        return true
+    }
+}
