@@ -1,4 +1,14 @@
 import AppKit
+@MainActor final class MacShowMode {
+ static let shared = MacShowMode()
+ var refreshes = 0
+ func refresh() { refreshes += 1 }
+}
+@MainActor final class MacShowLidBrightness {
+ static let shared = MacShowLidBrightness()
+ var stops = 0
+ func stop() { stops += 1 }
+}
 @MainActor final class SMK37FirmwareTask {
  static let shared = SMK37FirmwareTask()
  var busy = false
@@ -28,6 +38,10 @@ import AppKit
 Task { @MainActor in
  let app = CloseApplication()
  let delegate = JarasApplicationDelegate(); app.delegate = delegate
+ delegate.applicationWillFinishLaunching(Notification(name: NSApplication.willFinishLaunchingNotification))
+ precondition(MacShowMode.shared.refreshes == 1)
+ delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+ precondition(MacShowLidBrightness.shared.stops == 1)
  let guardClose = ProjectCloseGuard.shared
  SMK37FirmwareTask.shared.busy = true
  precondition(delegate.applicationShouldTerminate(app) == .terminateCancel,
