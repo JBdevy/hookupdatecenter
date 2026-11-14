@@ -1988,6 +1988,9 @@ let orderedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512
     let sample = orderedBuffer.floatChannelData![0][128]
     precondition(abs(sample - 0.2) < 0.003, "reordering track/master processors must preserve both scheduled PCM streams: \(sample), \(orderedFX.inserted)")
 }
+// Prepare both chains before measuring reorder stability. The first Master
+// insertion legitimately attaches its processors; subsequent orders reuse them.
+orderedAudio.previewFX(nil, settings: orderedFX)
 try checkOrderedPlayers()
 let orderedNodes = orderedEngine.attachedNodes.count
 for keys in [["Reverb", "Delay", "EQ", "Compressor"], ["Compressor", "EQ", "Reverb", "Delay"], ["EQ", "Compressor", "Delay", "Reverb"]] {

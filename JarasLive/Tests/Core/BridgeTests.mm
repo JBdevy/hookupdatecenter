@@ -216,10 +216,9 @@ int main(int argc,char**argv){@autoreleasepool{
         tempoSnapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
         expect([[tempoSnapshot[@"project"][@"songs"][0][@"markers"] lastObject][@"tempoTimebase"] isEqual:mode], "marker timebase survives bridge snapshot");
         NSMutableDictionary* expectedTransport=[NSJSONSerialization JSONObjectWithData:[NSJSONSerialization dataWithJSONObject:snapshot[@"transport"] options:0 error:&error] options:NSJSONReadingMutableContainers error:&error];
-        // Relative tempo resizes occupied spans after 8 s, keeping the 8 s gap.
-        // The main head at 2 s stays put; the secondary head follows the music.
-        expectedTransport[@"subPlay"][@"position"] = [mode isEqual:@"relative"] ? @19.2 : @22;
-        expect(equalJSON(expectedTransport,tempoSnapshot[@"transport"]), "timebase edit keeps playing state and retimes the secondary head with occupied audio");
+        // Switching timebase preserves the rate already applied and both heads.
+        expectedTransport[@"subPlay"][@"position"] = @22;
+        expect(equalJSON(expectedTransport,tempoSnapshot[@"transport"]), "timebase edit retains applied rate and both playback heads");
     }
     for (double position : {8.137875, 7.932125}) {
         error=nil;
