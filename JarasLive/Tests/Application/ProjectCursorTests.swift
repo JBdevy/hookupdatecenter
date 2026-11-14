@@ -589,10 +589,11 @@ final class ProjectCursorTests: XCTestCase {
             var tempo = TimelineMarker(id: UUID(), name: "TEMPO", position: 340, color: 0x999999, tempoBPM: 180, tempoBeats: 3, tempoUnit: 8)
             show.setMarker(tempo)
             XCTAssertEqual(show.current?.markers?.first?.position, 0)
+            tempo.tempoPlaybackRate = show.current?.markers?.first(where: { $0.id == tempo.id })?.tempoPlaybackRate
             XCTAssertEqual(show.current?.markers?.filter { $0.position > 0 }, [marker, tempo]); XCTAssertEqual(show.current?.duration, 340)
             tempo.tempoBPM = 90; show.setMarker(tempo)
             show.deleteManualMarker(tempo.id)
-            XCTAssertEqual(audioRevisions, mode == .relative ? [0, 1, 2, 3] : [0, 0, 0, 0])
+            XCTAssertEqual(audioRevisions, [0, 1, 2, 3])
             XCTAssertEqual(show.current?.markers?.filter { $0.position > 0 }, [marker])
             XCTAssertEqual(executor.snapshotCount, reads); XCTAssertEqual(executor.loadCount, loads)
             XCTAssertEqual(show.snapshot.transport, transport)
@@ -613,10 +614,11 @@ final class ProjectCursorTests: XCTestCase {
         var revisions: [UInt64] = []; show.audioUpdate = { _,revision in revisions.append(revision) }
         var settings = ProjectTimeSettings(); settings.timebase = .relative
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
-        XCTAssertEqual(show.current?.tempoAudioSegments(clip).map(\.audioRate), [1.25, 1.875])
+        XCTAssertEqual(show.current?.tempoAudioSegments(clip).map(\.audioRate), [1.25])
         settings.timebase = .free
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
-        XCTAssertEqual(show.current?.tempoAudioSegments(clip), [clip])
+        XCTAssertEqual(show.current?.tempoAudioSegments(clip).map(\.audioRate), [1.25])
+        XCTAssertEqual(show.current?.tempoAudioSegments(clip).first?.sourceOffset, clip.sourceOffset)
         settings.divisions = 0
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
         XCTAssertEqual(revisions, [1, 2, 2], "switching timebase updates voices, while a grid-only edit keeps them")
@@ -642,7 +644,7 @@ final class ProjectCursorTests: XCTestCase {
         global.tempoTimebase = .free; show.setMarker(global)
         settings.timebase = .free
         XCTAssertTrue(show.configureProjectTime(bpm: 120, beats: 4, unit: 4, settings: settings))
-        XCTAssertEqual(revisions, [1, 2, 3, 4, 4, 4, 5, 6, 7])
+        XCTAssertEqual(revisions, [1, 2, 3, 4, 5, 6, 7, 8, 9])
         XCTAssertEqual(executor.snapshotCount, reads); XCTAssertEqual(executor.loadCount, loads)
         XCTAssertEqual(show.snapshot.transport, transport)
         XCTAssertEqual(show.snapshot.project, executor.project)

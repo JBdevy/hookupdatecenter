@@ -721,21 +721,21 @@ final class ProjectSaveTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
         show.focusRegion(region.id)
         show.adjustTempo(1)
-        XCTAssertEqual(show.current?.markers?.compactMap(\.tempoBPM), [100,121,151,90])
+        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100,121,151.25,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
         XCTAssertEqual(show.current?.markers?.first(where: { $0.id == cue.id }), cue)
         XCTAssertEqual(executor.tempoBatches, 1)
         XCTAssertEqual(show.current?.parts, project.songs[0].parts)
         show.setTempo(125)
-        XCTAssertEqual(show.current?.markers?.compactMap(\.tempoBPM), [100,125,155,90])
+        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100,125,156.25,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
         show.adjustTempo(-1)
-        XCTAssertEqual(show.current?.markers?.compactMap(\.tempoBPM), [100,124,154,90])
+        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100.0,124,155,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
         XCTAssertEqual(show.current?.markers?.compactMap(\.tempoReferenceBPM), [100,120,150,90])
         XCTAssertEqual(executor.tempoBatches, 3)
         try show.snapshot.project.validate()
         let copy = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(show.snapshot.project))
         XCTAssertEqual(copy.songs[0].markers, show.current?.markers)
     }
-    @MainActor func testRegionTempoBoundsApplySameDeltaAndRestoreInheritedTempo() throws {
+    @MainActor func testRegionTempoBoundsPreserveRatiosAndRestoreInheritedTempo() throws {
         var project = Project.empty(name: "Tempo bounds")
         let region = Part(id: UUID(), name: "Selected", startTime: 10, endTime: 30)
         project.songs[0].parts = [region]; project.songs[0].duration = 60
@@ -744,17 +744,23 @@ final class ProjectSaveTests: XCTestCase {
             TimelineMarker(id: UUID(), name: "TEMPO", position: 20, color: 0, tempoBPM: 299, tempoBeats: 3, tempoUnit: 8)]
         let executor = SaveTestExecutor()
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        let innerID = project.songs[0].markers![1].id
         show.focusRegion(region.id); show.adjustTempo(2)
-        XCTAssertEqual(show.current?.activeTempoMarker(at: 10)?.tempoBPM, 121)
-        XCTAssertEqual(show.current?.activeTempoMarker(at: 20)?.tempoBPM, 300)
-        XCTAssertEqual(show.current?.activeTempoMarker(at: 30)?.tempoBPM, 299)
+        let limited = 120.0 * 300.0 / 299.0
+        func entryBPM() -> Double {
+            let current = show.current!
+            return current.activeTempoMarker(at: current.parts[0].startTime + 1e-6)!.tempoBPM!
+        }
+        func innerBPM() -> Double { show.current!.markers!.first(where: { $0.id == innerID })!.tempoBPM! }
+        XCTAssertEqual(entryBPM(), limited, accuracy: 1e-9)
+        XCTAssertEqual(innerBPM(), 300, accuracy: 1e-9)
         XCTAssertEqual(show.current?.activeTempoMarker(at: 5)?.tempoBPM, 120)
-        XCTAssertEqual(show.current?.activeTempoMarker(at: 20)?.tempoBeats, 3)
+        XCTAssertEqual(show.current?.markers?.first(where: { $0.id == innerID })?.tempoBeats, 3)
         show.adjustTempo(1); XCTAssertEqual(executor.tempoBatches, 1)
         show.adjustTempo(-1)
-        XCTAssertEqual(show.current?.activeTempoMarker(at: 10)?.tempoBPM, 120)
-        XCTAssertEqual(show.current?.activeTempoMarker(at: 20)?.tempoBPM, 299)
-        XCTAssertEqual(show.current?.activeTempoMarker(at: 30)?.tempoBPM, 299)
+        XCTAssertEqual(entryBPM(), limited - 1, accuracy: 1e-9)
+        XCTAssertEqual(innerBPM(), 300 * (limited - 1) / limited, accuracy: 1e-9)
+        XCTAssertEqual(show.current?.activeTempoMarker(at: show.current!.parts[0].endTime + 1e-6)?.tempoBPM, 299)
         XCTAssertEqual(executor.tempoBatches, 2)
         try show.snapshot.project.validate()
     }

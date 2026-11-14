@@ -6,6 +6,7 @@ final class HardwareKeyboardInputTests: XCTestCase {
         let bindings = DAWActionBindings()
         let cases: [(Int, HardwareKeyboardModifiers, DAWAction)] = [
             (0x16, .command, .saveProject),
+            (0x15, .shift, .createRegionsFromItems),
             (0x44, .command, .toggleFullscreen),
             (0x10, [], .muteTrack), (0x16, .shift, .soloTrack),
             (0x2c, [], .playStop), (0x2c, .shift, .subPlayStop),
