@@ -108,6 +108,19 @@ void orderAndOverflow() {
     queue.push({7,8});
     check(queue.consume(1, [](const Command& c) { if(c.serial!=7 || c.payload!=8) std::abort(); })==1, "restart");
 }
+void scheduledBoundary() {
+    Queue queue;
+    for(std::uint64_t i=0;i<40;++i)queue.push({i,i<16?0ull:512ull});
+    std::uint64_t next=0;
+    const auto apply=[&](const Command &c) noexcept {if(c.serial!=next++)std::abort();};
+    auditRealtime=true;
+    const auto before=queue.consumeWhile(100,[](const Command &c) noexcept {return c.payload==0;},apply);
+    const auto waiting=queue.consumeWhile(100,[](const Command &c) noexcept {return c.payload<512;},apply);
+    const auto atBoundary=queue.consumeWhile(3,[](const Command &c) noexcept {return c.payload<=512;},apply);
+    auditRealtime=false;
+    check(before==16 && waiting==0 && atBoundary==3 && next==19,"scheduled boundary/order/budget failed");
+    check(queue.consume(100,apply)==21 && next==40,"control drain did not finish scheduled commands");
+}
 void concurrentPublication() {
     Queue queue;
     constexpr std::uint64_t total=500000;
@@ -411,7 +424,7 @@ void cancelledPreparedEdits() {
 }
 }
 int main() {
-    orderAndOverflow(); concurrentPublication(); preparedOwnership(); immutablePages(); explicitRunLifecycle(); latestControlSnapshots(); pcmCaptureQueue(); borrowedRecordingLifetime(); cancelledPreparedEdits();timelineTempoMaps();
+    orderAndOverflow(); scheduledBoundary(); concurrentPublication(); preparedOwnership(); immutablePages(); explicitRunLifecycle(); latestControlSnapshots(); pcmCaptureQueue(); borrowedRecordingLifetime(); cancelledPreparedEdits();timelineTempoMaps();
     check(realtimeAllocations.load()==0 && realtimeDeallocations.load()==0,
           "consumer allocated or released heap ownership");
     std::cout << "REALTIME_COMMANDS_PREPARED_EDITS_PAGE_LIFETIMES_RUN_STATE_ZERO_CALLBACK_HEAP_OK\n";

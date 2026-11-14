@@ -23,7 +23,7 @@ import AppKit
     init(defaults: UserDefaults = .standard, now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) {
         self.defaults = defaults; self.now = now
         if let data = defaults.data(forKey: Self.preferenceKey), let saved = try? JSONDecoder().decode(Preferences.self,from: data) {
-            state = TeleprompterTimer(mode: .countdown,targetSeconds: saved.targetSeconds,initAutoEnabled: saved.initAutoEnabled)
+            state = TeleprompterTimer(mode: saved.mode,targetSeconds: saved.targetSeconds,initAutoEnabled: saved.initAutoEnabled)
         } else { state = TeleprompterTimer(mode: .countdown) }
         super.init()
     }
@@ -35,7 +35,7 @@ import AppKit
     func displayText(spaced: Bool = false) -> String {
         let seconds = state.displaySeconds(at: now())
         let safe = seconds.isFinite ? max(-Double(Int.max / 2), min(Double(Int.max / 2), seconds)) : 0
-        return TeleprompterTimer.formatted(Int(ceil(safe)), spaced: spaced)
+        return TeleprompterTimer.formatted(Int(mode == .progressive ? floor(safe) : ceil(safe)), spaced: spaced)
     }
     func displayOpacity() -> Double {
         expired() && Int(now() * 2) % 2 != 0 ? 0.25 : 1
@@ -44,10 +44,13 @@ import AppKit
     @discardableResult func setTargetText(_ text: String) -> Bool {
         guard !running, let seconds = TeleprompterTimer.targetSeconds(from: text) else { return false }
         change { value in
-            value.setMode(.countdown,at: now())
             value.setTarget(seconds: seconds,at: now())
         }
         return true
+    }
+    func setMode(_ mode: TeleprompterTimerMode) {
+        guard !running else { return }
+        change { $0.setMode(mode,at: now()) }
     }
     func setInitAutoEnabled(_ enabled: Bool) { change { $0.setInitAutoEnabled(enabled) } }
     func start() { change { $0.start(at: now()) } }
@@ -72,7 +75,7 @@ import AppKit
     func showConfiguration() {
         #if os(macOS)
         if let configuration { configuration.makeKeyAndOrderFront(nil); return }
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 380,height: 405),styleMask: [.titled,.closable],backing: .buffered,defer: false)
+        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 380,height: 445),styleMask: [.titled,.closable],backing: .buffered,defer: false)
         panel.title = JarasLocalization.string("Timer")
         panel.contentMinSize = NSSize(width: 340,height: 240); panel.level = .normal; panel.isReleasedWhenClosed = false
         panel.delegate = self
@@ -111,6 +114,10 @@ struct TeleprompterTimerConfiguration: View {
     @State private var stopRunID: UUID?
     var body: some View {
         VStack(spacing: 12) {
+            Picker("Timer", selection: Binding(get: { controller.mode }, set: { controller.setMode($0) })) {
+                Text("Progressive").tag(TeleprompterTimerMode.progressive)
+                Text("Countdown").tag(TeleprompterTimerMode.countdown)
+            }.pickerStyle(.segmented).disabled(controller.running)
             TimelineView(.periodic(from: .now,by: 0.5)) { _ in
                 Text(controller.displayText()).font(.jarasSystem(size: 30,weight: .bold,design: .monospaced))
                     .foregroundStyle(controller.expired() ? Color.red : JarasTheme.green)
@@ -118,6 +125,7 @@ struct TeleprompterTimerConfiguration: View {
                     .frame(maxWidth: .infinity,minHeight: 48).background(JarasTheme.display).cornerRadius(6)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.green))
             }
+            if controller.mode == .countdown {
             VStack(spacing: 8) {
                 HStack(spacing: 8) {
                     ForEach(0..<3,id: \.self) { index in
@@ -137,6 +145,7 @@ struct TeleprompterTimerConfiguration: View {
                 }
             }
             .disabled(controller.running)
+            }
             HStack(spacing: 10) {
                 Button(controller.running ? "Stop" : "Start") {
                     if controller.running { stopRunID = controller.runID; confirmStop = true } else { controller.start() }

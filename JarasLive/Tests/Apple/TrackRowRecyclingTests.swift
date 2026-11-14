@@ -1,3 +1,7 @@
+final class NativeSelectionGeometryRoot: NSView {
+    var hitTestCalls = 0
+    override func hitTest(_ point: NSPoint) -> NSView? { hitTestCalls += 1; return super.hitTest(point) }
+}
 final class BorderWheelDocument: NSView { override var isFlipped: Bool { true } }
 final class BorderWheelScrollView: NSScrollView {
     var receivedWheels = 0
@@ -11,7 +15,7 @@ MainActor.assumeIsolated {
 _ = NSApplication.shared
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
 window.isReleasedWhenClosed = false
-let host = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
+let host = NativeSelectionGeometryRoot(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
 window.contentView = host
 let row = TrackRightClickView(frame: host.bounds)
 let originalTrack = UUID(), newTrack = UUID(), originalProject = UUID()
@@ -32,11 +36,13 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(originalSelections == 1 && newSelections == 0, "deferred selection uses the click's captured action even if its native row has rebound")
 router.handle(pointer(.leftMouseUp))
 precondition(router.pinnedTracks.isEmpty, "release allows the row slot to be recycled again")
+row.selected = true // Collapsing an existing selection is committed on release.
 router.handle(pointer(.leftMouseDown))
 row.project = UUID()
 RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(newSelections == 0, "a queued row click cannot cross a project switch")
 router.handle(pointer(.leftMouseUp))
+row.selected = false
 
 for (index, control) in ["REC", "M", "S", "Fader", "Pan"].enumerated() {
     let excluded = TrackControlSelectionExclusionView(frame: CGRect(x: 30 + index * 45, y: 40, width: 40, height: 40))
@@ -54,6 +60,7 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.02))
 precondition(newSelections == 1, "Clicking the track body still selects it")
 router.handle(pointer(.leftMouseUp))
 
+precondition(host.hitTestCalls == 0, "Selecting or operating a track must not hit-test the complete hosted window")
 var originalPatch = 0, replacementPatch = 0, originalFX = 0, replacementFX = 0
 row.patch = { originalPatch += 1 }; row.fx = { originalFX += 1 }
 let snapshot = row.makeMenu()

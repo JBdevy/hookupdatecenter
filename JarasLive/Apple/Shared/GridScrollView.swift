@@ -6,6 +6,9 @@ import Combine
 /// transport controls, modal hosts and native input callbacks.
 final class SidebarResizeState: ObservableObject {
     @Published private(set) var width: CGFloat?
+    #if os(macOS)
+    let nativeWidth = NativeTimelineMixerWidth()
+    #endif
     private var includesWidthReserve = false
     var limitsWidthToVisibleRows: Bool { width != nil && !includesWidthReserve }
     func update(_ width: CGFloat?) {
@@ -28,6 +31,28 @@ struct SidebarResizeLayer<Content: View>: View {
     var body: some View { content(state.width) }
 }
 
+struct TimelineGeometrySize { let size: CGSize }
+/// Keep drawing coverage separate from the native viewport's actual width.
+/// Other platforms retain the ordinary GeometryReader behavior.
+struct TimelineGeometryReader<Content: View>: View {
+    var minimumRetainedWidth: CGFloat = 800
+    @ViewBuilder let content: (TimelineGeometrySize) -> Content
+    var body: some View {
+        #if os(macOS)
+        NativeTimelineGeometryReader(minimumRetainedWidth: minimumRetainedWidth, content: content)
+        #else
+        GeometryReader { geometry in content(TimelineGeometrySize(size: geometry.size)) }
+        #endif
+    }
+}
+
+struct GridRowReveal: Equatable {
+    let id: UUID
+    let offset: CGFloat
+    let height: CGFloat
+    let headerHeight: CGFloat
+}
+
 /// The grid owns these scroll views. SwiftUI cannot recreate scrollers or reserve gutters.
 struct GridScrollView<Content: View>: View {
     let axis: Axis.Set
@@ -39,12 +64,13 @@ struct GridScrollView<Content: View>: View {
     var trackHeight: CGFloat? = nil
     var rowHeights: [CGFloat] = []
     var selectedRow: Int? = nil
+    var rowReveal: GridRowReveal? = nil
     var fileDrop: (([URL], CGPoint) -> Bool)? = nil
     var fileDropPreview: (([URL], CGPoint?) -> Void)? = nil
     @ViewBuilder let content: () -> Content
     var body: some View {
         #if os(macOS)
-        NativeGridScroll(horizontal: axis == .horizontal, contentWidth: contentWidth, contentHeight: contentHeight, viewportWidth: viewportWidth, trackHeight: trackHeight, rowHeights: rowHeights, selectedRow: selectedRow, fileDrop: fileDrop, fileDropPreview: fileDropPreview, content: content())
+        NativeGridScroll(horizontal: axis == .horizontal, contentWidth: contentWidth, contentHeight: contentHeight, viewportWidth: viewportWidth, trackHeight: trackHeight, rowHeights: rowHeights, selectedRow: selectedRow, rowReveal: rowReveal, fileDrop: fileDrop, fileDropPreview: fileDropPreview, content: content())
         #else
         ScrollView(axis, showsIndicators: false, content: content)
         #endif
@@ -79,6 +105,7 @@ enum TimelineLayoutDiagnostics {
         var height: Double
         var durationMS: Double? = nil
         var inputTimestampMS: Double? = nil
+        var inputAgeMS: Double? = nil
         var deltaX: Double? = nil
         var deltaY: Double? = nil
         var modifiers: UInt? = nil
@@ -95,6 +122,10 @@ enum TimelineLayoutDiagnostics {
         private var sizes = 0
         private var lastFrame: (Int, Int)?
         private var layoutsInFrame = 0
+        private weak var resizeView: NSView?
+        private weak var resizeWindow: NSWindow?
+        private var resizeUpdateObserver: NSObjectProtocol?
+        private var pendingResizeUpdate: (received: TimeInterval, timestamp: TimeInterval, value: Double?)?
         fileprivate init(role: String, session: Session) {
             self.role = role; self.session = session
             id = session.nextID; session.nextID += 1
@@ -131,11 +162,43 @@ enum TimelineLayoutDiagnostics {
             var record = makeRecord(name, view)
             if let input {
                 record.inputTimestampMS = input.timestamp * 1000
-                record.deltaX = Double(input.scrollingDeltaX); record.deltaY = Double(input.scrollingDeltaY)
+                record.inputAgeMS = max(0, ProcessInfo.processInfo.systemUptime - input.timestamp) * 1000
+                // AppKit raises an exception when scroll-only properties are
+                // requested from a mouse drag/up. Diagnostics must never abort input.
+                if input.type == .scrollWheel {
+                    record.deltaX = Double(input.scrollingDeltaX); record.deltaY = Double(input.scrollingDeltaY)
+                }
                 record.modifiers = input.modifierFlags.rawValue
             }
             record.value = value
             session.append(record)
+            if name == "resize-input", let input, let view, let window = view.window {
+                resizeView = view
+                pendingResizeUpdate = (ProcessInfo.processInfo.systemUptime, input.timestamp, value)
+                if resizeWindow !== window {
+                    if let resizeUpdateObserver { NotificationCenter.default.removeObserver(resizeUpdateObserver) }
+                    resizeWindow = window
+                    resizeUpdateObserver = NotificationCenter.default.addObserver(forName: NSWindow.didUpdateNotification, object: window, queue: .main) { [weak self] _ in
+                        self?.recordResizeWindowUpdate()
+                    }
+                }
+            }
+        }
+        /// This boundary includes the descendant layouts omitted by a host's
+        /// own layout() timer. It is a window update, not a GPU-present timestamp.
+        private func recordResizeWindowUpdate() {
+            guard let pending = pendingResizeUpdate, let view = resizeView else { return }
+            pendingResizeUpdate = nil
+            var record = makeRecord("resize-window-update", view)
+            let now = ProcessInfo.processInfo.systemUptime
+            record.durationMS = (now - pending.received) * 1000
+            record.inputTimestampMS = pending.timestamp * 1000
+            record.inputAgeMS = max(0, now - pending.timestamp) * 1000
+            record.value = pending.value
+            session.append(record)
+        }
+        deinit {
+            if let resizeUpdateObserver { NotificationCenter.default.removeObserver(resizeUpdateObserver) }
         }
         private func makeRecord(_ event: String, _ view: NSView?) -> Record {
             let time = ProcessInfo.processInfo.systemUptime - session.start
@@ -247,9 +310,223 @@ protocol SidebarResizeLayoutBoundary: AnyObject {
     func commitSidebarResizeLayout()
 }
 
+private struct TimelineGeometryEnvironmentContent<Content: View>: View {
+    let content: Content
+    let font: Font?
+    let controlSize: ControlSize
+    let dynamicTypeSize: DynamicTypeSize
+    let displayScale: CGFloat
+    let layoutDirection: LayoutDirection
+    let isEnabled: Bool
+    var body: some View {
+        content.environment(\.font, font).environment(\.controlSize, controlSize)
+            .environment(\.dynamicTypeSize, dynamicTypeSize).environment(\.displayScale, displayScale)
+            .environment(\.layoutDirection, layoutDirection).environment(\.isEnabled, isEnabled)
+    }
+}
+/// Identifies one constructed builder, including every environment value passed
+/// into its hosted tree. A new parent body creates a new token even when its
+/// model metadata compares equal. Ventura can repeat updateNSView for the same
+/// value after applying the final native size; that is only a layout proposal.
+private struct TimelineGeometryContentIdentity: Equatable {
+    let builder: UUID
+    let blocked: Bool
+    let locale: Locale
+    let colorScheme: ColorScheme
+    let font: Font?
+    let controlSize: ControlSize
+    let dynamicTypeSize: DynamicTypeSize
+    let displayScale: CGFloat
+    let layoutDirection: LayoutDirection
+    let isEnabled: Bool
+}
+private struct NativeTimelineGeometryReader<Content: View>: NSViewRepresentable {
+    let minimumRetainedWidth: CGFloat
+    let content: (TimelineGeometrySize) -> Content
+    private let builderIdentity = UUID()
+    @Environment(\.openFX) private var openFX
+    @Environment(\.openClipFXChain) private var openClipFX
+    @Environment(\.editTextItem) private var editText
+    @Environment(\.editTrackDetails) private var editTrack
+    @Environment(\.gridInteractionBlocked) private var blocked
+    @Environment(\.locale) private var locale
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.font) private var font
+    @Environment(\.controlSize) private var controlSize
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.isEnabled) private var isEnabled
+    private typealias HostedContent = GridHostedContent<TimelineGeometryEnvironmentContent<Content>>
+    func makeNSView(context: Context) -> NSView { TimelineGeometryNativeView<HostedContent>() }
+    func updateNSView(_ native: NSView, context: Context) {
+        guard let view = native as? TimelineGeometryNativeView<HostedContent> else { return }
+        let actions = view.actions
+        actions.fx = openFX; actions.clipFX = openClipFX; actions.text = editText; actions.trackDetails = editTrack
+        // Always refresh actions, including closure-only environment changes.
+        // A fresh parent builder is never identified by partial model metadata.
+        let identity = TimelineGeometryContentIdentity(builder: builderIdentity, blocked: blocked,
+            locale: locale, colorScheme: colorScheme, font: font, controlSize: controlSize,
+            dynamicTypeSize: dynamicTypeSize, displayScale: displayScale,
+            layoutDirection: layoutDirection, isEnabled: isEnabled)
+        view.update(minimumRetainedWidth: minimumRetainedWidth, identity: identity) { size in
+            GridHostedContent(content: TimelineGeometryEnvironmentContent(content: content(TimelineGeometrySize(size: size)),
+                font: font, controlSize: controlSize, dynamicTypeSize: dynamicTypeSize,
+                displayScale: displayScale, layoutDirection: layoutDirection, isEnabled: isEnabled),
+                gridInteractionBlocked: blocked, locale: locale, colorScheme: colorScheme,
+                openFX: actions.openFX, openClipFXChain: actions.openClipFX, editTextItem: actions.editText,
+                editTrackDetails: actions.editTrack)
+        }
+    }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions(by: nsView.bounds.size)
+    }
+}
+private final class TimelineGeometryNativeView<Content: View>: NSView, NativeSidebarResizeViewportObserver {
+    let actions = GridHostedActions()
+    private var host: WorkspaceHostingView<Content>?
+    private var builder: ((CGSize) -> Content)?
+    private var contentSize: CGSize?
+    private var minimumRetainedWidth: CGFloat = 800
+    private var updating = false
+    private var retainedCoverageActive = false
+    private var awaitsFinalLayout = false
+    private var pendingBuilderUpdate = false
+    private var contentIdentity: TimelineGeometryContentIdentity?
+    // Suppress repeated proposals of this exact final value until a new
+    // builder, environment, frame, mount or resize invalidates it. Action
+    // relays still refresh on every proposal, including closure-only changes.
+    private var finalLayoutIdentity: TimelineGeometryContentIdentity?
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    override var fittingSize: NSSize { frame.size }
+    override init(frame: NSRect) {
+        super.init(frame: frame); autoresizesSubviews = false
+        identifier = NSUserInterfaceItemIdentifier("timeline-geometry")
+    }
+    convenience init() { self.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func update(minimumRetainedWidth: CGFloat, identity: TimelineGeometryContentIdentity,
+                builder: @escaping (CGSize) -> Content) {
+        let repeatsFinalRoot = finalLayoutIdentity == identity && self.minimumRetainedWidth == minimumRetainedWidth
+        pendingBuilderUpdate = pendingBuilderUpdate || !repeatsFinalRoot
+        if !repeatsFinalRoot { finalLayoutIdentity = nil }
+        contentIdentity = identity
+        self.minimumRetainedWidth = minimumRetainedWidth; self.builder = builder
+        // Mouse-up changes the native parent's frame before AppKit propagates
+        // its final proposal to this representable. Keep the latest builder,
+        // actions and environment, but do not build against the previous width.
+        if awaitsFinalLayout { needsLayout = true; return }
+        placeContent()
+    }
+    override func setFrameSize(_ size: NSSize) {
+        if frame.size != size { finalLayoutIdentity = nil }
+        super.setFrameSize(size)
+        if host?.frame != bounds { host?.frame = bounds }
+        needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        let commitsFinalRoot = awaitsFinalLayout
+        awaitsFinalLayout = false
+        placeContent()
+        if commitsFinalRoot && !pendingBuilderUpdate && host != nil { finalLayoutIdentity = contentIdentity }
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        finalLayoutIdentity = nil
+        if window != nil { NativeSidebarResizeActivity.shared.observeViewport(self) }
+        needsLayout = true
+    }
+    func sidebarResizeActivityChanged() {
+        let retainsCoverage = NativeSidebarResizeActivity.shared.canRetainTimelineCoverage(in: window)
+        if retainedCoverageActive && !retainsCoverage {
+            // The final layout supplies the actual new bounds and coalesces
+            // any synchronous parent updates into one exact-width root.
+            awaitsFinalLayout = true
+        } else if retainsCoverage {
+            finalLayoutIdentity = nil
+            awaitsFinalLayout = false
+            placeContent()
+        }
+        retainedCoverageActive = retainsCoverage
+        needsLayout = true
+    }
+    private func placeContent() {
+        guard !updating, let builder, bounds.width > 0, bounds.height > 0 else { return }
+        updating = true; defer { updating = false }
+        retainedCoverageActive = NativeSidebarResizeActivity.shared.canRetainTimelineCoverage(in: window)
+        let retainsWidth = bounds.width >= minimumRetainedWidth && retainedCoverageActive
+        let size = CGSize(width: retainsWidth ? ceil(bounds.width / 512) * 512 : bounds.width, height: bounds.height)
+        if pendingBuilderUpdate || contentSize != size {
+            pendingBuilderUpdate = false
+            contentSize = size
+            let content = builder(size)
+            if let host {
+                host.layoutProfile?.rootAssigned(host); host.rootView = content
+            } else {
+                let host = WorkspaceHostingView(rootView: content)
+                if #available(macOS 13, *) { host.sizingOptions = [] }
+                if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+                host.layoutProfile = TimelineLayoutDiagnostics.make("timeline-geometry")
+                host.layoutProfile?.rootAssigned(host)
+                self.host = host; addSubview(host)
+            }
+        }
+        // Coverage is never a visual frame or transform. The same live host,
+        // clip, columns and hit targets receive the real width on every pass.
+        if host?.frame != bounds { host?.frame = bounds }
+    }
+}
+
 private final class WorkspaceHostingView<Content: View>: NSHostingView<Content>, SidebarResizeLayoutBoundary {
     var layoutProfile: TimelineLayoutDiagnostics.Profile?
+    // Only independent mixer rows opt in. Scrolling/viewport roots and the
+    // timeline must continue processing their own geometry every display pass.
+    var retainsSidebarLayout = false
+    // The mixer column can retain its layout while the sibling Setlist changes
+    // only the timeline viewport. Its visible band also participates in the key:
+    // simultaneous scrolling must still update the hosted row pool.
+    var retainsSidebarViewportLayout = false
+    private var rowContentRevision: UInt64 = 0
+    private var laidOutRowRevision: UInt64?
+    private var laidOutModelRevision: UInt64?
+    private var laidOutBounds: CGRect?
+    private var laidOutVisibleRect: CGRect?
+    func updateRowContent(_ content: Content) {
+        rowContentRevision &+= 1
+        rootView = content
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); laidOutBounds = nil }
+    override func viewDidUnhide() { super.viewDidUnhide(); laidOutBounds = nil; needsLayout = true }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // NSHostingView on Ventura updates its SwiftUI graph before rejecting
+        // an outside point. Reject other rows/panes before entering that graph.
+        let local = convert(point, from: superview)
+        guard !isHiddenOrHasHiddenAncestor, bounds.contains(local), visibleRect.contains(local) else { return nil }
+        return super.hitTest(point)
+    }
     override func layout() {
+        if (retainsSidebarLayout || retainsSidebarViewportLayout) && isHiddenOrHasHiddenAncestor { return }
+        let modelRevision = NativeSidebarResizeActivity.shared.contentRevision
+        if retainsSidebarLayout || retainsSidebarViewportLayout {
+            let visible = retainsSidebarViewportLayout ? bounds.intersection(visibleRect) : nil
+            NativeSidebarResizeActivity.shared.recordLayout(retainsSidebarViewportLayout ? "column" : "row", view: self,
+                sameBounds: laidOutBounds == bounds && laidOutVisibleRect == visible,
+                sameContent: laidOutRowRevision == rowContentRevision && laidOutModelRevision == modelRevision)
+            if laidOutBounds == bounds, laidOutRowRevision == rowContentRevision,
+               laidOutModelRevision == modelRevision,
+               laidOutVisibleRect == visible,
+               NativeSidebarResizeActivity.shared.deferUnchangedLayout(self) { return }
+            let revision = rowContentRevision, geometry = bounds
+            let start = layoutProfile?.beginLayout(self)
+            super.layout()
+            if let start { layoutProfile?.endLayout(start) }
+            laidOutBounds = geometry; laidOutRowRevision = revision; laidOutModelRevision = modelRevision
+            laidOutVisibleRect = visible
+            return
+        }
         guard let profile = layoutProfile else { super.layout(); return }
         let start = profile.beginLayout(self)
         super.layout()
@@ -258,6 +535,159 @@ private final class WorkspaceHostingView<Content: View>: NSHostingView<Content>,
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
     func commitSidebarResizeLayout() { layoutSubtreeIfNeeded() }
+}
+
+struct NativeTimelineMixerRowSpec<Version: Equatable> {
+    let id: Int
+    let frame: CGRect
+    let version: Version
+    var retained = false
+}
+
+/// Independently retained row roots prevent selection/layout changes in one
+/// track from walking the SwiftUI controls in every other warm row.
+struct NativeTimelineMixerRows<Version: Equatable, Content: View>: NSViewRepresentable {
+    let size: CGSize
+    let rows: [NativeTimelineMixerRowSpec<Version>]
+    var followsContainerWidth = false
+    var limitsWidthToViewport = false
+    var limitsVisibilityToViewport = false
+    @ViewBuilder let content: (Int) -> Content
+    @Environment(\.openFX) private var openFX
+    @Environment(\.openClipFXChain) private var openClipFX
+    @Environment(\.editTextItem) private var editText
+    @Environment(\.editTrackDetails) private var editTrack
+    @Environment(\.gridInteractionBlocked) private var blocked
+    @Environment(\.locale) private var locale
+    @Environment(\.colorScheme) private var colorScheme
+    func makeNSView(context: Context) -> NSView { TimelineMixerRowsNativeView<Version>() }
+    func updateNSView(_ native: NSView, context: Context) {
+        guard let view = native as? TimelineMixerRowsNativeView<Version> else { return }
+        view.followsContainerWidth = followsContainerWidth
+        view.limitsWidthToViewport = limitsWidthToViewport
+        view.limitsVisibilityToViewport = limitsVisibilityToViewport
+        let actions = view.actions
+        actions.fx = openFX; actions.clipFX = openClipFX; actions.text = editText; actions.trackDetails = editTrack
+        let environment = AnyHashable(WorkspaceHostingIdentity(content: 0, locale: locale.identifier,
+            colorScheme: colorScheme, interactionBlocked: blocked))
+        view.update(rows: rows, environment: environment) { index in
+            AnyView(GridHostedContent(content: content(index), gridInteractionBlocked: blocked,
+                locale: locale, colorScheme: colorScheme, openFX: actions.openFX,
+                openClipFXChain: actions.openClipFX, editTextItem: actions.editText, editTrackDetails: actions.editTrack))
+        }
+    }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+        CGSize(width: followsContainerWidth ? (proposal.width ?? size.width) : size.width, height: size.height)
+    }
+}
+private final class TimelineMixerRowsNativeView<Version: Equatable>: NSView {
+    let actions = GridHostedActions()
+    private struct Row {
+        let host: WorkspaceHostingView<AnyView>
+        var version: Version
+        var environment: AnyHashable
+        var retained: Bool
+    }
+    private var mounted: [Int: Row] = [:]
+    var followsContainerWidth = false
+    var limitsWidthToViewport = false
+    var limitsVisibilityToViewport = false
+    private weak var widthClip: NSClipView?
+    private var widthObservations: [NSObjectProtocol] = []
+    private var accessibilityObservations: [NSKeyValueObservation] = []
+    private var retainsAccessibilityRows = false
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    override var fittingSize: NSSize { frame.size }
+    override init(frame: NSRect) {
+        super.init(frame: frame); autoresizesSubviews = false
+        updateAccessibility()
+        accessibilityObservations = [\NSWorkspace.isVoiceOverEnabled, \NSWorkspace.isSwitchControlEnabled].map { key in
+            NSWorkspace.shared.observe(key, options: [.new]) { [weak self] _, _ in
+                MainActor.assumeIsolated { self?.updateAccessibility(); self?.placeRowWidths() }
+            }
+        }
+    }
+    convenience init() { self.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func update(rows: [NativeTimelineMixerRowSpec<Version>], environment: AnyHashable, content: (Int) -> AnyView) {
+        let wanted = Set(rows.map(\.id))
+        for id in Array(mounted.keys) where !wanted.contains(id) { mounted.removeValue(forKey: id)?.host.removeFromSuperview() }
+        for (index, spec) in rows.enumerated() {
+            var frame = spec.frame
+            if followsContainerWidth, bounds.width > 0 {
+                frame.size.width = followsWidth(at: frame) ? bounds.width : (mounted[spec.id]?.host.frame.width ?? frame.width)
+            }
+            if var row = mounted[spec.id] {
+                if row.version != spec.version || row.environment != environment {
+                    row.host.updateRowContent(content(index)); row.version = spec.version; row.environment = environment
+                }
+                row.retained = spec.retained; mounted[spec.id] = row
+                if row.host.frame != frame { row.host.frame = frame }
+            } else {
+                let host = WorkspaceHostingView(rootView: content(index))
+                host.retainsSidebarLayout = true
+                if #available(macOS 13, *) { host.sizingOptions = [] }
+                if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
+                host.frame = frame; addSubview(host)
+                mounted[spec.id] = Row(host: host, version: spec.version, environment: environment, retained: spec.retained)
+            }
+        }
+        placeRowWidths()
+    }
+    override func layout() {
+        super.layout()
+        placeRowWidths()
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); observeWidthClip() }
+    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); observeWidthClip() }
+    private func observeWidthClip() {
+        let clip = window == nil ? nil : enclosingScrollView?.contentView
+        guard widthClip !== clip else { return }
+        widthObservations.forEach(NotificationCenter.default.removeObserver)
+        widthObservations.removeAll(); widthClip = clip
+        if let clip {
+            updateAccessibility()
+            clip.postsBoundsChangedNotifications = true
+            clip.postsFrameChangedNotifications = true
+            for name in [NSView.boundsDidChangeNotification, NSView.frameDidChangeNotification] {
+                widthObservations.append(NotificationCenter.default.addObserver(forName: name,
+                object: clip, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.placeRowWidths() }
+                })
+            }
+            widthObservations.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateAccessibility(); self?.placeRowWidths() }
+                })
+        }
+        placeRowWidths()
+    }
+    private func placeRowWidths() {
+        for row in mounted.values {
+            // Keep warm roots in their existing window (and keep their state),
+            // but leave offscreen rows out of AppKit/SwiftUI layout and drawing.
+            // Unhide a reserve before it enters the viewport, even on a jump.
+            let focused = (window?.firstResponder as? NSView).map { $0 === row.host || $0.isDescendant(of: row.host) } ?? false
+            let nearby = widthClip.map { convert(row.host.frame, to: $0).intersects($0.bounds.insetBy(dx: 0, dy: -128)) } ?? true
+            let hidden = limitsVisibilityToViewport && !nearby && !row.retained && !focused && !retainsAccessibilityRows
+            if row.host.isHidden != hidden { row.host.isHidden = hidden }
+            guard followsContainerWidth, bounds.width > 0 else { continue }
+            guard followsWidth(at: row.host.frame) else { continue }
+            if row.host.frame.width != bounds.width {
+                row.host.setFrameSize(CGSize(width: bounds.width, height: row.host.frame.height))
+            }
+        }
+    }
+    private func updateAccessibility() {
+        retainsAccessibilityRows = NSApp.isFullKeyboardAccessEnabled || NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
+    }
+    private func followsWidth(at frame: CGRect) -> Bool {
+        guard limitsWidthToViewport, let clip = widthClip else { return true }
+        return convert(frame, to: clip).intersects(clip.bounds)
+    }
+    deinit { widthObservations.forEach(NotificationCenter.default.removeObserver) }
 }
 
 private struct WorkspaceHostingIdentity: Hashable {
@@ -378,7 +808,6 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         wantsLayer = true; layer?.masksToBounds = true
         autoresizesSubviews = false
         if #available(macOS 13, *) { self.leading.sizingOptions = []; self.trailing.sizingOptions = [] }
-        // The outer window has already resolved the workspace content rect.
         if #available(macOS 13.3, *) { self.leading.safeAreaRegions = []; self.trailing.safeAreaRegions = [] }
         self.leading.layoutProfile = TimelineLayoutDiagnostics.make("workspace-timeline")
         self.trailing.layoutProfile = TimelineLayoutDiagnostics.make("workspace-setlist")
@@ -392,6 +821,8 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         divider.setAccessibilityElement(true)
         divider.setAccessibilityRole(.splitter)
         divider.setAccessibilityLabel("Resize setlist")
+        divider.retainsTimelineCoverage = true
+        divider.maximumResizeFrequency = 60
         divider.onStart = { [weak self] in self?.resizing = true }
         divider.onResize = { [weak self] width in
             guard let self else { return }
@@ -444,7 +875,8 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         super.layout()
         // AppKit lays out dirty descendants after applying these frames. A
         // timeline-only update must not explicitly walk the setlist host too.
-        // Divider tracking keeps its synchronous commit through resizeLayout.
+        // Divider tracking shares the normal display pass; release commits
+        // the final geometry through resizeLayout.
         applyFrames(layoutHosts: false)
     }
     override func viewDidMoveToWindow() {
@@ -463,13 +895,16 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
             NotificationCenter.default.addObserver(self, selector: #selector(workspaceWindowBecameKey(_:)),
                 name: NSWindow.didBecomeKeyNotification, object: window)
         }
-        if window == nil { resizing = false; liveWidth = nil; pendingSavedWidth = nil }
+        if window == nil {
+            resizing = false; liveWidth = nil; pendingSavedWidth = nil
+        }
     }
     private func applyFrames(layoutHosts: Bool) {
         guard !applyingFrames else { return }
         applyingFrames = true
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        defer { CATransaction.commit(); applyingFrames = false }
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled); applyingFrames = false }
         let available = bounds.size
         // Growing the footer only crops this workspace. Keep its timeline and
         // Setlist layout stable until release rather than rebuilding all rows
@@ -511,6 +946,170 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
     }
 }
 
+private protocol NativeTimelineMixerWidthTarget: AnyObject {
+    func mixerWidthChanged()
+}
+
+/// The document columns and the pinned header share actual native frames.
+/// A drag does not replace the vertical scroll/timeline SwiftUI roots per pixel.
+final class NativeTimelineMixerWidth {
+    private(set) var width: CGFloat?
+    private(set) var resizing = false
+    private let targets = NSHashTable<AnyObject>.weakObjects()
+    fileprivate func add(_ target: NativeTimelineMixerWidthTarget) { targets.add(target) }
+    fileprivate func remove(_ target: NativeTimelineMixerWidthTarget) { targets.remove(target) }
+    func begin(width: CGFloat) { resizing = true; update(width) }
+    func update(_ width: CGFloat) {
+        guard self.width != width else { return }
+        self.width = width
+        for case let target as NativeTimelineMixerWidthTarget in targets.allObjects { target.mixerWidthChanged() }
+    }
+    func finish(width: CGFloat) { update(width); resizing = false }
+    func cancel() {
+        resizing = false; width = nil
+        for case let target as NativeTimelineMixerWidthTarget in targets.allObjects { target.mixerWidthChanged() }
+    }
+    /// Keep the final native position until SwiftUI acknowledges the saved width.
+    func acknowledge(_ savedWidth: CGFloat) {
+        if !resizing, width == savedWidth { width = nil }
+    }
+}
+
+struct NativeTimelineMixerOverlay<Header: View>: NSViewRepresentable {
+    let width: CGFloat
+    let maximum: CGFloat
+    let minimum: CGFloat
+    let dividerWidth: CGFloat
+    let headerHeight: CGFloat
+    let liveWidth: NativeTimelineMixerWidth
+    var onStart: () -> Void = {}
+    var onWidthModeChanged: (CGFloat) -> Void = { _ in }
+    var onToggle: () -> Void = {}
+    var onCancel: () -> Void = {}
+    let onEnd: (CGFloat) -> Void
+    @ViewBuilder let header: () -> Header
+    @Environment(\.locale) private var locale
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.gridInteractionBlocked) private var blocked
+    @Environment(\.openFX) private var openFX
+    @Environment(\.openClipFXChain) private var openClipFX
+    @Environment(\.editTextItem) private var editText
+    @Environment(\.editTrackDetails) private var editTrack
+    private func content() -> GridHostedContent<Header> {
+        GridHostedContent(content: header(), gridInteractionBlocked: blocked, locale: locale,
+            colorScheme: colorScheme, openFX: openFX, openClipFXChain: openClipFX,
+            editTextItem: editText, editTrackDetails: editTrack)
+    }
+    func makeNSView(context: Context) -> NSView {
+        let view = TimelineMixerOverlayView(header: content())
+        configure(view)
+        return view
+    }
+    func updateNSView(_ native: NSView, context: Context) {
+        guard let view = native as? TimelineMixerOverlayView<Header> else { return }
+        view.header.rootView = content()
+        configure(view)
+    }
+    private func configure(_ view: TimelineMixerOverlayView<Header>) {
+        view.configure(width: width, maximum: maximum, minimum: minimum, dividerWidth: dividerWidth,
+                       headerHeight: headerHeight, liveWidth: liveWidth, onStart: onStart,
+                       onWidthModeChanged: onWidthModeChanged, onToggle: onToggle, onCancel: onCancel, onEnd: onEnd)
+    }
+    @available(macOS 13, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions(by: nsView.frame.size)
+    }
+}
+
+private final class TimelineMixerOverlayView<Header: View>: NSView, NativeTimelineMixerWidthTarget {
+    let header: WorkspaceHostingView<GridHostedContent<Header>>
+    let divider = MixerDividerView()
+    private var liveWidth: NativeTimelineMixerWidth?
+    private var savedWidth: CGFloat = 0
+    private var dividerWidth: CGFloat = 6
+    private var headerHeight: CGFloat = 0
+    private var widthMode = false
+    private var onStart: () -> Void = {}
+    private var onWidthModeChanged: (CGFloat) -> Void = { _ in }
+    private var onEnd: (CGFloat) -> Void = { _ in }
+    private var onCancel: () -> Void = {}
+    init(header: GridHostedContent<Header>) {
+        self.header = WorkspaceHostingView(rootView: header)
+        super.init(frame: .zero)
+        autoresizesSubviews = false
+        if #available(macOS 13, *) { self.header.sizingOptions = [] }
+        if #available(macOS 13.3, *) { self.header.safeAreaRegions = [] }
+        self.header.identifier = NSUserInterfaceItemIdentifier("mixer-pinned-header")
+        addSubview(self.header); addSubview(divider)
+        divider.setAccessibilityElement(true); divider.setAccessibilityRole(.splitter)
+        divider.setAccessibilityLabel("Resize mixer")
+        divider.showsScrollRail = false; divider.maximumResizeFrequency = 60
+        divider.onStart = { [weak self] in
+            guard let self else { return }
+            self.widthMode = self.divider.columnWidth >= 180
+            self.liveWidth?.begin(width: self.divider.columnWidth)
+            self.onStart()
+        }
+        divider.onResize = { [weak self] width in
+            guard let self else { return }
+            self.liveWidth?.update(width)
+            if self.widthMode != (width >= 180) {
+                self.widthMode = width >= 180; self.onWidthModeChanged(width)
+            }
+        }
+        divider.onEnd = { [weak self] width in
+            guard let self else { return }
+            self.liveWidth?.finish(width: width); self.onEnd(width)
+        }
+        divider.onCancel = { [weak self] in
+            guard let self else { return }
+            self.liveWidth?.cancel(); self.onCancel()
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { NativeTimelineOverlayInputRegistration.addPinnedControls(header) }
+    }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    override var fittingSize: NSSize { frame.size }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        guard bounds.contains(local) else { return nil }
+        if divider.frame.contains(local) { return divider.hitTest(local) }
+        if !header.isHidden, header.frame.contains(local) { return header.hitTest(local) }
+        return nil
+    }
+    func configure(width: CGFloat, maximum: CGFloat, minimum: CGFloat, dividerWidth: CGFloat,
+                   headerHeight: CGFloat, liveWidth: NativeTimelineMixerWidth, onStart: @escaping () -> Void,
+                   onWidthModeChanged: @escaping (CGFloat) -> Void, onToggle: @escaping () -> Void,
+                   onCancel: @escaping () -> Void, onEnd: @escaping (CGFloat) -> Void) {
+        if !liveWidth.resizing, width != savedWidth { liveWidth.cancel() }
+        savedWidth = width; self.dividerWidth = dividerWidth; self.headerHeight = headerHeight
+        self.onStart = onStart; self.onWidthModeChanged = onWidthModeChanged; self.onEnd = onEnd
+        self.onCancel = onCancel
+        if self.liveWidth !== liveWidth {
+            self.liveWidth?.remove(self); self.liveWidth = liveWidth; liveWidth.add(self)
+        }
+        liveWidth.acknowledge(width)
+        divider.maximum = maximum; divider.minimum = minimum; divider.onToggle = onToggle
+        applyFrames()
+    }
+    func mixerWidthChanged() { applyFrames() }
+    override func layout() { super.layout(); applyFrames() }
+    private func applyFrames() {
+        let width = liveWidth?.width ?? savedWidth
+        let disabled = CATransaction.disableActions(); CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
+        let headerFrame = CGRect(x: 0, y: 0, width: max(0, width), height: headerHeight)
+        let dividerFrame = CGRect(x: width, y: 0, width: dividerWidth, height: bounds.height)
+        if header.frame != headerFrame { header.frame = headerFrame }
+        if divider.frame != dividerFrame { divider.frame = dividerFrame }
+        header.isHidden = width <= 0; divider.columnWidth = width
+    }
+}
+
 /// Keep mixer controls and the zoomable timeline in separate SwiftUI graphs.
 /// Both hosts remain children of the existing vertical scroll document.
 struct NativeTimelineColumns<Mixer: View, Divider: View, Timeline: View, Identity: Equatable>: NSViewRepresentable {
@@ -520,6 +1119,7 @@ struct NativeTimelineColumns<Mixer: View, Divider: View, Timeline: View, Identit
     let dividerWidth: CGFloat
     let project: UUID
     let mixerIdentity: Identity
+    var liveWidth: NativeTimelineMixerWidth? = nil
     @ViewBuilder let mixer: () -> Mixer
     @ViewBuilder let divider: () -> Divider
     @ViewBuilder let timeline: () -> Timeline
@@ -552,7 +1152,7 @@ struct NativeTimelineColumns<Mixer: View, Divider: View, Timeline: View, Identit
         let view = TimelineColumnsNativeView(actions: actions,
             mixer: hosted(mixer(), actions: actions), divider: hosted(divider(), actions: actions),
             timeline: hosted(timeline(), actions: actions), identity: identity)
-        view.configure(mixerWidth: mixerWidth, viewportWidth: viewportWidth, height: height, dividerWidth: dividerWidth)
+        view.configure(mixerWidth: mixerWidth, viewportWidth: viewportWidth, height: height, dividerWidth: dividerWidth, liveWidth: liveWidth)
         return view
     }
     func updateNSView(_ native: NSView, context: Context) {
@@ -561,11 +1161,11 @@ struct NativeTimelineColumns<Mixer: View, Divider: View, Timeline: View, Identit
         view.updateContent(mixer: hosted(mixer(), actions: view.actions),
             divider: hosted(divider(), actions: view.actions), timeline: hosted(timeline(), actions: view.actions),
             identity: identity)
-        view.configure(mixerWidth: mixerWidth, viewportWidth: viewportWidth, height: height, dividerWidth: dividerWidth)
+        view.configure(mixerWidth: mixerWidth, viewportWidth: viewportWidth, height: height, dividerWidth: dividerWidth, liveWidth: liveWidth)
     }
     @available(macOS 13, *)
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
-        CGSize(width: viewportWidth, height: height)
+        CGSize(width: proposal.width ?? viewportWidth, height: height)
     }
 }
 
@@ -578,7 +1178,7 @@ private struct TimelineColumnsMixerIdentity<Content: Equatable>: Equatable {
     let visible: Bool
 }
 
-private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeline: View, Identity: Equatable>: NSView, NativeTimelineBodyInputHost {
+private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeline: View, Identity: Equatable>: NSView, NativeTimelineBodyInputHost, NativeTimelineMixerWidthTarget {
     weak var timelineBodyInput: (NSView & NativeTimelineBodyInput)?
     override func hitTest(_ point: NSPoint) -> NSView? {
         timelineBodyHit(at: point) ?? timelineControlHit(at: point) ?? super.hitTest(point)
@@ -592,11 +1192,13 @@ private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeli
     private var viewportWidth: CGFloat = 0
     private var documentHeight: CGFloat = 0
     private var dividerWidth: CGFloat = 0
+    private var liveWidth: NativeTimelineMixerWidth?
 
     init(actions: GridHostedActions, mixer: GridHostedContent<Mixer>, divider: GridHostedContent<Divider>,
          timeline: GridHostedContent<Timeline>, identity: TimelineColumnsMixerIdentity<Identity>) {
         self.actions = actions; mixerIdentity = identity
         mixerHost = WorkspaceHostingView(rootView: mixer)
+        mixerHost.retainsSidebarViewportLayout = true
         dividerHost = WorkspaceHostingView(rootView: divider)
         timelineHost = WorkspaceHostingView(rootView: timeline)
         super.init(frame: .zero)
@@ -621,32 +1223,39 @@ private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeli
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
-    override var fittingSize: NSSize { CGSize(width: viewportWidth, height: documentHeight) }
+    override var fittingSize: NSSize { CGSize(width: bounds.width > 0 ? bounds.width : viewportWidth, height: documentHeight) }
 
     func updateContent(mixer: GridHostedContent<Mixer>, divider: GridHostedContent<Divider>,
                        timeline: GridHostedContent<Timeline>, identity: TimelineColumnsMixerIdentity<Identity>) {
         if mixerIdentity != identity {
             mixerIdentity = identity
             mixerHost.layoutProfile?.rootAssigned(mixerHost)
-            mixerHost.rootView = mixer
+            mixerHost.updateRowContent(mixer)
         }
         dividerHost.layoutProfile?.rootAssigned(dividerHost)
         dividerHost.rootView = divider
         timelineHost.layoutProfile?.rootAssigned(timelineHost)
         timelineHost.rootView = timeline
     }
-    func configure(mixerWidth: CGFloat, viewportWidth: CGFloat, height: CGFloat, dividerWidth: CGFloat) {
+    func configure(mixerWidth: CGFloat, viewportWidth: CGFloat, height: CGFloat, dividerWidth: CGFloat, liveWidth: NativeTimelineMixerWidth?) {
         self.mixerWidth = mixerWidth; self.viewportWidth = viewportWidth
         documentHeight = height; self.dividerWidth = dividerWidth
+        if self.liveWidth !== liveWidth {
+            self.liveWidth?.remove(self); self.liveWidth = liveWidth; liveWidth?.add(self)
+        }
         applyFrames()
     }
+    func mixerWidthChanged() { applyFrames() }
     override func layout() {
         super.layout()
         applyFrames()
     }
     private func applyFrames() {
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
+        let mixerWidth = liveWidth?.width ?? self.mixerWidth
+        let viewportWidth = bounds.width > 0 ? bounds.width : self.viewportWidth
         func update<Content: View>(_ host: WorkspaceHostingView<Content>, frame: CGRect) {
             guard host.frame != frame else { return }
             host.layoutProfile?.sizeChanged(host, from: host.frame.size, to: frame.size)
@@ -675,6 +1284,7 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
     var trackHeight: CGFloat? = nil
     var rowHeights: [CGFloat] = []
     var selectedRow: Int? = nil
+    var rowReveal: GridRowReveal? = nil
     let fileDrop: (([URL], CGPoint) -> Bool)?
     let fileDropPreview: (([URL], CGPoint?) -> Void)?
     let content: Content
@@ -737,6 +1347,7 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
         let document = GridDocumentView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: contentHeight))
         document.wantsLayer = true
         document.autoresizesSubviews = false
+        document.followsViewportWidth = !horizontal
         document.host = host; document.addSubview(host)
         scroll.hostedProjectionDidLayout = { [weak document] in document?.commitHostedProjection() ?? true }
         scroll.documentView = document
@@ -762,7 +1373,7 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
         // apply immediately and the live bridge commits any new zoom/extent.
         let size = NSSize(width: document.liveLogicalWidth ?? contentWidth, height: contentHeight)
         document.applySize(size, in: scroll, retainingCapacity: document.liveLogicalWidth != nil)
-        let layoutSize = NSSize(width: document.liveHostedWidth ?? hostedSize.width, height: contentHeight)
+        let layoutSize = NSSize(width: document.followsViewportWidth ? document.frame.width : (document.liveHostedWidth ?? hostedSize.width), height: contentHeight)
         if host.frame.size != layoutSize {
             host.layoutProfile?.sizeChanged(host, from: host.frame.size, to: layoutSize)
             host.setFrameSize(layoutSize)
@@ -779,10 +1390,14 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
             var bounds = clip.bounds
             bounds.origin.y = anchoredY
             let origin = clip.constrainBoundsRect(bounds).origin
-            scroll.prepareVerticalViewport(at: origin.y)
-            clip.scroll(to: origin)
-            scroll.reflectScrolledClipView(clip)
+            if origin != clip.bounds.origin {
+                // TimelineClipView prepares the destination before committing
+                // its bounds. Preparing here as well repeats the hosted layout
+                // inside this representable's height update on Ventura.
+                scroll.anchorTrackHeight(to: origin)
+            }
         }
+        if !horizontal { scroll.revealRow(rowReveal) }
     }
 }
 /// Stable environment actions prevent a document-size change from invalidating
@@ -813,6 +1428,9 @@ private struct GridHostedContent<Content: View>: View {
             .environment(\.editTrackDetails, editTrackDetails)
             .environment(\.gridInteractionBlocked, gridInteractionBlocked)
             .environment(\.locale, locale).environment(\.colorScheme, colorScheme)
+            // Mixer/timeline colors are app-owned. Opening another tool must
+            // not restyle every retained row for the main window's key state.
+            .environment(\.controlActiveState, .active)
             .frame(width: viewportWidth, alignment: .topLeading)
     }
 }
@@ -820,10 +1438,15 @@ private struct GridHostedContent<Content: View>: View {
 /// Rescaling the timeline must not ask the track controls and meters for sizes.
 private final class GridDocumentView: NSView {
     var host: NSView?
+    // A vertical document has no independent horizontal extent. Adopt the
+    // actual native clip width without rebuilding its SwiftUI content root.
+    var followsViewportWidth = false
+    private var synchronizingViewport = false
     private weak var logicalSizeInput: GridDocumentSizeView?
     private var usesHostedViewport = false
     private weak var hostedClip: NSClipView?
     private var hostedClipObserver: NSObjectProtocol?
+    private var hostedClipFrameObserver: NSObjectProtocol?
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { frame.size }
@@ -858,6 +1481,9 @@ private final class GridDocumentView: NSView {
         let logicalChanged = scroll.logicalDocumentWidth != logicalWidth
         scroll.logicalDocumentWidth = logicalWidth
         var physicalSize = size
+        if followsViewportWidth, scroll.contentView.bounds.width > 0 {
+            physicalSize.width = scroll.contentView.bounds.width
+        }
         if retainingCapacity {
             let required = max(size.width, liveHostedWidth ?? 0)
             physicalSize.width = required > frame.width ? max(required, frame.width * 2) : frame.width
@@ -879,14 +1505,19 @@ private final class GridDocumentView: NSView {
 
     func setHostedViewport(width: CGFloat?, clip: NSClipView) {
         usesHostedViewport = width != nil
-        let nextClip = usesHostedViewport ? clip : nil
+        let nextClip = usesHostedViewport || followsViewportWidth ? clip : nil
         if hostedClip !== nextClip {
             if let hostedClipObserver { NotificationCenter.default.removeObserver(hostedClipObserver) }
+            if let hostedClipFrameObserver { NotificationCenter.default.removeObserver(hostedClipFrameObserver) }
             hostedClipObserver = nil
+            hostedClipFrameObserver = nil
             hostedClip = nextClip
             if let nextClip {
                 nextClip.postsBoundsChangedNotifications = true
                 hostedClipObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
+                    object: nextClip, queue: .main) { [weak self] _ in self?.synchronizeHostedViewport() }
+                nextClip.postsFrameChangedNotifications = true
+                hostedClipFrameObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification,
                     object: nextClip, queue: .main) { [weak self] _ in self?.synchronizeHostedViewport() }
             }
         }
@@ -897,7 +1528,16 @@ private final class GridDocumentView: NSView {
     /// coordinates. The host itself stays over the visible range, so AppKit
     /// still reaches native controls far beyond the initial viewport.
     func synchronizeHostedViewport() {
-        guard let host else { return }
+        guard let host, !synchronizingViewport else { return }
+        synchronizingViewport = true
+        defer { synchronizingViewport = false }
+        if followsViewportWidth, let width = hostedClip?.bounds.width, width > 0 {
+            if frame.width != width { setFrameSize(NSSize(width: width, height: frame.height)) }
+            if host.frame.width != width {
+                host.setFrameSize(NSSize(width: width, height: host.frame.height))
+                host.needsLayout = true
+            }
+        }
         let origin = NSPoint(x: usesHostedViewport ? max(0, hostedClip?.bounds.minX ?? 0) : 0, y: 0)
         if host.frame.origin != origin { host.setFrameOrigin(origin) }
         if host.bounds.origin != origin { host.setBoundsOrigin(origin) }
@@ -905,6 +1545,7 @@ private final class GridDocumentView: NSView {
 
     deinit {
         if let hostedClipObserver { NotificationCenter.default.removeObserver(hostedClipObserver) }
+        if let hostedClipFrameObserver { NotificationCenter.default.removeObserver(hostedClipFrameObserver) }
     }
 }
 
@@ -983,6 +1624,33 @@ private final class GridHostingView<Content: View>: NSHostingView<Content> {
     override var fittingSize: NSSize { frame.size }
 }
 final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, NativeTimelineSelectionScrollHost, NativeTimelineFollowPresentation {
+    private var lastRowReveal: UUID?
+    private var pendingRowReveal: GridRowReveal?
+    func revealRow(_ request: GridRowReveal?) {
+        pendingRowReveal = request?.id == lastRowReveal ? nil : request
+        applyPendingRowReveal()
+    }
+    private func applyPendingRowReveal() {
+        guard let request = pendingRowReveal, let document = documentView,
+              contentView.bounds.height > 0, request.height > 0 else { return }
+        let bottom = request.headerHeight + request.offset + request.height
+        // The model and the native document can commit on different layout
+        // passes. Keep the newest request until the new row actually fits.
+        guard bottom <= contentView.documentRect.height + 0.5 else { return }
+        pendingRowReveal = nil; lastRowReveal = request.id
+        let clip = contentView, maximum = max(0, clip.documentRect.height - clip.bounds.height)
+        let raw = clip.bounds.minY - clip.documentRect.minY
+        let offset = document.isFlipped ? raw : maximum - raw
+        var target = offset
+        if request.offset < offset || request.height + request.headerHeight > clip.bounds.height {
+            target = request.offset
+        } else if bottom > offset + clip.bounds.height { target = bottom - clip.bounds.height }
+        target = min(maximum, max(0, target))
+        guard abs(target - offset) > 0.001 else { return }
+        clip.scroll(to: NSPoint(x: clip.bounds.minX,
+            y: clip.documentRect.minY + (document.isFlipped ? target : maximum - target)))
+        reflectScrolledClipView(clip)
+    }
     private var previousTrackHeight: CGFloat?
     private var previousRowHeights: [CGFloat] = []
     func trackHeightOffset(height: CGFloat?, rows: [CGFloat], selected: Int?) -> CGFloat? {
@@ -1049,6 +1717,7 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     var prepareHostedHorizontalScroll: ((CGFloat) -> Bool)?
     var prepareHostedVerticalScroll: ((CGFloat) -> Bool)?
     private var preparingVerticalScroll = false
+    private var applyingTrackHeightAnchor = false
     private var preparingHorizontalScroll = false
     func prepareHorizontalViewport(at x: CGFloat) {
         guard !preparingHorizontalScroll, zoomAnchor == nil, let document = documentView else { return }
@@ -1065,12 +1734,28 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
               let prepareHostedVerticalScroll else { return }
         preparingVerticalScroll = true
         defer { preparingVerticalScroll = false }
-        if prepareHostedVerticalScroll(y) { document.layoutSubtreeIfNeeded() }
+        if prepareHostedVerticalScroll(y) {
+            if applyingTrackHeightAnchor {
+                // updateNSView has already assigned this height's root and
+                // frames. Re-entering its SwiftUI layout here evaluates the
+                // old and new row geometry in the same update on Ventura.
+                // The destination is published now; AppKit lays it out before
+                // presenting the changed clip in the current display pass.
+                document.needsLayout = true
+            } else { document.layoutSubtreeIfNeeded() }
+        }
+    }
+    func anchorTrackHeight(to origin: NSPoint) {
+        applyingTrackHeightAnchor = true
+        defer { applyingTrackHeightAnchor = false }
+        contentView.scroll(to: origin)
+        reflectScrolledClipView(contentView)
     }
     var hostedProjectionDidLayout: (() -> Bool)?
     func commitHostedProjection() {
         guard hostedProjectionDidLayout?() != false else { return }
         applyZoomAnchor()
+        applyPendingRowReveal()
     }
     var fileDrop: (([URL], CGPoint) -> Bool)?
     var fileDropPreview: (([URL], CGPoint?) -> Void)?
@@ -1079,6 +1764,11 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     private var fileDropPasteboardChange: Int?
     private var lastFileDropPreview: CGPoint?
     private var lastFileDropModifierFlags: NSEvent.ModifierFlags = []
+    private var acceptedFileDrop = false
+    private func restoreFileDropFocus() {
+        guard acceptedFileDrop else { return }
+        NativeTimelineKeyboardFocus.activate(window: window, responder: nil)
+    }
     private func updateFileDropPreview(_ point: CGPoint?) {
         // Shift changes magnetic snapping even when the dragged file has not moved.
         let modifiers: NSEvent.ModifierFlags = point == nil ? [] : fileDropModifierFlags()
@@ -1105,14 +1795,25 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
     override func draggingExited(_ sender: NSDraggingInfo?) { updateFileDropPreview(nil) }
-    override func draggingEnded(_ sender: NSDraggingInfo) { updateFileDropPreview(nil) }
-    override func concludeDragOperation(_ sender: NSDraggingInfo?) { updateFileDropPreview(nil) }
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        updateFileDropPreview(nil); restoreFileDropFocus()
+    }
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        updateFileDropPreview(nil)
+        // AppKit finishes the cross-application drag after performDragOperation.
+        // Reassert the destination here as well, without waiting for the async
+        // audio import (which must never steal focus from a later user action).
+        restoreFileDropFocus(); acceptedFileDrop = false
+    }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        acceptedFileDrop = false
         defer { updateFileDropPreview(nil) }
         guard let documentView, let fileDrop,
               sender.draggingSourceOperationMask.contains(.copy),
               let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return false }
-        return fileDrop(urls, documentView.convert(sender.draggingLocation, from: nil))
+        acceptedFileDrop = fileDrop(urls, documentView.convert(sender.draggingLocation, from: nil))
+        restoreFileDropFocus()
+        return acceptedFileDrop
     }
 
     // A committed layout clears zoomAnchor between frames, but the gesture
@@ -1161,6 +1862,10 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
         super.tile()
         // No border, scroller, or accessory area: the clip fills the entire viewport.
         if contentView.frame != bounds { contentView.frame = bounds }
+        if let document = documentView as? GridDocumentView, document.followsViewportWidth {
+            document.synchronizeHostedViewport()
+        }
+        applyPendingRowReveal()
     }
 }
 #endif
@@ -1185,17 +1890,25 @@ private final class TimelineClipView: NSClipView {
     }
     // Momentum scrolling can update bounds directly, bypassing the proposed
     // rectangle constraint. Enforce time zero on both AppKit entry points.
+    private var committingScroll = false
     override func setBoundsOrigin(_ newOrigin: NSPoint) {
         let origin = boundedOrigin(newOrigin)
-        if origin.x != bounds.minX { (superview as? GridNativeScrollView)?.prepareHorizontalViewport(at: origin.x) }
-        if origin.y != bounds.minY { (superview as? GridNativeScrollView)?.prepareVerticalViewport(at: origin.y) }
+        if !committingScroll { prepareDestination(origin) }
         super.setBoundsOrigin(origin)
     }
     override func scroll(to newOrigin: NSPoint) {
         let origin = boundedOrigin(newOrigin)
+        guard origin != bounds.origin else { return }
+        prepareDestination(origin)
+        // NSClipView.scroll(to:) calls setBoundsOrigin itself. Keep both entry
+        // points supported without preparing the same rows/waveforms twice.
+        committingScroll = true
+        defer { committingScroll = false }
+        super.scroll(to: origin)
+    }
+    private func prepareDestination(_ origin: NSPoint) {
         if origin.x != bounds.minX { (superview as? GridNativeScrollView)?.prepareHorizontalViewport(at: origin.x) }
         if origin.y != bounds.minY { (superview as? GridNativeScrollView)?.prepareVerticalViewport(at: origin.y) }
-        super.scroll(to: origin)
     }
 
     override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
@@ -1347,6 +2060,9 @@ struct SidebarScrollMetrics: Equatable {
     var canScroll: Bool { maximumOffset > 0.5 && viewportHeight > 0 }
 }
 @MainActor final class SidebarScrollController {
+    private let limitsScrollVelocity: Bool
+    private var wheelVelocity = NativeMixerScrollVelocity()
+    init(limitsScrollVelocity: Bool = false) { self.limitsScrollVelocity = limitsScrollVelocity }
     private static let timelineWheelClips = NSHashTable<NSClipView>.weakObjects()
     static func registerTimelineWheelClip(_ clip: NSClipView) { timelineWheelClips.add(clip) }
     /// Returns true only when a different destination tile/row bucket needs
@@ -1360,16 +2076,51 @@ struct SidebarScrollMetrics: Equatable {
     private var listeners: [UUID: () -> Void] = [:]
     private(set) var metrics = SidebarScrollMetrics()
 
+    private weak var wheelTarget: NSScrollView?
+    private weak var wheelRoot: NSView?
+    private var wheelPoint: NSPoint?
+    private var wheelTime: TimeInterval = -.infinity
+    private var wheelRootFrame: NSRect = .zero
+    private var wheelClipSize: NSSize = .zero
+    func invalidateWheelTarget() {
+        wheelTarget = nil; wheelRoot = nil; wheelPoint = nil; wheelTime = -.infinity
+        wheelVelocity.reset()
+    }
+    private func wheelDestination(_ event: NSEvent, root: NSView) -> NSScrollView? {
+        let point = event.locationInWindow
+        // A wheel gesture owns its destination while the pointer stays put.
+        // Ventura's SwiftUI hit test walks the entire window; repeating it for
+        // every trackpad/mouse delta consumed most of the measured input time.
+        if let target = wheelTarget, wheelRoot === root, let previous = wheelPoint,
+           target.window === event.window, !target.isHiddenOrHasHiddenAncestor,
+           root.frame == wheelRootFrame, target.contentView.bounds.size == wheelClipSize,
+           abs(point.x - previous.x) < 0.5, abs(point.y - previous.y) < 0.5,
+           event.timestamp.isFinite, event.timestamp >= wheelTime, event.timestamp - wheelTime <= 0.16 {
+            wheelTime = event.timestamp
+            return target
+        }
+        let local = root.superview?.convert(point, from: nil) ?? point
+        var hit = root.hitTest(local)
+        var nearest: NSScrollView?
+        while let current = hit {
+            if let candidate = current as? NSScrollView { nearest = candidate; break }
+            hit = current.superview
+        }
+        wheelTarget = nearest; wheelRoot = root; wheelPoint = point; wheelTime = event.timestamp
+        wheelRootFrame = root.frame; wheelClipSize = nearest?.contentView.bounds.size ?? .zero
+        return nearest
+    }
     private var wheelMonitor: Any?
     @discardableResult func handleWheel(_ event: NSEvent) -> Bool {
         guard let scroll = scrollView, event.window === scroll.window, scroll.window?.attachedSheet == nil,
               !scroll.isHiddenOrHasHiddenAncestor,
               scroll.contentView.visibleRect.contains(scroll.contentView.convert(event.locationInWindow, from: nil)) else { return false }
+        if !event.phase.intersection([.began, .ended, .cancelled]).isEmpty { invalidateWheelTarget() }
         // Visible native scrollers keep AppKit momentum. When indicators are
         // removed, route precise deltas here too: older AppKit can decline
         // scrolling on that axis. Modifier gestures remain with the timeline.
         // Reject them before traversing the entire SwiftUI document for hit testing.
-        guard (!event.hasPreciseScrollingDeltas || !scroll.hasVerticalScroller),
+        guard (!event.hasPreciseScrollingDeltas || !scroll.hasVerticalScroller || limitsScrollVelocity),
               event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty else { return false }
         // The outer vertical document also contains the horizontal timeline.
         // Its wheel input owns this viewport; decline before hit-testing the
@@ -1384,16 +2135,17 @@ struct SidebarScrollMetrics: Equatable {
         // and Add regions are sibling overlays above the ordinary Setlist.
         // Hit-testing only our own clip would steal their physical-wheel events.
         guard let root = scroll.window?.contentView else { return false }
-        let point = root.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
-        var hit = root.hitTest(point)
-        var nearest: NSScrollView?
-        while let current = hit {
-            if let candidate = current as? NSScrollView { nearest = candidate; break }
-            hit = current.superview
-        }
-        guard nearest === scroll else { return false }
-        let movement = -event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 16)
-        guard movement != 0 else { return false }
+        guard wheelDestination(event, root: root) === scroll else { return false }
+        // Peeking through nextEvent runs AppKit's display observers on Ventura.
+        // During fast scrolling that nested layout/cursor pass costs more than
+        // handling the wheel itself. Let the normal event loop coalesce display.
+        let rawMovement = -event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 16)
+        let movement = limitsScrollVelocity ? wheelVelocity.limit(rawMovement, timestamp: event.timestamp,
+            viewport: scroll.contentView.bounds.height, precise: event.hasPreciseScrollingDeltas) : rawMovement
+        guard rawMovement != 0 else { return false }
+        // A duplicate timestamp has no remaining time budget. Consume it so
+        // AppKit cannot apply the original unlimited delta as a fallback.
+        if movement == 0 { return limitsScrollVelocity }
         refresh()
         // Apply each native delta once, including trackpad momentum events.
         // No additional inertia or deferred movement is introduced here.
@@ -1403,11 +2155,12 @@ struct SidebarScrollMetrics: Equatable {
     func attach(_ scroll: NSScrollView?, owner: NSView? = nil) {
         attachmentOwner = owner
         guard scrollView !== scroll else { refresh(); return }
+        invalidateWheelTarget()
         if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor); self.wheelMonitor = nil }
         if scroll != nil {
-            wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown, .rightMouseDown]) { [weak self] event in
+            wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown, .rightMouseDown, .keyDown, .flagsChanged]) { [weak self] event in
                 guard let self else { return event }
-                if event.type != .scrollWheel { return event }
+                if event.type != .scrollWheel { self.invalidateWheelTarget(); return event }
                 return self.handleWheel(event) ? nil : event
             }
         }
@@ -1460,7 +2213,45 @@ struct SidebarScrollMetrics: Equatable {
         metrics = next
         for changed in Array(listeners.values) { changed() }
     }
+    /// Both panes share this vertical clip. Horizontal navigation targets only
+    /// the timeline document and uses the same preparation/follow rules as wheel input.
+    @discardableResult func scrollTimelineByArrow(_ keyCode: UInt16) -> Bool {
+        guard let scroll = scrollView else { return false }
+        if keyCode == 125 || keyCode == 126 {
+            refresh()
+            applyScroll(to: metrics.offset + (keyCode == 125 ? 72 : -72))
+            return true
+        }
+        guard keyCode == 123 || keyCode == 124, let document = scroll.documentView else { return false }
+        func horizontal(in view: NSView) -> GridNativeScrollView? {
+            guard !view.isHiddenOrHasHiddenAncestor else { return nil }
+            if let grid = view as? GridNativeScrollView,
+               grid.logicalDocumentWidth != nil || grid.prepareHorizontalScroll != nil { return grid }
+            for child in view.subviews { if let grid = horizontal(in: child) { return grid } }
+            return nil
+        }
+        guard let grid = horizontal(in: document) else { return false }
+        let clip = grid.contentView
+        var point = clip.bounds.origin
+        point.x += keyCode == 124 ? 72 : -72
+        point = clip.constrainBoundsRect(CGRect(origin: point, size: clip.bounds.size)).origin
+        grid.pauseManualPlaybackFollow()
+        grid.prepareHorizontalViewport(at: point.x)
+        clip.scroll(to: point); grid.reflectScrolledClipView(clip)
+        return true
+    }
     func scroll(to offset: CGFloat) { applyScroll(to: offset) }
+    func revealRow(offset: CGFloat, height: CGFloat, pinnedHeaderHeight: CGFloat) {
+        scrollView?.documentView?.layoutSubtreeIfNeeded()
+        refresh()
+        guard height > 0, metrics.viewportHeight > 0 else { return }
+        let bottom = offset + height + pinnedHeaderHeight
+        if offset < metrics.offset || height + pinnedHeaderHeight > metrics.viewportHeight {
+            applyScroll(to: offset)
+        } else if bottom > metrics.offset + metrics.viewportHeight {
+            applyScroll(to: bottom - metrics.viewportHeight)
+        }
+    }
     private func applyScroll(to offset: CGFloat) {
         guard offset.isFinite, let scroll = scrollView, let document = scroll.documentView else { return }
         let clip = scroll.contentView
@@ -1470,12 +2261,14 @@ struct SidebarScrollMetrics: Equatable {
         origin.y = clip.documentRect.minY + (document.isFlipped ? bounded : maximum - bounded)
         guard abs(origin.y - clip.bounds.minY) > 0.001 else { return }
         let largeUnpreparedJump = prepareScroll == nil && abs(origin.y - clip.bounds.minY) > clip.bounds.height / 2
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
-        // A thumb can jump farther than the existing tile overscan in one
-        // event. Mount its actual destination before revealing that viewport.
-        if prepareScroll?(bounded) == true { document.layoutSubtreeIfNeeded() }
+        // Only a new tile or a thumb jump needs an atomic layout commit.
+        // Committing a transaction for every in-bucket wheel delta forces an
+        // entire AppKit display/layout cycle on Ventura instead of coalescing it.
+        let prepared = prepareScroll?(bounded) == true
+        let synchronous = prepared || largeUnpreparedJump
+        if synchronous { CATransaction.begin(); CATransaction.setDisableActions(true) }
+        defer { if synchronous { CATransaction.commit() } }
+        if prepared { document.layoutSubtreeIfNeeded() }
         clip.scroll(to: origin)
         scroll.reflectScrolledClipView(clip)
         // Native SwiftUI ScrollView supplies its own lazy-content state after
@@ -1566,7 +2359,7 @@ final class SidebarScrollProbeView: NSView {
         var origin = clip.bounds.origin
         origin.y = min(max(document.bounds.minY, origin.y + velocity * elapsed), max(document.bounds.minY, document.bounds.maxY - clip.bounds.height))
         guard origin != clip.bounds.origin else { return }
-        (scroll as? GridNativeScrollView)?.prepareSelectionScroll(to: origin, horizontal: false)
+        (scroll as? NativeTimelineSelectionScrollHost)?.prepareSelectionScroll(to: origin, horizontal: false)
         clip.scroll(to: origin); scroll.reflectScrolledClipView(clip)
     }
     func stop() { timer?.invalidate(); timer = nil; scroll = nil }

@@ -4,6 +4,7 @@
 #include "InstrumentAssets.h"
 #include "Localization.h"
 #include <regex>
+#include <functional>
 
 namespace catlive::projectBackups {
 inline void require(bool condition, const char *message) {
@@ -96,7 +97,10 @@ inline void prune(const std::vector<File> &previous) {
 }
 // Opening a backup creates an independent recovered project. Subsequent Save
 // must never overwrite the original document, its history or its media.
-inline File restore(const File &backup, const jaras::Project &project) {
+inline File restore(const File &backup, const jaras::Project &project,
+                    const std::function<void(int, int, const String &)> &progress = {},
+                    const std::function<void()> &checkpoint = {}) {
+    if (checkpoint) checkpoint();
     const auto root = mediaDirectory(backup);
     const auto base = backup.getFileNameWithoutExtension() + "-Recovered";
     const auto folder = root.getParentDirectory().getNonexistentChildFile(base, "", false);
@@ -105,15 +109,24 @@ inline File restore(const File &backup, const jaras::Project &project) {
     try {
         auto paths = mediaCleanup::references(project);
         for (const auto &id : instrumentAssets::identities(project)) paths.insert(utf8("Instruments/" + id + ".sf2"));
+        const int total = (int)paths.size() + 1;
+        int completed = 0;
         for (const auto &path : paths) {
+            if (checkpoint) checkpoint();
+            if (progress) progress(completed, total, text(path));
             const auto source = ProjectCodec::resolveMedia(root, path);
             const auto target = ProjectCodec::resolveMedia(folder, path, false);
-            if (!source.existsAsFile()) continue;
-            require(target.getParentDirectory().createDirectory().wasOk() && source.copyFileTo(target),
-                    "Could not copy media for the recovered project.");
+            if (source.existsAsFile())
+                require(target.getParentDirectory().createDirectory().wasOk() && source.copyFileTo(target),
+                        "Could not copy media for the recovered project.");
+            ++completed;
+            if (progress) progress(completed, total, text(path));
         }
+        if (checkpoint) checkpoint();
         const auto target = folder.getChildFile(base + ".jl");
+        if (progress) progress(completed, total, target.getFileName());
         require(backup.copyFileTo(target), "Could not restore the project backup.");
+        if (progress) progress(total, total, {});
         return target;
     } catch (...) {
         folder.deleteRecursively();

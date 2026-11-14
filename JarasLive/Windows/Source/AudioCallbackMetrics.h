@@ -6,7 +6,8 @@ namespace catlive {
 // Read on demand from the diagnostic snapshot, outside the device callback.
 class AudioCallbackMetrics {
 public:
-    AudioCallbackMetrics() : profiling(SystemStats::getEnvironmentVariable("CATLIVE_AUDIO_DIAGNOSTICS", {}) == "1") {}
+    AudioCallbackMetrics() : profiling(SystemStats::getEnvironmentVariable("CATLIVE_AUDIO_DIAGNOSTICS", {}) == "1" &&
+        SystemStats::getEnvironmentVariable("CATLIVE_AUDIO_DIAGNOSTICS_DETAIL", {}) != "0") {}
     class Detail {
     public:
         Detail(AudioCallbackMetrics& owner, size_t index) noexcept : metrics(owner), slot(index) {

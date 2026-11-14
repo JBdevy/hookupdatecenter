@@ -261,7 +261,11 @@ private final class CaptureWriter: @unchecked Sendable {
     weak var projectAudio: StemAudioPlayback?
     private var projectTabActive = true
     @Published private(set) var armed: Set<UUID> = []
-    @Published private(set) var armState = RecordingArmState()
+    private(set) var armState = RecordingArmState() {
+        willSet {
+            if !armState.hasSamePresentation(as: newValue) { objectWillChange.send() }
+        }
+    }
     private var microphoneTracks: Set<UUID> = []
     private var selectionObservation: AnyCancellable?
     private var requestingMicrophone = false
@@ -309,10 +313,18 @@ private final class CaptureWriter: @unchecked Sendable {
             self.midiTakes[track]?.receive(source: Int32.min, status: status, number: number, value: value, position: position)
         }
         selectionObservation = show.$mixerTrackSelection.removeDuplicates().sink { [weak self] selection in
-            guard let self else { return }
-            self.armState.select(selection)
-            self.reconcileArming()
+            self?.selectionChanged(selection)
         }
+        // Rebinding a suspended tab must restore its manual input monitoring
+        // even when the selection and its automatic REC targets did not change.
+        reconcileArming()
+    }
+    private func selectionChanged(_ selection: Set<UUID>) {
+        let previous = armState.armed
+        armState.select(selection)
+        // A selection only changes capture when it hands off automatic REC.
+        // Avoid scanning/configuring all tracks for ordinary mixer clicks.
+        if previous != armState.armed { reconcileArming() }
     }
     var recordingDisplayPosition: Double? {
         guard recording, let show else { return nil }
@@ -555,8 +567,10 @@ private final class CaptureWriter: @unchecked Sendable {
     func setMode(_ mode: RecordingArmState.Mode, tracks: Set<UUID>, requiresAudioInput: Bool) {
         guard !busy else { return }
         if requiresAudioInput { microphoneTracks.formUnion(tracks) } else { microphoneTracks.subtract(tracks) }
-        armState.select(show?.mixerTrackSelection ?? [])
-        armState.set(mode, tracks: tracks)
+        var next = armState
+        next.select(show?.mixerTrackSelection ?? [])
+        next.set(mode, tracks: tracks)
+        armState = next
         reconcileArming()
     }
     private func reconcileArming() {

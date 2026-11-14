@@ -47,7 +47,9 @@ final class UnifiedRegionTests: XCTestCase {
         XCTAssertNil(project.songs[0].tracks[0].clips.first { $0.id == loose.id }?.regionOwnerID)
         let moved = project.songs[0].previewMovingRegion(owner, to: 140)
         XCTAssertNotEqual(moved.tracks[0].clips.first { $0.id == owned.id }?.startTime, owned.startTime)
-        XCTAssertEqual(moved.tracks[0].clips.first { $0.id == loose.id }?.startTime, loose.startTime)
+        let ownerStart = try XCTUnwrap(project.songs[0].parts.first { $0.id == owner }?.startTime)
+        XCTAssertEqual(moved.tracks[0].clips.first { $0.id == loose.id }?.startTime,
+                       loose.startTime + 140 - ownerStart, "covered media follows the region regardless of stored ownership")
     }
     private func fixture() -> Project {
         var project = Project.empty(name: "Unified")

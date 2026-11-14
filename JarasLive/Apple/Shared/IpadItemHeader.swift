@@ -21,8 +21,10 @@ struct IpadItemHeader: UIViewRepresentable {
     let editable: Bool
     let textEditable: Bool
     let interactionID: UUID
+    var itemTitle: String? = nil
     var pinsToViewport = true
     var sourceStartOffset: CGFloat = 0
+    var mixLocked = false
     let mix: (IpadItemMixParameter, Double, Bool, Bool) -> Void
     let mute: () -> Void
     let phase: () -> Void
@@ -32,8 +34,9 @@ struct IpadItemHeader: UIViewRepresentable {
     func makeUIView(context: Context) -> IpadItemHeaderControl { IpadItemHeaderControl() }
     func updateUIView(_ view: IpadItemHeaderControl, context: Context) {
         view.interactionID = interactionID
-        view.clip = clip; view.editable = editable; view.textEditable = textEditable
+        view.clip = clip; view.itemTitle = itemTitle; view.editable = editable; view.textEditable = textEditable
         view.pinsToViewport = pinsToViewport; view.sourceStartOffset = sourceStartOffset
+        view.mixLocked = mixLocked
         view.mix = mix; view.mute = mute; view.phase = phase; view.fx = fx; view.menu = menu
         view.isEnabled = enabled; view.setNeedsDisplay()
     }
@@ -55,7 +58,16 @@ final class IpadItemHeaderControl: UIControl {
         didSet { if !editable && oldValue { cancelTracking(with: nil) } }
     }
     var textEditable = false
+    var mixLocked = false {
+        didSet {
+            if mixLocked && !oldValue, let hit = activeGesture?.hit, hit == .gain || hit == .pan {
+                cancelTracking(with: nil); setNeedsDisplay()
+            }
+        }
+    }
     var pinsToViewport = true
+    var itemTitle: String?
+    private var displayTitle: String { itemTitle ?? clip.name }
     var sourceStartOffset: CGFloat = 0
     var mix: (IpadItemMixParameter, Double, Bool, Bool) -> Void = { _, _, _, _ in }
     var mute: () -> Void = {}
@@ -73,11 +85,11 @@ final class IpadItemHeaderControl: UIControl {
         let item = GridSelectionItem(id: clip.id, rect: sourceRect, gain: clip.gain ?? 1,
             phaseInverted: clip.phaseInverted == true, pan: clip.pan ?? 0,
             editable: editable, midiEditable: clip.midi != nil, textEditable: textEditable,
-            name: clip.name, muted: clip.muted == true, hasFX: !(clip.fx?.inserted.isEmpty ?? true),
+            name: displayTitle, muted: clip.muted == true, hasFX: !(clip.fx?.inserted.isEmpty ?? true),
             fxBypassed: clip.fxBypassed == true)
         guard let viewport else { return item }
         let visible = convert(viewport.bounds, from: viewport)
-        let titleWidth = (clip.name as NSString).size(withAttributes: [
+        let titleWidth = (displayTitle as NSString).size(withAttributes: [
             .font: UIFont.systemFont(ofSize: GridSelectionItem.headerFontSize, weight: .semibold)
         ]).width
         return item.visibleLeftHeader(in: visible, titleWidth: titleWidth, pinned: pinsToViewport)
@@ -149,6 +161,7 @@ final class IpadItemHeaderControl: UIControl {
     override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
         guard isEnabled, let hit = hit(touch.location(in: self)) else { return false }
         if event?.buttonMask.contains(.secondary) == true { menu(); return false }
+        if mixLocked && (hit == .gain || hit == .pan) { return false }
         if touch.tapCount == 2, hit == .gain || hit == .pan {
             mix(hit == .gain ? .gain : .pan, hit == .gain ? 1 : 0, true, false)
             return false
@@ -240,7 +253,7 @@ final class IpadItemHeaderControl: UIControl {
         }
         knob(g.panKnobRect, position: g.panPosition); label(g.panLabel, g.panLabelRect)
         button(g.editRect, active: false, text: JarasLocalization.string("Edit"))
-        label(clip.name, CGRect(x: g.headerRect.minX + g.titleInset, y: 0, width: max(0, g.headerRect.width - g.titleInset - 2), height: bounds.height), centered: false)
+        label(displayTitle, CGRect(x: g.headerRect.minX + g.titleInset, y: 0, width: max(0, g.headerRect.width - g.titleInset - 2), height: bounds.height), centered: false)
     }
 }
 #endif

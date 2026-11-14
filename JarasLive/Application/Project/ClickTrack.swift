@@ -53,13 +53,13 @@ public struct ClickTrackSection: Equatable, Sendable {
 }
 public enum ClickTrackProgram {
     public static func visibleBeats(sections: [TimelineTempoSection], start: Double, end: Double,
-                                    visibleStart: Double, visibleEnd: Double, pixelsPerSecond: Double, doubled: Bool = false) -> [Double] {
-        guard pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return [] }
+                                    visibleStart: Double, visibleEnd: Double, pixelsPerSecond: Double, doubled: Bool = false, rate: Double = 1) -> [Double] {
+        guard pixelsPerSecond.isFinite, pixelsPerSecond > 0, rate.isFinite, rate > 0 else { return [] }
         var result: [Double] = []
         for section in sections {
             let first = max(start, visibleStart, section.start), last = min(end, visibleEnd, section.end)
             guard first < last else { continue }
-            let beat = 60 / section.bpm * 4 / Double(section.unit) / (doubled ? 2 : 1)
+            let beat = 60 / section.bpm * 4 / Double(section.unit) / (doubled ? 2 : 1) / rate
             let step = max(1, ceil(1 / (beat * pixelsPerSecond)))
             var index = max(0, ceil((first - section.start) / beat - 1e-9))
             index = ceil(index / step) * step
@@ -75,21 +75,23 @@ public enum ClickTrackProgram {
         let items = track.clips.filter { $0.muted != true && $0.audioFile == nil }.sorted { $0.startTime < $1.startTime }
         // Partition overlaps once, choosing the densest active item without summing clicks.
         let edges = Array(Set(items.flatMap { [$0.startTime, $0.startTime + $0.duration] })).sorted()
-        var spans: [(Double, Double, Int)] = []
+        var spans: [(Double, Double, Double, Int)] = []
         for (start, end) in zip(edges, edges.dropFirst()) where end > start {
             let active = items.filter { $0.startTime < end && $0.startTime + $0.duration > start }
             guard !active.isEmpty else { continue }
-            let rate = active.contains { $0.clickDouble == true } ? 2 : 1
-            if let previous = spans.last, previous.1 == start, previous.2 == rate {
+            let fastest = active.max { $0.clickRate * ($0.clickDouble == true ? 2 : 1) < $1.clickRate * ($1.clickDouble == true ? 2 : 1) }!
+            let subdivisions = fastest.clickDouble == true ? 2 : 1
+            let rate = fastest.clickRate * Double(subdivisions)
+            if let previous = spans.last, previous.1 == start, previous.2 == rate, previous.3 == subdivisions {
                 spans[spans.count - 1].1 = end
-            } else { spans.append((start, end, rate)) }
+            } else { spans.append((start, end, rate, subdivisions)) }
         }
         let tempo = song.tempoSections(until: max(song.duration, spans.last?.1 ?? 0))
         var result: [ClickTrackSection] = []
         for span in spans {
             for section in tempo where section.end > span.0 && section.start < span.1 {
                 result.append(ClickTrackSection(start: max(span.0, section.start), end: min(span.1, section.end),
-                    origin: section.start, bpm: section.bpm * Double(span.2), beats: section.beats * span.2, unit: section.unit))
+                    origin: section.start, bpm: section.bpm * span.2, beats: section.beats * span.3, unit: section.unit))
             }
         }
         return result

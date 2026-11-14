@@ -30,8 +30,11 @@ multi = multi[start:multi.index('\n}', start) + 2]
 # Only the track payload type is irrelevant to this view; all transport fields,
 # the presentation helper, needle view and native follow remain real code.
 presentation = Path('Application/Transport/TimelinePlaybackPresentation.swift').read_text().split('/// Song names and explicit tempo metadata')[0]
-Path(sys.argv[1]).with_name('Presentation.swift').write_text(presentation)
+audio = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
+clock = audio[audio.index('struct AudioPresentationClock {'):audio.index('@MainActor final class MetronomeSettings')]
+Path(sys.argv[1]).with_name('Presentation.swift').write_text(presentation + '\n' + clock)
 stub_track = 'public struct MultiLoopTrack: Codable, Equatable, Sendable {}\n'
+stub_track += 'final class GridDocumentView: NSView { var followsViewportWidth = false; func synchronizeHostedViewport() {} }\n'
 stubs = Path('Tests/Apple/TimelinePlaybackLayerTests.swift').read_text().split('@MainActor private final class PresentationJournal')[0]
 stubs = stubs.replace('let duration: Double; let parts:', 'let id = UUID(); let duration: Double; let parts:')
 stubs = stubs.replace('var isPlaying: Bool', '@Published var subCursorPreview = false\n    @Published var timelineFollowPaused = false\n    var subCursorVisible: Bool { subCursorPreview || snapshot.transport.subPlay.playing }\n    var isPlaying: Bool')

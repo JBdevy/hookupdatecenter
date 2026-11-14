@@ -184,4 +184,26 @@ final class SMK37IntegrationTests: XCTestCase {
         XCTAssertEqual(SMK37Protocol.decode(SMK37Protocol.fadeout(active: true, remaining: .nan, duration: 5))?.payload, [0,0,0])
     }
 
+    func testBluetoothFeedbackHasBoundedBurstsAndLeavesTimeForNotes() {
+        var budget = SMK37FeedbackBudget()
+        XCTAssertTrue(budget.allow(bytes: 95, at: 0))
+        XCTAssertFalse(budget.allow(bytes: 95, at: 0))
+        XCTAssertFalse(budget.allow(bytes: 10, at: 0.01))
+        XCTAssertTrue(budget.allow(bytes: 10, at: 0.02))
+        XCTAssertFalse(budget.allow(bytes: 97, at: 1))
+        XCTAssertFalse(budget.allow(bytes: 0, at: 1))
+        XCTAssertFalse(budget.allow(bytes: 10, at: .nan))
+        XCTAssertFalse(budget.allow(bytes: 10, at: -1))
+        var flood = SMK37FeedbackBudget(), total = 0, last = -Double.infinity
+        for step in 0...2000 {
+            let now = Double(step) / 1000
+            if flood.allow(bytes: 80, at: now) {
+                XCTAssertGreaterThanOrEqual(now - last, 0.02 - 1e-9)
+                last = now; total += 80
+            }
+        }
+        XCTAssertLessThanOrEqual(total, 96 + 2400)
+        XCTAssertGreaterThan(total, 2000, "metadata must still make progress")
+    }
+
 }

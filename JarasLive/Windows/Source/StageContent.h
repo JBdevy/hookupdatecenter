@@ -17,7 +17,7 @@ struct StageContent {
         put(out,"index",index);put(out,"settings",settings);put(out,"preview",preview);
         put(out,"loopActive",transport.loop.enabled);
         put(out,"loopLabel",localization::translate("Loop ativo"));
-        put(out,"timer",stage.timeText(true));put(out,"expired",stage.seconds()<0);
+        put(out,"timer",stage.timeText(true));put(out,"expired",stage.expired());
         put(out,"localTime",Time::getCurrentTime().formatted("%H:%M:%S"));
         put(out,"mediaStretch",flag(settings,"mediaStretch"));
         const auto noticeSettings=stage.preferences.value("jaras.notices.appearance",object());

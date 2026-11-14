@@ -33,6 +33,11 @@ public struct RecordingArmState: Equatable {
     public var armed: Set<UUID> {
         Set(modes.compactMap { id, mode in mode == .manual || (mode == .automatic && selected.contains(id)) ? id : nil })
     }
+    /// Selection is retained for future automatic arming, but unrelated track
+    /// clicks do not change the REC controls or their capture configuration.
+    public func hasSamePresentation(as other: Self) -> Bool {
+        modes == other.modes && armed == other.armed
+    }
     public mutating func set(_ mode: Mode, tracks: Set<UUID>) {
         for id in tracks { modes[id] = mode == .off ? nil : mode }
     }

@@ -10,6 +10,7 @@ struct IpadTimelineToolbar: View {
     @ObservedObject private var updates: ShowProjectPresentation
     @AppStorage(TimelineSnapPreference.key) private var snapEnabled = true
     @State private var showingVisibility = false
+    @State private var showingLocks = false
     @State private var pendingTimebase: TimebaseRequest?
 
     private struct TimebaseRequest {
@@ -121,6 +122,8 @@ struct IpadTimelineToolbar: View {
                                                     background: show.timelineMovementLocked ? JarasTheme.yellow : nil))
             .accessibilityLabel("Lock timeline movement")
             .accessibilityIdentifier("timeline-movement-lock")
+            .onLongPressGesture { showingLocks = true }
+            .popover(isPresented: $showingLocks) { TimelineLockOptionsView(show: show) }
             .accessibilityValue(show.timelineMovementLocked ? "Locked" : "Unlocked")
     }
 }

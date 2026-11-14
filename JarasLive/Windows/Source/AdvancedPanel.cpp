@@ -137,7 +137,6 @@ void AdvancedPanel::select(int index) {
     fields.clear();
     bpm = beats = unit = nullptr;
     timebase = nullptr;
-    automation = nullptr;
     for (int i = 0; i < tabs.size(); ++i)
         tabs[i]->setToggleState(i == index, dontSendNotification);
     label(tabs[index]->getButtonText(), 18, 16, 560, 28, true);
@@ -170,12 +169,6 @@ void AdvancedPanel::select(int index) {
         timebase = &choice("Projeto timebase", {"Grid Livre", "Grid Relativo"},
                            settings.timebase == jaras::ProjectTimebase::relative ? 2 : 1, 306, 105,
                            160, [](int) {});
-        automation =
-            new ToggleButton(String::fromUTF8("Timebase afeta a duração dos itens de automação"));
-        fields.add(automation);
-        page.addAndMakeVisible(automation);
-        automation->setBounds(18, 146, 570, 30);
-        automation->setToggleState(settings.affectsAutomationLength, dontSendNotification);
     } else if (index == 1) {
         label("Gridline", 18, 58, 300);
         choice("Gridline", {"Ativado", "Desativado"}, appearance.gridlines() ? 1 : 2, 436, 59, 148,
@@ -366,7 +359,7 @@ void AdvancedPanel::applyTiming() {
                         : jaras::ProjectTimeSettings{};
     settings.timebase = timebase->getSelectedId() == 2 ? jaras::ProjectTimebase::relative
                                                        : jaras::ProjectTimebase::free;
-    settings.affectsAutomationLength = automation->getToggleState();
+    settings.affectsAutomationLength = true;
     try {
         session.configureTiming(value, numerator, denominator, settings);
         ModalSheet::dismiss(*this);

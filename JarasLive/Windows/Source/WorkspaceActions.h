@@ -196,6 +196,14 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         // Reuse the menu callback so keyboard and mouse share the full selection,
         // progress, cancellation and single-transaction Undo behavior.
         clipMenuAction(anchor)(action == "normalizeItems" ? 11 : action == "reRenderItems" ? 13 : 14);
+    } else if (action == "createRegionsFromItems") {
+        if (const auto range = session.selectedTimeRange()) {
+            session.addRegion({}, range->first, range->second);
+        } else {
+            auto anchor = selectedClip;
+            if (!selectedClips.empty() && !selectedClips.count(anchor)) anchor = *selectedClips.begin();
+            if (!anchor.empty() && !session.busy) clipMenuAction(anchor)(9);
+        }
     } else if (action == "createTempoMarker") {
         editTempoMarker({},session.transport().editPosition);
     }

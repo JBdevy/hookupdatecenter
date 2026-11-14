@@ -1402,13 +1402,40 @@ class Workspace::Setlist final : public Component,
         if (!playlist.empty() && targets.size()==1 && !entry.child && !searching)
             menu.addItem(7, localization::translate("Duplicate region"));
         menu.addItem(6,"Config Init");
+        if(playlist.empty() && !entry.child && !entry.hasChildren) {
+            menu.addItem(8,localization::translate("Set region end to longest item"));
+            menu.addItem(9,localization::translate("Space regions by 30 s"));
+        }
         menu.addItem(3, localization::translate(String::fromUTF8("Exportar áudio")));
         if (!entry.child) menu.addItem(5, selectedPlaylist() ? localization::translate("Remover da playlist") : localization::translate(String::fromUTF8("Excluir região")));
         std::set<ID> sources;
         for (const auto &id : targets) sources.insert(selectedPlaylist() ? selectedPlaylist()->resolvedRegionId(id) : id);
         menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea({Desktop::getMousePosition().x,Desktop::getMousePosition().y,1,1}),
-            [self=SafePointer<Setlist>(this),entry,targets,sources,playlist](int action) {
+            [self=SafePointer<Setlist>(this),entry,targets,sources,playlist,
+             projectID=w.session.project().id,songID=w.session.song()?w.session.song()->id:ID{}](int action) {
                 if(!self)return;
+                if(action==8 || action==9) {
+                    if(!playlist.empty() || entry.child || entry.hasChildren ||
+                       self->selectedPlaylist() || self->w.session.project().id!=projectID ||
+                       !self->w.session.song() || self->w.session.song()->id!=songID ||
+                       timelineGrid::regionsLocked(self->w.session.project())) return;
+                    const auto original=*self->w.session.song();
+                    const jaras::RegionSpacingPlan plan(original,sources);
+                    self->w.perform([&]{self->w.session.edit([&](jaras::Project& project){
+                        for(auto& song:project.songs) if(song.id==songID) {
+                            if(action==8) {
+                                for(auto& part:song.parts) if(sources.count(part.id))
+                                    if(const auto end=jaras::regionEndAtLongestItem(original,part.id)) {
+                                        part.endTime=*end;song.duration=std::max(song.duration,*end);
+                                    }
+                            } else {
+                                jaras::automationTiming::map(project.masterAutomationJSON,[&](double time){return plan.position(original,time);});
+                                plan.apply(song);
+                            }
+                        }
+                    },true,false,true);});
+                    return;
+                }
                 if(action==1)self->w.editMultiLoops(entry.sourceId);
                 if(action==2)self->w.detectRegions(sources);
                 if(action==3)self->w.exportRegions(sources);

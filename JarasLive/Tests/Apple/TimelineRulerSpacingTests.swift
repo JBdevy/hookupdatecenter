@@ -114,3 +114,7 @@ for zoom in [0.08, 0.03, 0.01, 0.003, 0.001] {
 precondition(TimelineTimeRuler.labelSpacing(through: farEnd, measuredWidth: 250, pixelsPerSecond: 0.01) >= 250 + TimelineTimeRuler.labelGap,
              "unusually wide hour labels override the normal density range without clipping")
 print("TIMELINE_RULER_FAR_DENSITY_GLOBAL_REGIONS_ZERO_HOURS_AND_CLIPPING_OK")
+
+// Mid-zoom beat groups must fill gaps before individual beats fit.
+let medium = TimelineTimeRuler.ticks(in: simple, from: 0, to: 4, pixelsPerSecond: 20, divisions: 4)
+precondition(medium.map(\.time) == [0, 1, 2, 3, 4], "half-bar lines appear before quarter-note lines")

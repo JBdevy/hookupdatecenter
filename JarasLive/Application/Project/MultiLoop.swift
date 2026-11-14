@@ -10,6 +10,52 @@ public struct MultiLoopTrack: Codable, Equatable, Identifiable, Sendable {
     public var solo = false
     public init(id: UUID, gain: Double = 1) { self.id = id; self.gain = gain }
 }
+
+/// Editor-only state: changing a selection never changes the saved loop rules.
+public struct MultiLoopTrackSelection {
+    public private(set) var ids: Set<UUID> = []
+    public private(set) var anchor: UUID?
+    public init() {}
+    public mutating func select(_ id: UUID, ordered: [UUID], extending: Bool = false, additive: Bool = false) {
+        let available = Set(ordered)
+        ids.formIntersection(available)
+        guard available.contains(id) else { return }
+        if extending, let anchor, let first = ordered.firstIndex(of: anchor), let last = ordered.firstIndex(of: id) {
+            let range = Set(ordered[min(first, last)...max(first, last)])
+            ids = additive ? ids.union(range) : range
+        } else {
+            if additive { if !ids.insert(id).inserted { ids.remove(id) } }
+            else { ids = [id] }
+            anchor = id
+        }
+    }
+    public mutating func targets(for id: UUID) -> Set<UUID> {
+        if !ids.contains(id) { ids = [id]; anchor = id }
+        return ids
+    }
+}
+
+/// Keep the starting balance throughout a gesture, including after a fader
+/// reaches its ceiling and the pointer moves back in the other direction.
+public struct MultiLoopGainDrag {
+    public let source: UUID
+    private let start: [UUID: Double]
+    private let ceilings: [UUID: Double]
+    public init(source: UUID, targets: Set<UUID>, rules: [MultiLoopTrack], ceilings: [UUID: Double]) {
+        self.source = source; self.ceilings = ceilings
+        start = Dictionary(uniqueKeysWithValues: rules.filter { targets.contains($0.id) }.map {
+            ($0.id, min(max(0, ceilings[$0.id] ?? 0), max(0, $0.gain)))
+        })
+    }
+    public func gains(at value: Double) -> [UUID: Double] {
+        guard value.isFinite, let original = start[source] else { return [:] }
+        let requested = max(0, value)
+        let ratio = requested / max(0.000001, original)
+        return start.mapValues { max(0.000001, $0) * ratio }.map { id, gain in
+            (id, min(max(0, ceilings[id] ?? 0), id == source ? requested : gain))
+        }.reduce(into: [:]) { $0[$1.0] = $1.1 }
+    }
+}
 public struct MultiLoop: Codable, Equatable, Identifiable, Sendable {
     public var id = UUID()
     public var name: String
@@ -18,9 +64,10 @@ public struct MultiLoop: Codable, Equatable, Identifiable, Sendable {
     public var fadeSeconds: Double = 3
     public var tracks: [MultiLoopTrack] = []
     public var enabled: Bool?
+    // Retained only for document compatibility; the per-track controls own M/S.
     public var mixerEnabled: Bool?
     public var isEnabled: Bool { enabled ?? true }
-    public var usesMixer: Bool { mixerEnabled ?? true }
+    public var usesMixer: Bool { true }
     public init(name: String, marker1: UUID, marker2: UUID) {
         self.name = name; self.marker1 = marker1; self.marker2 = marker2
     }

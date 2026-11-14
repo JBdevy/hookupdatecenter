@@ -332,7 +332,7 @@ MigratedProject readLogicProject(const File &bundle) {
     auto infoFile = bundle.getChildFile("Resources/ProjectInformation.plist");
     auto info = object();
     try { if (infoFile.existsAsFile()) info = readPlist(infoFile); }
-    catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic project information ignored: ") + String::fromUTF8(error.what())); }
+    catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Resources/ProjectInformation.plist\n" + migration::message("Logic project information ignored: ") + String::fromUTF8(error.what())); }
     auto active = get(info, "ActiveVariant");
     File alternative;
     try {
@@ -371,12 +371,12 @@ MigratedProject readLogicProject(const File &bundle) {
     auto candidates=available; candidates.removeAllInstancesOf(alternative); candidates.insert(0,alternative);
     for (const auto &candidate : candidates) {
         try { all=records(readBytes(candidate.getChildFile("ProjectData"),512*1024*1024),&result.warnings); alternative=candidate; readable=true; break; }
-        catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic alternative ignored: ") + String::fromUTF8(error.what())); }
+        catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Alternatives/" + candidate.getFileName() + "/ProjectData\n" + migration::message("Logic alternative ignored: ") + String::fromUTF8(error.what())); }
     }
     require(readable,migration::message("Logic: no readable arrangement data was found."));
     auto metadata=object();
     try { metadata=readPlist(alternative.getChildFile("MetaData.plist")); }
-    catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic metadata ignored: ") + String::fromUTF8(error.what())); }
+    catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere("Alternatives/" + alternative.getFileName() + "/MetaData.plist\n" + migration::message("Logic metadata ignored: ") + String::fromUTF8(error.what())); }
     result.project = migration::emptyProject(bundle.getFileNameWithoutExtension());
     auto &song = result.project.songs.front();
     double rate = num(metadata, "SampleRate", 44100),
@@ -454,16 +454,21 @@ MigratedProject readLogicProject(const File &bundle) {
         bool mute;
     };
     std::map<uint64, Reference> files;
+    std::map<uint64, String> fileNames;
     std::map<uint64, std::string> importedPaths;
     std::map<std::pair<uint64, uint64>, Bytes> regions;
     std::map<uint64, String> names, identifiers;
     std::map<String, Mixer> mixers;
     std::map<uint64, const Record *> sequences;
     for (auto &r : all) {
+        auto sourceDescription = "Alternatives/" + alternative.getFileName() + "/ProjectData [" +
+            r.tag + ", " + String((int64)r.owner) + ", " + String((int64)r.index) + "]";
             try {
         auto &b = r.body;
         if (r.tag == "lFuA") {
             auto name = b.string(8, true);
+            fileNames[r.owner >> 16] = name;
+            sourceDescription = name + "\n" + sourceDescription;
             require(name.isNotEmpty() && name != "." && name != ".." && !name.containsAnyOf("/\\:"),
                     migration::message("Logic: invalid audio filename."));
             double fileRate = rate;
@@ -502,7 +507,7 @@ MigratedProject readLogicProject(const File &bundle) {
         } else if (r.tag == "qeSM" && r.kind == 23)
             sequences[r.owner] = &r;
 
-            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic media or mixer setting ignored: ") + String::fromUTF8(error.what())); }
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(sourceDescription + "\n" + migration::message("Logic media or mixer setting ignored: ") + String::fromUTF8(error.what())); }
 }
     std::set<uint64> roots;
     for (auto &r : all)
@@ -558,6 +563,27 @@ MigratedProject readLogicProject(const File &bundle) {
     for (auto &r : all)
         if (r.tag == "qSvE" && r.kind == 23 && r.owner == root)
             for (auto &event : events(r.body, &result.warnings)) {
+            StringArray context;
+            if (event.count >= 24) {
+                const auto row = event.integer(20) & 0xffffff;
+                if (tracks.count(row)) context.add(text(song.tracks[tracks.at(row)].name));
+            }
+            if (event.count >= 48 && event.integer(0, 1) == 0x24) {
+                const auto id = event.integer(44), regionID = event.integer(40);
+                context.add(fileNames.count(id) ? fileNames.at(id) : migration::message("Audio file reference: ") + String((int64)id));
+                const auto region = regions.find({id, regionID});
+                if (region != regions.end()) {
+                    try { context.add(region->second.string(74)); } catch (const std::exception &) { /* The item reports its original decoding failure below. */ }
+                }
+            } else if (event.count >= 36 && event.integer(0, 1) == 0x20) {
+                const auto sequence = sequences.find(event.integer(32) << 16);
+                if (sequence != sequences.end()) {
+                    const auto *seq = sequence->second;
+                    try { context.add(seq->body.string(seq->version == 3 || seq->version >= 5 ? 16 : 52)); } catch (const std::exception &) {}
+                }
+            }
+            const auto sourceDescription = context.joinIntoString(" / ") + "\nAlternatives/" + alternative.getFileName() +
+                "/ProjectData [" + String((int64)r.owner) + ", " + String((int64)r.index) + "]";
             try {
                 int type = (int)event.integer(0, 1);
                 if (type == 0xf1)
@@ -685,7 +711,7 @@ MigratedProject readLogicProject(const File &bundle) {
                     result.warnings.addIfNotAlreadyThere(
                         migration::message("Logic Flex processing and region automation are not applied. Audio retains its source bounds."));
 
-            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic item ignored: ") + String::fromUTF8(error.what())); }
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(sourceDescription + "\n" + migration::message("Logic item ignored: ") + String::fromUTF8(error.what())); }
 }
     struct Marker {
         std::string name;

@@ -72,6 +72,26 @@ import Combine
     }
 }
 
+/// Audio owns the envelope; mixer controls observe only its presentation.
+/// Publishing here never edits manual gains or invalidates the project rows.
+@MainActor public final class MultiLoopFaderPresentation: ObservableObject {
+    public struct Frame: Equatable {
+        public let project: UUID
+        public let amount: Double
+        public let targets: [UUID?: Double]
+        public func gain(_ manual: Double, project: UUID, track: UUID?) -> Double {
+            guard self.project == project, let target = targets[track] else { return manual }
+            return manual + (min(manual, target) - manual) * amount
+        }
+    }
+    @Published public private(set) var frame: Frame?
+    public func update(project: UUID, amount: Double, targets: [UUID?: Double]) {
+        let next = targets.isEmpty ? nil : Frame(project: project, amount: min(1, max(0, amount)), targets: targets)
+        if frame != next { frame = next }
+    }
+    public func reset() { if frame != nil { frame = nil } }
+}
+
 extension ShowController {
     public var fadeoutTracks: [Track] { (current?.tracks ?? []).filter { $0.kind == .standard || $0.kind == .click } }
     public func configureTransportFadeout(enabled: Bool, duration: Double, tracks: Set<UUID>) {

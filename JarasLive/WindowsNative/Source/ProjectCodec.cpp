@@ -281,6 +281,7 @@ jaras::Project ProjectCodec::decode(const json &input) {
         p.masterFXJSON = get(root, "masterFX").dump();
     p.masterMono = flag(root, "masterMono");
     optionalNum(root, "timelineMovementLocked", p.timelineMovementLocked);
+    optionalNum(root, "timelineLockOptions", p.timelineLockOptions);
     optionalNum(root, "masterColor", p.masterColor);
     optionalNum(root, "masterPhaseInverted", p.masterPhaseInverted);
     if (get(root, "masterPatch").is_object())
@@ -550,6 +551,8 @@ json ProjectCodec::encode(const jaras::Project &p, json input) {
     putDefault(root, "masterMono", p.masterMono, false);
     if (p.timelineMovementLocked) put(root, "timelineMovementLocked", *p.timelineMovementLocked);
     else root.erase("timelineMovementLocked");
+    if (p.timelineLockOptions) put(root, "timelineLockOptions", *p.timelineLockOptions);
+    else root.erase("timelineLockOptions");
     emitJSON(root, "masterAutomation", p.masterAutomationJSON);
     emit(root, "masterPatch", p.masterPatch);
     emit(root, "masterSecondaryPatch", p.masterSecondaryPatch);

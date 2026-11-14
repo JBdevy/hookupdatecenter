@@ -3,7 +3,7 @@
 #include "Automation.h"
 #include "CatDynamicsAssets.h"
 #include "Include/CatDynamicsDSP.hpp"
-#include "../ThirdParty/Signalsmith/signalsmith-stretch.h"
+#include "SharedClipAudio.h"
 namespace catlive {
 namespace {
 catlive::dsp::TriggerParameters readTriggerParameters(const var &settings) {
@@ -482,16 +482,19 @@ void NativeFX::waitForStems(){for(auto &e:effects)if(e->stem&&e->stemMix.enabled
 void NativeFX::checkStemErrors()const {for(const auto &e:effects)if(e->stem&&e->stemMix.enabled){const auto s=e->stem->status();if(s.state=="fault")throw std::runtime_error(s.error);}}
 bool NativeFX::hasExternal() const {for(const auto &effect:effects)if(effect->plugin)return true;return false;}
 void NativeFX::applyAutomation(const AutomationProgram &program, double time) {
+    if (effects.empty()) return;
     for (const auto &curve : program.curves) if (curve.target == AutomationCurve::externalFX)
         for (const auto &effect : effects) if (effect->plugin && !effect->bypassed &&
             effect->pluginID == curve.plugin)
             effect->plugin->automate(curve.parameter, curve.value(time));
 }
 void NativeFX::processIdleEditors(int samples,double seconds,bool playing,const jaras::PluginTempoMap *tempoMap) {
+    if (effects.empty()) return;
     const auto transport = tempoMap ? tempoMap->at(seconds,playing) : jaras::PluginTempoMap{}.at(seconds,playing);
     for(auto &effect:effects)if(effect->plugin)effect->plugin->processEditorSilence(samples,transport);
 }
 void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bool playing,const MidiBuffer *midi,double stemSeconds,const jaras::PluginTempoMap *tempoMap) {
+    if (effects.empty()) return;
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {
         if (e->kind == "CatLive Trigger")

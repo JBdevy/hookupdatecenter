@@ -32,6 +32,31 @@ bool regionOwns(const Song& song, const ID& root, const std::optional<ID>& owner
     for (const auto& part : song.parts) if (part.id == *owner) return part.parentRegionID == root;
     return false;
 }
+std::optional<ID> regionMovementOwner(const Song& song, double start, std::optional<double> end,
+                                    const std::optional<ID>& preferred) {
+    const Part* selected = nullptr;
+    double largest = 0;
+    for (const auto& part : song.parts) {
+        if (part.parentRegionID) continue;
+        const double overlap = end ? std::max(0.0, std::min(*end, part.endTime) - std::max(start, part.startTime))
+            : start >= part.startTime - regionPlacementTolerance && start < part.endTime - regionPlacementTolerance ? 1.0 : 0.0;
+        if (overlap <= 0) continue;
+        const bool same = selected && std::abs(overlap - largest) <= 1e-9;
+        const bool preferredHere = regionOwns(song, part.id, preferred);
+        const bool preferredBefore = selected && regionOwns(song, selected->id, preferred);
+        if (!selected || overlap > largest + 1e-9 || (same &&
+            (preferredHere != preferredBefore ? preferredHere :
+             part.endTime - part.startTime != selected->endTime - selected->startTime
+                ? part.endTime - part.startTime < selected->endTime - selected->startTime : part.id < selected->id))) {
+            selected = &part; largest = overlap;
+        }
+    }
+    return selected ? std::optional<ID>(selected->id) : std::nullopt;
+}
+bool markerMovesWithRegion(const Song& song, const TimelineMarker& marker, const ID& root) {
+    return marker.unifiedRegionID == root ||
+        regionMovementOwner(song, marker.position, {}, marker.regionOwnerID ? marker.regionOwnerID : marker.sourceRegionID) == root;
+}
 void synchronizeRegionOwnership(Project& project, const Project* previous) {
     for (auto& song : project.songs) {
         const Song* old = nullptr;
@@ -400,6 +425,9 @@ void validate(const Project& p) {
                 unique(clip.id);
                 require(finite(clip.startTime) && finite(clip.duration) && clip.startTime >= 0 && clip.duration > 0 && clip.startTime + clip.duration <= s.duration, "Invalid clip interval");
                 require(finite(clip.playbackRate) && clip.playbackRate >= 1.0/32 && clip.playbackRate <= 32, "Invalid clip playback rate");
+                std::set<ID> tempoReferenceIDs;
+                for(const auto& reference:clip.tempoRateReferences)
+                    require(!reference.markerID.empty() && tempoReferenceIDs.insert(reference.markerID).second && finite(reference.rate) && reference.rate>0,"Invalid item tempo reference");
                 require(!clip.tempoBasePlaybackRate || (finite(*clip.tempoBasePlaybackRate) && *clip.tempoBasePlaybackRate >= 1.0/32 && *clip.tempoBasePlaybackRate <= 32), "Invalid tempo playback reference");
                 require(finite(clip.sourceOffset) && clip.sourceOffset >= 0, "Invalid source offset");
                 for (const auto& channel : clip.waveformChannels) for (double peak : channel) require(finite(peak) && peak >= 0 && peak <= 1, "Invalid channel waveform");
@@ -424,7 +452,8 @@ void validate(const Project& p) {
                 require(finite(*marker.tempoBPM) && *marker.tempoBPM >= 60 && *marker.tempoBPM <= 300 && marker.tempoBeats.value_or(4) >= 1 && marker.tempoBeats.value_or(4) <= 32 && (unit == 1 || unit == 2 || unit == 4 || unit == 8 || unit == 16 || unit == 32 || unit == 64) && !marker.unifiedRegionID && !marker.sourceRegionID, "Invalid tempo marker");
                 require(!marker.tempoTimebase || *marker.tempoTimebase == "global" || *marker.tempoTimebase == "free" || *marker.tempoTimebase == "relative", "Invalid tempo marker timebase");
                 require(!marker.tempoReferenceBPM || (finite(*marker.tempoReferenceBPM) && *marker.tempoReferenceBPM >= 60 && *marker.tempoReferenceBPM <= 300), "Invalid tempo reference");
-            } else require(!marker.tempoBeats && !marker.tempoUnit && !marker.tempoTimebase && !marker.tempoReferenceBPM, "Invalid tempo marker");
+                require(!marker.tempoPlaybackRate || (finite(*marker.tempoPlaybackRate) && *marker.tempoPlaybackRate > 0), "Invalid tempo playback rate");
+            } else require(!marker.tempoBeats && !marker.tempoUnit && !marker.tempoTimebase && !marker.tempoReferenceBPM && !marker.tempoPlaybackRate, "Invalid tempo marker");
             unique(marker.id);
             require(marker.name.find_first_not_of(" \t\r\n") != std::string::npos && marker.color <= 0xffffff && finite(marker.position) && marker.position >= 0 && marker.position <= s.duration, "Invalid marker");
         }

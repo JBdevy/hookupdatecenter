@@ -2,6 +2,21 @@ import XCTest
 @testable import JarasApplication
 
 final class ClickTrackTests: XCTestCase {
+    func testManualRateChangesGeneratedPulsesAndGlobalBPMDoesNotApplyItTwice() throws {
+        var song = fixture().songs[0]; song.bpm = 120; song.timeSettings = ProjectTimeSettings()
+        var track = song.tracks[0]
+        track.clips = [AudioClip(id: UUID(), name: "Click", startTime: 0, duration: 8, playbackRate: 1.25)]
+        song.tracks = [track]
+        XCTAssertEqual(ClickTrackProgram.sections(song: song, track: track).first?.bpm, 150)
+        song.followTempo(180)
+        XCTAssertEqual(ClickTrackProgram.sections(song: song, track: song.tracks[0]).first?.bpm, 225)
+        let clip = song.tracks[0].clips[0]
+        let ticks = ClickTrackProgram.visibleBeats(sections: song.tempoSections(until: 8), start: 0, end: 1,
+            visibleStart: 0, visibleEnd: 1, pixelsPerSecond: 100, rate: clip.clickRate)
+        XCTAssertEqual(ticks[1], 60 / 225, accuracy: 1e-9)
+        XCTAssertEqual(song.tracks[0].clips[0].duration, 8 / 1.5)
+    }
+
     func testDoubleClickIsPerItemPersistsAndKeepsBarAccents() throws {
         var project = fixture()
         project.insertClickItems(track: project.songs[0].tracks[0].id)

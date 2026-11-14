@@ -272,7 +272,7 @@ final class ReaperAutomationImportTests: XCTestCase {
         XCTAssertTrue(result.warnings.contains { $0.contains("no compatible VST3 instrument was inserted on this track") })
         XCTAssertTrue(result.warnings.contains { $0.contains("MIDI take automation") && $0.contains("shared track instrument") })
     }
-    func testMIDITakeAutomationClockFollowsFlattenedTakeRate() throws {
+    func testMIDITakeAutomationClockPreservesEditableTakeRate() throws {
         let (folder, file) = try fixture("""
         <TRACK
           NAME MIDI
@@ -304,13 +304,13 @@ final class ReaperAutomationImportTests: XCTestCase {
         let result = try ReaperProjectImporter.read(file, resolveVST3: resolved)
         let clip = result.project.songs[0].tracks[0].clips[0]
         XCTAssertEqual(clip.sourceOffset, 0)
-        XCTAssertEqual(clip.audioRate, 1)
+        XCTAssertEqual(clip.audioRate, 2)
         let automation = try XCTUnwrap(clip.automation)
         let volume = try XCTUnwrap(automation.envelopes.first { $0.target.kind == .volume })
-        XCTAssertEqual(volume.points.map(\.time), [0, 2])
+        XCTAssertEqual(volume.points.map(\.time), [0, 4])
         XCTAssertEqual(TrackEnvelope.gain(volume.value(at: clip.automationTime(at: 11))), 0.55, accuracy: 0.000001)
         let effect = try XCTUnwrap(automation.envelopes.first { $0.target.kind == .externalFX })
-        XCTAssertEqual(effect.points.map(\.time), [0, 2])
+        XCTAssertEqual(effect.points.map(\.time), [0, 4])
         XCTAssertEqual(effect.value(at: clip.automationTime(at: 11)), 0.52, accuracy: 0.000001)
         XCTAssertFalse(result.warnings.contains { $0.contains("MIDI take automation") || $0.contains("MIDI take VST3") || $0.contains("Choose an instrument") }, result.warnings.description)
     }

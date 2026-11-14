@@ -1,5 +1,81 @@
 import Foundation
 
+public extension Song {
+    func isOrdinaryRegion(_ part: Part) -> Bool {
+        part.parentRegionID == nil && !parts.contains { $0.parentRegionID == part.id }
+    }
+    func endAtLongestItem(in region: UUID) -> Double? {
+        guard let part = parts.first(where: { $0.id == region }), isOrdinaryRegion(part) else { return nil }
+        return tracks.flatMap { track in track.clips.filter {
+            !(track.kind == .timecode && track.importedTimecodeItems != true) &&
+            !(track.kind == .click && $0.audioFile == nil) &&
+            regionMovementOwner(at: $0.startTime, end: $0.startTime + $0.duration, preferred: $0.regionOwnerID) == region
+        } }.map { $0.startTime + $0.duration }.filter { $0 > part.startTime }.max()
+    }
+}
+public struct RegionSpacingPlan {
+    public let offsets: [UUID: Double]
+    private let cuts: [Double]
+    private let gap: Double
+    public init(song: Song, selected: Set<UUID>, seconds: Double = 30) {
+        gap = seconds.isFinite && seconds > 0 ? seconds : 0
+        let roots = song.parts.filter { $0.parentRegionID == nil }.sorted {
+            $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime < $1.startTime
+        }
+        var offsets: [UUID: Double] = [:], cuts: [Double] = [], offset = 0.0
+        for (index, root) in roots.enumerated() {
+            offsets[root.id] = offset
+            if index + 1 < roots.count, selected.contains(root.id), song.isOrdinaryRegion(root), gap > 0 {
+                cuts.append(root.endTime); offset += gap
+            }
+        }
+        self.offsets = offsets; self.cuts = cuts
+    }
+    private func displacement(song: Song, time: Double, owner: UUID?) -> Double {
+        if let owner, let root = song.parts.first(where: { $0.id == owner }), let offset = offsets[root.parentRegionID ?? root.id] { return offset }
+        return Double(cuts.filter { time >= $0 }.count) * gap
+    }
+    public func position(_ time: Double, in song: Song) -> Double {
+        time + displacement(song: song, time: time, owner: song.regionMovementOwner(at: time))
+    }
+    public func apply(to song: inout Song) {
+        guard !cuts.isEmpty else { return }
+        let original = song
+        for track in song.tracks.indices {
+            song.tracks[track].automation?.mapTimelineTimes { position($0, in: original) }
+            if song.tracks[track].programChanges != nil {
+                for marker in song.tracks[track].programChanges!.indices {
+                    song.tracks[track].programChanges![marker].position = position(song.tracks[track].programChanges![marker].position, in: original)
+                }
+                song.tracks[track].programChanges!.sort { $0.position < $1.position }
+            }
+            for item in song.tracks[track].clips.indices {
+                let clip = song.tracks[track].clips[item]
+                let owner = original.regionMovementOwner(at: clip.startTime, end: clip.startTime + clip.duration, preferred: clip.regionOwnerID)
+                let offset = displacement(song: original, time: clip.startTime, owner: owner)
+                song.tracks[track].clips[item].startTime += offset
+                if offset != 0, let owner, !original.regionOwns(owner, owner: clip.regionOwnerID) { song.tracks[track].clips[item].regionOwnerID = owner }
+            }
+        }
+        if song.markers != nil {
+            for marker in song.markers!.indices {
+                let value = song.markers![marker]
+                let owner = value.unifiedRegionID ?? original.regionMovementOwner(at: value.position, preferred: value.regionOwnerID ?? value.sourceRegionID)
+                let offset = displacement(song: original, time: value.position, owner: owner)
+                song.markers![marker].position += offset
+                if offset != 0, let owner, !original.regionOwns(owner, owner: value.regionOwnerID) { song.markers![marker].regionOwnerID = owner }
+            }
+        }
+        for part in song.parts.indices {
+            let offset = offsets[song.parts[part].parentRegionID ?? song.parts[part].id] ?? 0
+            song.parts[part].startTime += offset; song.parts[part].endTime += offset
+        }
+        song.duration = position(original.duration, in: original)
+        song.duration = max(song.duration, song.parts.map(\.endTime).max() ?? 0,
+                            song.tracks.flatMap(\.clips).map { $0.startTime + $0.duration }.max() ?? 0)
+    }
+}
+
 public enum GridDeleteTarget: Equatable {
     case items(Set<UUID>), tracks(Set<UUID>), none
     public init(items: Set<UUID>, tracks: Set<UUID>) {
@@ -121,11 +197,21 @@ public extension Project {
     /// A track copy owns its editable state while reusing immutable media files.
     /// Folders include their descendants; linked stereo channels stay a pair.
     @discardableResult mutating func duplicateTracks(_ ids: Set<UUID>, song songID: UUID, copiedSong: Song? = nil) throws -> Set<UUID> {
-        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return [] }
+        let draft = try trackDuplicationDraft(ids, song: songID, copiedSong: copiedSong)
+        guard !draft.ids.isEmpty else { return [] }
+        try draft.project.validate()
+        self = draft.project
+        return draft.ids
+    }
+    /// The command executor validates this draft before committing it. Keeping
+    /// construction separate avoids scanning every waveform twice per paste.
+    internal func trackDuplicationDraft(_ ids: Set<UUID>, song songID: UUID, copiedSong: Song? = nil,
+                                       insertingAfter: [UUID: UUID] = [:]) throws -> (project: Project, ids: Set<UUID>, mapping: [UUID: UUID]) {
+        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return (self, [], [:]) }
         let destination = songs[index], source = copiedSong ?? destination
-        guard source.id == songID else { return [] }
+        guard source.id == songID else { return (self, [], [:]) }
         let selected = source.trackDuplicationTargets(ids)
-        guard !selected.isEmpty else { return [] }
+        guard !selected.isEmpty else { return (self, [], [:]) }
         guard selected.isSubset(of: Set(destination.tracks.map(\.id))) else {
             throw ProjectError.invalid("The copied tracks no longer exist.")
         }
@@ -195,7 +281,17 @@ public extension Project {
             let copiedBlock = source.tracks.filter { block.contains($0.id) }.compactMap { copies[$0.id] }
             // The source may have moved since Copy. Anchor to its current row,
             // while retaining the captured item, plugin and control values.
-            block.formUnion(destinationHierarchy.descendants(of: root.id))
+            if let previous = insertingAfter[root.id],
+               let previousTrack = destination.tracks.first(where: { $0.id == previous }),
+               let originalTrack = destination.tracks.first(where: { $0.id == root.id }),
+               previousTrack.parentTrackID == originalTrack.parentTrackID {
+                // Repeated Paste follows the previous copies, while the
+                // clipboard still supplies the original captured sound.
+                block = Set(block.compactMap { insertingAfter[$0] })
+                for anchor in Array(block) { block.formUnion(destinationHierarchy.descendants(of: anchor)) }
+            } else {
+                block.formUnion(destinationHierarchy.descendants(of: root.id))
+            }
             let positions = destination.tracks.indices.filter { block.contains(destination.tracks[$0].id) }
             if let last = positions.last { insertions[last, default: []] += copiedBlock }
         }
@@ -216,9 +312,7 @@ public extension Project {
                 candidate.songs[index].parts[part].multiLoops = loops
             }
         }
-        try candidate.validate()
-        self = candidate
-        return Set(mapping.values)
+        return (candidate, Set(mapping.values), mapping)
     }
     /// Track IDs may appear in more than one song; deletion removes them all.
     func tracksContainItems(_ ids: Set<UUID>) -> Bool {
@@ -378,7 +472,7 @@ public extension Project {
     }
     /// Removing an item never removes its source file. History keeps this value
     /// and shares the immutable waveform storage through Swift copy-on-write.
-    mutating func resizeItem(_ id: UUID, start: Double, end: Double) {
+    mutating func resizeItem(_ id: UUID, start: Double, end: Double, sourceDuration: Double? = nil) {
         guard start.isFinite, end.isFinite, start >= 0, end - start >= 0.01 else { return }
         for song in songs.indices {
             for track in songs[song].tracks.indices {
@@ -390,7 +484,7 @@ public extension Project {
                 }
                 guard songs[song].tracks[track].canPlaceItem(start: start, duration: end - start, excluding: id) else { return }
                 if songs[song].tracks[track].clips[index].isProjectionMedia {
-                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
+                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end, sourceDuration: sourceDuration)
                 } else if songs[song].tracks[track].kind == .timecode {
                     if songs[song].tracks[track].importedTimecodeItems == true {
                         songs[song].tracks[track].clips[index].startTime = start
@@ -404,9 +498,9 @@ public extension Project {
                     songs[song].tracks[track].clips[index].startTime = start
                     songs[song].tracks[track].clips[index].duration = end - start
                 } else if songs[song].tracks[track].kind.isText && !songs[song].tracks[track].clips[index].isProjectionMedia {
-                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
+                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end, sourceDuration: sourceDuration)
                 } else if songs[song].tracks[track].kind == .standard {
-                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end)
+                    songs[song].tracks[track].clips[index] = songs[song].tracks[track].clips[index].resized(start: start, end: end, sourceDuration: sourceDuration)
                 } else { continue }
                 songs[song].duration = max(songs[song].duration, end)
             }
@@ -847,9 +941,14 @@ public struct ProjectEditHistory {
 
 public extension AudioClip {
     /// Both edges follow the same original source interval, including backward extension.
-    func resized(start: Double, end: Double) -> AudioClip {
+    func resized(start: Double, end: Double, sourceDuration: Double? = nil) -> AudioClip {
         guard start.isFinite, end.isFinite, start >= 0, end - start >= 0.01 else { return self }
         var clip = self
+        // A trimmed item's present length is not its source period. Repeat the
+        // complete media only at its real EOF, retaining imported loop sections.
+        if clip.loopLength == nil, let sourceDuration, sourceDuration.isFinite, sourceDuration > 0 {
+            clip.loopStart = 0; clip.loopLength = sourceDuration
+        }
         if clip.audioFile != nil && clip.loopLength == nil {
             let actualStart = max(start, clip.startTime - clip.sourceOffset / clip.audioRate)
             guard end - actualStart >= 0.01 else { return self }

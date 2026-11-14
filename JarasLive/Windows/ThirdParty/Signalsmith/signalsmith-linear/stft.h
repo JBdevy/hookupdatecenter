@@ -19,6 +19,7 @@ struct DynamicSTFT {
 	RealFFT<Sample, splitComputation, modified> fft;
 
 	using Complex = std::complex<Sample>;
+	struct Input;
 
 	enum class WindowShape {ignore, acg, kaiser};
 	static constexpr WindowShape acg = WindowShape::acg;
@@ -79,6 +80,18 @@ struct DynamicSTFT {
 	Sample freqToBin(Sample f) const {
 		return modified ? f*_fftSamples - Sample(0.5) : f*_fftSamples;
 	}
+
+#ifdef CATLIVE_SIGNALSMITH_STATE_COPY
+	// Copy streaming history between identically configured processors. FFT
+	// plans/windows stay owned by the destination; no allocation or plan copy.
+	void copyStateFrom(const DynamicSTFT &other) {
+		input = other.input; output = other.output;
+		std::copy(other.spectrumBuffer.begin(), other.spectrumBuffer.end(), spectrumBuffer.begin());
+		std::copy(other.timeBuffer.begin(), other.timeBuffer.end(), timeBuffer.begin());
+		_samplesSinceSynthesis = other._samplesSinceSynthesis;
+		_samplesSinceAnalysis = other._samplesSinceAnalysis;
+	}
+#endif
 
 	void reset(Sample productWeight=1) {
 		input.pos = _blockSamples;
@@ -396,6 +409,33 @@ struct DynamicSTFT {
 			}
 		}
 	}
+
+#ifdef CATLIVE_SIGNALSMITH_NEUTRAL_SYNTHESIS
+	bool canSynthesiseIdentity() const {
+		return !splitComputation && _analysisChannels == _synthesisChannels &&
+			_analysisOffset == _synthesisOffset && _fftSamples >= _blockSamples &&
+			!hookTimeInput && !hookTimeOutput;
+	}
+	void synthesiseIdentityStep(size_t channel, const Input &history) {
+		// For an unchanged spectrum the inverse FFT is exactly the windowed
+		// input times FFT size. Keep the same overlap-add and normalisation.
+		if (channel == 0) addWindowProduct();
+		size_t source = (history.pos + _inputLengthSamples - _blockSamples)%_inputLengthSamples;
+		size_t destination = output.pos;
+		const Sample *inputBuffer = history.buffer.data() + channel*_inputLengthSamples;
+		Sample *outputBuffer = output.buffer.data() + channel*_blockSamples;
+		const Sample scaling = _fftSamples;
+		for (size_t offset = 0; offset < _blockSamples;) {
+			const size_t count = std::min({_blockSamples - offset, _inputLengthSamples - source, _blockSamples - destination});
+			for (size_t n = 0; n < count; ++n) {
+				outputBuffer[destination + n] += ((inputBuffer[source + n]*_analysisWindow[offset + n])*scaling)*_synthesisWindow[offset + n];
+			}
+			offset += count;
+			source = (source + count)%_inputLengthSamples;
+			destination = (destination + count)%_blockSamples;
+		}
+	}
+#endif
 
 	void synthesise() {
 		for (size_t s = 0; s < synthesiseSteps(); ++s) {

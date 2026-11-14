@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import JarasApplication
 
 @MainActor private final class FadeoutExecutor: CommandExecutor {
@@ -25,19 +26,130 @@ import XCTest
     func finishCurrentSong(_ enabled: Bool) {}
 }
 final class TransportFadeoutTests: XCTestCase {
+    @MainActor func testConfigRateAcceptsMIDIAndGeneratedSpecialItemsInOneUndoableEdit() throws {
+        let executor = FadeoutExecutor()
+        var project = Project.empty(name: "All rate item types")
+        let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 10)
+        project.songs[0].parts = [region]; project.songs[0].duration = 20
+        var tc = Track(id: UUID(), name: "Timecode", role: .init(rawValue: "timecode"))
+        tc.clips = [.init(id: Project.timecodeItemID(region.id), name: "LTC", startTime: 0, duration: 10, regionOwnerID: region.id)]
+        var click = Track(id: UUID(), name: "Click", role: .init(rawValue: "generatedClick"))
+        click.clips = [.init(id: Project.clickItemID(region.id), name: "Click", startTime: 0, duration: 10, regionOwnerID: region.id)]
+        var midi = Track(id: UUID(), name: "MIDI", role: .other)
+        midi.clips = [.init(id: UUID(), name: "MIDI", startTime: 0, duration: 10, midi: MIDIItem(notes: [.init(start: 2, length: 2, pitch: 60)]))]
+        project.songs[0].tracks = [tc, click, midi]
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let ids = Set(project.songs[0].tracks.flatMap(\.clips).map(\.id))
+        XCTAssertTrue(show.configureItemsRate(ids, rate: 2))
+        XCTAssertEqual(show.current?.tracks.flatMap(\.clips).map(\.duration), [5,5,5])
+        XCTAssertEqual(show.current?.tracks.flatMap(\.clips).map(\.audioRate), [2,2,2])
+        XCTAssertEqual(show.current?.tracks[0].clips[0].timecodeEndOffset, -5)
+        XCTAssertEqual(executor.projectEdits, 1)
+        show.undo(); XCTAssertEqual(show.snapshot.project, project)
+    }
+
+    @MainActor func testSavingUnchangedPreciseRateDoesNotChangeGeometryOrCreateUndo() throws {
+        let executor = FadeoutExecutor()
+        var project = Project.empty(name: "Precise rate")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        let exact = 1.1234567890123456
+        let clip = AudioClip(id: UUID(), name: "Reference", startTime: 0.667123456789, duration: 184.66123456789,
+                             sourceOffset: 0.123456789012345, audioFile: AudioFile(path: "source.wav"), playbackRate: exact)
+        track.clips = [clip]; project.songs[0].tracks = [track]; project.songs[0].duration = 200
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        XCTAssertTrue(show.configureItemsRate([clip.id], rate: exact))
+        XCTAssertEqual(show.current?.tracks[0].clips[0], clip)
+        XCTAssertEqual(executor.projectEdits, 0)
+    }
+    @MainActor func testSetlistSpacingIsOneUndoableEditAndKeepsTimebaseAndAutomation() throws {
+        let executor = FadeoutExecutor()
+        var project = Project.empty(name: "Setlist spacing")
+        let a = Part(id: UUID(), name: "A", startTime: 0, endTime: 50)
+        let b = Part(id: UUID(), name: "B", startTime: 100, endTime: 150)
+        let c = Part(id: UUID(), name: "C", startTime: 200, endTime: 250)
+        project.songs[0].parts = [a,b,c]; project.songs[0].duration = 300
+        project.songs[0].timeSettings = ProjectTimeSettings(); project.songs[0].timeSettings?.timebase = .relative
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        track.clips = [AudioClip(id: UUID(), name: "Tail", startTime: 10, duration: 70),
+                       AudioClip(id: UUID(), name: "B", startTime: 110, duration: 20),
+                       AudioClip(id: UUID(), name: "C", startTime: 210, duration: 20)]
+        project.songs[0].tracks = [track]
+        var master = TrackAutomation()
+        var envelope = TrackEnvelope(target: AutomationTarget(.volume), name: "Volume", defaultValue: 0.5)
+        envelope.points = [.init(time: 15, value: 0.3), .init(time: 215, value: 0.8)]
+        master.envelopes = [envelope]; project.masterAutomation = master
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.fitRegionEndsToItems([a.id]); XCTAssertEqual(show.current?.parts[0].endTime, 80)
+        let before = show.snapshot.project
+        show.spaceRegionsAfter([a.id,b.id])
+        XCTAssertEqual(show.current?.parts.map(\.startTime), [0,130,260])
+        XCTAssertEqual(show.current?.tracks[0].clips.map(\.startTime), [10,140,270])
+        XCTAssertEqual(show.snapshot.project.masterAutomation?.envelopes[0].points.map(\.time), [15,275])
+        XCTAssertEqual(show.current?.projectTime.timebase, .relative)
+        XCTAssertEqual(executor.projectEdits, 2)
+        show.undo(); XCTAssertEqual(show.snapshot.project, before)
+    }
+    @MainActor func testResetDurationReadsRealFileCommitsOnceAndCanBeUndone() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        do {
+            let file = try AVAudioFile(forWriting: directory.appendingPathComponent("Source.wav"), settings: format.settings)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 96000)!
+            buffer.frameLength = 96000
+            buffer.floatChannelData![0].initialize(repeating: 0, count: 96000)
+            try file.write(from: buffer)
+        }
+        let executor = FadeoutExecutor()
+        var project = Project.empty(name: "Duration")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        let clip = AudioClip(id: UUID(), name: "Trimmed", startTime: 4, duration: 0.2, sourceOffset: 0.75,
+                             audioFile: AudioFile(path: "Source.wav"), playbackRate: 1.25)
+        track.clips = [clip]; project.songs[0].tracks = [track]
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        await show.resetItemsDuration([clip.id], mediaDirectory: directory)
+        XCTAssertEqual(show.message, "")
+        let restored = try XCTUnwrap(show.current?.tracks[0].clips[0])
+        XCTAssertEqual(restored.startTime, 4); XCTAssertEqual(restored.duration, 1.6, accuracy: 1e-9)
+        XCTAssertEqual(restored.sourceOffset, 0); XCTAssertEqual(restored.audioRate, 1.25)
+        XCTAssertEqual(executor.projectEdits, 1)
+        show.undo(); XCTAssertEqual(show.current?.tracks[0].clips[0], clip)
+        XCTAssertTrue(show.configureItemsRate([clip.id], rate: 2.5))
+        XCTAssertEqual(show.current!.tracks[0].clips[0].duration, 0.1, accuracy: 1e-9)
+        XCTAssertEqual(show.current!.tracks[0].clips[0].sourceOffset, 0.75)
+        show.undo(); XCTAssertEqual(show.current?.tracks[0].clips[0], clip)
+        show.itemSourceInfo = { _ in (directory.appendingPathComponent("Source.wav"), nil) }
+        show.resizeItem(clip.id, start: 4, end: 8)
+        for _ in 0..<100 {
+            if show.current?.tracks[0].clips[0].loopLength != nil { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(show.current?.tracks[0].clips[0].loopLength, 2)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].duration, 4)
+    }
     @MainActor func testResetRatePreservesMarkersOtherItemsAndItemGeometry() throws {
         let executor = FadeoutExecutor()
         var project = Project.empty(name: "Reset rate")
-        let item = AudioClip(id: UUID(), name: "Audio", startTime: 2, duration: 5, sourceOffset: 3, playbackRate: 1.5, tempoBasePlaybackRate: 1.2)
+        let item = AudioClip(id: UUID(), name: "Audio", startTime: 2, duration: 5, sourceOffset: 3,
+                             audioFile: AudioFile(path: "source.wav"), playbackRate: 1.5, tempoBasePlaybackRate: 1.2)
         let other = AudioClip(id: UUID(), name: "Other", startTime: 0, duration: 9, playbackRate: 0.8)
         var track = Track(id: UUID(), name: "Track", role: .other)
         track.clips = [item, other]; project.songs[0].tracks = [track]
-        project.songs[0].markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 4, color: 0, tempoBPM: 140)]
+        project.songs[0].bpm = 120
+        let marker = TimelineMarker(id: UUID(), name: "Tempo", position: 4, color: 0,
+                                   tempoBPM: 140, tempoTimebase: .relative, tempoReferenceBPM: 120)
+        project.songs[0].markers = [marker]
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
         show.resetItemsRate([item.id])
         var expected = project
         expected.songs[0].tracks[0].clips[0].playbackRate = 1
         expected.songs[0].tracks[0].clips[0].tempoBasePlaybackRate = nil
+        expected.songs[0].tracks[0].clips[0].tempoRateReferences = [.init(markerID: marker.id, rate: 140.0 / 120)]
+        XCTAssertEqual(show.snapshot.project, expected)
+        XCTAssertEqual(show.current!.tempoAudioSegments(show.current!.tracks[0].clips[0]).map(\.audioRate), [1])
+        show.undo(); XCTAssertEqual(show.snapshot.project, project)
+        XCTAssertTrue(show.configureItemsRate([item.id], rate: 1, resetTempo: true))
         XCTAssertEqual(show.snapshot.project, expected)
     }
 

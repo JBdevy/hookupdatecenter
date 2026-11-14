@@ -24,7 +24,12 @@ final class PlaylistWheelEvent: NSEvent {
     var point = NSPoint.zero
     override var window: NSWindow? { target }
     override var locationInWindow: NSPoint { point }
+    override var phase: NSEvent.Phase { [] }
+    override var timestamp: TimeInterval { 100 }
     override var scrollingDeltaY: CGFloat { -6 }
+    override var type: NSEvent.EventType { .scrollWheel }
+    override var scrollingDeltaX: CGFloat { 0 }
+    override var momentumPhase: NSEvent.Phase { [] }
     override var hasPreciseScrollingDeltas: Bool { false }
     override var modifierFlags: NSEvent.ModifierFlags { [] }
 }

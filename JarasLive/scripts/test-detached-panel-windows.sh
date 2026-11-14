@@ -12,6 +12,11 @@ import AppKit
 final class ShowController {}
 struct TrackDetailsEditRequest {}
 @MainActor final class InterfaceScaling { static let shared = InterfaceScaling(); func register(_ window: NSWindow) {} }
+final class DetachedTestWindow: NSWindow {
+    var simulatedLiveResize = false
+    override var inLiveResize: Bool { simulatedLiveResize || super.inLiveResize }
+}
+enum DetachedSaveProbe { static var mixer = 0 }
 """
 # Exercise the production controllers with lightweight content, isolated from the audio engine.
 for file, name, content in [
@@ -20,7 +25,11 @@ for file, name, content in [
     source = Path('Apple/Shared', file).read_text()
     start = source.index('@MainActor final class Detached' + name + 'Window')
     end = source.index('private struct Detached' + name + 'Content', start)
-    s += source[start:end].replace(content, 'Text("Geometry fixture")').replace('CatLiveDetached' + name, 'CatLiveTestDetached' + name).replace('jaras.layout.', 'jaras.testlayout.')
+    subject = source[start:end].replace(content, 'Text("Geometry fixture")').replace('CatLiveDetached' + name, 'CatLiveTestDetached' + name).replace('jaras.layout.', 'jaras.testlayout.').replace('WorkspaceLayoutPreferences.storage', 'UserDefaults.standard')
+    if name == 'Mixer':
+        subject = subject.replace('let panel = NSWindow(', 'let panel = DetachedTestWindow(')
+        subject = subject.replace('private func savePlacement() {', 'private func savePlacement() { DetachedSaveProbe.mixer += 1;')
+    s += subject
 s += Path('Tests/Apple/DetachedPanelWindowTests.swift').read_text()
 (out / 'test.swift').write_text(s)
 PYTHON

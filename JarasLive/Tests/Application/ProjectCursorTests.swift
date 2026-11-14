@@ -160,6 +160,32 @@ final class ProjectCursorTests: XCTestCase {
         XCTAssertEqual(show.selectedTimelineRegion, part.id, "Header interaction preserves the white selection")
     }
 
+    @MainActor func testRegionBandSelectionExtendsInTimeOrderAndTogglesWithoutSeeking() throws {
+        var project = Project.empty(name: "Range selection")
+        let parts = (0..<5).map { Part(id: UUID(), name: "Region \($0)", startTime: Double($0 * 10), endTime: Double($0 * 10 + 9)) }
+        project.songs[0].parts = parts.reversed()
+        project.songs[0].duration = 50
+        let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.send(.editSeek, value: 7)
+        show.selectTimelineRegion(parts[1].id)
+        show.selectTimelineRegion(parts[4].id, extending: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set(parts[1...4].map(\.id)))
+        show.selectTimelineRegion(parts[2].id, extending: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set(parts[1...2].map(\.id)), "Repeated Shift clicks keep the original anchor")
+        show.selectTimelineRegion(parts[0].id, extending: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set(parts[0...1].map(\.id)), "Intervals work in reverse")
+        show.selectTimelineRegion(parts[4].id, toggling: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set([parts[0].id, parts[1].id, parts[4].id]))
+        show.selectTimelineRegion(parts[1].id, toggling: true)
+        XCTAssertEqual(show.selectedTimelineRegions, Set([parts[0].id, parts[4].id]))
+        XCTAssertEqual(show.snapshot.transport.editPosition, 7)
+        XCTAssertEqual(show.timelinePresentationState.selectedRegions, show.selectedTimelineRegions)
+        show.selectTimelineRegion(parts[2].id)
+        XCTAssertEqual(show.selectedTimelineRegions, [parts[2].id])
+        try show.replaceProject(Project.empty(name: "Other"))
+        XCTAssertTrue(show.selectedTimelineRegions.isEmpty)
+    }
+
     @MainActor func testRegionBandClickPausesFollowUntilStopOrNextSongAndKeepsHighlight() throws {
         var project = Project.empty(name: "Navigation")
         let first = Part(id: UUID(), name: "First", startTime: 0, endTime: 10)

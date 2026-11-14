@@ -6,12 +6,25 @@ import Foundation
     func applyProjectSync(_ data: Data, elapsed: Double, first: Bool) throws -> PlaybackSnapshot { try JSONDecoder().decode(PlaybackSnapshot.self, from: core.applyProjectSync(data, elapsed: elapsed, first: first)) }
     private let core: JarasCoreBridge
     private struct ClipWaveform {
+        struct Storage: Hashable {
+            struct Buffer: Hashable {
+                let address: UInt
+                let count: Int
+                init(_ values: [Double]) {
+                    address = values.withUnsafeBufferPointer { $0.isEmpty ? 0 : UInt(bitPattern: $0.baseAddress!) }
+                    count = values.count
+                }
+            }
+            let values: Buffer
+            let channels: [Buffer]
+        }
         let values: [Double]
         let channels: [[Double]]?
         init(_ clip: AudioClip) {
             values = clip.waveform
             channels = clip.waveformChannels.flatMap { $0.isEmpty ? nil : $0 }
         }
+        var storage: Storage { Storage(values: .init(values), channels: (channels ?? []).map(Storage.Buffer.init)) }
         private static func sharesStorage(_ a: [Double], _ b: [Double]) -> Bool {
             guard a.count == b.count else { return false }
             guard !a.isEmpty else { return true }
@@ -27,6 +40,14 @@ import Foundation
     // These immutable arrays share Swift's existing storage. Scalar edits never
     // box, serialize, decode or read the media waveform again.
     private var waveforms: [UUID: ClipWaveform] = [:]
+    private let projectValidation = ProjectValidationCache()
+    private struct TrackMetadataSnapshot: Decodable {
+        var snapshot: ShowSnapshot
+        let trackOrders: [String: [UUID]]
+        let revision: UInt64
+    }
+    private var metadataRevision: UInt64 = 0
+    private var snapshotTracks: [UUID: [UUID: Track]] = [:]
     init(core: JarasCoreBridge = JarasCoreBridge()) { self.core = core }
     private func cacheWaveforms(_ project: Project) {
         var next: [UUID: ClipWaveform] = [:]
@@ -96,14 +117,35 @@ import Foundation
     func regionsFromClips(_ ids: [UUID]) throws { try core.regions(fromClips: ids.map(\.uuidString), identifiers: ids.map { _ in UUID().uuidString }) }
     func regionFromClip(_ id: UUID) throws { try core.region(fromClip: id.uuidString, identifier: UUID().uuidString) }
     func applyProjectEdit(_ project: Project) throws {
+        try applyProjectEdit(project, previousTracks: nil)
+    }
+    func applyTrackStructureEdit(_ project: Project, previous: Project) throws {
+        guard project.id == previous.id else { throw ProjectError.invalid("Cannot edit another project") }
+        try applyProjectEdit(project, previousTracks: previous)
+    }
+    private func applyProjectEdit(_ project: Project, previousTracks: Project?) throws {
         var metadata = project
         var retained: [String] = []
+        var waveformSources: [String: String] = [:]
+        var sharedSources: [ClipWaveform.Storage: UUID] = [:]
+        if let previousTracks {
+            // A copied item still owns the original immutable arrays. Reuse
+            // their native values without encoding thousands of sample peaks.
+            for song in previousTracks.songs { for track in song.tracks { for clip in track.clips {
+                if let waveform = waveforms[clip.id], waveform.sharesStorage(with: clip) {
+                    sharedSources[waveform.storage] = clip.id
+                }
+            } } }
+        }
         for song in metadata.songs.indices {
             for track in metadata.songs[song].tracks.indices {
                 for item in metadata.songs[song].tracks[track].clips.indices {
                     let clip = metadata.songs[song].tracks[track].clips[item]
-                    guard waveforms[clip.id]?.sharesStorage(with: clip) == true else { continue }
+                    let source = waveforms[clip.id]?.sharesStorage(with: clip) == true
+                        ? clip.id : sharedSources[ClipWaveform(clip).storage]
+                    guard let source else { continue }
                     retained.append(clip.id.uuidString)
+                    waveformSources[clip.id.uuidString] = source.uuidString
                     metadata.songs[song].tracks[track].clips[item].waveform = []
                     metadata.songs[song].tracks[track].clips[item].waveformChannels = nil
                 }
@@ -111,26 +153,95 @@ import Foundation
         }
         // Retained storage was validated when it entered the cache. Validate
         // changed/new arrays and every edited metadata field before committing.
-        try metadata.validate()
-        try core.applyProjectMetadataEdit(JSONEncoder().encode(metadata), preservingWaveforms: retained)
+        try projectValidation.validate(metadata)
+        if let previousTracks {
+            let previousSongs = Dictionary(uniqueKeysWithValues: previousTracks.songs.map { ($0.id, $0) })
+            var orders: [String: [String]] = [:]
+            var transmittedItems = Set<UUID>()
+            for index in project.songs.indices {
+                let song = project.songs[index]
+                let oldTracks = Dictionary(uniqueKeysWithValues: (previousSongs[song.id]?.tracks ?? []).map { ($0.id, $0) })
+                orders[song.id.uuidString] = song.tracks.map { $0.id.uuidString }
+                let changed = Set(song.tracks.filter { oldTracks[$0.id] != $0 }.map(\.id))
+                metadata.songs[index].tracks.removeAll { !changed.contains($0.id) }
+                for track in metadata.songs[index].tracks { transmittedItems.formUnion(track.clips.map(\.id)) }
+            }
+            // Every omitted track remains owned by the engine. Adding a row
+            // must not serialize all of the existing items and plugin states.
+            let preserving = waveformSources.filter { UUID(uuidString: $0.key).map(transmittedItems.contains) == true }
+            try core.applyTrackStructureEdit(JSONEncoder().encode(metadata), trackOrders: orders, preservingWaveforms: preserving)
+        } else {
+            try core.applyProjectMetadataEdit(JSONEncoder().encode(metadata), preservingWaveforms: retained)
+        }
         cacheWaveforms(project)
     }
-    func load(_ project: Project) throws { try project.validate(); try core.load(projectData: JSONEncoder().encode(project)); cacheWaveforms(project) }
-    func execute(_ command: ShowCommand, target: UUID?, value: Double) throws { try core.execute(command: command.rawValue, target: target?.uuidString, value: value) }
-    func snapshot() throws -> ShowSnapshot {
-        var snapshot = try JSONDecoder().decode(ShowSnapshot.self, from: core.metadataSnapshot())
-        for song in snapshot.project.songs.indices {
-            for track in snapshot.project.songs[song].tracks.indices {
-                for item in snapshot.project.songs[song].tracks[track].clips.indices {
-                    let id = snapshot.project.songs[song].tracks[track].clips[item].id
-                    if snapshot.project.songs[song].tracks[track].kind.isTeleprompter,
-                       snapshot.project.songs[song].tracks[track].clips[item].isProjectionMedia { continue }
-                    snapshot.project.songs[song].tracks[track].clips[item].waveform = waveforms[id]?.values ?? []
-                    snapshot.project.songs[song].tracks[track].clips[item].waveformChannels = waveforms[id]?.channels
+    func load(_ project: Project) throws {
+        try projectValidation.validate(project)
+        var metadata = project
+        var buffers: [String: [Data]] = [:]
+        var shared: [ClipWaveform.Storage: [Data]] = [:]
+        for song in metadata.songs.indices {
+            for track in metadata.songs[song].tracks.indices {
+                for item in metadata.songs[song].tracks[track].clips.indices {
+                    let clip = metadata.songs[song].tracks[track].clips[item]
+                    let waveform = ClipWaveform(clip), storage = waveform.storage
+                    let data: [Data]
+                    if let cached = shared[storage] { data = cached }
+                    else {
+                        data = ([waveform.values] + (waveform.channels ?? [])).map { values in
+                            values.withUnsafeBytes { Data($0) }
+                        }
+                        shared[storage] = data
+                    }
+                    buffers[clip.id.uuidString] = data
+                    metadata.songs[song].tracks[track].clips[item].waveform = []
+                    metadata.songs[song].tracks[track].clips[item].waveformChannels = nil
                 }
             }
         }
-        return snapshot
+        // Large projects can have millions of sample peaks. Transfer their
+        // native Double bytes once; JSON carries only editable metadata. The
+        // core still owns the exact peaks for split, copy and synchronization.
+        try core.load(projectData: JSONEncoder().encode(metadata), waveforms: buffers)
+        cacheWaveforms(project)
+    }
+    func execute(_ command: ShowCommand, target: UUID?, value: Double) throws { try core.execute(command: command.rawValue, target: target?.uuidString, value: value) }
+    func snapshot() throws -> ShowSnapshot {
+        do {
+            let update = try JSONDecoder().decode(TrackMetadataSnapshot.self,
+                from: core.trackMetadataSnapshot(previousRevision: metadataRevision))
+            var snapshot = update.snapshot
+            var next: [UUID: [UUID: Track]] = [:]
+            for song in snapshot.project.songs.indices {
+                let id = snapshot.project.songs[song].id
+                guard let order = update.trackOrders[id.uuidString] else { throw ProjectError.invalid("Missing snapshot track order") }
+                let changed = Dictionary(uniqueKeysWithValues: snapshot.project.songs[song].tracks.map { ($0.id, $0) })
+                var tracks: [Track] = []; tracks.reserveCapacity(order.count)
+                var retained: [UUID: Track] = [:]
+                for trackID in order {
+                    guard var track = changed[trackID] ?? snapshotTracks[id]?[trackID] else { throw ProjectError.invalid("Missing snapshot track") }
+                    for item in track.clips.indices {
+                        if track.kind.isTeleprompter, track.clips[item].isProjectionMedia { continue }
+                        let waveform = waveforms[track.clips[item].id]
+                        if waveform?.sharesStorage(with: track.clips[item]) != true ||
+                            (waveform?.channels == nil) != (track.clips[item].waveformChannels == nil) {
+                            track.clips[item].waveform = waveform?.values ?? []
+                            track.clips[item].waveformChannels = waveform?.channels
+                        }
+                    }
+                    retained[trackID] = track; tracks.append(track)
+                }
+                snapshot.project.songs[song].tracks = tracks
+                next[id] = retained
+            }
+            snapshotTracks = next; metadataRevision = update.revision
+            return snapshot
+        } catch {
+            // A failed read must not acknowledge a delta that Swift never
+            // received. Revision zero requests every track on the next read.
+            metadataRevision = 0; snapshotTracks.removeAll()
+            throw error
+        }
     }
     func playbackSnapshot() throws -> PlaybackSnapshot { try JSONDecoder().decode(PlaybackSnapshot.self, from: core.playbackSnapshot()) }
     func advance(_ elapsed: Double) { core.advance(elapsed) }

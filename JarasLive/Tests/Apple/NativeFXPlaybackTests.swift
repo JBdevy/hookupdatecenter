@@ -31,17 +31,35 @@ import AVFoundation
         var time = project.songs[0].projectTime; time.timebase = .free; project.songs[0].timeSettings = time
         let engine = AVAudioEngine()
         try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 2048)
-        let audio = StemAudioPlayback(engine: engine, realtime: false)
+        let prepared = ProcessInfo.processInfo.environment["JARAS_TEST_PREPARED_SOURCE"] == "1"
+        let audio = StemAudioPlayback(engine: engine, realtime: prepared)
         defer { audio.prepareForClosing() }
         audio.open(directory: folder)
         var state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
             position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
         var revision: UInt64 = 1
-        try audio.update(state, revision: revision)
+        try audio.update(state, revision: revision, sampledAt: 0)
+        if prepared {
+            // Drive the production prepared source with the offline device's
+            // sample clock. This covers inserting an initially absent effect
+            // without depending on wall-clock scheduling or physical output.
+            let voices = Mirror(reflecting: audio).children.first { $0.label == "voices" }!.value
+            for entry in Mirror(reflecting: voices).children {
+                let voice = Mirror(reflecting: entry.value).children.first { $0.label == "value" }!.value
+                let fields = Mirror(reflecting: voice).children
+                let source = fields.first { $0.label == "prepared" }!.value
+                let clip = Mirror(reflecting: source).children.first!.value as! JarasPreparedClip
+                clip.start(atHostTime: 0, ramp: false)
+                JarasVoiceGain.setStartHostTime(fields.first { $0.label == "gain" }!.value as! AVAudioUnitEffect, hostTime: 0)
+            }
+        }
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2048)!
         func tick() throws {
             state.transport.position = Double(engine.manualRenderingSampleTime) / rate
-            try audio.update(state, revision: revision)
+            // Prepared sources use the realtime graph, but this fixture is
+            // driven by renderOffline. Its transport and sample timestamp must
+            // share that clock, including the intentional wall-clock stall.
+            try audio.update(state, revision: revision, sampledAt: state.transport.position)
         }
         for _ in 0..<24 {
             let result = try engine.renderOffline(512, to: buffer)

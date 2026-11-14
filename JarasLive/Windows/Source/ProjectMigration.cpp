@@ -117,6 +117,21 @@ struct RppChunk {
         return nullptr;
     }
 };
+String rppImportContext(const RppChunk &node, const String &track, const RppChunk *item = nullptr) {
+    StringArray details, paths;
+    details.add(track);
+    const auto name = node.value("NAME", 1, item ? item->value("NAME") : String());
+    if (name.isNotEmpty()) details.add(name);
+    const auto position = (item ? *item : node).value("POSITION");
+    if (position.isNotEmpty()) details.add(position + " s");
+    const std::function<void(const RppChunk &)> collect = [&](const RppChunk &chunk) {
+        const auto path = chunk.value("FILE");
+        if (path.isNotEmpty()) paths.addIfNotAlreadyThere(path);
+        for (const auto &child : chunk.children) collect(*child);
+    };
+    collect(node);
+    return details.joinIntoString(" / ") + (paths.isEmpty() ? String() : "\n" + paths.joinIntoString("\n"));
+}
 StringArray rppTokens(const String &line) {
     StringArray result;
     int i = 0;
@@ -419,7 +434,7 @@ jaras::MIDIItem rppMIDI(const RppChunk &source, const RppChunk &take, const RppC
                    b = std::min(clip.startTime + clip.duration,
                                 time(note.start + note.length + shift));
             if (b > a)
-                result.notes.push_back({uuid(), (a - clip.startTime) * 2, (b - a) * 2, note.pitch,
+                result.notes.push_back({uuid(), (a - clip.startTime) * 2 * rate, (b - a) * 2 * rate, note.pitch,
                                         note.velocity, note.channel});
             require(result.notes.size() <= 100000, migration::message("REAPER: too many MIDI notes."));
         }
@@ -582,7 +597,7 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                     migration::message("REAPER: invalid item bounds."));
             if (start < 0) {
                 result.warnings.addIfNotAlreadyThere(
-                    migration::message("Items before the project start were ignored."));
+                    rppImportContext(item, text(track.name)) + "\n" + migration::message("Item starts before the project timeline."));
                 continue;
             }
             std::vector<const RppChunk *> takes;
@@ -596,9 +611,9 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                 if (take->header.contains("SEL") || take->value("SEL") == "1")
                     active = take;
             if (!specialName.empty()) {
-                if (takes.size() > 1)
+                for (auto *skipped : takes) if (skipped != active)
                     result.warnings.addIfNotAlreadyThere(
-                        String::fromUTF8(track.name.c_str()) + migration::message(": alternate REAPER takes ignored on this single-lane special track; the active take was imported."));
+                        rppImportContext(*skipped, text(track.name), &item) + migration::message(": alternate REAPER takes ignored on this single-lane special track; the active take was imported."));
                 takes = {active};
             }
             for (auto *take : takes) {
@@ -641,7 +656,8 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                         require(source && source->header[1] == "LTC", migration::message("O item da pista Timecode não contém as configurações do gerador SMPTE. Use o gerador LTC/MTC do REAPER para migrar esse item."));
                         const int send=(int)source->number("SEND",1,1);
                         require(send==1 || send==2, migration::message("O gerador Timecode deve usar LTC ou MTC individualmente para migrar."));
-                        require(take->number("PLAYRATE",1,1)==1, migration::message("Timecode com velocidade alterada não pode ser recriado com a mesma configuração."));
+                        clip.playbackRate=take->number("PLAYRATE",1,1);
+                        require(clip.playbackRate>=1./32 && clip.playbackRate<=32, "Invalid Timecode playback rate");
                         const auto userData=source->line("USERDATA");
                         for(int i=1;i<userData.size();++i) require(userData[i].getDoubleValue()==0, migration::message("Timecode com user bits personalizados ainda não é suportado pelo CatLive."));
                         jaras::TimecodeSettings tc; tc.mode=send==2 ? "mtc" : "ltc";
@@ -696,13 +712,18 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                     clip.midi = rppMIDI(*source, *take, item, clip, tempo,
                                         file.getParentDirectory(), result.warnings, midiPools);
                     clip.sourceOffset = 0;
-                    clip.playbackRate = 1;
                     clip.fadeIn.reset();
                     clip.fadeOut.reset();
                     clip.channelMode.reset();
                 } else {
                     // Skip empty/unsupported takes instead of creating silent placeholders.
                     // Special video/teleprompter tracks were handled above.
+                    if (source) {
+                        const auto reason = StringArray{"WAVE","MP3","FLAC","VORBIS","AIFF","AIF","OPUS","WAVPACK","VIDEO"}.contains(sourceKind)
+                            ? migration::message("REAPER source has no file reference.")
+                            : migration::message("Unsupported REAPER source type: ") + sourceKind;
+                        result.warnings.addIfNotAlreadyThere(rppImportContext(*take, text(track.name), &item) + "\n" + reason);
+                    }
                     continue;
                 }
                 const auto hasInstrument=[](const var &fx,bool requireActive) {
@@ -718,17 +739,15 @@ MigratedProject readReaperProject(const File &file, const ReaperVST3Resolver &re
                 }
                 auto takeAutomation = rppAutomation(*take, takeFX.envelopes, true, clip.sourceOffset, result.warnings, text(track.name) + " / " + text(clip.name));
                 if (takeAutomation.isObject()) {
-                    if (clip.midi) for (auto &envelope : *get(takeAutomation,"envelopes").getArray())
-                        for (auto &point : *get(envelope,"points").getArray()) put(point,"time",num(point,"time") / take->number("PLAYRATE",1,1));
                     clip.automationJSON = utf8(JSON::toString(takeAutomation));
                     if(clip.midi&&!takeInstrument)result.warnings.addIfNotAlreadyThere(text(track.name)+" / "+text(clip.name)+migration::message(": MIDI take automation was retained, but cannot be applied independently through a shared track instrument. An active VST3 instrument on the take is required."));
                 }
                 track.clips.push_back(clip);
 
-            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("REAPER take ignored: ") + String::fromUTF8(error.what())); }
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(rppImportContext(*take, text(track.name), &item) + "\n" + migration::message("REAPER take ignored: ") + String::fromUTF8(error.what())); }
 }
 
-            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("REAPER item ignored: ") + String::fromUTF8(error.what())); }
+            } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(rppImportContext(*itemOwned, text(track.name)) + "\n" + migration::message("REAPER item ignored: ") + String::fromUTF8(error.what())); }
 }
         if (jaras::isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "video") {
             // Empty REAPER placeholders must not hide the actual lyrics or

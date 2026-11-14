@@ -285,7 +285,7 @@ def main():
         archive.unlink()
         python = staging / 'python/python.exe'
         subprocess.run([str(python), '-I', '-m', 'pip', 'install', '--timeout', '120', '--retries', '5', '--no-cache-dir', '-r', str(lock)], check=True)
-        download('https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/' + MODEL_NAME, staging / MODEL_NAME, MODEL_SHA)
+        download('https://huggingface.co/musicfy/uvr/resolve/2afc13a29f3b11bdd051221c425629e013591e13/' + MODEL_NAME, staging / MODEL_NAME, MODEL_SHA)
         refresh_runtime(staging, root, lock)
         # Same filesystem: move the completed payload without duplicating 1.6 GiB.
         staging.replace(target)

@@ -35,6 +35,7 @@ class Session final : private Timer {
     String smkPartPanel; bool smkQueuedParts=false;
     uint64 setlistFocusRevision = 0;
     String message;
+    StringArray projectReadWarnings;
     uint64 revision = 0;
     std::function<void()> changed, tick, selectionChanged, mixerChanged, transportChanged;
     std::function<void(bool)> timingChanged;
@@ -47,7 +48,9 @@ class Session final : private Timer {
     double transportFadeoutRemaining() const { return audio.trackFadeoutRemainingSeconds(); }
     double transportFadeoutDuration() const { return fadeoutDuration; }
     const ID &transportFadeoutRunID() const { return fadeoutRunID; }
-    double trackDisplayVolume(const ID &id, double volume) const { return fadeoutRequested ? volume * audio.trackFadeoutGain(id) : volume; }
+    double trackDisplayVolume(const ID &id, double volume) const { volume = audio.loopDisplayVolume(id, volume); return fadeoutRequested ? volume * audio.trackFadeoutGain(id) : volume; }
+    bool trackDisplayMute(const ID &id, bool mute) const { return audio.loopDisplayMute(id, mute); }
+    bool trackDisplaySolo(const ID &id, bool solo) const { return audio.loopDisplaySolo(id, solo); }
     bool trackFaderLocked(const ID &id) const;
     std::function<bool()> canPlay;
     std::function<void(const jaras::TransportState &)> playbackUpdate;
@@ -88,10 +91,12 @@ class Session final : private Timer {
     void configureEffects(const ID &, const var &);
     void configureEffects(const std::map<ID, var> &);
     String copyEffect(const ID &source, const String &effect, const ID &destination, const String &before = {});
-    void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false);
+    void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false, bool regionOperation = false);
     void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
     void resizeItem(const ID &, double start, double end);
-    std::vector<ID> duplicateTracks(const std::set<ID> &, const var *copiedDocument = nullptr);
+    void resizeSharedItemBoundary(const ID &, const ID &, double, std::optional<double> = {}, std::optional<double> = {});
+    std::vector<ID> duplicateTracks(const std::set<ID> &, const var *copiedDocument = nullptr,
+                                  const std::map<ID, ID> &insertingAfter = {}, std::map<ID, ID> *createdMapping = nullptr);
     void editTrackHierarchy(const ID &, const std::function<void(jaras::Song &)> &);
     void undo();
     void redo();
@@ -120,7 +125,7 @@ class Session final : private Timer {
         return recordArm(id) == 1 || (recordArm(id) == 2 && recordSelections.count(id) != 0);
     }
     void cycleRecordArm(const ID &, const std::set<ID> &targets = {});
-    void mixerCommand(jaras::CommandKind, const ID &, const std::set<ID> &, double value = 0);
+    void mixerCommand(jaras::CommandKind, const ID &, const std::set<ID> &, double value = 0, bool clearAll = false);
     void beginMixerGesture(jaras::CommandKind kind, ID source) {
         mixerGestureSource = std::move(source); mixerGestureProject = project().id; mixerGestureKind = kind;
         mixerGestureTracks.clear();

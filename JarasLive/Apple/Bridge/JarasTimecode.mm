@@ -10,7 +10,7 @@
 #include <mach/mach_time.h>
 
 struct TimecodeSignal {
-    std::atomic<double> position{0},end{0},fps{30};
+    std::atomic<double> position{0},end{0},fps{30},speed{1};
     std::atomic<uint64_t> host{0};
     std::atomic<bool> active{false};
     std::atomic<float> peak{0}, gain{1};
@@ -22,7 +22,7 @@ struct TimecodeSignal {
     int64_t frame=-1;
     std::array<float,160> halves{};
     explicit TimecodeSignal(double rate):sampleRate(rate) { mach_timebase_info_data_t info; mach_timebase_info(&info); ticksPerSecond=1e9*info.denom/info.numer; }
-    double clock(uint64_t now) const { return position.load()+double(int64_t(now-host.load()))/ticksPerSecond; }
+    double clock(uint64_t now) const { return position.load()+double(int64_t(now-host.load()))/ticksPerSecond*speed.load(); }
     void render(const AudioTimeStamp* time, AVAudioFrameCount count, AudioBufferList* list) {
         const auto physical = jaras::physicalRenderTime(*time, sampleRate); time = &physical;
         const bool enabled=active.load(std::memory_order_acquire);
@@ -33,7 +33,7 @@ struct TimecodeSignal {
             anchorPosition=clock((time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time());
         }
         if(renderedFPS!=rate) { renderedFPS=rate; frame=-1; }
-        const double start=(time->mFlags & kAudioTimeStampSampleTimeValid) ? anchorPosition+(time->mSampleTime-anchorSample)/sampleRate : clock(mach_absolute_time());
+        const double start=(time->mFlags & kAudioTimeStampSampleTimeValid) ? anchorPosition+(time->mSampleTime-anchorSample)/sampleRate*speed.load() : clock(mach_absolute_time());
         const double limit=end.load();
         const double first=std::max(0.0,position.load());
         float observedPeak=0;
@@ -41,7 +41,7 @@ struct TimecodeSignal {
         const float smoothing = float(1.0 - std::exp(-1.0 / (sampleRate * 0.01)));
         for(unsigned sample=0;sample<count;++sample) {
             float value=0;
-            const double seconds=start+sample/sampleRate;
+            const double seconds=start+sample/sampleRate*speed.load();
             if(enabled && seconds>=first && seconds<limit) {
                 const int64_t half=int64_t(std::floor(seconds*actualRate*160));
                 const int64_t current=half/160;
@@ -70,7 +70,7 @@ struct TimecodeSignal {
     MIDIClientRef _client;
     MIDIPortRef _port;
     MIDIEndpointRef _destination;
-    double _position, _end, _fps, _ticksPerSecond;
+    double _position, _end, _fps, _ticksPerSecond, _speed;
     uint64_t _host;
     int64_t _quarter;
     jaras::NativeMtcTimeFields _fields;
@@ -98,7 +98,7 @@ struct TimecodeSignal {
 }
 - (void)pulse {
     const uint64_t now=mach_absolute_time();
-    const double elapsed=double(int64_t(now-_host))/_ticksPerSecond;
+    const double elapsed=double(int64_t(now-_host))/_ticksPerSecond*_speed;
     const double rate=_fps==29.97 ? 30000.0/1001 : _fps;
     if(elapsed<0 || _position+elapsed>=_end) return;
     const int64_t quarter=int64_t(std::floor(elapsed*rate*4));
@@ -109,19 +109,23 @@ struct TimecodeSignal {
         const double at=_position+double(_quarter)/(rate*4);
         if((_quarter&7)==0) _fields=jaras::nativeMtcTimeFields(at,_fps,_fps==29.97);
         Byte bytes[2]={0xf1,Byte(jaras::nativeMtcQuarterFrameData(_fields,int(_quarter&7)))};
-        [self send:bytes length:2 at:_host+uint64_t(double(_quarter)*_ticksPerSecond/(rate*4))];
+        [self send:bytes length:2 at:_host+uint64_t(double(_quarter)*_ticksPerSecond/(rate*4*_speed))];
     }
 }
 - (void)configurePosition:(double)position end:(double)end hostTime:(uint64_t)hostTime rate:(double)fps mode:(NSString*)mode running:(BOOL)running destination:(int32_t)destination {
+    [self configurePosition:position end:end hostTime:hostTime rate:fps speed:1 mode:mode running:running destination:destination];
+}
+- (void)configurePosition:(double)position end:(double)end hostTime:(uint64_t)hostTime rate:(double)fps speed:(double)speed mode:(NSString*)mode running:(BOOL)running destination:(int32_t)destination {
+    speed=std::isfinite(speed) && speed>0 ? speed : 1;
     _signal->active.store(false,std::memory_order_release);
     _signal->peak.store(0,std::memory_order_relaxed);
-    _signal->position=position; _signal->end=end; _signal->host=hostTime; _signal->fps=fps;
+    _signal->position=position; _signal->end=end; _signal->host=hostTime; _signal->fps=fps; _signal->speed=speed;
     _signal->generation.fetch_add(1,std::memory_order_release);
     _signal->active.store(running && [mode isEqualToString:@"ltc"],std::memory_order_release);
     const bool mtc=[mode isEqualToString:@"mtc"];
     dispatch_async(_queue,^{
         if(self->_timer) { dispatch_source_cancel(self->_timer); self->_timer=nil; }
-        self->_position=position; self->_end=end; self->_host=hostTime; self->_fps=fps; self->_quarter=-1;
+        self->_position=position; self->_end=end; self->_host=hostTime; self->_fps=fps; self->_speed=speed; self->_quarter=-1;
         self->_destination=0;
         if(destination) for(ItemCount i=0;i<MIDIGetNumberOfDestinations();++i) { auto endpoint=MIDIGetDestination(i); SInt32 identifier=0, offline=0; MIDIObjectGetIntegerProperty(endpoint,kMIDIPropertyUniqueID,&identifier); MIDIObjectGetIntegerProperty(endpoint,kMIDIPropertyOffline,&offline); if(identifier==destination && !offline) self->_destination=endpoint; }
         if(!mtc || !self->_destination || !self->_port) return;

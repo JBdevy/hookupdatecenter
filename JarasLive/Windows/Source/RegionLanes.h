@@ -1,5 +1,6 @@
 #pragma once
 #include "Project/Models.hpp"
+#include "Tracks/AutomationTiming.hpp"
 #include <algorithm>
 #include <cmath>
 #include <optional>
@@ -72,9 +73,7 @@ struct RegionMarkerRepulsion {
         const double gap=std::isfinite(minimumGap)?std::max(.01,minimumGap):.01;
         std::vector<double> offsets, stationary;
         if(song.markers) for(const auto &marker:*song.markers) {
-            const auto owner=song.regionOwnershipInitialized?marker.regionOwnerID:
-                marker.sourceRegionID?marker.sourceRegionID:jaras::regionOwnerAt(song,marker.position);
-            if(marker.unifiedRegionID==region.id || jaras::regionOwns(song,region.id,owner)) offsets.push_back(marker.position-region.startTime);
+            if(jaras::markerMovesWithRegion(song,marker,region.id)) offsets.push_back(marker.position-region.startTime);
             else stationary.push_back(marker.position);
         }
         for(double offset:offsets)minimumStart=std::max(minimumStart,-offset);
@@ -133,14 +132,14 @@ inline std::optional<jaras::Song> previewRegionEdit(const jaras::Song &song, con
     result.duration = std::max(result.duration, newEnd);
     if (resize) return result; // Region bounds do not drag their contents.
 
-    std::unordered_set<ID> ownedRegions{id};
-    for (const auto &part : song.parts)
-        if (part.parentRegionID == id) ownedRegions.insert(part.id);
-    const auto owns = [&](const std::optional<ID> &owner) {
-        return owner && ownedRegions.count(*owner) != 0;
-    };
     const auto timecodeID = regionEditDetail::timecodeItemID(id);
     for (auto &track : result.tracks) {
+        jaras::automationTiming::map(track.automationJSON, [&](double time) {
+            return jaras::regionMovementOwner(song, time, {}, {}) == id ? std::max(0.0, time + delta) : time;
+        });
+        for (auto& marker : track.programChanges)
+            if (jaras::regionMovementOwner(song, marker.position, {}, {}) == id) marker.position = std::max(0.0, marker.position + delta);
+        std::stable_sort(track.programChanges.begin(), track.programChanges.end(), [](const auto& a, const auto& b){return a.position < b.position;});
         const bool nativeTimecode = track.role.id == "timecode" && !track.importedTimecodeItems;
         for (auto &clip : track.clips) {
             if (nativeTimecode && !clip.audioFile) {
@@ -150,8 +149,7 @@ inline std::optional<jaras::Song> previewRegionEdit(const jaras::Song &song, con
                                                 newEnd + clip.timecodeEndOffset.value_or(0));
                 clip.duration = finish - clip.startTime;
                 result.duration = std::max(result.duration, finish);
-            } else if (owns(song.regionOwnershipInitialized ? clip.regionOwnerID
-                                                            : jaras::regionOwnerAt(song, clip.startTime))) {
+            } else if (jaras::regionMovementOwner(song, clip.startTime, clip.startTime + clip.duration, clip.regionOwnerID) == id) {
                 clip.startTime = std::max(0.0, clip.startTime + delta);
                 result.duration = std::max(result.duration, clip.startTime + clip.duration);
             }
@@ -159,10 +157,7 @@ inline std::optional<jaras::Song> previewRegionEdit(const jaras::Song &song, con
     }
     if (result.markers)
         for (auto &marker : *result.markers) {
-            const auto owner = song.regionOwnershipInitialized ? marker.regionOwnerID
-                             : marker.sourceRegionID ? marker.sourceRegionID
-                                                     : jaras::regionOwnerAt(song, marker.position);
-            if (marker.unifiedRegionID == id || owns(owner)) {
+            if (jaras::markerMovesWithRegion(song, marker, id)) {
                 marker.position = std::max(0.0, marker.position + delta);
                 result.duration = std::max(result.duration, marker.position);
             }

@@ -63,6 +63,12 @@ precondition(deletedTracks == 1 && deletedItems == 0 && items == 2)
 tracks = 1; click(250)
 precondition(RegionShortcutView.handleSelectedObjectsDelete(deletion(117)))
 precondition(deletedItems == 2 && tracks == 1)
+// SwiftUI background keyboard probes can have no drawable area on macOS 12/13.
+grid.frame = .zero
+items = 1; router.activate(.grid, in: window)
+precondition(RegionShortcutView.handleSelectedObjectsDelete(deletion()), "zero-sized passive keyboard probe still deletes the selected item")
+precondition(deletedItems == 3)
+grid.frame = host.bounds
 items = 1; click(50)
 precondition(RegionShortcutView.handleSelectedObjectsDelete(deletion()))
 precondition(deletedTracks == 2 && items == 1)

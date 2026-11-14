@@ -2,7 +2,7 @@
 #include "Common.h"
 namespace catlive {
 // The same narrow sidebar rail scrolls vertically and resizes horizontally.
-class DragDivider final : public Component {
+class DragDivider final : public Component, private Timer {
   public:
     struct ScrollMetrics { int offset=0, viewport=0, document=0; };
     explicit DragDivider(bool horizontalMotion = true) : alongX(horizontalMotion) {
@@ -13,6 +13,7 @@ class DragDivider final : public Component {
     std::function<ScrollMetrics()> scrollMetrics;
     void setThinRail(bool value) { thinRail=value;repaint(); }
     void setScrollRailVisible(bool value) { scrollRailVisible=value;repaint(); }
+    void setCoalescedResize(bool value) { coalescedResize=value; }
     void refreshScroll() {
         const auto next = scrollMetrics ? scrollMetrics() : ScrollMetrics{};
         if (metrics.offset != next.offset || metrics.viewport != next.viewport || metrics.document != next.document) {
@@ -21,6 +22,7 @@ class DragDivider final : public Component {
     }
     void mouseDown(const MouseEvent &e) override {
         if (!e.mods.isLeftButtonDown()) return;
+        stopTimer();pendingResize.reset();lastResize.reset();
         refreshScroll(); origin=e.getScreenPosition(); initialScroll=metrics.offset; axis=Axis::pending;
         const auto thumb=thumbBounds();
         const float travel=getHeight()-4.f-thumb.getHeight();
@@ -36,9 +38,26 @@ class DragDivider final : public Component {
             else return;
         }
         if(axis==Axis::scroll && scrollTo) { scrollTo(initialScroll+roundToInt(delta.y*scrollPerPoint)); refreshScroll(); }
-        if(axis==Axis::resize && moved) moved(alongX?delta.x:delta.y);
+        if(axis==Axis::resize && moved) {
+            const int value=alongX?delta.x:delta.y;
+            if(coalescedResize) {
+                pendingResize=value;
+                if(!isTimerRunning())startTimerHz(60);
+            } else moved(value);
+        }
     }
-    void mouseUp(const MouseEvent &) override { if(axis==Axis::resize && ended)ended();axis=Axis::pending; }
+    void mouseUp(const MouseEvent &event) override {
+        stopTimer();
+        if(axis==Axis::resize) {
+            if(coalescedResize) {
+                const auto delta=event.getScreenPosition()-origin;
+                pendingResize=alongX?delta.x:delta.y;
+                flushResize();
+            }
+            if(ended)ended();
+        }
+        pendingResize.reset();axis=Axis::pending;
+    }
     void mouseDoubleClick(const MouseEvent &) override { if(doubleClicked)doubleClicked(); }
     void mouseWheelMove(const MouseEvent &, const MouseWheelDetails &wheel) override {
         refreshScroll(); if(scrollTo) { scrollTo(metrics.offset-roundToInt(wheel.deltaY*320));refreshScroll(); }
@@ -65,6 +84,16 @@ class DragDivider final : public Component {
         }
     }
   private:
+    void timerCallback() override { flushResize(); }
+    void flushResize() {
+        if(!pendingResize)return;
+        const auto value=*pendingResize;pendingResize.reset();
+        if(lastResize==value)return;
+        lastResize=value;
+        if(moved)moved(value);
+    }
+    bool coalescedResize=false;
+    std::optional<int> pendingResize,lastResize;
     enum class Axis { pending, resize, scroll };
     Axis axis=Axis::pending;
     bool alongX,thinRail=false,scrollRailVisible=true; Point<int> origin; ScrollMetrics metrics;

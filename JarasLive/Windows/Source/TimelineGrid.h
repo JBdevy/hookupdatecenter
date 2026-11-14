@@ -17,7 +17,7 @@ inline std::vector<double> clickBeats(const jaras::Song &song,const jaras::Audio
     for(const auto &section:sections(song,std::max(song.duration,to))) {
         const double first=std::max({clip.startTime,from,section.start}),last=std::min({clip.startTime+clip.duration,to,section.end});
         if(first>=last || section.bpm<=0 || section.unit<=0)continue;
-        const double beat=60./section.bpm*4/section.unit/(clip.clickDouble.value_or(false)?2:1),step=std::max(1.,std::ceil(1/(beat*scale)));
+        const double beat=60./section.bpm*4/section.unit/(clip.clickDouble.value_or(false)?2:1)/clip.tempoBasePlaybackRate.value_or(clip.playbackRate),step=std::max(1.,std::ceil(1/(beat*scale)));
         double index=std::ceil(std::max(0.,std::ceil((first-section.start)/beat-1e-9))/step)*step;
         for(;section.start+index*beat<last-1e-9;index+=step)result.push_back(section.start+index*beat);
     }
@@ -58,7 +58,6 @@ inline std::vector<Tick> ticks(const jaras::Song &song, double start, double end
         const double beat = bar / section.beats;
         // Whole-bar groups (4 -> 2 -> 1) precede beats and finer divisions.
         // Keep the ruler, body and snapping on these same divisions.
-        const bool showBeats = beat * scale >= 16;
         const double base = std::min(beat, beat * section.unit / (divisions == 0 ? 4 : divisions));
         const double minor = visibleGridStep(bar,section.beats,section.unit,divisions==0?4:divisions,scale);
         if (!std::isfinite(base) || base<=0 || !std::isfinite(minor) || minor <= 0) continue;
@@ -88,7 +87,7 @@ inline std::vector<Tick> ticks(const jaras::Song &song, double start, double end
             const double clearance=i==0?boundaryClearance:
                 std::min((double)hierarchyStep((uint64_t)i)*bar,boundaryEnd-time);
             append(time, true, clearance);
-            if (showBeats) for (int sub = 1; sub * minor < std::min(bar, section.end - time) - 1e-9; ++sub) {
+            if (minor < bar) for (int sub = 1; sub * minor < std::min(bar, section.end - time) - 1e-9; ++sub) {
                 const double offset=sub*minor;
                 const auto index=(uint64_t)std::max<int64>(1,(int64)std::llround(offset/base));
                 append(time+offset,false,std::min({(double)hierarchyStep(index)*base,bar-offset,boundaryEnd-time-offset}));

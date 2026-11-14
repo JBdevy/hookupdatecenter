@@ -279,3 +279,24 @@ public struct SMK37Stream {
         return result
     }
 }
+
+/// Bound display feedback on the shared Bluetooth radio. Notes are input and
+/// never pass through this budget; the connection heartbeat stays independent.
+public struct SMK37FeedbackBudget {
+    private var tokens = 96.0
+    private var updated: Double?
+    private var sent: Double?
+    public init() {}
+    public mutating func allow(bytes: Int, at now: Double) -> Bool {
+        guard now.isFinite, bytes > 0, bytes <= 96 else { return false }
+        if let updated {
+            guard now >= updated else { return false }
+            tokens = min(96, tokens + (now - updated) * 1200)
+        }
+        updated = now
+        if let sent, now - sent < 0.02 - 1e-9 { return false }
+        guard tokens + 1e-9 >= Double(bytes) else { return false }
+        tokens -= Double(bytes); sent = now
+        return true
+    }
+}

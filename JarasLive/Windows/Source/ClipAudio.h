@@ -1,16 +1,22 @@
 #pragma once
 #include "RegionPitch.h"
 #include "ClipTempo.h"
-#include "../ThirdParty/Signalsmith/signalsmith-stretch.h"
+#include "SharedClipAudio.h"
 namespace catlive {
 // Streaming clip pitch/rate/loop processing. Input lookahead removes the spectral
 // algorithm's latency from the timeline; seeking and Sub Play have independent state.
 class ClipAudio {
   public:
     ClipAudio(const jaras::Song &song, const jaras::Track &track, const jaras::AudioClip &clip,
-              double rate, bool prepareDSP = true, jaras::TempoEditMap::PlaybackRates* compiled = nullptr) { configure(song, track, clip, rate, prepareDSP, compiled); }
+              double rate, bool prepareDSP = true, jaras::TempoEditMap::PlaybackRates* compiled = nullptr,
+              std::shared_ptr<void> source = {}) : sourceOwner(std::move(source)) { configure(song, track, clip, rate, prepareDSP, compiled); }
     void configure(const jaras::Song &song, const jaras::Track &track,
-                   const jaras::AudioClip &clip, double rate, bool prepareDSP = true, jaras::TempoEditMap::PlaybackRates* compiled = nullptr) {
+                   const jaras::AudioClip &clip, double rate, bool prepareDSP = true, jaras::TempoEditMap::PlaybackRates* compiled = nullptr,
+                   std::shared_ptr<void> source = {}) {
+        if(source && sourceOwner!=source) {
+            for(auto& head:heads)head.shared.reset();
+            group.reset();sourceOwner=std::move(source);preparedPitchRate=0;
+        }
         offset = clip.sourceOffset; speed = clip.playbackRate; duration = clip.duration;
         start = clip.startTime;
         timing.emplace(clip, &song, compiled);
@@ -37,6 +43,7 @@ class ClipAudio {
                                 12 * std::log2(timing->at(start + bounds[i])->rate)});
         }
         sampleRate = rate;
+        prepareMapping();
         if (prepareDSP) prepare(rate);
     }
     // Called at a callback boundary. The replacement contains only a prepared
@@ -52,6 +59,7 @@ class ClipAudio {
         std::swap(speed, replacement.speed); std::swap(duration, replacement.duration);
         std::swap(loopStart, replacement.loopStart); std::swap(loopLength, replacement.loopLength);
         timing.swap(replacement.timing); segments.swap(replacement.segments);
+        mapping.swap(replacement.mapping);
     }
     static bool needed(const jaras::Song &song, const jaras::Track &track,
                        const jaras::AudioClip &clip, jaras::TempoEditMap::PlaybackRates* compiled = nullptr) {
@@ -70,6 +78,7 @@ class ClipAudio {
         return false;
     }
     void prepare(double rate) {
+        if(sampleRate!=rate){sampleRate=rate;prepareMapping();}
         sampleRate = rate;
         for (auto &head : heads) head.next = -1;
         // Rebuilding a track or reattaching the same device only invalidates
@@ -78,6 +87,13 @@ class ClipAudio {
         const bool spectral = std::any_of(segments.begin(), segments.end(),
                                          [](const auto &segment) { return std::abs(segment.pitch) >= 1e-8; });
         if (!spectral || preparedPitchRate == rate) return;
+        if(sourceOwner) {
+            // Release old leases before changing their owning pool.
+            for(auto& head:heads)head.shared.reset();
+            group=ClipAudioRenderGroup::open(sourceOwner,rate);
+            for(auto& head:heads)head.shared=group->seed();
+            preparedPitchRate=rate;return;
+        }
         for (auto &head : heads) {
             // Spread spectral work over callbacks, including small ASIO
             // buffers. The prepared input lookahead still removes DSP delay.
@@ -125,6 +141,54 @@ class ClipAudio {
     bool render(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
                 int headIndex, double local, int count) {
         auto &head = heads[(size_t)headOrder[headIndex]];
+        if(group) {
+            bool ok=true;
+            for(int done=0;done<count;) {
+                const int frames=std::min(count-done,ClipAudioRenderState::maximumFrames);
+                const ClipAudioRenderKey key{mapping->id,&reader,local+done/sampleRate,head.next,head.ahead,head.semitones,frames};
+                auto cached=head.shared.cachedSuccessor();
+                if(cached && cached->ok && cached->key==key)head.shared=std::move(cached);
+                else {
+                    cached.reset();
+                    if(!group->pool.makeExclusive(head.shared)) {
+                        auto next=group->pool.acquire();
+                        if(!next){output.clear(done,count-done);return false;}
+                        next->pitch.copyStateFrom(head.shared->pitch);
+                        next->key=key;
+                        next->ok=renderHead(reader,scratch,next->output,head,next->pitch,next->input,key.local,frames);
+                        next->next=head.next;next->ahead=head.ahead;next->semitones=head.semitones;
+                        if(next->ok)head.shared.publishSuccessor(next);
+                        head.shared=std::move(next);
+                    } else {
+                        head.shared->key=key;
+                        head.shared->ok=renderHead(reader,scratch,head.shared->output,head,head.shared->pitch,head.shared->input,key.local,frames);
+                        head.shared->next=head.next;head.shared->ahead=head.ahead;head.shared->semitones=head.semitones;
+                    }
+                }
+                head.next=head.shared->next;head.ahead=head.shared->ahead;head.semitones=head.shared->semitones;
+                for(int ch=0;ch<2;++ch)output.copyFrom(ch,done,head.shared->output,ch,0,frames);
+                ok=head.shared->ok && ok;done+=frames;
+            }
+            return ok;
+        }
+        return renderHead(reader,scratch,output,head,head.pitch,head.input,local,count);
+    }
+
+  private:
+    struct Segment { double start, end, pitch; };
+    // Pool must outlive the leases owned by the heads.
+    std::shared_ptr<void> sourceOwner;
+    std::shared_ptr<ClipAudioRenderGroup> group;
+    std::shared_ptr<const ClipAudioMapping> mapping;
+    struct Head {
+        signalsmith::stretch::SignalsmithStretch<float> pitch{0};
+        AudioBuffer<float> input;
+        ClipAudioRenderGroup::Pool::Lease shared;
+        double next = -1, ahead = 0, semitones = 0;
+    };
+    bool renderHead(AudioFormatReader &reader, AudioBuffer<float> &scratch, AudioBuffer<float> &output,
+                    Head& head,signalsmith::stretch::SignalsmithStretch<float>& processor,
+                    AudioBuffer<float>& input,double local,int count) {
         bool ok = true;
         int done = 0;
         while (done < count) {
@@ -151,20 +215,20 @@ class ClipAudio {
                 head.next = -1;
             } else {
                 if (std::abs(head.next - now) > .25 / sampleRate) {
-                    head.pitch.setTransposeSemitones((float)pitch);
-                    const int prime = head.pitch.outputSeekLength(1.f);
-                    ok = read(reader, scratch, head.input, 0, now, prime) && ok;
-                    head.pitch.outputSeek(head.input.getArrayOfReadPointers(), prime);
+                    processor.setTransposeSemitones((float)pitch);
+                    const int prime = processor.outputSeekLength(1.f);
+                    ok = read(reader, scratch, input, 0, now, prime) && ok;
+                    processor.outputSeek(input.getArrayOfReadPointers(), prime);
                     head.ahead = now + prime / sampleRate;
                     head.semitones = pitch;
                 }
                 else if (head.semitones != pitch) {
-                    head.pitch.setTransposeSemitones((float)pitch);
+                    processor.setTransposeSemitones((float)pitch);
                     head.semitones = pitch;
                 }
-                ok = read(reader, scratch, head.input, 0, head.ahead, frames) && ok;
+                ok = read(reader, scratch, input, 0, head.ahead, frames) && ok;
                 float *outputs[]{output.getWritePointer(0, done), output.getWritePointer(1, done)};
-                head.pitch.process(head.input.getArrayOfReadPointers(), frames, outputs, frames);
+                processor.process(input.getArrayOfReadPointers(), frames, outputs, frames);
                 head.ahead += frames / sampleRate;
                 head.next = now + frames / sampleRate;
             }
@@ -173,15 +237,6 @@ class ClipAudio {
         return ok;
     }
 
-  private:
-    struct Segment {
-        double start, end, pitch;
-    };
-    struct Head {
-        signalsmith::stretch::SignalsmithStretch<float> pitch{0};
-        AudioBuffer<float> input;
-        double next = -1, ahead = 0, semitones = 0;
-    };
     std::array<Head, 2> heads;
     int headOrder[2]{0,1};
     std::vector<Segment> segments;
@@ -189,6 +244,13 @@ class ClipAudio {
 
     double start = 0, offset = 0, speed = 1, duration = 0, loopStart = 0, loopLength = 0,
            sampleRate = 48000, preparedPitchRate = 0;
+    void prepareMapping() {
+        std::vector<double> values{start,offset,speed,duration,loopStart,loopLength,sampleRate,double(segments.size())};
+        for(const auto& s:segments)values.insert(values.end(),{s.start,s.end,s.pitch});
+        values.push_back(timing?double(timing->spans.size()):-1.);
+        if(timing)for(const auto& s:timing->spans)values.insert(values.end(),{s.start,s.end,s.source,s.rate});
+        mapping=ClipAudioMapping::intern(std::move(values));
+    }
     // Long items/loops can exceed INT_MAX samples. Clamp in floating point
     // before narrowing, otherwise the overflow degenerates into one-frame reads.
     static int boundedFrames(double remaining, int maximum) {

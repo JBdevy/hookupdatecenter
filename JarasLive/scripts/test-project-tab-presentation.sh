@@ -16,5 +16,5 @@ title=source[start:source.index('\nstruct DesktopProjectRoot:',start)].replace('
 fixture=Path('Tests/Apple/ProjectTabPresentationTests.swift').read_text()
 Path(sys.argv[1]).write_text(fixture.replace('// INSERT_WORKSPACE',workspace).replace('// INSERT_TITLE',title))
 PY
-swiftc -swift-version 5 -parse-as-library "$test_dir/main.swift" -o "$test_dir/test"
+swiftc Apple/Shared/NativeTimelineInputGate.swift -swift-version 5 -parse-as-library "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test" "${1:-current}"

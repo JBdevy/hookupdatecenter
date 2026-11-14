@@ -36,6 +36,12 @@ Windows/ThirdParty/Signalsmith/PROVENANCE.txt.
 https://github.com/Signalsmith-Audio/signalsmith-stretch
 https://github.com/Signalsmith-Audio/linear
 
+PFFFT, copyright Julien Pommier, Hayati Ayguen, Dario Mambro and UCAR.
+Licensed under the FFTPACK/BSD redistribution terms. The complete notice is
+included in Licenses/PFFFT/LICENSE.txt. Pinned source and provenance are in
+Windows/ThirdParty/PFFFT.
+https://github.com/marton78/pffft
+
 TinySoundFont, copyright Bernhard Schelling and contributors.
 Licensed under MIT. The complete notice accompanies the executable as
 TinySoundFont-LICENSE.txt. CatLive includes its existing instrument extensions.

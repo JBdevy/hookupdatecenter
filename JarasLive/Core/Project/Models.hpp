@@ -47,6 +47,9 @@ struct Project {
     std::optional<bool> masterPhaseInverted;
     std::optional<unsigned> masterColor;
     std::optional<bool> timelineMovementLocked;
+    std::optional<int> timelineLockOptions;
+    int configuredTimelineLocks() const noexcept { return timelineLockOptions.value_or(7) & 7; }
+    int effectiveTimelineLocks() const noexcept { return timelineMovementLocked.value_or(false) ? configuredTimelineLocks() : 0; }
     // Preserve imported timing through engine snapshots and project saves.
     std::optional<bool> importedTimeline;
     std::optional<std::vector<ID>> partialImportIDs;
@@ -61,5 +64,8 @@ void validate(const Project& project);
 void synchronizeTimecode(Project& project);
 std::optional<ID> regionOwnerAt(const Song& song, double start, std::optional<double> end = {});
 bool regionOwns(const Song& song, const ID& root, const std::optional<ID>& owner);
+std::optional<ID> regionMovementOwner(const Song&, double start, std::optional<double> end = {},
+                                    const std::optional<ID>& preferred = {});
+bool markerMovesWithRegion(const Song&, const TimelineMarker&, const ID& root);
 void synchronizeRegionOwnership(Project& project, const Project* previous = nullptr);
 }

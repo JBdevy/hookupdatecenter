@@ -73,6 +73,10 @@ final class ProjectionWindow: NSWindow {
         Self.followWorkspaceWindow(self)
     }
     static func followWorkspaceWindow(_ window: NSWindow) {
+        // Workspace tools respond immediately to their transport buttons.
+        // The system's open/close animation adds a visible pause even when
+        // the retained editor is already laid out and ready to display.
+        window.animationBehavior = .none
         window.parent?.removeChildWindow(window)
         workspaceTools.add(window)
         if toolLevels.object(forKey: window) == nil {

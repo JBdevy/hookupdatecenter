@@ -1,8 +1,8 @@
 import Foundation
 
 /// Frame-rate presentation of the last authoritative transport sample. This
-/// never predicts engine transitions: loop wraps, queues and Sub Play promotion
-/// remain the engine's responsibility.
+/// never predicts engine transitions: an available output clock supplies the
+/// audible position, otherwise interpolation waits at the engine's boundary.
 public struct TimelinePlaybackPresentation: Equatable, Sendable {
     public enum Source: Equatable, Sendable { case main, sub }
 
@@ -23,7 +23,8 @@ public struct TimelinePlaybackPresentation: Equatable, Sendable {
     }
 
     public init(transport: TransportState, elapsed: Double, songDuration: Double,
-                mainBoundary: Double? = nil) {
+                mainBoundary: Double? = nil, audibleMainPosition: Double? = nil,
+                audibleSubPosition: Double? = nil) {
         let delta = elapsed.isFinite ? min(Self.maximumExtrapolation, max(0, elapsed)) : 0
         var mainEnd = songDuration
         if let edit = transport.editPosition, edit >= songDuration, transport.position >= songDuration,
@@ -44,15 +45,20 @@ public struct TimelinePlaybackPresentation: Equatable, Sendable {
             mainEnd = min(mainEnd, boundary)
         }
         mainPosition = Self.advance(transport.position, playing: transport.playing,
-                                    delta: delta, end: mainEnd)
+                                    delta: delta, end: mainEnd, audiblePosition: audibleMainPosition)
         subPosition = Self.advance(transport.subPlay.position, playing: transport.subPlay.playing,
-                                   delta: delta, end: songDuration)
+                                   delta: delta, end: songDuration, audiblePosition: audibleSubPosition)
         followSource = transport.subPlay.playing ? .sub : transport.playing ? .main : nil
     }
 
-    private static func advance(_ position: Double, playing: Bool, delta: Double, end: Double) -> Double {
+    private static func advance(_ position: Double, playing: Bool, delta: Double, end: Double,
+                                audiblePosition: Double?) -> Double {
         let sample = position.isFinite ? max(0, position) : 0
         guard playing else { return sample }
+        // This value already describes this frame's output time, including any
+        // scheduled handoff since the last transport tick. Do not advance it
+        // twice or constrain it with the previous region/loop's stale boundary.
+        if let audiblePosition, audiblePosition.isFinite { return max(0, audiblePosition) }
         // An authoritative sample always wins over stale/malformed limits. Do
         // not pull a cursor backwards or extrapolate beyond a terminal point.
         guard end.isFinite else { return sample }

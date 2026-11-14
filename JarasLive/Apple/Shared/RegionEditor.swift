@@ -413,9 +413,11 @@ struct RegionRightClick: NSViewRepresentable {
     var exportAudio: (() -> Void)? = nil
     var resizable = true
     var seek: (() -> Void)? = nil
+    var select: ((NSEvent.ModifierFlags) -> Void)? = nil
+    var cancelDrag: (() -> Void)? = nil
     var drag: (CGFloat, Bool, Int) -> Void = { _, _, _ in }
     func makeNSView(context: Context) -> RegionRightClickView { RegionRightClickView() }
-    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.drag = drag; view.resizable = resizable; view.seek = seek }
+    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.drag = drag; view.resizable = resizable; view.seek = seek; view.select = select; view.cancelDrag = cancelDrag }
 }
 final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var edit: (() -> Void)?
@@ -426,6 +428,8 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var exportAudio: (() -> Void)?
     var drag: ((CGFloat, Bool, Int) -> Void)?
     var seek: (() -> Void)?
+    var select: ((NSEvent.ModifierFlags) -> Void)?
+    var cancelDrag: (() -> Void)?
     var resizable = true { didSet {
         if resizable != oldValue {
             if !resizable { hoverEdge = 0; if edge != 0 { startX = nil; activeDrag = nil; edge = 0 } }
@@ -452,7 +456,11 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         if window != nil { NativeTimelineInputGate.shared.add(self) }
     }
     func timelineInputGateChanged(blocked: Bool) {
-        if blocked { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; didDrag = false }
+        if blocked {
+            let cancellation = didDrag ? cancelDrag : nil
+            startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; didDrag = false
+            cancellation?()
+        }
     }
     func timelinePendingClickCancelled() {
         if !didDrag { timelineInputGateChanged(blocked: true) }
@@ -484,7 +492,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         nativeGrip.isHidden = true
         nativeGrip.path = nil
         edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil; exportAudio = nil
-        drag = nil; seek = nil
+        drag = nil; seek = nil; select = nil; cancelDrag = nil
         guard !presentingProjectedMenu else { return false }
         timelineInputGateChanged(blocked: true)
         projectedInteractionEnded = nil
@@ -656,6 +664,12 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     @objc private func disunifySelected() { disunify?() }
     override func mouseDown(with event: NSEvent) {
         guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
+        if let select, !event.modifierFlags.intersection([.shift, .command]).isEmpty,
+           !event.modifierFlags.contains(.control), !event.modifierFlags.contains(.option) {
+            startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil
+            select(event.modifierFlags)
+            return
+        }
         if event.modifierFlags.contains(.control) { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; rightMouseDown(with: event) }
         else {
             startX = event.locationInWindow.x
@@ -666,7 +680,10 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
             hoverEdge = edge
             activeDelete = deleting ? delete : nil
             activeDrag = deleting ? nil : drag
-            activeSeek = deleting ? nil : seek; didDrag = false
+            if deleting { activeSeek = nil }
+            else if let select { activeSeek = { select(event.modifierFlags) } }
+            else { activeSeek = seek }
+            didDrag = false
         }
     }
     override func mouseDragged(with event: NSEvent) {

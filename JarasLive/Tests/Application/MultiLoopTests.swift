@@ -57,7 +57,7 @@ final class MultiLoopTests: XCTestCase {
         loop.enabled = false; loop.mixerEnabled = false
         let saved = try JSONDecoder().decode(MultiLoop.self, from: JSONEncoder().encode(loop))
         XCTAssertFalse(saved.isEnabled)
-        XCTAssertFalse(saved.usesMixer)
+        XCTAssertTrue(saved.usesMixer, "The retired global switch cannot disable per-track M/S")
         XCTAssertEqual(saved.tracks, [rule], "disabled loops retain their saved mixer presets")
         loop.enabled = true; loop.mixerEnabled = true
         let enabled = try JSONDecoder().decode(MultiLoop.self, from: JSONEncoder().encode(loop))

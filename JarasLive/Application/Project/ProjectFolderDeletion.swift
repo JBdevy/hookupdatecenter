@@ -100,7 +100,7 @@ public struct ProjectFolderDeletion: Identifiable, Sendable {
     }
     private static func isDedicatedDirectory(_ document: URL) throws -> Bool {
         let fm = FileManager.default, root = document.deletingLastPathComponent().standardizedFileURL
-        var protected = [fm.homeDirectoryForCurrentUser, fm.temporaryDirectory, URL(fileURLWithPath: "/")]
+        var protected = [URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true), fm.temporaryDirectory, URL(fileURLWithPath: "/")]
         for type in [FileManager.SearchPathDirectory.documentDirectory, .desktopDirectory, .downloadsDirectory,
                      .musicDirectory, .moviesDirectory, .picturesDirectory, .applicationSupportDirectory,
                      .libraryDirectory, .cachesDirectory, .applicationDirectory] {

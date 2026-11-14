@@ -499,7 +499,7 @@ private struct VinhetasPadSurface: NSViewRepresentable {
     private var window: NSWindow?
     func open(show: ShowController) {
         VinhetasController.shared.bind(show: show)
-        if let window { window.makeKeyAndOrderFront(nil); visible = true; UserDefaults.standard.set(true, forKey: "jaras.layout.vinhetas.visible"); return }
+        if let window { window.makeKeyAndOrderFront(nil); visible = true; WorkspaceLayoutPreferences.storage.set(true, forKey: "jaras.layout.vinhetas.visible"); return }
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 260), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         panel.title = "CatLive · Vinhetas"; panel.isReleasedWhenClosed = false; panel.delegate = self
         panel.minSize = NSSize(width: 850, height: 260)
@@ -507,12 +507,12 @@ private struct VinhetasPadSurface: NSViewRepresentable {
         if !panel.setFrameUsingName("CatLiveVinhetas", force: true) { panel.center() }
         panel.setFrameAutosaveName("CatLiveVinhetas"); window = panel; detached = true; visible = true
         panel.makeKeyAndOrderFront(nil)
-        UserDefaults.standard.set(true, forKey: "jaras.layout.vinhetas.detached")
-        UserDefaults.standard.set(true, forKey: "jaras.layout.vinhetas.visible")
+        WorkspaceLayoutPreferences.storage.set(true, forKey: "jaras.layout.vinhetas.detached")
+        WorkspaceLayoutPreferences.storage.set(true, forKey: "jaras.layout.vinhetas.visible")
     }
     func toggle(show: ShowController) { if visible { hide() } else { open(show: show) } }
-    func hide(preserveState: Bool = false) { window?.orderOut(nil); visible = false; if !preserveState { UserDefaults.standard.set(false, forKey: "jaras.layout.vinhetas.visible") } }
-    func dock() { window?.delegate = nil; window?.close(); window = nil; detached = false; visible = false; UserDefaults.standard.set(false, forKey: "jaras.layout.vinhetas.detached") }
+    func hide(preserveState: Bool = false) { window?.orderOut(nil); visible = false; if !preserveState { WorkspaceLayoutPreferences.storage.set(false, forKey: "jaras.layout.vinhetas.visible") } }
+    func dock() { window?.delegate = nil; window?.close(); window = nil; detached = false; visible = false; WorkspaceLayoutPreferences.storage.set(false, forKey: "jaras.layout.vinhetas.detached") }
     func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
 }
 #endif

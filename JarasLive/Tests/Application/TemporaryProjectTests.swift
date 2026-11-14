@@ -2,6 +2,13 @@ import XCTest
 @testable import JarasApplication
 
 final class TemporaryProjectTests: XCTestCase {
+    private final class ProgressLog: @unchecked Sendable {
+        let lock = NSLock()
+        var values: [TemporaryProjectSession.SaveProgress] = []
+        func append(_ value: TemporaryProjectSession.SaveProgress) {
+            lock.lock(); defer { lock.unlock() }; values.append(value)
+        }
+    }
     func root() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("catlive-temporary-tests-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -59,6 +66,34 @@ final class TemporaryProjectTests: XCTestCase {
         XCTAssertThrowsError(try session.export(project, to: target))
         XCTAssertFalse(fm.fileExists(atPath: target.deletingLastPathComponent().path))
         XCTAssertTrue(fm.fileExists(atPath: document.path))
+    }
+    func testSavingProgressNamesCopiesAndFinishesOnlyAfterDocumentCommit() throws {
+        let root = try root(), session = try TemporaryProjectSession(documents: root)
+        let fm = FileManager.default, progress = ProgressLog()
+        var project = Project.empty(name: "Temporary")
+        var track = Track(id: UUID(), name: "Two media files", role: .other)
+        track.clips = try ["a.wav", "b.wav"].enumerated().map { index, name in
+            try Data(repeating: UInt8(index + 1), count: 1024).write(to: session.directory.appendingPathComponent(name))
+            return AudioClip(id: UUID(), name: name, startTime: Double(index), duration: 1, audioFile: AudioFile(path: name))
+        }
+        project.songs[0].tracks = [track]
+        let destination = root.appendingPathComponent("Saved/Saved.jl")
+        _ = try session.export(project, to: destination) { value in
+            if value.stage == .complete { XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path)) }
+            progress.append(value)
+        }
+        XCTAssertEqual(progress.values.map(\.sequence), [0, 1, 2, 3, 4])
+        XCTAssertEqual(progress.values.filter { $0.stage == .copying }.map(\.fileName), ["a.wav", "b.wav"])
+        XCTAssertEqual(progress.values.last?.fraction, 1)
+        for name in ["a.wav", "b.wav"] {
+            XCTAssertEqual(try Data(contentsOf: destination.deletingLastPathComponent().appendingPathComponent(name)),
+                           try Data(contentsOf: session.directory.appendingPathComponent(name)))
+        }
+        try fm.removeItem(at: session.directory.appendingPathComponent("b.wav"))
+        let failed = ProgressLog()
+        XCTAssertThrowsError(try session.export(project, to: root.appendingPathComponent("Failed/Failed.jl")) { failed.append($0) })
+        XCTAssertFalse(failed.values.contains { $0.stage == .complete })
+        XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("Failed").path))
     }
     func testSymlinkRootRejectedAndChildLinkCannotDeleteOutside() throws {
         let root = try root(), fm = FileManager.default

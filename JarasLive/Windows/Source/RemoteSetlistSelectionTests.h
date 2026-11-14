@@ -52,6 +52,31 @@ inline void click(SetlistRows &rows,int row) {
         Time::getCurrentTime(),1,false));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+    test("Remote timer switches progressive and countdown atomically and preserves targets", [&] {
+        Session session;session.inspection=true;session.core.loadProject(fixture());
+        Appearance preferences(directory.getNonexistentChildFile("timer-modes", ".json"));
+        StageState stage(preferences);remote::Presentation presentation(session,stage);
+        auto apply=[&](const char *action,double value) {
+            auto wire=object();put(wire,"id",remote::wireID(uuid()));
+            put(wire,"project",remote::wireID(session.project().id));
+            put(wire,"action",action);put(wire,"value",value);
+            const auto command=remote::Command::decode(wire);
+            require(presentation.apply(command),"Timer command rejected");
+        };
+        apply("timerStart",90);
+        require(stage.running && !stage.progressive && stage.target==90,"Countdown start changed");
+        apply("timerSetMode",0);
+        require(!stage.progressive && stage.running,"Tab changed a running timer");
+        apply("timerStop",0);apply("timerSetMode",0);
+        require(stage.progressive && !stage.running && stage.target==90 && !stage.expired(),"Progressive tab lost duration");
+        require(str(get(presentation.snapshot(0),"timer"),"mode")=="progressive","Mode missing from Remote snapshot");
+        apply("timerStartProgressive",0);stage.started=StageState::now()-65.2;
+        require(stage.running && stage.timeText()=="00:01:05" && !stage.expired(),"Progressive count/rounding incorrect");
+        apply("timerStop",0);apply("timerSetMode",1);
+        require(!stage.progressive && stage.target==90,"Countdown target not restored");
+        StageState restored(preferences);
+        require(!restored.progressive && restored.target==90,"Mode preference not restored");
+    });
     test("Setlist drawer preserves browsing position and metadata reorder avoids workspace rebuild",[&] {
         const auto project=fixture(); const auto &parts=project.songs[0].parts;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
@@ -122,6 +147,57 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         session.core.execute({jaras::CommandKind::cancelSection});
         require(get(get(presentation.snapshot(0),"sectionPlayback"),"queuedMarker").isVoid(),
                 "Cancelling must clear observer's armed warning");
+    });
+    test("Remote Tuner publishes its active region, preserves targets and uses pitch undo", [&] {
+        auto project=fixture();auto &song=project.songs[0];
+        const auto first=song.parts[0].id,second=song.parts[1].id;
+        song.parts[0].pitchTrackIDs=std::vector<ID>{};
+        song.parts[0].pitchGroupIDs=std::vector<ID>{song.tracks.front().id};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Appearance preferences(directory.getNonexistentChildFile("remote-tuner",".json"));
+        StageState stage(preferences);remote::Presentation presentation(session,stage);
+        require(presentation.apply(remote::Command::decode(request(session,first))),"Tuner region selection failed");
+        auto state=presentation.snapshot(0);
+        require(str(state,"pitchRegion")==remote::wireID(first) && num(state,"pitchSemitones")==0,
+                "Remote Tuner is disabled because the active region/pitch was not published");
+        auto pitch=request(session,first);put(pitch,"action","pitch");put(pitch,"value",3);
+        require(presentation.apply(remote::Command::decode(pitch)),"Remote pitch edit rejected");
+        require(num(presentation.snapshot(0),"pitchSemitones")==3,"Pitch confirmation never reached Remote");
+        const auto &part=session.song()->parts[0];
+        require(part.pitchTrackIDs==song.parts[0].pitchTrackIDs && part.pitchGroupIDs==song.parts[0].pitchGroupIDs,
+                "Remote Tuner discarded explicit track/group targets");
+        session.undo();require(num(presentation.snapshot(0),"pitchSemitones")==0,"Remote pitch is not undoable");
+        session.redo();require(num(presentation.snapshot(0),"pitchSemitones")==3,"Remote pitch redo lost adjustment");
+        require(presentation.apply(remote::Command::decode(request(session,second))),"Second region selection failed");
+        require(!presentation.apply(remote::Command::decode(pitch)),"Stale Remote pitch edited an inactive song");
+        require(session.song()->parts[0].pitchSemitones==3 && session.song()->parts[1].pitchSemitones.value_or(0)==0,
+                "Stale pitch packet changed a region");
+    });
+    test("Remote BPM edits the selected tempo section through the desktop path and supports repeated steps", [&] {
+        auto project=fixture();auto &song=project.songs[0];song.bpm=120;
+        song.timeSettings=jaras::ProjectTimeSettings{};song.timeSettings->timebase=jaras::ProjectTimebase::relative;
+        const auto selected=song.parts[1].id;
+        auto marker=tempoEditing::boundary(song,10);marker.tempoBPM=140;
+        song.markers=std::vector<jaras::TimelineMarker>{marker};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Appearance preferences(directory.getNonexistentChildFile("remote-bpm",".json"));
+        StageState stage(preferences);remote::Presentation presentation(session,stage);
+        require(presentation.apply(remote::Command::decode(request(session,selected))),"BPM region selection failed");
+        require(num(presentation.snapshot(0),"bpm")==140,"Wrong initial region BPM");
+        auto tempo=request(session,selected);put(tempo,"action","tempo");tempo.getDynamicObject()->removeProperty("target");
+        for(double value:{141.,142.,141.}) {
+            put(tempo,"id",remote::wireID(uuid()));put(tempo,"value",value);
+            require(presentation.apply(remote::Command::decode(tempo)),"Remote tempo rejected");
+            require(std::abs(num(presentation.snapshot(0),"bpm")-value)<.000001,
+                    "Remote BPM did not acknowledge the step and would leave its buttons locked");
+            require(session.song()->bpm==120,"Remote changed global BPM instead of the selected tempo section");
+        }
+        session.undo();require(num(presentation.snapshot(0),"bpm")==142,"Remote BPM undo lost preceding step");
+        session.redo();require(num(presentation.snapshot(0),"bpm")==141,"Remote BPM redo lost final step");
+        put(tempo,"song",remote::wireID(uuid()));
+        require(!presentation.apply(remote::Command::decode(tempo)),"Remote command from another song was accepted");
     });
     test("Unified Remote tempo returns to white after repeated BPM round trips", [&] {
         auto project=fixture();auto &song=project.songs[0];song.timeSettings=jaras::ProjectTimeSettings{};

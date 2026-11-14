@@ -57,6 +57,7 @@ struct GridSelectionItem {
     var movable = true
     var contextActions = true
     var audioExportable = true
+    var rateEditable = false
     var midiEditable = false
     var textEditable = false
     var clickDouble: Bool? = nil
@@ -341,6 +342,15 @@ final class GridSelectionLayout {
     }
     func item(id: UUID, pixelsPerSecond: CGFloat) -> GridSelectionItem? {
         ids[id].map { projectedItem(at: $0, pixelsPerSecond: pixelsPerSecond) }
+    }
+    func selectionRange(from anchor: UUID, to target: UUID) -> Set<UUID> {
+        let ordered = items.sorted {
+            if $0.rect.minY != $1.rect.minY { return $0.rect.minY < $1.rect.minY }
+            if $0.rect.minX != $1.rect.minX { return $0.rect.minX < $1.rect.minX }
+            return $0.id.uuidString < $1.id.uuidString
+        }.map(\.id)
+        guard let first = ordered.firstIndex(of: anchor), let last = ordered.firstIndex(of: target) else { return [target] }
+        return Set(ordered[min(first, last)...max(first, last)])
     }
     func projectedItem(at index: Int, pixelsPerSecond: CGFloat) -> GridSelectionItem {
         var item = items[index]
@@ -628,7 +638,9 @@ struct GridSelectionInput: NSViewRepresentable {
     var pixelsPerSecond: CGFloat = 1
     var projection: GridSelectionProjection? = nil
     var interactionBlocked = false
+    var itemMixLocked = false
     var resize: (UUID, Bool, CGFloat, Bool) -> Void = { _,_,_,_ in }
+    var resizeShared: (UUID, UUID, CGFloat, Bool) -> Void = { _,_,_,_ in }
     var fadeShape: (UUID, Bool, Bool, Double, Bool) -> Void = { _, _, _, _, _ in }
     var fade: (UUID, Bool, Double, Bool) -> Void = { _, _, _, _ in }
     var gain: (UUID, Double, Bool) -> Void = { _,_,_ in }
@@ -646,6 +658,8 @@ struct GridSelectionInput: NSViewRepresentable {
     var glue: (Set<UUID>) -> Void = { _ in }
     var tuner: (Set<UUID>) -> Void = { _ in }
     var resetRate: (Set<UUID>) -> Void = { _ in }
+    var resetDuration: (Set<UUID>) -> Void = { _ in }
+    var configureRate: (Set<UUID>) -> Void = { _ in }
     var normalize: (Set<UUID>) -> Void = { _ in }
     var export: (Set<UUID>) -> Void = { _ in }
     var selectRow: (CGFloat) -> Void = { _ in }
@@ -676,16 +690,17 @@ struct GridSelectionInput: NSViewRepresentable {
         view.timelineOrigin = origin; view.headerHeight = headerHeight
         view.itemGuide = itemGuide
         view.interactionBlocked = interactionBlocked
+        view.itemMixLocked = itemMixLocked
         view.pointerDown = pointerDown
         if let indexedLayout { view.updateLayout(indexedLayout, pixelsPerSecond: pixelsPerSecond) }
         else { view.items = items }
         view.updateSelection(selected)
         view.toggleClickDouble = toggleClickDouble
-        view.fileLocation = fileLocation; view.separateAudio = separateAudio; view.canSeparateAudio = canSeparateAudio
+        view.fileLocation = fileLocation; view.separateAudio = separateAudio; view.canSeparateAudio = canSeparateAudio; view.configureRate = configureRate
         view.marqueeBegan = marqueeBegan
         view.itemMoveBegan = itemMoveBegan
         view.renameItem = renameItem; view.exportMIDI = exportMIDI
-        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
+        view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.resetDuration = resetDuration; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.resizeShared = resizeShared; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
@@ -698,6 +713,16 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         if headerHeight != oldValue { updateCursorCoverage() }
     } }
     var interactionBlocked = false { didSet { if interactionBlocked && !oldValue { timelineInputGateChanged(blocked: true) } } }
+    var itemMixLocked = false { didSet {
+        guard itemMixLocked != oldValue else { return }
+        if itemMixLocked {
+            if gainItem != nil || panItem != nil { draggedItem = nil; hasDragged = false }
+            gainItem = nil; panItem = nil; liveHeaderGain = nil; liveHeaderPan = nil
+            preparedHeaderProjection = nil; needsDisplay = true
+        }
+        window?.invalidateCursorRects(for: self)
+        refreshPointerCursor()
+    } }
     var items: [GridSelectionItem] = [] { didSet {
         updateLayout(GridSelectionLayout(items: items), pixelsPerSecond: 1)
     } }
@@ -709,12 +734,14 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         invalidateHeaderProjectionIfNeeded()
     } }
     private var itemLayout = GridSelectionLayout(items: [])
+    private var selectionAnchor: UUID?
     private var pixelsPerSecond: CGFloat = 1
     func updateLayout(_ layout: GridSelectionLayout, pixelsPerSecond: CGFloat) {
         guard itemLayout !== layout || self.pixelsPerSecond != pixelsPerSecond else { return }
         let changedLayout = itemLayout !== layout
         let changedScale = self.pixelsPerSecond != pixelsPerSecond
         itemLayout = layout; self.pixelsPerSecond = pixelsPerSecond
+        if let selectionAnchor, layout.item(id: selectionAnchor, pixelsPerSecond: pixelsPerSecond) == nil { self.selectionAnchor = nil }
         preparedHeaderProjection = nil
         if changedScale {
             // Several native projections can arrive in one display transaction.
@@ -809,6 +836,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private(set) var heldItemGuide: CGRect? { didSet { if heldItemGuide != oldValue { needsDisplay = true } } }
     var selected = Set<UUID>() {
         didSet {
+            if selected.isEmpty { selectionAnchor = nil }
             if selected != oldValue { preparedHeaderProjection = nil; invalidateHeaderProjectionIfNeeded() }
         }
     }
@@ -817,6 +845,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     var itemMoveBegan: (() -> Void)?
     var createRegion: ((UUID) -> Void)?
     var resize: ((UUID, Bool, CGFloat, Bool) -> Void)?
+    var resizeShared: ((UUID, UUID, CGFloat, Bool) -> Void)?
+    private var sharedResize: (left: UUID, right: UUID)?
     var fadeShape: ((UUID, Bool, Bool, Double, Bool) -> Void)?
     var fade: ((UUID, Bool, Double, Bool) -> Void)?
     private var fadeItem: (item: GridSelectionItem, left: Bool, sCurve: Bool?)?
@@ -843,6 +873,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     var glue: ((Set<UUID>) -> Void)?
     var tuner: ((Set<UUID>) -> Void)?
     var resetRate: ((Set<UUID>) -> Void)?
+    var resetDuration: ((Set<UUID>) -> Void)?
+    var configureRate: ((Set<UUID>) -> Void)?
     var normalize: ((Set<UUID>) -> Void)?
     var export: ((Set<UUID>) -> Void)?
     var mute: ((UUID) -> Void)?
@@ -1048,6 +1080,20 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             min(abs(point.x - $1.rect.minX), abs(point.x - $1.rect.maxX))
         }.map(positionedHeader)
     }
+    func sharedBoundary(at point: CGPoint) -> (left: UUID, right: UUID)? {
+        let nearby = candidates(in: CGRect(x: point.x - 7, y: point.y, width: 14, height: 0))
+        for left in nearby where left.resizable && abs(left.rect.maxX - point.x) <= 6 {
+            for right in nearby where right.id != left.id && right.resizable && right.trackIndex == left.trackIndex && right.laneIndex == left.laneIndex {
+                guard abs(left.rect.maxX - right.rect.minX) < 1e-5,
+                      abs(left.rect.minY - right.rect.minY) < 0.01,
+                      point.y > max(left.rect.minY, right.rect.minY) + min(Self.sharedBoundaryHeaderInset, min(left.rect.height, right.rect.height) / 2),
+                      point.y < min(left.rect.maxY, right.rect.maxY) else { continue }
+                return (left.id, right.id)
+            }
+        }
+        return nil
+    }
+    private static let sharedBoundaryHeaderInset: CGFloat = GridSelectionItem.bodyInset + 2
     @discardableResult func handlePointerEvent(_ event: NSEvent) -> Bool {
         if activeButton == nil, extraBodyHit?(event.locationInWindow) != nil { return false }
         guard !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window), event.window === window, window != nil, window?.attachedSheet == nil,
@@ -1065,7 +1111,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             // The local monitor consumes this click before NSWindow can make
             // itself key. Selecting an item in a background document must also
             // bring its keyboard shortcuts back from the previous tool window.
-            if window?.isKeyWindow == false { window?.makeKey() }
+            NativeTimelineKeyboardFocus.activate(window: window, responder: self)
             activeButton = event.buttonNumber
         } else if activeButton != event.buttonNumber { return false }
         switch event.type {
@@ -1118,11 +1164,25 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         pendingSeek = nil
         dragStart = event.locationInWindow
         let timeline = timelinePoint(event)
+        sharedResize = nil
         draggedItem = nil; hasDragged = false; movingAllowed = false; resizingLeft = nil; gainItem = nil; panItem = nil; liveHeaderPan = nil; fadeItem = nil; liveFade = nil
         pressedHeader = nil; headerPressCancelled = false
         guard let item = hitItem(at: timeline) else {
             if createMIDI != nil && !event.modifierFlags.intersection([.command,.control]).isEmpty { midiStart = timeline; return }
             pendingSeek = timeline; return
+        }
+        if event.modifierFlags.contains(.shift) {
+            let anchor = selectionAnchor ?? itemLayout.items.first(where: { selected.contains($0.id) })?.id ?? item.id
+            let range = itemLayout.selectionRange(from: anchor, to: item.id)
+            selected = event.modifierFlags.contains(.command) ? selected.union(range) : range
+            selectionAnchor = anchor
+            selectionChanged?(selected)
+            return
+        }
+        if let pair = sharedBoundary(at: timeline) {
+            sharedResize = pair; draggedItem = pair.left; dragOrigin = timeline
+            resizingLeft = false; heldItemGuide = item.rect
+            return
         }
         if let shape = item.fadeShape(at: timeline) {
             if event.clickCount == 2 { fadeShape?(item.id, shape.left, shape.sCurve, shape.sCurve ? 1 : 0, true); return }
@@ -1140,10 +1200,12 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         } else if let rect = item.phaseRect, rect.contains(timeline) {
             pressedHeader = (item.id, rect, .phase); dragStart = event.locationInWindow; return
         } else if item.panKnobRect?.contains(timeline) == true {
+            guard !itemMixLocked else { return }
             if event.clickCount == 2 { pan?(item.id, 0, true); return }
             panItem = item; draggedItem = item.id; dragStart = event.locationInWindow
             valueTooltipPoint = convert(event.locationInWindow, from: nil); return
         } else if item.gainKnobRect?.contains(timeline) == true {
+            guard !itemMixLocked else { return }
             if event.clickCount == 2 { gain?(item.id, 1, true); return }
             gainItem = item; draggedItem = item.id; dragStart = event.locationInWindow
             valueTooltipPoint = convert(event.locationInWindow, from: nil); return
@@ -1158,6 +1220,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         if additive {
             if selected.contains(item.id) { selected.remove(item.id) } else { selected.insert(item.id) }
         } else { collapseSelectionOnRelease = item.id }
+        selectionAnchor = additive && !selected.contains(item.id) ? selected.first : item.id
         if additive { selectionChanged?(selected) }
         movingAllowed = item.movable
         draggedItem = item.id; dragStart = event.locationInWindow; dragOrigin = timeline
@@ -1196,6 +1259,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             }
             needsDisplay = true
         }
+        else if let pair = sharedResize { resizeShared?(pair.left, pair.right, translation.width, false) }
         else if let resizingLeft { resize?(id, resizingLeft, translation.width, false) }
         else if let panItem {
             let value = panItem.draggingPan(by: translation.height)
@@ -1275,6 +1339,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 if let sCurve = fadeItem.sCurve { fadeShape?(id, fadeItem.left, sCurve, fadeItem.item.draggingFadeShape(left: fadeItem.left, sCurve: sCurve, delta: translation.width), true) }
                 else { fade?(id, fadeItem.left, fadeItem.item.draggingFade(left: fadeItem.left, delta: translation.width), true) }
             }
+            else if let pair = sharedResize { resizeShared?(pair.left, pair.right, translation.width, true) }
             else if let resizingLeft { resize?(id, resizingLeft, translation.width, true) }
             else if let panItem { pan?(id, panItem.draggingPan(by: translation.height), true) }
             else if let gainItem { gain?(id, gainItem.draggingGain(by: translation.height), true) }
@@ -1284,6 +1349,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             }
         }
         draggedItem = nil; hasDragged = false; movingAllowed = false; gainItem = nil; panItem = nil; liveHeaderPan = nil; liveHeaderGain = nil; valueTooltipPoint = nil; fadeItem = nil; liveFade = nil; needsDisplay = true
+        sharedResize = nil
         refreshValueTooltip(event)
     }
     override func updateTrackingAreas() {
@@ -1336,14 +1402,29 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         return NSCursor(image: image, hotSpot: NSPoint(x: 8, y: 8))
     }
     func pointerCursor(at point: CGPoint) -> NSCursor {
+        if sharedBoundary(at: point) != nil { return Self.sharedBoundaryCursor }
         guard let item = hitItem(at: point) else { return .arrow }
         if let left = item.fadeSide(at: point) { return left ? Self.fadeInCursor : Self.fadeOutCursor }
         if item.fadeShape(at: point) != nil { return .crosshair }
-        if item.panKnobRect?.contains(point) == true { return .resizeUpDown }
-        if item.gainKnobRect?.contains(point) == true { return .resizeUpDown }
+        if item.panKnobRect?.contains(point) == true { return itemMixLocked ? .arrow : .resizeUpDown }
+        if item.gainKnobRect?.contains(point) == true { return itemMixLocked ? .arrow : .resizeUpDown }
         if item.fxRect?.contains(point) == true || item.muteRect?.contains(point) == true || item.editRect?.contains(point) == true { return .pointingHand }
         return item.resizeSide(at: point) != nil ? .resizeLeftRight : .arrow
     }
+    private static let sharedBoundaryCursor: NSCursor = {
+        let image = NSImage(size: NSSize(width: 24, height: 24), flipped: false) { _ in
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: 12, y: 3)); path.line(to: NSPoint(x: 12, y: 21))
+            path.move(to: NSPoint(x: 2, y: 12)); path.line(to: NSPoint(x: 22, y: 12))
+            for (tip, base) in [(2.0, 6.0), (22.0, 18.0)] {
+                path.move(to: NSPoint(x: base, y: 8)); path.line(to: NSPoint(x: tip, y: 12)); path.line(to: NSPoint(x: base, y: 16))
+            }
+            NSColor.black.setStroke(); path.lineWidth = 4; path.stroke()
+            NSColor.white.setStroke(); path.lineWidth = 2; path.stroke()
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: 12, y: 12))
+    }()
     private func refreshPointerCursor(_ event: NSEvent? = nil) {
         guard let window, window.attachedSheet == nil,
               !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window),
@@ -1535,6 +1616,12 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             let reveal = NSMenuItem(title: JarasLocalization.string("Open file location"), action: #selector(revealContextFile), keyEquivalent: "")
             reveal.target = self; menu.addItem(reveal); menu.addItem(.separator())
         }
+        let source = fileLocation?(contextItem)
+        let fileRate = source.map { !["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains($0.pathExtension.lowercased()) } ?? false
+        if item(id: contextItem)?.rateEditable == true || item(id: contextItem)?.midiEditable == true || fileRate {
+            let rate = NSMenuItem(title: JarasLocalization.string("Config rate"), action: #selector(configureRateSelection), keyEquivalent: "")
+            rate.target = self; menu.addItem(rate)
+        }
         if item(id: contextItem)?.midiEditable == true {
             let muted = selectedMIDIItems.allSatisfy(\.muted)
             let toggle = NSMenuItem(title: JarasLocalization.string(muted ? "Unmute items" : "Mute items"), action: #selector(muteMIDISelection), keyEquivalent: "")
@@ -1571,6 +1658,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 normalize.target = self; menu.addItem(normalize)
                 let reset = NSMenuItem(title: JarasLocalization.string("Reset rate"), action: #selector(resetRateSelection), keyEquivalent: "")
                 reset.target = self; menu.addItem(reset)
+                if let source = fileLocation?(contextItem),
+                   !["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains(source.pathExtension.lowercased()) {
+                    let duration = NSMenuItem(title: JarasLocalization.string("Reset duration"), action: #selector(resetDurationSelection), keyEquivalent: "")
+                    duration.target = self; menu.addItem(duration)
+                }
                 if self.item(id: contextItem)?.editable == true {
                     menu.addItem(.separator())
                     for (mode, title) in [(4,"Swap - LR"), (1,"Convert Mono - L"), (2,"Convert Mono - R"), (3,"Convert Mono L-R"), (0,"Convert Stereo")] {
@@ -1633,6 +1725,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     @objc private func convertSelection(_ sender: NSMenuItem) { convert?(selected, sender.tag) }
     @objc private func resetRateSelection() { resetRate?(selected) }
+    @objc private func resetDurationSelection() { resetDuration?(selected) }
+    @objc private func configureRateSelection() { configureRate?(selected) }
     @objc private func normalizeSelection() { normalize?(selected) }
     @objc private func createContextRegion() { if let contextItem { createRegion?(contextItem) } }
     override func draw(_ dirtyRect: NSRect) {

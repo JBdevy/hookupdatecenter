@@ -1039,3 +1039,37 @@ for precise in [false, true] {
 precondition((UserDefaults.standard.object(forKey: "jaras.timelineZoom") as? NSObject) == legacyZoomBeforeTest,
              "zoom persistence must never write the standard preferences domain")
 print("ZOOM_PERSISTENCE_LEAVES_STANDARD_PREFERENCES_UNCHANGED_OK")
+
+private final class HeightRoutingRoot: NSView {
+    var hitTests = 0
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { hitTests += 1; return super.hitTest(point) }
+}
+MainActor.assumeIsolated {
+    let testWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: .borderless, backing: .buffered, defer: false)
+    testWindow.isReleasedWhenClosed = false
+    let root = HeightRoutingRoot(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    testWindow.contentView = root
+    let heightInput = TimelineTrackHeightResizeView(frame: root.bounds)
+    root.addSubview(heightInput)
+    heightInput.configure(project: UUID(), song: UUID(), tracks: [UUID()], offsets: [0], heights: [80],
+                          laneCounts: [1], scales: [1], baseHeight: 64, top: 40,
+                          verticalOffset: 0, mixerWidth: 200, blocked: false)
+    func click(_ point: CGPoint, flags: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.mouseEvent(with: .leftMouseDown, location: heightInput.convert(point, to: nil), modifierFlags: flags,
+                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: testWindow.windowNumber,
+                           context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    }
+    precondition(TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 117))))
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 80))))
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 250, y: 117))))
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 117), flags: .shift)))
+    NativeTimelineInputGate.shared.setBlocked(true, for: testWindow)
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 117))))
+    NativeTimelineInputGate.shared.setBlocked(false, for: testWindow)
+    heightInput.isHidden = true
+    precondition(!TimelineTrackHeightResizeView.handlesPointer(click(CGPoint(x: 50, y: 117))))
+    precondition(root.hitTests == 0, "Track selection must resolve resize borders without hit-testing the complete SwiftUI window")
+    testWindow.close()
+    print("TRACK_HEIGHT_BORDER_ROUTE_VISIBLE_GEOMETRY_MODIFIERS_GATE_AND_NO_WINDOW_HIT_TEST_OK")
+}

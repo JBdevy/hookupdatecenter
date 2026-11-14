@@ -63,8 +63,14 @@ inline void HozMixerFocusTests::run(const File &directory) {
                         strip->slotAt({layout.slots.getCentreX(),layout.slots.getY()+5})==0,
                         "Focused FX slots and bottom name overlap, clip, or cannot be activated");
                 for(auto *child:strip->getChildren())require(!child->isVisible(),"A fader, pan, meter or other control remains visible in slots-only mode");
-            } else require(strip->fader.isVisible() && strip->pan.isVisible() && strip->fx.isVisible() && strip->peak->isVisible(),
-                           "Returning to normal mode did not restore mixer controls");
+            } else {
+                require(strip->fader.isVisible() && strip->pan.isVisible() && strip->fx.isVisible() && strip->peak->isVisible(),
+                        "Returning to normal mode did not restore mixer controls");
+                const auto meter=strip->meterPaintBounds(),fader=strip->fader.getBounds();
+                require(meter.getRight()<=fader.getX() && meter.getY()==fader.getY() && meter.getHeight()==fader.getHeight() &&
+                        strip->getLocalBounds().contains(meter) && strip->getLocalBounds().contains(fader),
+                        "The stereo audio meter must stay left of its fader, aligned and inside the strip");
+            }
         }
     };
     {
@@ -73,6 +79,23 @@ inline void HozMixerFocusTests::run(const File &directory) {
         Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,preferences);
         workspace.setSize(1366,900);workspace.footerMixerVisible=true;workspace.resized();
         auto &panel=*workspace.footerMixer;panel.setSize(640,350);check(panel,false);
+        {
+            FileOutputStream screenshot(directory.getChildFile("hoz-mixer-audio-meter-left.png"));
+            require(screenshot.openedOk() && PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),screenshot),
+                    "Cannot save Hoz-Mixer meter layout screenshot");
+        }
+        auto *farStrip=panel.strips.getLast();
+        for(int height=351;height<390;++height)panel.setSize(640,height);
+        require(farStrip->controlLayoutPending,"Offscreen controls were relaid out for every height change");
+        require(farStrip->getHeight()==panel.content.getHeight(),"Deferred controls must retain exact strip geometry");
+        const auto farID=farStrip->id;
+        panel.viewport.setViewPosition(panel.content.getWidth(),0);
+        require(!farStrip->controlLayoutPending && farStrip->fader.isVisible() &&
+                farStrip->getLocalBounds().contains(farStrip->fader.getBounds()),
+                "Scrolling after resize must restore controls before drawing the newly exposed track");
+        panel.viewport.setViewPosition(0,0);
+        require(panel.strips.getLast()==farStrip && farStrip->id==farID,
+                "Resizing or scrolling rebuilt a retained mixer strip");
         // A saved oversized height must not push controls below the dock.
         workspace.mixerHeightSetting=724;workspace.resized();
         require(panel.getHeight()<=workspace.dockViewport.getHeight(),"Hoz-Mixer escaped the visible dock at maximum height");

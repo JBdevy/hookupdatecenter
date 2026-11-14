@@ -3,17 +3,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-grid-drop.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
-cp Tests/Apple/GridFileDropTests.swift "$test_dir/main.swift"
-python3 - "$test_dir" <<'PYDEPS'
+python3 - "$test_dir/main.swift" <<'PYDEPS'
 from pathlib import Path
 import sys
-folder = Path(sys.argv[1])
-region = Path('Apple/Shared/RegionEditor.swift').read_text()
-(folder/'environment.swift').write_text('import SwiftUI\n' + region[region.index('/// Immutable menu target:'):])
-source = Path('Apple/Shared/TimelineGridView.swift').read_text()
-start = source.index('struct MixerResizeHandle:')
-(folder/'divider.swift').write_text('import SwiftUI\nimport AppKit\n' + source[start:source.index('\n#endif', start)])
+source = Path('Apple/Shared/GridScrollView.swift').read_text()
+a = source.index('    var fileDrop: (([URL], CGPoint) -> Bool)?', source.index('final class GridNativeScrollView:'))
+b = source.index('    // A committed layout clears zoomAnchor', a)
+subject = 'final class GridNativeScrollView: NSScrollView {\n' + source[a:b] + '\n}\n'
+tests = Path('Tests/Apple/GridFileDropTests.swift').read_text().replace('let application = DropTestApplication.shared', 'MainActor.assumeIsolated {\nlet application = DropTestApplication.shared', 1) + '\n}\n'
+Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\n' + subject + tests)
 PYDEPS
-python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
-swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 "$test_dir/environment.swift" "$test_dir/divider.swift" Apple/Shared/GridScrollView.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -swift-version 5 -target "${CATLIVE_TEST_ARCH:-$(uname -m)}-apple-macos12.0" Apple/Shared/NativeTimelineInputGate.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

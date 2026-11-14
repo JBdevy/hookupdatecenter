@@ -2,6 +2,7 @@
 #include "Localization.h"
 #include "Session.h"
 #include "MediaSource.h"
+#include "ProjectionSelection.h"
 #include "ItemRender.h"
 #include "AudioSeparation.h"
 #include "ItemLayout.h"
@@ -115,6 +116,7 @@ void Session::newProject(String name) {
     core.loadProject(std::move(p));
     original = var();
     observedMedia.clear();
+    projectReadWarnings.clear();
     document = File();
     mediaDirectory = File::getSpecialLocation(File::userApplicationDataDirectory)
                          .getChildFile("Hook Developer/CatLive/Unsaved/" + text(project().id));
@@ -369,6 +371,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
         std::deque<HistoryEntry> undoHistory,redoHistory;
         ID song;
         String warning;
+        StringArray mediaWarnings;
     };
     // The old document, histories, DSP, SF2 banks and decoders are also retired
     // here after the swap, rather than being destroyed in the UI callback.
@@ -409,8 +412,13 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                     return;
                 }
             }
-            if (prepared->document.hasFileExtension("bkjl")) {
-                prepared->document = projectBackups::restore(prepared->document, incoming);
+            const bool openingBackup = prepared->document.hasFileExtension("bkjl");
+            if (openingBackup) {
+                prepared->document = projectBackups::restore(prepared->document, incoming,
+                    [&](int done, int total, const String &name) {
+                        report(localization::translate(String::fromUTF8("Restoring backup…")) + " " + name,
+                               0.6 * double(done) / std::max(1, total));
+                    }, checkpoint);
                 prepared->mediaDirectory = prepared->document.getParentDirectory();
                 checkpoint();
             }
@@ -430,17 +438,20 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
             for (const auto &song : project.songs) for (const auto &track : song.tracks)
                 for (const auto &clip : track.clips) {
                     const auto source = clip.audioFile ? clip.audioFile : track.audioFile;
-                    if (source && !clip.midi && !jaras::isTeleprompterRole(track.role))
+                    if (source && !clip.midi && !projectionMedia(clip) && track.role.id != "video" && !jaras::isTeleprompterRole(track.role))
                         files.insert(ProjectCodec::resolveMedia(prepared->mediaDirectory, source->path, false).getFullPathName());
                 }
             int done = 0; const auto total = (int)files.size();
-            report(localization::translate(String::fromUTF8("Preparing waveforms…")) + " " + "0/" + String(total), total ? 0 : 1);
+            report(localization::translate(String::fromUTF8("Preparing waveforms…")) + " " + "0/" + String(total),
+                   openingBackup ? (total ? 0.6 : 0.8) : (total ? 0 : 1));
             for (const auto &path : files) {
                 checkpoint();
-                WaveformCache::preload(File(path), cancellation.get());
+                const auto issue = WaveformCache::preload(File(path), cancellation.get());
+                if (issue.isNotEmpty()) prepared->mediaWarnings.addIfNotAlreadyThere(path + "\n" + localization::translate(issue));
                 checkpoint();
                 ++done;
-                report(localization::translate(String::fromUTF8("Preparing waveforms…")) + " " + String(done) + "/" + String(total), double(done) / total);
+                report(localization::translate(String::fromUTF8("Preparing waveforms…")) + " " + String(done) + "/" + String(total),
+                       openingBackup ? 0.6 + 0.2 * double(done) / total : double(done) / total);
             }
             checkpoint();
             prepared->audio=std::make_unique<AudioEngine>(sampleRate,offline);
@@ -451,7 +462,8 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                 const auto now=Time::getMillisecondCounterHiRes();
                 if(count==0||count==totalWork||now-lastReport>=25) {
                     lastReport=now;
-                    report(localization::translate(String::fromUTF8("Preparing audio…")) + " "+String(count)+"/"+String(totalWork),double(count)/totalWork);
+                    report(localization::translate(String::fromUTF8("Preparing audio…")) + " "+String(count)+"/"+String(totalWork),
+                           openingBackup ? 0.8 + 0.2 * double(count)/std::max(1, totalWork) : double(count)/std::max(1, totalWork));
                 }
             };
             control.pluginDispatcher=[checkpoint,weak,cancellation](std::function<void()> operation) {
@@ -508,6 +520,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                     presentationQueues.reset();fadeoutRequested=false;fadeoutTracks.clear();
                     updateRecordArms();publishTransport();
                     dirty=false;message=prepared->warning;importProgress=1;
+                    projectReadWarnings.swapWith(prepared->mediaWarnings);
                 }
             } catch(const std::exception &e) {error=String::fromUTF8(e.what());}
             prepared.reset();
@@ -887,6 +900,7 @@ void Session::syncClock() {
 }
 void Session::publishTransport(bool preserveLatency, bool routingOnly, bool followMainClock) {
     const auto &t = transport();
+    audio.setLoopMixer(t.multiLoop);
     AudioEngine::State state;
     state.preserveLatency = preserveLatency;
     state.followMainClock = followMainClock;
@@ -1027,6 +1041,8 @@ bool Session::controlAllowedDuringSave(jaras::CommandKind kind) const {
     }
 }
 void Session::command(jaras::CommandKind kind, const ID &target, double value) {
+    if (timelineGrid::itemMixLocked(project()) &&
+        (kind == jaras::CommandKind::clipGain || kind == jaras::CommandKind::clipPan)) return;
     if (jaras::projectSync::readOnly()) return;
     if (recordingFinalizing) {
         if (kind == jaras::CommandKind::play) { recordingResume = RecordingResume::play; return; }
@@ -1217,7 +1233,7 @@ void Session::cycleRecordArm(const ID &id, const std::set<ID> &targets) {
         updateRecordArms(); notify();
     }
 }
-void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set<ID> &selection, double value) {
+void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set<ID> &selection, double value, bool clearAll) {
     if (jaras::projectSync::readOnly()) return;
     if ((busy && !controlAllowedDuringSave(kind)) || !song()) return;
     // These commands change scalar controls only. Never copy the arrangement's
@@ -1225,6 +1241,18 @@ void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set
     const auto& tracks = mixerGestureSource == id && mixerGestureProject == project().id && mixerGestureKind == kind ? mixerGestureTracks : song()->tracks;
     const auto source = std::find_if(tracks.begin(), tracks.end(), [&](const auto &t) { return t.id == id; });
     if (source == tracks.end()) return;
+    if (clearAll && (kind == jaras::CommandKind::mute || kind == jaras::CommandKind::solo)) {
+        // Ctrl-click clears the current song, independent of selection. Batch the
+        // audio/UI update so clearing hundreds of tracks does not rebuild them.
+        std::vector<ID> targets;
+        for (const auto &track : song()->tracks)
+            if (kind == jaras::CommandKind::mute ? track.mute : track.solo)
+                targets.push_back(track.id);
+        if (targets.empty()) return;
+        for (const auto &target : targets) core.execute({kind, target});
+        dirty = true; audio.setMixer(project(), *song()); notifyMixer();
+        return;
+    }
     const bool volume = kind == jaras::CommandKind::volume, pan = kind == jaras::CommandKind::pan;
     auto state = [&](const auto &t) { return kind == jaras::CommandKind::mute ? t.mute : kind == jaras::CommandKind::solo ? t.solo : t.phaseInverted.value_or(false); };
     const bool desired = !state(*source);
@@ -1629,13 +1657,15 @@ void Session::moveMarker(const ID &id, double position) {
     if(undoHistory.size()>40) undoHistory.erase(undoHistory.begin());
     redoHistory.clear(); dirty=true; notify();
 }
-std::vector<ID> Session::duplicateTracks(const std::set<ID> &targets, const var *copiedDocument) {
+std::vector<ID> Session::duplicateTracks(const std::set<ID> &targets, const var *copiedDocument,
+                                       const std::map<ID, ID> &insertingAfter, std::map<ID, ID> *createdMapping) {
     if (busy || !song() || targets.empty()) return {};
-    const auto result = trackEditing::duplicateDocument(snapshot(), song()->id, targets, uuid, copiedDocument);
+    const auto result = trackEditing::duplicateDocument(snapshot(), song()->id, targets, uuid, copiedDocument, insertingAfter);
     if (result.trackIDs.empty()) return {};
     edit([&](jaras::Project &p) { p = ProjectCodec::decode(result.document); });
     original = result.document;
     notify();
+    if (createdMapping) *createdMapping = result.trackIDMap;
     return result.trackIDs;
 }
 void Session::resizeItem(const ID &id, double start, double end) {
@@ -1645,10 +1675,38 @@ void Session::resizeItem(const ID &id, double start, double end) {
         throw std::runtime_error("Conclua a gravação antes de alterar a estrutura do projeto.");
     syncClock();
     auto project = core.project();
-    clipEditing::resize(project, id, start, end);
+    std::optional<double> sourceDuration;
+    for(const auto& track:song()->tracks)for(const auto& clip:track.clips)if(clip.id==id && !clip.midi && !clip.loopLength) {
+        const auto source=clip.audioFile?clip.audioFile:track.audioFile;
+        if(!source)continue;
+        const auto file=ProjectCodec::resolveMedia(mediaDirectory,source->path);
+        if(file.hasFileExtension("png;jpg;jpeg;gif;heic;heif;tif;tiff;bmp;webp;avif"))continue;
+        try {
+            AudioFormatManager formats;registerAudioFormats(formats);
+            if(auto reader=std::unique_ptr<AudioFormatReader>(formats.createReaderFor(file)))sourceDuration=double(reader->lengthInSamples)/reader->sampleRate;
+            else sourceDuration=inspectMediaSource(file).duration;
+        } catch(...) {} // Missing media retains its existing editable geometry.
+    }
+    clipEditing::resize(project, id, start, end, sourceDuration);
     if (timelineGrid::changesLockedGeometry(core.project(), project))
         throw std::runtime_error("Desbloqueie o cadeado para mover ou redimensionar itens, regiões e marcadores.");
     commitItemTiming(std::move(project), id, true);
+}
+void Session::resizeSharedItemBoundary(const ID &left,const ID &right,double position,std::optional<double> leftSource,std::optional<double> rightSource) {
+    edit([&](jaras::Project &project) {
+        for(auto &song:project.songs)for(auto &track:song.tracks) {
+            auto a=std::find_if(track.clips.begin(),track.clips.end(),[&](const auto &c){return c.id==left;});
+            auto b=std::find_if(track.clips.begin(),track.clips.end(),[&](const auto &c){return c.id==right;});
+            if(a==track.clips.end()||b==track.clips.end())continue;
+            const auto pair=clipEditing::sharedBoundary(song,track,*a,*b,position,leftSource,rightSource);
+            if(!pair)throw std::runtime_error("Os itens não compartilham mais a mesma borda.");
+            auto remaining=track;remaining.clips.erase(std::remove_if(remaining.clips.begin(),remaining.clips.end(),[&](const auto &c){return c.id==left||c.id==right;}),remaining.clips.end());
+            clipEditing::requireSpace(remaining,pair->first,pair->first.startTime,pair->first.startTime+pair->first.duration);
+            clipEditing::requireSpace(remaining,pair->second,pair->second.startTime,pair->second.startTime+pair->second.duration);
+            *a=pair->first;*b=pair->second;return;
+        }
+        throw std::runtime_error("Os itens não existem mais na mesma pista.");
+    },false);
 }
 Session::ItemTimingHistory Session::itemTimingHistory(const ID &id) const {
     for (const auto &song : project().songs) for (const auto &track : song.tracks)
@@ -1750,6 +1808,7 @@ void Session::editItemControls(const std::function<void(jaras::Project &)> &chan
     if (busy || jaras::projectSync::readOnly()) return;
     auto updated = project();
     change(updated);
+    if (timelineGrid::changesLockedGeometry(project(), updated)) return;
     applyTimelineHistory({std::move(updated),false,true}, true);
 }
 void Session::applyTimelineHistory(const TimelineHistory &state, bool recordHistory) {
@@ -1828,7 +1887,7 @@ void Session::applyTimelineHistory(const TimelineHistory &state, bool recordHist
     }
     dirty = true; if (state.mixerControls) notifyMixer(); else notify();
 }
-void Session::edit(const std::function<void(jaras::Project &)> &change, bool rebuild, bool allowTimingEdit) {
+void Session::edit(const std::function<void(jaras::Project &)> &change, bool rebuild, bool allowTimingEdit, bool regionOperation) {
     if (jaras::projectSync::readOnly()) return;
     if (busy)
         return;
@@ -1838,7 +1897,8 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
         auto before = snapshot();
     auto p = ProjectCodec::decode(before);
     change(p);
-    if (!allowTimingEdit && timelineGrid::changesLockedGeometry(project(), p))
+    const bool lockingItemMix = !timelineGrid::itemMixLocked(project()) && timelineGrid::itemMixLocked(p);
+    if (!allowTimingEdit && timelineGrid::changesLockedGeometry(project(), p, regionOperation))
         throw std::runtime_error("Desbloqueie o cadeado para mover ou redimensionar itens, regiões e marcadores.");
     jaras::validate(p);
     const auto beforeMedia = mediaCleanup::references(project()),
@@ -1846,6 +1906,7 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
     observedMedia.insert(beforeMedia.begin(), beforeMedia.end());
     observedMedia.insert(afterMedia.begin(), afterMedia.end());
     core.applyProjectEdit(std::move(p));
+    audio.setLoopMixer(transport().multiLoop);
     undoHistory.push_back(before);
     if (undoHistory.size() > 40)
         undoHistory.erase(undoHistory.begin());
@@ -1853,8 +1914,13 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
     dirty = true;
     if (rebuild)
         prepare();
-    else if (song())
+    else if (song()) {
         audio.setMixer(project(), *song());
+        if (lockingItemMix) for (const auto &track : song()->tracks) for (const auto &clip : track.clips) {
+            if (clip.midi) audio.previewMIDIItem(*song(), clip);
+            else audio.setItemControls(clip);
+        }
+    }
     notify();
 }
 void Session::setTrackInstrumentIcon(const std::set<ID> &ids, std::optional<std::string> icon) {
@@ -2086,7 +2152,7 @@ void Session::setTempo(double value) {
     const auto &oldSong = *std::find_if(before.project.songs.begin(), before.project.songs.end(),
                                      [&](const auto &candidate) { return candidate.id == song()->id; });mark("historyAndSongCopy");
     if (const auto *part = tempoEditing::region(oldSong, transport())) {
-        const auto targets = tempoEditing::regionChange(oldSong, *part, value - tempoBPM());
+        const auto targets = tempoEditing::regionChange(oldSong, *part, value - tempoBPM(), tempoBPM());
         if (targets.empty()) return;
         core.setMarkers(targets, {}, true);
     } else if (const auto *active = tempoEditing::active(oldSong, tempoEditing::position(oldSong, transport()))) {
@@ -2653,6 +2719,7 @@ void Session::timerCallback() {
             return;
         }
         syncClock();
+        audio.setLoopMixer(transport().multiLoop);
         // Auto/region endings can stop playback without going through command().
         // Return those sessions to the idle rate, including hidden project tabs.
         const int hz = transport().playing || transport().subPlay.playing ? 60 : 8;

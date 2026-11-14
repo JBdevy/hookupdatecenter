@@ -192,16 +192,19 @@ class WaveformCache final {
         if (!data) data = readCache(macCacheFile(file), size, modified);
         return data;
     }
-    static void preload(const File &requested, const std::atomic<bool> *cancel = nullptr) {
-        if (cancel && cancel->load()) return;
+    static String preload(const File &requested, const std::atomic<bool> *cancel = nullptr) {
+        if (cancel && cancel->load()) return {};
         const auto file = existingMediaPath(requested);
-        if (!file.existsAsFile()) return;
+        if (!file.existsAsFile()) return "Media file was not found.";
         const auto size = file.getSize(), modified = file.getLastModificationTime().toMilliseconds();
         const auto target = cacheFile(file, size, modified);
-        if (readCache(target, size, modified) || readCache(macCacheFile(file), size, modified)) return;
+        if (readCache(target, size, modified) || readCache(macCacheFile(file), size, modified)) return {};
         AudioFormatManager formats; registerAudioFormats(formats);
         std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(file));
-        if (reader) if (auto data = analyse(*reader, cancel)) writeCache(*data, target, size, modified);
+        if (!reader) return "No audio decoder could open this file.";
+        if (auto data = analyse(*reader, cancel)) { writeCache(*data, target, size, modified); return {}; }
+        if (cancel && cancel->load()) return {};
+        return "Audio data could not be read completely or has invalid sample information.";
     }
     // BPM detection uses the same validated peak hierarchy as the timeline.
     // Reopening a decoder must not decode the complete show a second time just

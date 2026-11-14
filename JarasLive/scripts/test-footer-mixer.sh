@@ -19,7 +19,7 @@ body = (layout + s[a:b]).replace('private func smoothWheel(', 'fileprivate func 
 body = body.replace('private func routeWheel(', 'fileprivate func routeWheel(')
 body = body.replace('private var cachedStrips:', 'fileprivate var cachedStrips:')
 body = body.replace('private var pendingStripLayout:', 'fileprivate var pendingStripLayout:')
-body = body.replace('strips[index]?.layoutSubtreeIfNeeded()', 'strips[index]?.layoutSubtreeIfNeeded(); FooterScrollLayoutProbe.forced += 1')
+body = body.replace('func prepareChannelContent() -> Bool {', 'func prepareChannelContent() -> Bool { FooterScrollLayoutProbe.forced += 1')
 body = body.replace('guard !preparing, let makeContent else { return }',
                     'FooterScrollLayoutProbe.preparations += 1; guard !preparing, let makeContent else { return }')
 if posted:
@@ -34,5 +34,6 @@ native = native.replace('NSFont.jarasMonospacedSystemFont', 'NSFont.monospacedSy
 PYTHON
 swiftc -parse-as-library "$build_dir/midi.swift" -o "$build_dir/midi"
 "$build_dir/midi"
-swiftc "$build_dir/scroll.swift" -o "$build_dir/scroll"
+cp "$build_dir/scroll.swift" "$build_dir/main.swift"
+swiftc Apple/Shared/NativeTimelineInputGate.swift "$build_dir/main.swift" -o "$build_dir/scroll"
 "$build_dir/scroll"

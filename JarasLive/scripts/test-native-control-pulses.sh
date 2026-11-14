@@ -85,6 +85,6 @@ Path(sys.argv[1]).write_text('import SwiftUI\nimport AppKit\nimport Combine\n' +
     source + '\n' + Path('Tests/Apple/NativeControlPulseTests.swift').read_text().replace('precondition(', 'expect('))
 PYTEST
 swiftc -swift-version 5 -O -target "$(uname -m)-apple-macos12.0" \
-    Apple/Shared/RightClickRouting.swift Apple/Shared/NativeTooltips.swift \
+    Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift Apple/Shared/NativeTooltips.swift \
     "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

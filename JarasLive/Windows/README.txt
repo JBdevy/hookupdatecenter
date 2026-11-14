@@ -40,7 +40,7 @@ typed state/messages as Mac; actual iPad interoperability still needs verificati
 grandMA2
 The grandMA2 button is immediately left of Resolume.
 The map reserves Sequence, Executor and Timecode destinations by stable region ID.
-Removed regions keep their reservations. Partial exports keep the original numbers.
+Removed regions keep their reservations. Exports keep the original numbers.
 Choose a destination and export. Copy macros/ and import/ to the grandMA2 import
 directory. Import and execute only the macro 00-Importar tudo - [project]-macro.xml.
 Configure a virtual MIDI output in CatLive and the matching input in grandMA2.

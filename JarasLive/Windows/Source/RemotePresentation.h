@@ -6,6 +6,7 @@
 #include "PlaylistOccurrences.h"
 #include "RegionEditing.h"
 #include "TempoEditing.h"
+#include "RegionPitch.h"
 #include "PartsPresentation.h"
 namespace catlive::remote {
 class Presentation final {
@@ -165,6 +166,10 @@ class Presentation final {
 
         put(result, "duration", song ? song->duration : 0);
         put(result, "bpm", session.tempoBPM());
+        if (const auto *part = song ? regionPitch::target(*song, session.transport()) : nullptr) {
+            put(result, "pitchRegion", wireID(part->id));
+            put(result, "pitchSemitones", part->pitchSemitones.value_or(0));
+        }
         const auto *tempoRegion = song ? tempoEditing::region(*song, session.transport()) : nullptr;
         const ID songID = song ? song->id : ID{}, regionID = tempoRegion ? tempoRegion->id : ID{};
         if (tempoRevision != session.revision || tempoSong != songID || tempoRegionID != regionID) {
@@ -225,8 +230,9 @@ class Presentation final {
         put(result, "recording", session.audio.isRecording());
         put(result, "previewActive", stage.preview);
         put(result, "previewPage", stage.previewPage);
-        if (timerTarget != stage.target || timerRunning != stage.running ||
+        if (timerTarget != stage.target || timerProgressive != stage.progressive || timerRunning != stage.running ||
             timerStarted != stage.started) {
+            timerProgressive = stage.progressive;
             timerTarget = stage.target;
             timerRunning = stage.running;
             timerStarted = stage.started;
@@ -234,6 +240,7 @@ class Presentation final {
         }
         auto timer = object();
         put(timer, "revision", wireID(timerRevision));
+        put(timer, "mode", stage.progressive ? "progressive" : "countdown");
         put(timer, "targetSeconds", stage.target);
         put(timer, "running", stage.running);
         put(timer, "remainingSeconds", stage.seconds());
@@ -269,11 +276,14 @@ class Presentation final {
             stage.previewPage = (int)c.value;
             return true;
         }
-        if (a == "timerStart" || a == "timerStop") {
+        if (a == "timerStart" || a == "timerStartProgressive" || a == "timerSetMode" || a == "timerStop") {
             timerCommand = c.id;
             timerRevision = uuid();
+            if (a == "timerSetMode") { stage.setProgressive(c.value == 0); return true; }
             stage.reset();
+            if (a == "timerStartProgressive") { stage.setProgressive(true); stage.start(); }
             if (a == "timerStart") {
+                stage.setProgressive(false);
                 stage.target = (int)c.value;
                 stage.saveTimer();
                 stage.start();
@@ -383,19 +393,29 @@ class Presentation final {
                 save();
             return true;
         }
-        if (a == "pitch" || a == "editRegion") {
+        if (a == "tempo") {
+            session.setTempo(c.value);
+            return true;
+        }
+        if (a == "pitch") {
+            const auto *part = regionPitch::target(*song, session.transport());
+            // A delayed Remote packet must not transpose a previously selected
+            // song after the host has advanced to another region.
+            if (!part || wireID(part->id) != wireID(c.target)) return false;
+            session.setRegionPitch(part->id, (int)c.value,
+                part->pitchTrackIDs.value_or(regionPitch::defaults(*song, false)),
+                part->pitchGroupIDs.value_or(regionPitch::defaults(*song, true)));
+            return true;
+        }
+        if (a == "editRegion") {
             const auto sid = song->id;
             session.edit([&](jaras::Project &p) {
                 for (auto &s : p.songs)
                     if (s.id == sid)
                         for (auto &part : s.parts)
                             if (part.id == target) {
-                                if (a == "pitch")
-                                    part.pitchSemitones = (int)c.value;
-                                else {
-                                    part.name = utf8(c.message.trim());
-                                    part.color = (unsigned)c.value;
-                                }
+                                part.name = utf8(c.message.trim());
+                                part.color = (unsigned)c.value;
                             }
             });
             return true;
@@ -479,7 +499,6 @@ class Presentation final {
             {"masterMono", jaras::CommandKind::masterMono},
             {"selectRegion", jaras::CommandKind::selectRegion},
             {"selectSong", jaras::CommandKind::select},
-            {"tempo", jaras::CommandKind::tempo},
             {"clipGain", jaras::CommandKind::clipGain},
             {"clipMute", jaras::CommandKind::clipMute}};
         const auto found = commands.find(a);
@@ -535,7 +554,7 @@ class Presentation final {
     bool tempoNeedsRender = false;
     ID timerRevision = uuid(), timerCommand, noticeImageID = uuid();
     int timerTarget = -1;
-    bool timerRunning = false;
+    bool timerRunning = false, timerProgressive = false;
     double timerStarted = -1, noticeSent = -1;
     var notices() {
         auto result = object();

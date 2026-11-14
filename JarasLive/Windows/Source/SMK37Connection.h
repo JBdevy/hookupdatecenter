@@ -1,6 +1,7 @@
 #pragma once
 #include "Appearance.h"
 #include "SMK37Firmware.h"
+#include "SMK37FeedbackBudget.h"
 #include <deque>
 #include <map>
 namespace catlive {
@@ -88,7 +89,7 @@ public:
         const auto now=Time::getMillisecondCounterHiRes()/1000.;
         if(now-lastRefresh>=1){lastRefresh=now;refresh();}
         if(!output)return;
-        if(linked.load()&&now-response>=3){release();linked=false;sent.clear();pending.clear();}
+        if(linked.load()&&now-response>=3){release();linked=false;feedbackBudget = {};sent.clear();pending.clear();}
         if(now-hello>=1){send(frame(1));hello=now;}flush();
     }
 private:
@@ -97,9 +98,10 @@ private:
     struct Message {std::array<uint8_t,96> bytes{};int size=0;};std::deque<Message> incoming;bool overflow=false;
     std::atomic<bool> linked{false};std::atomic<int> mode{0};int preset=0,lastPad=127,lastPadPreset=-1,serial=0;
     double hello=-1e10,response=-1e10,lastRefresh=-1e10;
+    SMK37FeedbackBudget feedbackBudget;
     std::map<int,ID> held;std::set<int> down;std::map<String,Bytes> sent,pending;
     void release(){if(padUp)for(const auto &p:held)padUp(p.second);held.clear();down.clear();}
-    void disconnect(){if(output)send(frame(2));release();linked=false;output.reset();{const ScopedLock lock(mutex);source.clear();incoming.clear();}pending.clear();sent.clear();}
+    void disconnect(){feedbackBudget = {};if(output)send(frame(2));release();linked=false;output.reset();{const ScopedLock lock(mutex);source.clear();incoming.clear();}pending.clear();sent.clear();}
     void refresh(){
         String candidate;
         for(const auto &d:MidiInput::getAvailableDevices())if(devices.isMidiInputDeviceEnabled(d.identifier)&&deviceName(d.name)){candidate=d.identifier;break;}
@@ -122,7 +124,7 @@ private:
         if(lost){release();linked=false;return;}
         for(const auto &m:messages){Bytes b(m.bytes.begin(),m.bytes.begin()+m.size);
             if(b[0]==240){if(!valid(b))continue;const int c=b[6],n=(int)b.size()-9;
-                if(c==65&&n==3&&b[7]<6&&b[8]<16&&b[9]<3){if(mode!=b[9])release();if(!linked.load()){sent.clear();pending.clear();}mode=b[9];linked=true;response=Time::getMillisecondCounterHiRes()/1000.;}
+                if(c==65&&n==3&&b[7]<6&&b[8]<16&&b[9]<3){if(mode!=b[9])release();if(!linked.load()){feedbackBudget = {};sent.clear();pending.clear();}mode=b[9];linked=true;response=Time::getMillisecondCounterHiRes()/1000.;}
                 else if(linked.load()&&mode!=2&&c==32&&n==2&&b[7]<6&&b[8]<16){preset=b[7];if(choosePreset)choosePreset(preset);}
                 else if(linked.load()&&c==34&&n==3&&b[7]<3&&b[8]<6&&b[9]<16){release();mode=b[7];preset=b[8];}
                 else if(linked.load()&&mode==1&&c==35&&n==1&&b[7]>0&&b[7]!=64){if(previewStep)previewStep((int)b[7]-64);}
@@ -137,6 +139,17 @@ private:
     }
     void queue(const String &key,const Bytes &b,bool force=false){if(!linked.load())return;if(force||sent[key]!=b)pending[key]=b;else pending.erase(key);}
     void send(const Bytes &b){if(output)output->sendMessageNow(MidiMessage(b.data(),(int)b.size(),0));}
-    void flush(){if(!linked.load())return;int count=0;for(const auto *key:{"action","navigation","transport","fadeout","songs","playback","loop","selection"}){auto it=pending.find(key);if(it!=pending.end()){send(it->second);sent[it->first]=it->second;pending.erase(it);++count;}}while(count++<4&&!pending.empty()){auto it=pending.begin();send(it->second);sent[it->first]=it->second;pending.erase(it);}}
+    void flush() {
+        if (!linked.load() || pending.empty()) return;
+        auto next = pending.end();
+        for (const auto *key : {"action","navigation","transport","fadeout","songs","playback","loop","selection"}) {
+            next = pending.find(key);
+            if (next != pending.end()) break;
+        }
+        if (next == pending.end()) next = pending.begin();
+        const auto now = Time::getMillisecondCounterHiRes() / 1000.;
+        if (!feedbackBudget.allow((int)next->second.size(), now)) return;
+        send(next->second); sent[next->first] = next->second; pending.erase(next);
+    }
 };
 }

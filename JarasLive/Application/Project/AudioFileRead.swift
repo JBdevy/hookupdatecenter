@@ -4,6 +4,20 @@ import AVFoundation
 /// fraction of one packet. AVAudioFile then reports EOF (sometimes nilError)
 /// after successfully decoding all samples. Other errors remain errors.
 enum AudioFileRead {
+    static func sourceDuration(_ url: URL) throws -> Double {
+        let duration: Double
+        if let file = try? AVAudioFile(forReading: url) {
+            duration = Double(file.length) / file.processingFormat.sampleRate
+        } else {
+            let asset = AVURLAsset(url: url)
+            guard asset.isReadable, !asset.tracks(withMediaType: .video).isEmpty else {
+                throw MediaError.invalidAudioFormat(url)
+            }
+            duration = asset.duration.seconds
+        }
+        guard duration.isFinite, duration > 0 else { throw MediaError.invalidAudioFormat(url) }
+        return duration
+    }
     private static let mediaLock = NSLock()
     // One decoder at a time across project tabs. Cancelling a cursor/project
     // request removes its queued operation and releases the awaiting UI task;

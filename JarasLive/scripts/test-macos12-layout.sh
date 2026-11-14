@@ -6,15 +6,16 @@ trap 'rm -rf "$test_dir"' EXIT
 python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
-mixer=Path('Apple/Shared/TrackMixerRow.swift').read_text()
-start=mixer.index('struct TrackMixerHeightGeometry {')
-mixer=mixer[start:mixer.index('\n#endif',start)]
+sys.path.insert(0, 'scripts')
+from native_mixer_test_sources import native_mixer_sources
+mixer='\n'.join(native_mixer_sources(timeline_rows=False))
 mixer=mixer.replace('inputRegistration.update(active: active)', 'TrackMixerRegistrationProbe.calls += 1; inputRegistration.update(active: active)')
 grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
 start=grid.index('@available(macOS 13, *)\nprivate struct TimelineColumnsLayout:')
-grid=grid[start:grid.index('private struct TimelineMixerIdentity:',start)]
-stubs = 'enum TrackMixerRegistrationProbe { static var calls = 0 }\n enum JarasTheme { static let text = Color.white }\nfinal class NativeVerticalTrackMeterView: NSView {}\nfinal class TrackSelectionRouter { static let shared = TrackSelectionRouter(); var pinnedTracks = Set<UUID>() }\n'
-Path(sys.argv[1]).write_text('import SwiftUI\nimport AppKit\n' + stubs + mixer + '\n' + grid + '\n' + Path('Tests/Apple/MacOS12LayoutTests.swift').read_text())
+grid=grid[start:grid.index('private struct TimelineMixerIdentity',start)]
+stubs = 'enum TrackMixerRegistrationProbe { static var calls = 0 }\n'
+Path(sys.argv[1]).write_text(stubs + mixer + '\n' + grid + '\n' + Path('Tests/Apple/MacOS12LayoutTests.swift').read_text())
+
 PY
 swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift -target "$(uname -m)-apple-macos12.0" \
   Apple/Shared/JarasLegacyLayout.swift \

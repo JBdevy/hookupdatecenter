@@ -2,6 +2,23 @@ import XCTest
 @testable import JarasApplication
 
 final class DAWActionTests: XCTestCase {
+    func testRegionCreationIsListedAndShiftRCanBeRemapped() throws {
+        let action = DAWAction.createRegionsFromItems
+        let shortcut = ControlInput(kind: "keyboard", label: "Shift R", key: 15, modifiers: 1 << 17)
+        var bindings = DAWActionBindings()
+        XCTAssertTrue(DAWActionCategory.shortcuts.actions.contains(action))
+        XCTAssertEqual(bindings.matching(shortcut), action)
+        XCTAssertFalse(action.repeats)
+        XCTAssertFalse(action.supportsMIDI)
+        let replacement = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
+        XCTAssertTrue(bindings.setInput(replacement, action: action, kind: "keyboard"))
+        XCTAssertNil(bindings.matching(shortcut))
+        let restored = DAWActionBindings(stored: try JSONDecoder().decode([DAWActionBinding].self,
+            from: JSONEncoder().encode(bindings.entries)))
+        XCTAssertEqual(restored.matching(replacement), action)
+        var occupied = DAWActionBinding(action: .pause); occupied.keyboard = shortcut
+        XCTAssertEqual(DAWActionBindings(stored: [occupied]).matching(shortcut), .pause)
+    }
     func testPreviewCanMapKeyboardAndMIDIWithoutTakingExistingShortcuts() throws {
         let action = DAWAction.togglePreview
         XCTAssertTrue(DAWAction.visible.contains(action)); XCTAssertTrue(action.supportsMIDI)

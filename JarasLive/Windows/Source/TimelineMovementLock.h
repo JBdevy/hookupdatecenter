@@ -5,16 +5,19 @@
 
 namespace catlive::timelineGrid {
 inline bool movementLocked(const jaras::Project &project) noexcept {
-    return project.timelineMovementLocked.value_or(false);
+    return (project.effectiveTimelineLocks() & 3) != 0;
 }
+inline bool regionsLocked(const jaras::Project &p) noexcept { return (p.effectiveTimelineLocks() & 1) != 0; }
+inline bool itemsLocked(const jaras::Project &p) noexcept { return (p.effectiveTimelineLocks() & 2) != 0; }
+inline bool itemMixLocked(const jaras::Project &p) noexcept { return (p.effectiveTimelineLocks() & 4) != 0; }
 
 // Guard the candidate before committing history/audio. Only surviving entities
 // are compared: creation, duplication and deletion remain available. Metadata,
 // fades, MIDI contents, FX and track ordering do not change grid geometry.
 // Explicit tempo-retiming commands bypass this check at their action boundary;
 // editing a marker's BPM/meter/name/color alone is always allowed here.
-inline bool changesLockedGeometry(const jaras::Project &before, const jaras::Project &after) {
-    if (!movementLocked(before)) return false;
+inline bool changesLockedGeometry(const jaras::Project &before, const jaras::Project &after, bool regionOperation = false) {
+    if (!before.effectiveTimelineLocks()) return false;
     struct ClipLocation { const jaras::AudioClip *clip; std::string_view song, track; };
     struct RegionLocation { const jaras::Part *part; std::string_view song; };
     struct MarkerLocation { const jaras::TimelineMarker *marker; std::string_view song; };
@@ -35,22 +38,23 @@ inline bool changesLockedGeometry(const jaras::Project &before, const jaras::Pro
             const auto found = clips.find(clip.id);
             if (found == clips.end()) continue;
             const auto &old = found->second;
-            if (old.song != song.id || old.track != track.id ||
+            if (itemMixLocked(before) && (old.clip->gain != clip.gain || old.clip->pan != clip.pan)) return true;
+            if (!regionOperation && itemsLocked(before) && (old.song != song.id || old.track != track.id ||
                 old.clip->startTime != clip.startTime || old.clip->duration != clip.duration ||
-                old.clip->sourceOffset != clip.sourceOffset) return true;
+                old.clip->sourceOffset != clip.sourceOffset)) return true;
         }
         for (const auto &part : song.parts) {
             const auto found = regions.find(part.id);
             if (found == regions.end()) continue;
             const auto &old = found->second;
-            if (old.song != song.id || old.part->startTime != part.startTime ||
-                old.part->endTime != part.endTime) return true;
+            if (regionsLocked(before) && (old.song != song.id || old.part->startTime != part.startTime ||
+                old.part->endTime != part.endTime)) return true;
         }
         if (song.markers) for (const auto &marker : *song.markers) {
             const auto found = markers.find(marker.id);
             if (found == markers.end()) continue;
             const auto &old = found->second;
-            if (old.song != song.id || old.marker->position != marker.position) return true;
+            if (regionsLocked(before) && (old.song != song.id || old.marker->position != marker.position)) return true;
         }
     }
     return false;

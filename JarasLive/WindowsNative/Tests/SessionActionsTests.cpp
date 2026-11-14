@@ -1,4 +1,5 @@
 #include "SessionActions.h"
+#include "../../Windows/Source/TimelineMovementLock.h"
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -226,6 +227,47 @@ void recordingFormatOverrideDoesNotChangeInputAndCanFollowAdvanced() {
         rejected(special, request("setRecordingFormat", {{"id", "track2"}, {"format", "mp3"}}));
     }
 }
+void independentLocksKeepRegionContentsAndPersist() {
+    auto session = fixture();
+    applySessionAction(session, request("setTimelineLockOptions", {{"options", 2}}));
+    check(session.project().configuredTimelineLocks() == 2 && session.project().effectiveTimelineLocks() == 0,
+        "configuring categories must not enable the lock");
+    applySessionAction(session, request("setTimelineMovementLocked", {{"locked", true}}));
+    const auto beforeRegion = session.project();
+    rejected(session, request("moveClip", {{"id", "clip"}, {"start", 9}}));
+    applySessionAction(session, request("moveRegion", {{"id", "region"}, {"start", 40}}));
+    check(session.project().songs[0].tracks[0].clips[0].startTime == 43,
+        "region must carry its item while individual item movement is locked");
+    check(session.project().songs[0].markers->at(0).position == 48,
+        "region must carry its marker");
+    check(catlive::timelineGrid::changesLockedGeometry(beforeRegion, session.project()),
+        "ordinary edit must respect item lock");
+    check(!catlive::timelineGrid::changesLockedGeometry(beforeRegion, session.project(), true),
+        "desktop region operation must allow carried locked items");
+    applySessionAction(session, request("setTimelineLockOptions", {{"options", 1}}));
+    rejected(session, request("moveRegion", {{"id", "region"}, {"start", 80}}));
+    applySessionAction(session, request("moveClip", {{"id", "clip"}, {"start", 10}}));
+    check(session.project().songs[0].tracks[0].clips[0].startTime == 10,
+        "region lock must leave individual items unlocked");
+    applySessionAction(session, request("setTimelineLockOptions", {{"options", 4}}));
+    rejected(session, request("clipGain", {{"id", "clip"}, {"value", 0.25}}));
+    rejected(session, request("clipPan", {{"id", "clip"}, {"value", -0.5}}));
+    auto candidate = session.project(); candidate.songs[0].tracks[0].clips[0].gain = 0.25;
+    check(catlive::timelineGrid::changesLockedGeometry(session.project(), candidate),
+        "desktop item mix edits must respect mix lock");
+    applySessionAction(session, request("moveClip", {{"id", "clip"}, {"start", 15}}));
+    NativeSession reopened; reopened.loadDocument(session.document());
+    check(reopened.project().effectiveTimelineLocks() == 4 && reopened.state()["timelineLockOptions"] == 4,
+        "independent locks must survive reopening");
+    applySessionAction(reopened, request("setTimelineMovementLocked", {{"locked", false}}));
+    check(reopened.project().configuredTimelineLocks() == 4 && reopened.project().effectiveTimelineLocks() == 0,
+        "unlock must remember configured categories");
+    applySessionAction(reopened, request("clipGain", {{"id", "clip"}, {"value", 0.25}}));
+    check(reopened.project().songs[0].tracks[0].clips[0].gain == 0.25,
+        "unlock must restore item mix edits");
+    for (const auto value : {-1.0, 8.0, 1.5})
+        rejected(session, request("setTimelineLockOptions", {{"options", value}}));
+}
 }
 int main() {
     const std::pair<const char*, std::function<void()>> tests[] = {
@@ -237,11 +279,12 @@ int main() {
         {"mixer and markers", mixerAndMarkerActionsAreUndoableAndValidateBatch},
         {"complete track duplication", duplicateWholeTrackHasFreshIDsAndOneUndo},
         {"grid movement lock", gridLockBlocksGeometryButKeepsNamesColorsAndTempo},
+        {"independent lock scopes", independentLocksKeepRegionContentsAndPersist},
         {"recording format override", recordingFormatOverrideDoesNotChangeInputAndCanFollowAdvanced},
     };
     for (const auto& test : tests) {
         try { test.second(); std::cout << "PASS " << test.first << '\n'; }
         catch (const std::exception& error) { std::cerr << "FAIL " << test.first << ": " << error.what() << '\n'; return 1; }
     }
-    std::cout << "SESSION_ACTIONS_9_GROUPS_PASSED\n";
+    std::cout << "SESSION_ACTIONS_10_GROUPS_PASSED\n";
 }

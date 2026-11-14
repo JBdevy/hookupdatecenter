@@ -119,12 +119,12 @@ const TimelineMarker* findMarker(const NativeSession& session, const ID& id) {
     if (s.markers) for (const auto& value : *s.markers) if (value.id == id) return &value;
     return nullptr;
 }
-void requireGridMovement(const NativeSession& session) {
-    require(!session.project().timelineMovementLocked.value_or(false), "O movimento no grid está bloqueado pelo cadeado.");
+void requireGridMovement(const NativeSession& session, int category=2) {
+    require(!(session.project().effectiveTimelineLocks() & category), "O movimento no grid está bloqueado pelo cadeado.");
 }
 void requireMarkerPosition(const NativeSession& session, const TimelineMarker& value) {
     if (const auto* previous = findMarker(session, value.id))
-        if (previous->position != value.position) requireGridMovement(session);
+        if (previous->position != value.position) requireGridMovement(session,1);
 }
 ID mixerID(const NativeSession& session, const json& value, bool current = false) {
     const auto id = identifier(value);
@@ -482,6 +482,8 @@ json applySessionAction(NativeSession& session, const json& request) {
     object(request, {"action", "args"});
     finiteJSON(request);
     const auto action = identifier(field(request, "action"));
+    if (action == "clipGain" || action == "clipPan")
+        require(!(session.project().effectiveTimelineLocks() & 4), "Volume e pan dos itens estão bloqueados pelo cadeado.");
     const auto& args = field(request, "args");
     require(args.is_object(), "Expected an argument object");
     const auto before = session.revision();
@@ -501,6 +503,14 @@ json applySessionAction(NativeSession& session, const json& request) {
         if (session.project().timelineMovementLocked.value_or(false) != locked)
             session.edit([=](auto& project) { project.timelineMovementLocked = locked; });
         return {{"state", session.state()}, {"changed", session.revision() != before}};
+    }
+    if (action == "setTimelineLockOptions") {
+        object(args, {"options"}); const auto value=number(field(args,"options"));
+        require(value>=0 && value<=7 && value==std::floor(value), "Invalid timeline lock options");
+        const int options=static_cast<int>(value);
+        if(session.project().configuredTimelineLocks()!=options)
+            session.edit([=](auto& project) { project.timelineLockOptions=options; });
+        return {{"state",session.state()},{"changed",session.revision()!=before}};
     }
     if (action == "duplicateTracks") {
         object(args, {"songId", "trackIds"});
@@ -562,7 +572,7 @@ json applySessionAction(NativeSession& session, const json& request) {
         const auto name = text(field(args, "name")), role = identifier(field(args, "role"));
         edit = [=](auto& engine) { engine.addTrack(id, name, {role}); };
     } else if (action == "resizeRegion" || action == "moveRegion") {
-        requireGridMovement(session);
+        requireGridMovement(session,1);
         if (action == "resizeRegion") object(args, {"id", "start", "end"}); else object(args, {"id", "start"});
         const auto id = identifier(field(args, "id")); (void)region(session, id);
         const auto start = number(field(args, "start"));

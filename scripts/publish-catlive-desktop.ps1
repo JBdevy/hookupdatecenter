@@ -15,7 +15,7 @@ if(-not (Test-Path -LiteralPath $githubCLI) -and (Test-Path -LiteralPath $github
 if(-not (Test-Path -LiteralPath $githubCLI)){throw 'Instale GitHub CLI (gh) e entre com gh auth login antes de publicar.'}
 $branch=(& git branch --show-current).Trim()
 if($LASTEXITCODE -or -not $branch){throw 'Selecione uma branch antes de publicar.'}
-if(-not $Version){$Version=Read-Host 'Versão do CatLive [1.35]';if(-not $Version){$Version='1.35'}}
+if(-not $Version){$Version=Read-Host 'Versão do CatLive [1.36]';if(-not $Version){$Version='1.36'}}
 $Version=$Version -replace '^v',''
 if($Version -notmatch '^[0-9]+\.[0-9]{2}$'){throw 'Use a versão X.XX, por exemplo 1.25.'}
 $repository='JBdevy/hookupdatecenter'

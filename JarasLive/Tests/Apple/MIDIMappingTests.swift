@@ -345,6 +345,14 @@ enum ProjectError: Error { case invalid(String) }
         let afterSubPlay = show.actionsReceived.count
         precondition(mappings.handleKey(key(49, modifiers: .shift, in: parent, isRepeat: true)))
         precondition(show.actionsReceived.count == afterSubPlay, "holding Shift+Space must not toggle Sub Play repeatedly")
+        for modifiers: NSEvent.ModifierFlags in [.command, .control] {
+            mappings.beginAction(.togglePreview, kind: "keyboard")
+            mappings.candidate = ControlInput(kind: "keyboard", label: "Duplicate", key: 2, modifiers: modifiers.rawValue)
+            mappings.save()
+            let before = show.actionsReceived.count
+            precondition(!mappings.handleKey(key(2, modifiers: modifiers, in: parent)) && show.actionsReceived.count == before,
+                         "Command/Ctrl D belongs to item/track duplication before custom Actions")
+        }
         for code: UInt16 in [51, 117, 53] {
             mappings.beginAction(.projectEnd, kind: "keyboard")
             mappings.candidate = ControlInput(kind: "keyboard", label: "Envelope key", key: code, modifiers: 0)

@@ -1,6 +1,7 @@
 #pragma once
 #include "ProjectMigration.h"
 #include "Automation.h"
+#include "../../Core/Timecode/TimecodePlayback.hpp"
 
 namespace catlive::reaperImportParityTests {
 inline void require(bool condition, const String &message) {
@@ -47,6 +48,31 @@ inline var restored(const var &plugin, const std::set<int> &indices) {
     return result;
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("REAPER ignored items identify each source and reason while retaining valid media", [&] {
+        const auto result = read(directory, "<TRACK\nNAME Keys\n"
+            "<ITEM\nPOSITION nan\nLENGTH 2\n<SOURCE WAVE\nFILE First.wav\n>\n>\n"
+            "<ITEM\nPOSITION 4\nLENGTH 2\nPLAYRATE invalid\n<SOURCE SECTION\n<SOURCE WAVE\nFILE Second.wav\n>\n>\n>\n"
+            "<ITEM\nPOSITION 8\nLENGTH 2\n<SOURCE UNKNOWN\nFILE Third.xyz\n>\n>\n"
+            "<ITEM\nPOSITION 12\nLENGTH 2\n<SOURCE WAVE\nFILE Valid.wav\n>\n>\n>");
+        require(result.project.songs.front().tracks.front().clips.size() == 1, "A bad item blocked valid media");
+        for (const auto *file : {"First.wav", "Second.wav", "Third.xyz"}) {
+            const auto found = std::find_if(result.warnings.begin(), result.warnings.end(), [&](const auto &notice) {
+                return notice.contains(file) && notice.contains("Keys") && notice.contains("\n");
+            });
+            require(found != result.warnings.end(), "An ignored file lost its identity or reason");
+        }
+    });
+    test("REAPER take rate preserves full double precision through project save", [&] {
+        const auto result=read(directory,"<TRACK\nNAME Precision\n<ITEM\nPOSITION 0.667123456789\nLENGTH 184.66123456789\nSOFFS 0.123456789012345\nPLAYRATE 1.1234567890123456 1 0\n<SOURCE WAVE\nFILE missing-reference.wav\n>\n>\n>");
+        const double expected=1.1234567890123456;
+        require(result.project.songs.front().tracks.front().clips.front().playbackRate==expected,"REAPER rate was rounded while importing");
+        const auto saved=directory.getNonexistentChildFile("rate-precision",".jl");
+        struct Cleanup {File file;~Cleanup(){file.deleteFile();}} cleanup{saved};
+        ProjectCodec::write(saved,ProjectCodec::encode(result.project));
+        const auto reopened=ProjectCodec::decode(ProjectCodec::read(saved));
+        const auto& clip=reopened.songs.front().tracks.front().clips.front();
+        require(clip.playbackRate==expected && clip.duration==184.66123456789,"Project save changed imported rate or item duration");
+    });
     test("REAPER region-free items stay region-free", [&] {
         const auto result = read(directory, "<TRACK\nNAME Piano\n<ITEM\nPOSITION 3\nLENGTH 10\nNAME Piano.wav\n<SOURCE WAVE\nFILE missing.wav\n>\n>\n>");
         const auto &song = result.project.songs.front();
@@ -240,6 +266,21 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         bezier.prepare(settings(result.project.songs.front().tracks[1].automationJSON));
         require(std::abs(bezier.curves[0].value(2) - .5) < 2e-5, "Symmetric Bezier midpoint changed");
     });
+    test("REAPER MIDI retains exact imported rate without changing audible note times", [&] {
+        const double rate=1.1234567890123456;
+        const auto result=read(directory,"<TRACK\nNAME MIDI\n<ITEM\nPOSITION 2\nLENGTH 4\nPLAYRATE 1.1234567890123456 1 0\n<SOURCE MIDI\nHASDATA 1 960 QN\nE 960 90 3c 64\nE 960 80 3c 00\n>\n>\n>\n");
+        const auto& clip=result.project.songs.front().tracks.front().clips.front();
+        require(clip.playbackRate==rate && clip.midi && clip.midi->notes.size()==1,"Imported MIDI lost its editable rate");
+        const auto& note=clip.midi->notes.front();
+        require(std::abs(note.start*.5/rate-.5/rate)<1e-12 && std::abs(note.length*.5/rate-.5/rate)<1e-12,"Imported MIDI changed audible note timing");
+    });
+    test("REAPER timecode retains rate with its source offset and configured FPS", [&] {
+        const auto result=read(directory,"<TRACK\nNAME TIMECODE\n<ITEM\nPOSITION 5\nLENGTH 7\nSOFFS 2\nPLAYRATE 1.159123456789 1 0\n<SOURCE LTC\nSTARTTIME 3600\nFRAMERATE 25 0\nSEND 2\nUSERDATA 0 0 0 0\n>\n>\n>\n");
+        const auto& song=result.project.songs.front();const auto& track=song.tracks.front();const auto& clip=track.clips.front();
+        require(clip.playbackRate==1.159123456789 && clip.timecode && clip.timecode->frameRate==25 && clip.timecode->offset==3602,"Imported timecode lost rate, offset or FPS");
+        const jaras::TimecodeProgram program(song,track);
+        require(std::abs(program.at(6)->time(6)-(3602+clip.playbackRate))<1e-10,"Imported timecode counter did not follow its take rate");
+    });
     test("REAPER pooled MIDI accounts for SysEx time, take rate, source offsets and muted notes", [&] {
         const auto result =
             read(directory,
@@ -253,12 +294,12 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(clips[0].midi->notes.size() == 1 && clips[1].midi->notes.size() == 1,
                 "Muted notes were imported or notes lost");
         const auto &a = clips[0].midi->notes[0], &b = clips[1].midi->notes[0];
-        require(a.start == .5 && a.length == 1 && b.start == .25 && b.length == .5 &&
-                    clips[1].playbackRate == 1,
+        require(a.start == .5 && a.length == 1 && b.start == .5 && b.length == 1 &&
+                    clips[1].playbackRate == 2,
                 "MIDI event clock or rate was applied incorrectly");
         const auto env = list(get(settings(clips[1].automationJSON), "envelopes"));
-        require(num(list(get(env[0], "points"))[1], "time") == 2,
-                "MIDI take envelope clock was not flattened");
+        require(num(list(get(env[0], "points"))[1], "time") == 4,
+                "MIDI take envelope must retain its editable source-rate clock");
         require(result.warnings.joinIntoString(" ").contains("SysEx"),
                 "Unsupported MIDI content must be reported");
     });

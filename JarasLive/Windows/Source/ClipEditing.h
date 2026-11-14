@@ -1,6 +1,8 @@
 #pragma once
 #include "Common.h"
 #include "ClipTempo.h"
+#include "../../Core/Tracks/ItemResize.hpp"
+#include "../../Core/Tracks/SharedItemBoundary.hpp"
 namespace catlive::clipEditing {
 inline bool projection(const jaras::AudioClip &clip) {
     return clip.audioFile && clip.audioFile->path.rfind("Videos/", 0) == 0;
@@ -144,33 +146,11 @@ inline jaras::AudioClip resizedClick(const jaras::Song &song, const jaras::Track
     return clip;
 }
 // Preview and commit share the same source interval, including left extension.
-inline jaras::AudioClip resizedSource(jaras::AudioClip clip, double start, double end) {
-    if (!std::isfinite(start) || !std::isfinite(end) || start < 0 || end - start < .01)
-        return clip;
-    if(clip.audioFile && !clip.loopLength) {
-        const double actualStart=std::max(start,clip.startTime-clip.sourceOffset/clip.playbackRate);
-        if(end-actualStart<.01)return clip;
-        clip.sourceOffset=std::max(0.,clip.sourceOffset+(actualStart-clip.startTime)*clip.playbackRate);
-        clip.startTime=actualStart;clip.duration=end-actualStart;
-        return clip;
-    }
-    const double loopStart = clip.loopStart.value_or(clip.sourceOffset);
-    const double loopLength = clip.loopLength.value_or(clip.duration * clip.playbackRate);
-    if (!std::isfinite(loopLength) || loopLength <= 0)
-        throw std::runtime_error("Duração da fonte inválida.");
-    const double offset = clip.sourceOffset - loopStart +
-                          (start - clip.startTime) * clip.playbackRate;
-    clip.loopStart = loopStart;
-    clip.loopLength = loopLength;
-    clip.sourceOffset =
-        loopStart +
-        std::fmod(std::fmod(offset, loopLength) + loopLength, loopLength);
-
-    clip.startTime = start;
-    clip.duration = end - start;
-    return clip;
+inline jaras::AudioClip resizedSource(jaras::AudioClip clip, double start, double end, std::optional<double> sourceDuration = {}) {
+    return jaras::resizedItemSource(std::move(clip),start,end,sourceDuration);
 }
-inline void resize(jaras::Project &project, const ID &id, double start, double end) {
+
+inline void resize(jaras::Project &project, const ID &id, double start, double end, std::optional<double> sourceDuration = {}) {
     if (!std::isfinite(start) || !std::isfinite(end) || start < 0 || end - start < .01)
         throw std::runtime_error("O item precisa ter pelo menos 10 ms.");
     for (auto &song : project.songs)
@@ -196,11 +176,32 @@ inline void resize(jaras::Project &project, const ID &id, double start, double e
                         }
                     clip.startTime = start;
                     clip.duration = end - start;
-                    } else { clip = resizedSource(clip, start, end); }
+                    } else { clip = resizedSource(clip, start, end, clip.midi ? std::nullopt : sourceDuration); }
                     song.duration = std::max(song.duration, end);
                     return;
                 }
     throw std::runtime_error("O item não existe mais.");
+}
+inline std::optional<std::pair<jaras::AudioClip,jaras::AudioClip>> sharedBoundary(const jaras::Song &song,const jaras::Track &track,
+    const jaras::AudioClip &left,const jaras::AudioClip &right,double position,std::optional<double> leftSource={},std::optional<double> rightSource={}) {
+    if(generatedClick(track,left))if(const auto *region=generatedClickRegion(song,left))position=std::min(position,region->endTime);
+    if(generatedClick(track,right))if(const auto *region=generatedClickRegion(song,right))position=std::max(position,region->startTime);
+    auto result=jaras::sharedItemBoundary(left,right,position,leftSource,rightSource);
+    if(!result)return {};
+    for(auto entry:{std::pair<jaras::AudioClip*,const jaras::AudioClip*>{&result->first,&left},{&result->second,&right}}) {
+        auto &item=*entry.first;const auto &original=*entry.second;
+        if(generatedClick(track,original))item=resizedClick(song,track,original,item.startTime,item.startTime+item.duration);
+        else if(track.role.id=="timecode"&&!projection(original)) {
+            item.sourceOffset=original.sourceOffset;item.loopStart=original.loopStart;item.loopLength=original.loopLength;
+            if(!track.importedTimecodeItems) {
+                const auto region=std::find_if(song.parts.begin(),song.parts.end(),[&](const auto &p){return original.regionOwnerID==p.id;});
+                if(region==song.parts.end())return {};
+                item.timecodeStartOffset=item.startTime-region->startTime;item.timecodeEndOffset=item.startTime+item.duration-region->endTime;
+            }
+        }
+    }
+    if(std::abs(result->first.startTime+result->first.duration-result->second.startTime)>=1e-7)return {};
+    return result;
 }
 inline void move(jaras::Project &project, const ID &id, double start, const ID &targetID = {}) {
     if (!std::isfinite(start) || start < 0)

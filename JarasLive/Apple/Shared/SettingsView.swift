@@ -211,6 +211,110 @@ struct SettingsView: View {
 }
 
 #if os(macOS)
+import IOKit
+import IOKit.pwr_mgt
+import CoreGraphics
+import Darwin
+
+/// Lid notifications and backlight changes are independent of audio and UI ticks.
+@MainActor final class MacShowLidBrightness {
+    static let shared = MacShowLidBrightness()
+    struct Backend {
+        var displays: () -> [UInt32]
+        var read: (UInt32) -> Float?
+        var write: (UInt32, Float) -> Bool
+    }
+    private static let displayServices = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY | RTLD_LOCAL)
+    private static let nativeBackend = Backend(displays: {
+        var values = [CGDirectDisplayID](repeating: 0, count: 32), count: UInt32 = 0
+        guard CGGetOnlineDisplayList(32, &values, &count) == .success else { return [] }
+        return values.prefix(Int(count)).filter { CGDisplayIsBuiltin($0) != 0 }
+    }, read: { display in
+        guard let library = displayServices, let symbol = dlsym(library, "DisplayServicesGetBrightness") else { return nil }
+        typealias Read = @convention(c) (UInt32, UnsafeMutablePointer<Float>) -> Int32
+        var value: Float = 0
+        guard unsafeBitCast(symbol, to: Read.self)(display, &value) == 0, value.isFinite, (0...1).contains(value) else { return nil }
+        return value
+    }, write: { display, value in
+        guard let library = displayServices, let symbol = dlsym(library, "DisplayServicesSetBrightness") else { return false }
+        typealias Write = @convention(c) (UInt32, Float) -> Int32
+        return unsafeBitCast(symbol, to: Write.self)(display, value) == 0
+    })
+    private let backend: Backend
+    private let watchesHardware: Bool
+    private var enabled = false
+    private var closed = false
+    private var knownDisplays = Set<UInt32>()
+    private var saved: [UInt32: Float] = [:]
+    private var notificationPort: IONotificationPortRef?
+    private var root: io_service_t = 0
+    private var notifier: io_object_t = 0
+    private var wakeObservers: [NSObjectProtocol] = []
+    init(backend: Backend? = nil, watchesHardware: Bool = true) {
+        self.backend = backend ?? Self.nativeBackend; self.watchesHardware = watchesHardware
+    }
+    func setEnabled(_ value: Bool) {
+        guard value != enabled else { return }
+        enabled = value
+        if value {
+            knownDisplays.formUnion(backend.displays())
+            if watchesHardware { startNotifications() }
+        } else {
+            restore()
+            stopNotifications()
+        }
+    }
+    func lidChanged(closed: Bool) {
+        self.closed = closed
+        guard enabled else { return }
+        if closed {
+            knownDisplays.formUnion(backend.displays())
+            for display in knownDisplays where saved[display] == nil {
+                guard let original = backend.read(display), backend.write(display, 0) else { continue }
+                saved[display] = original
+            }
+        } else { restore() }
+    }
+    func stop() { enabled = false; restore(); stopNotifications() }
+    private func restore() {
+        for (display, original) in saved {
+            // A manual brightness adjustment takes precedence over our restore.
+            if let current = backend.read(display), current > 0.002 { saved.removeValue(forKey: display); continue }
+            if backend.write(display, original) { saved.removeValue(forKey: display) }
+        }
+    }
+    private func startNotifications() {
+        guard notificationPort == nil else { return }
+        root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard root != 0, let port = IONotificationPortCreate(kIOMainPortDefault) else { stopNotifications(); return }
+        notificationPort = port
+        IONotificationPortSetDispatchQueue(port, .main)
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        let status = IOServiceAddInterestNotification(port, root, kIOGeneralInterest, { context, _, type, argument in
+            // IOPM.h: iokit_family_msg(sub_iokit_powermanagement, 0x100).
+            // Swift cannot import that function-like C macro.
+            guard type == ((UInt32(0x38) << 26) | (UInt32(13) << 14) | 0x100), let context else { return }
+            let closed = UInt(bitPattern: argument) & UInt(kClamshellStateBit) != 0
+            MainActor.assumeIsolated { Unmanaged<MacShowLidBrightness>.fromOpaque(context).takeUnretainedValue().lidChanged(closed: closed) }
+        }, context, &notifier)
+        guard status == KERN_SUCCESS else { stopNotifications(); return }
+        if let state = IORegistryEntryCreateCFProperty(root, kAppleClamshellStateKey as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool {
+            lidChanged(closed: state)
+        }
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
+            wakeObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { if let self { self.lidChanged(closed: self.closed) } }
+            })
+        }
+    }
+    private func stopNotifications() {
+        if notifier != 0 { IOObjectRelease(notifier); notifier = 0 }
+        if let notificationPort { IONotificationPortDestroy(notificationPort); self.notificationPort = nil }
+        if root != 0 { IOObjectRelease(root); root = 0 }
+        wakeObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver); wakeObservers.removeAll()
+    }
+}
+
 /// The same persistent pmset switch used by Hook Center. Query first: another
 /// application may already have changed this computer-wide setting.
 @MainActor final class MacShowMode: ObservableObject {
@@ -221,7 +325,10 @@ struct SettingsView: View {
     @Published private(set) var error = ""
     typealias Runner = @Sendable (String, [String]) throws -> String
     private let run: Runner
-    init(run: @escaping Runner = { try MacShowMode.execute($0, $1) }) { self.run = run }
+    private let brightnessEnabled: @MainActor (Bool) -> Void
+    init(run: @escaping Runner = { try MacShowMode.execute($0, $1) }, brightnessEnabled: @escaping @MainActor (Bool) -> Void = { MacShowLidBrightness.shared.setEnabled($0) }) {
+        self.run = run; self.brightnessEnabled = brightnessEnabled
+    }
     nonisolated static func isEnabled(_ output: String) -> Bool {
         output.range(of: #"\b(?:SleepDisabled|disablesleep)\s+1\b"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
@@ -243,7 +350,7 @@ struct SettingsView: View {
                     }
                     return active
                 }.value
-                enabled = value; loaded = true
+                enabled = value; loaded = true; brightnessEnabled(value)
             } catch { self.error = error.localizedDescription }
             busy = false
         }

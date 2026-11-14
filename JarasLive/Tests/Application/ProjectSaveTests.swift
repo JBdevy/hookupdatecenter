@@ -6,6 +6,8 @@ import XCTest
     var snapshotCount = 0
     var gainCommands = 0
     var projectEditCount = 0
+    var trackStructureEditCount = 0
+    var failsTrackStructureEdit = false
     var failsGain = false
     var clipFXCommands = 0
     var failsClipFX = false
@@ -68,6 +70,11 @@ import XCTest
         project.songs[0].markers!.append(contentsOf: markers)
     }
     func applyProjectEdit(_ project: Project) throws { self.project = project; projectEditCount += 1 }
+    func applyTrackStructureEdit(_ project: Project, previous: Project) throws {
+        guard !failsTrackStructureEdit else { throw ProjectError.invalid("Structure edit rejected") }
+        try project.validate()
+        self.project = project; trackStructureEditCount += 1; projectEditCount += 1
+    }
     func setFX(_ id: UUID?, settings: NativeFXSettings) throws {
         try settings.validate()
         if let id {
@@ -766,7 +773,7 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(copy.songs[0].meterBeats, 6)
         XCTAssertEqual(copy.songs[0].meterUnit, 8)
         XCTAssertEqual(TimelineTempo.snap(0.8, bar: 2, beats: 4, pixelsPerSecond: 40), 1)
-        XCTAssertEqual(TimelineTempo.snap(0.8, bar: 2, beats: 6, pixelsPerSecond: 40), 0, accuracy: 0.00001)
+        XCTAssertEqual(TimelineTempo.snap(0.8, bar: 2, beats: 6, pixelsPerSecond: 40), 2.0 / 3, accuracy: 0.00001)
         XCTAssertEqual(TimelineTempo.snap(-1, bar: 2, beats: 4, pixelsPerSecond: 40), 0)
         XCTAssertEqual(TimelineTempo.snap(27, bar: 2, beats: 4, pixelsPerSecond: 0.3), 32, "distant zoom snaps only to visible whole-bar groups")
         show.setMeterBeats(0); show.setMeterUnit(3)
@@ -874,6 +881,35 @@ final class ProjectSaveTests: XCTestCase {
         XCTAssertEqual(executor.regionCommands, [.queueRegion, .queueRegion])
         XCTAssertEqual(executor.regionSelections, regions.map(\.id))
         XCTAssertNil(show.selectedRegionPlaylist)
+    }
+
+    @MainActor func testTrackStructureDeletionUpdatesRoutingAndFailureIsAtomic() throws {
+        var project = Project.empty(name: "Structure deletion")
+        let parent = Track(id: UUID(), name: "Folder", role: .other)
+        var child = Track(id: UUID(), name: "Audio", role: .keys)
+        child.parentTrackID = parent.id
+        child.clips = [AudioClip(id: UUID(), name: "Audio", startTime: 0, duration: 5, waveform: [0.2, 0.4])]
+        let empty = Track(id: UUID(), name: "Empty", role: .other)
+        project.songs[0].tracks = [parent, child, empty]
+        let executor = SaveTestExecutor()
+        let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+        let before = show.snapshot.project
+        executor.failsTrackStructureEdit = true
+        show.deleteTracks([parent.id, empty.id])
+        XCTAssertEqual(show.snapshot.project, before)
+        XCTAssertEqual(executor.trackStructureEditCount, 0)
+        executor.failsTrackStructureEdit = false
+        show.deleteTracks([parent.id, empty.id])
+        XCTAssertEqual(executor.trackStructureEditCount, 1)
+        XCTAssertEqual(show.current?.tracks.map(\.id), [child.id])
+        XCTAssertNil(show.current?.tracks.first?.parentTrackID)
+        XCTAssertEqual(show.current?.tracks.first?.clips, child.clips)
+        try show.snapshot.project.validate()
+        show.deleteTracks([child.id])
+        XCTAssertEqual(executor.trackStructureEditCount, 2)
+        XCTAssertEqual(show.current?.tracks.count, 0)
+        show.deleteTracks([UUID()])
+        XCTAssertEqual(executor.trackStructureEditCount, 2, "no-op deletion does not write another history entry")
     }
 
     @MainActor func testNewTrackFollowsSelectionOrAppendsWithoutSelection() throws {

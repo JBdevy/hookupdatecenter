@@ -373,7 +373,8 @@ void ImGuiTimeline::render(const J& snapshot,const J& telemetry,const Command& c
     const float unit=uiScale();const double duration=std::max(1.,number(song,"duration",60));
     const auto position=s.playPosition(transport,"position","playing"),subPosition=s.playPosition(transport,"subPosition","subPlaying");
     const auto edit=s.editPreview.value_or(number(transport,"editPosition",position));
-    const bool movementLocked=flag(member(snapshot,"project"),"timelineMovementLocked"),editable=!flag(snapshot,"busy")&&!flag(snapshot,"readOnly");
+    const auto& lockProject=member(snapshot,"project");
+    const bool movementLocked=flag(lockProject,"timelineMovementLocked") && ((int)number(lockProject,"timelineLockOptions",7)&2)!=0,editable=!flag(snapshot,"busy")&&!flag(snapshot,"readOnly");
     const bool canCopy=!flag(snapshot,"busy")&&!selected.empty();
     const bool canCut=canCopy&&editable&&!movementLocked;
     const bool canPaste=editable&&clipboardHere&&(!flag(clipboard,"moving")||!movementLocked);

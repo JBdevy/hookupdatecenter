@@ -593,8 +593,8 @@ struct SectionListDock<Primary: View, Sections: View>: View {
     @Published private(set) var isDetached = false
     @Published private(set) var isVisible = false
     private func remember(detached: Bool, visible: Bool) {
-        UserDefaults.standard.set(detached, forKey: "jaras.layout.parts.detached")
-        UserDefaults.standard.set(visible, forKey: "jaras.layout.parts.visible")
+        WorkspaceLayoutPreferences.storage.set(detached, forKey: "jaras.layout.parts.detached")
+        WorkspaceLayoutPreferences.storage.set(visible, forKey: "jaras.layout.parts.visible")
     }
     private var window: NSWindow?
     func open(show: ShowController) {

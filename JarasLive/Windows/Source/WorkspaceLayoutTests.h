@@ -7,8 +7,113 @@
 #include "ProjectOpenConfirmationPanel.h"
 #include "SetlistRows.h"
 #include "ExportPanel.h"
+#include "WaveformRasterIdentity.h"
 namespace catlive {
 struct WorkspaceLayoutTests {
+    static void ctrlClearMixerButtons(const File &directory) {
+        using floatingControlTests::require;
+        auto project=floatingControlTests::fixture();auto &tracks=project.songs.front().tracks;
+        while(tracks.size()<200){auto track=tracks.front();track.id=uuid();tracks.push_back(track);}
+        tracks[2].parentTrackID=tracks[1].id;
+        tracks[3].role.id="generatedClick";tracks[3].name="Click";
+        const ID first=tracks[0].id,second=tracks[1].id;
+        std::set<ID> all;for(const auto &track:tracks)all.insert(track.id);
+        project.masterMute=true;project.masterSolo=true;
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("ctrl-clear-mixer",".json"));
+        w.setSize(1366,900);w.projectOpened(false);w.footerMixerVisible=true;w.resized();w.footerMixer->refresh();
+        w.selectMixerTrack(first,{},true,false);
+        w.selectMixerTrack(second,ModifierKeys(ModifierKeys::ctrlModifier),true,false);
+        const auto selected=w.selectedTracks;
+        auto *retainedRow=uiFeatureTests::find(w,"trackRow:"+text(first));
+        require(retainedRow,"Track Mixer row is missing");
+        auto active=[&](const ID &id,bool mute) {
+            const auto &current=session.song()->tracks;
+            const auto at=std::find_if(current.begin(),current.end(),[&](const auto &track){return track.id==id;});
+            require(at!=current.end(),"Expected mixer track is missing");
+            return mute?at->mute:at->solo;
+        };
+        auto check=[&](Component &row,bool horizontal) {
+            for(auto kind:{jaras::CommandKind::mute,jaras::CommandKind::solo}) {
+                const bool mute=kind==jaras::CommandKind::mute;
+                auto *button=dynamic_cast<QuietButton *>(uiFeatureTests::find(row,
+                    horizontal ? (mute?"mixerMute":"mixerSolo") : (mute?"trackMute":"trackSolo")));
+                require(button && button->isVisible(),"Mixer M/S button is missing");
+                session.mixerCommand(kind,second,all);
+                session.mixerCommand(kind,first,{first}); // Ctrl-click an inactive button, with other tracks active.
+                require(!active(first,mute),"Clicked track must start inactive");
+                const auto revision=session.revision;
+                const auto point=button->getLocalBounds().toFloat().getCentre();const auto now=Time::getCurrentTime();
+                MouseEvent down(Desktop::getInstance().getMainMouseSource(),point,
+                    ModifierKeys(ModifierKeys::ctrlModifier|ModifierKeys::leftButtonModifier),1,0,0,0,0,button,button,now,point,now,1,false);
+                button->mouseDown(down);
+                // Releasing Ctrl before the mouse must not trigger the normal toggle on mouse-up.
+                MouseEvent up(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys(),1,0,0,0,0,button,button,now,point,now,1,false);
+                button->mouseUp(up);
+                for(const auto &track:session.song()->tracks)
+                    require(!(mute?track.mute:track.solo),"Ctrl-click left M/S active on an unselected, grouped or offscreen track");
+                require(session.revision==revision+1,"Ctrl-click toggled twice or published multiple mixer updates");
+                require(session.project().masterMute && session.project().masterSolo,"Ctrl-click changed the Master");
+                require(w.selectedTracks==selected && uiFeatureTests::find(w,"trackRow:"+text(first))==retainedRow,
+                        "Ctrl-click changed selection or rebuilt retained controls");
+                require(button->modifiedClick && !button->modifiedClick(ModifierKeys()),"An ordinary click was consumed by Ctrl-click handling");
+                button->onClick();
+                require(active(first,mute) && active(second,mute) &&
+                        !(mute?session.song()->tracks.back().mute:session.song()->tracks.back().solo),
+                        "Ordinary M/S no longer follows the selected tracks");
+                button->onClick();
+            }
+        };
+        check(*retainedRow,false);
+        auto *strip=uiFeatureTests::find(*w.footerMixer,"mixerStrip:"+text(first));
+        require(strip,"Docked Hoz-Mixer strip is missing");check(*strip,true);
+        w.showDetachedMixer();
+        auto *floating=dynamic_cast<MixerPanel *>(w.floatingWindows.at("Mixer")->getContentComponent());
+        require(floating,"Detached Hoz-Mixer is missing");
+        strip=uiFeatureTests::find(*floating,"mixerStrip:"+text(first));
+        require(strip,"Detached Hoz-Mixer strip is missing");check(*strip,true);
+        auto *master=uiFeatureTests::find(*floating,"mixerMaster");
+        require(master,"Detached Master is missing");
+        for(const auto *id:{"mixerMute","mixerSolo"}) {
+            auto *button=dynamic_cast<QuietButton *>(uiFeatureTests::find(*master,id));
+            require(button && !button->modifiedClick(ModifierKeys(ModifierKeys::ctrlModifier)),"Master Ctrl-click must retain the ordinary Master action");
+        }
+    }
+    static void duplicateTrackFollow(const File &directory) {
+        using floatingControlTests::require;
+        auto project=floatingControlTests::fixture();auto &tracks=project.songs.front().tracks;
+        while(tracks.size()<900){auto track=tracks.front();track.id=uuid();tracks.push_back(track);}
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("duplicate-follow",".json"));
+        w.setSize(1366,900);w.projectOpened(false);w.footerMixerVisible=true;w.resized();w.footerMixer->refresh();
+        const ID retainedID=tracks.front().id;
+        auto *retainedRow=uiFeatureTests::find(w,"trackRow:"+text(retainedID));
+        auto *retainedStrip=uiFeatureTests::find(*w.footerMixer,"mixerStrip:"+text(retainedID));
+        require(retainedRow && retainedStrip,"Initial mixer controls are missing");
+        w.selectMixerTrack(tracks[898].id,{},true,false);
+        w.selectMixerTrack(tracks[899].id,ModifierKeys(ModifierKeys::ctrlModifier),true,false);
+        w.copyGridItems(false);
+        for(int repeat=0;repeat<3;++repeat) {
+            std::set<ID> before;for(const auto &track:session.song()->tracks)before.insert(track.id);
+            w.pasteGridItems();
+            const auto *song=session.song();require(song && song->tracks.size()==size_t(902+repeat*2),"Repeated paste lost its original multi-track clipboard");
+            const auto created=std::find_if(song->tracks.rbegin(),song->tracks.rend(),[&](const auto &track){return !before.count(track.id);});
+            require(created!=song->tracks.rend(),"Paste did not create a new identity");const ID last=created->id;
+            require(song->tracks.back().id==last,"Repeated Paste inserted before the previous copies instead of progressing downwards");
+            require(w.selectedTracks==std::set<ID>{last} && w.selectedTrack==last && w.trackSelectionAnchor==last,
+                    "The last created track must be the sole selection and the next range anchor");
+            auto *row=uiFeatureTests::find(w,"trackRow:"+text(last));
+            require(row && w.tracksViewport.getViewArea().contains(row->getBounds()),"Track Mixer did not reveal the complete new row immediately");
+            auto *viewport=dynamic_cast<Viewport*>(uiFeatureTests::find(*w.footerMixer,"mixerTracksViewport"));
+            auto *strip=uiFeatureTests::find(*w.footerMixer,"mixerStrip:"+text(last));
+            require(viewport && strip && viewport->getViewArea().contains(strip->getBounds()),"Hoz-Mixer waited for a timer to reveal the new strip");
+            require(uiFeatureTests::find(w,"trackRow:"+text(retainedID))==retainedRow &&
+                    uiFeatureTests::find(*w.footerMixer,"mixerStrip:"+text(retainedID))==retainedStrip,
+                    "Pasting rebuilt existing mixer controls");
+        }
+    }
     static void exportMixerSelection(const File &directory) {
         using floatingControlTests::require;
         Session session; session.inspection=true; session.audio.prepareOffline(48000);
@@ -570,6 +675,72 @@ struct WorkspaceLayoutTests {
             session.command(jaras::CommandKind::stopAll);
         }
     }
+    static void sharedWaveformRaster(const File &directory) {
+        using floatingControlTests::require;
+        WaveformCache::Data data;data.version="fixture";
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Original";clip.duration=20;
+        const auto identity=[&](const jaras::AudioClip &value) {
+            return WaveformRasterIdentity::make(data,value,ClipTempo(value),5,1.5f,98,58,0,98,Colours::black);
+        };
+        const auto key=identity(clip);require(key.has_value(),"Valid waveform has no identity");
+        auto copy=clip;copy.id=uuid();copy.name="Renamed copy";copy.startTime=50;
+        require(identity(copy)==key,"Identical audio in a copied or moved item cannot share its waveform");
+        const std::vector<std::function<void(jaras::AudioClip &)>> edits={
+            [](auto &c){c.gain=.5;},[](auto &c){c.normalizationGain=2;},[](auto &c){c.phaseInverted=true;},
+            [](auto &c){c.pan=.5;},[](auto &c){c.channelMode=1;},[](auto &c){c.sourceOffset=.5;},
+            [](auto &c){c.playbackRate=1.159;},[](auto &c){c.duration=19;},
+            [](auto &c){c.loopLength=2;},[](auto &c){c.loopStart=.25;},
+            [](auto &c){c.fadeIn=1;},[](auto &c){c.fadeOut=1;},
+            [](auto &c){c.fadeInCurve=.5;},[](auto &c){c.fadeOutCurve=.5;},
+            [](auto &c){c.fadeInSCurve=2;},[](auto &c){c.fadeOutSCurve=2;}};
+        for(const auto &edit:edits){auto changed=clip;edit(changed);require(!(identity(changed)==key),"An edited copy reused incompatible waveform pixels");}
+        auto timing=ClipTempo(clip);timing.spans.front().rate=2;
+        require(!(WaveformRasterIdentity::make(data,clip,timing,5,1.5f,98,58,0,98,Colours::black)==key),"Tempo mapping was omitted from raster identity");
+        require(!(WaveformRasterIdentity::make(data,clip,ClipTempo(clip),5,1.5f,98,58,0,98,Colours::red)==key),"Waveform colour was omitted");
+        require(!(WaveformRasterIdentity::make(data,clip,ClipTempo(clip),5,2,98,58,0,98,Colours::black)==key),"DPI was omitted");
+        data.version="changed";require(!(identity(clip)==key),"Changed source peaks retained their old pixels");
+
+        const auto folder=directory.getNonexistentChildFile("shared-waveforms","");
+        require(folder.createDirectory().wasOk(),"Cannot create waveform fixture");
+        const auto source=folder.getChildFile("tone.wav");
+        WavAudioFormat format;auto stream=source.createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.release(),48000,2,24,{},0));
+        require(bool(writer),"Cannot create waveform fixture audio");
+        AudioBuffer<float> pcm(2,96000);
+        for(int ch=0;ch<2;++ch)for(int i=0;i<pcm.getNumSamples();++i)
+            pcm.setSample(ch,i,float(.7*std::sin(i*.037*(ch+1))*(.2+.8*i/pcm.getNumSamples())));
+        require(writer->writeFromAudioSampleBuffer(pcm,0,pcm.getNumSamples()),"Cannot write waveform fixture audio");writer.reset();
+        auto project=floatingControlTests::fixture();auto &song=project.songs.front();song.duration=30;song.tracks.clear();
+        clip.duration=20;clip.loopLength=2;clip.audioFile=jaras::AudioFile{"tone.wav",{}};
+        for(int i=0;i<200;++i){jaras::Track track;track.id=uuid();track.name="Copy "+std::to_string(i);track.role.id="other";clip.id=uuid();track.clips={clip};song.tracks.push_back(track);}
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.audio.setOffline(true);session.mediaDirectory=folder;session.core.loadProject(project);
+        Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,folder.getChildFile("preferences.json"));
+        w.setSize(1366,900);w.projectOpened(false);w.zoom.setValue(20,sendNotificationSync);
+        auto *canvas=uiFeatureTests::find(w,"timelineCanvas");require(canvas,"No waveform canvas");
+        Image image(Image::RGB,canvas->getWidth(),canvas->getHeight(),true);
+        auto paint=[&]{Graphics g(image);canvas->paint(g);return get(w.diagnostics(),"timeline");};
+        auto state=paint();const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+        while((int64)get(state,"waveformRasterBuilds")==0 && Time::getMillisecondCounterHiRes()<deadline) {
+            floatingControlTests::pump();Thread::sleep(20);state=paint();
+        }
+        // The worker can finish while the previous frame is already drawing
+        // its last row. Measure reuse after a complete frame with ready peaks.
+        state=paint();
+        require((int64)get(state,"waveformRasterBuilds")==1,"Identical visible copies built separate waveform bitmaps");
+        require((int64)get(state,"waveformRasterHits")>=1,"Visible duplicate rows did not reuse the same waveform");
+        w.mixerDivider.scrollTo(64*150);state=paint();
+        require((int64)get(state,"waveformRasterBuilds")==1,"Scrolling to distant copies rebuilt the same waveform");
+        auto *timeline=canvas->getParentComponent();
+        for(int frame=0;frame<5;++frame) {
+            w.zoom.setValue(30+frame,sendNotificationSync);
+            const auto before=(int64)get(get(w.diagnostics(),"timeline"),"waveformRasterBuilds");
+            const auto point=canvas->getLocalBounds().toFloat().getCentre();const auto now=Time::getCurrentTime();
+            MouseEvent event(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys(),1,0,0,0,0,timeline,timeline,now,point,now,1,false);
+            MouseWheelDetails wheel{};wheel.deltaY=1e-9f;timeline->mouseWheelMove(event,wheel);state=paint();
+            require((int64)get(state,"waveformRasterBuilds")==before,"Zoom must retain the direct exact-scale drawing path");
+            require((int64)get(state,"waveformRasterBytes")<=16*1024*1024,"Waveform raster cache exceeded its memory bound");
+        }
+    }
     static void overviewProfile(const File &directory) {
         using floatingControlTests::require;
         const File source(SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{}));
@@ -580,6 +751,43 @@ struct WorkspaceLayoutTests {
         w.setSize(1366,900);w.projectOpened(false);
         auto *canvas=uiFeatureTests::find(w,"timelineCanvas");
         require(canvas!=nullptr,"No grid canvas for overview profile");
+        if(SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_GRID_MOVEMENT",{})=="1") {
+            auto *timeline=canvas->getParentComponent();ScrollBar *horizontal=nullptr;
+            for(auto *child:timeline->getChildren())if(auto *bar=dynamic_cast<ScrollBar *>(child);bar&&!bar->isVertical())horizontal=bar;
+            require(horizontal,"No horizontal grid scrollbar for movement profile");
+            w.pixelsPerSecond=5;w.rebuild();
+            Image image(Image::RGB,canvas->getWidth(),canvas->getHeight(),true);
+            // Warm the actual saved project's peak mapping before measuring gestures.
+            for(int frame=0;frame<60;++frame){Graphics g(image);canvas->paint(g);floatingControlTests::pump();Thread::sleep(20);}
+            Array<var> measurements;
+            for(const String mode:{"scroll","zoom","vertical"}) {
+                w.zoom.setValue(5,sendNotificationSync);
+                for(int frame=0;frame<90;++frame) {
+                    const auto point=canvas->getLocalBounds().toFloat().getCentre();const auto now=Time::getCurrentTime();
+                    MouseEvent event(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys(),1,0,0,0,0,timeline,timeline,now,point,now,1,false);
+                    timeline->mouseDown(event); // Finish the preceding synthetic gesture.
+                    const auto started=Time::getMillisecondCounterHiRes();
+                    if(mode=="scroll")horizontal->setCurrentRangeStart(frame*7.5,sendNotificationSync);
+                    if(mode=="vertical")w.mixerDivider.scrollTo(frame*12);
+                    if(mode=="zoom") {
+                        w.zoom.setValue(5*std::exp(std::sin(frame*.08)*.8),sendNotificationSync);
+                        // Enter the real wheel-rendering path without changing the chosen scale.
+                        MouseWheelDetails wheel{};wheel.deltaY=1e-9f;timeline->mouseWheelMove(event,wheel);
+                    }
+                    const auto inputMs=Time::getMillisecondCounterHiRes()-started;
+                    {Graphics g(image);canvas->paint(g);}
+                    const auto state=get(w.diagnostics(),"timeline");
+                    auto row=object();put(row,"mode",mode);put(row,"frame",frame);put(row,"inputMs",inputMs);
+                    put(row,"drawMs",get(state,"paintMilliseconds"));put(row,"stages",get(state,"paintStagesMilliseconds"));
+                    put(row,"rasterBuilds",get(state,"waveformRasterBuilds"));put(row,"rasterHits",get(state,"waveformRasterHits"));
+                    put(row,"zoom",get(state,"zoom"));measurements.add(row);
+                }
+            }
+            auto report=object();put(report,"tracks",(int)session.song()->tracks.size());
+            put(report,"width",canvas->getWidth());put(report,"height",canvas->getHeight());put(report,"samples",measurements);
+            directory.getChildFile("grid-movement-profile.json").replaceWithText(JSON::toString(report,true));
+            return;
+        }
         Array<var> timings;
         for(double scale:{.01,.04,.16,.663591698059409,2.5,10.}) {
             w.pixelsPerSecond=scale;w.rebuild();
@@ -1068,6 +1276,8 @@ struct WorkspaceLayoutTests {
 };
 namespace workspaceLayoutTests {
 template<class Test> void registerTests(const File &directory,Test &test) {
+    test("Ctrl-click M and S clears all 200 tracks in Track Mixer and docked or detached Hoz-Mixer",[&]{WorkspaceLayoutTests::ctrlClearMixerButtons(directory);});
+    test("Duplicated waveform rasters share pixels through scrolling and exact zoom without sharing edits",[&]{WorkspaceLayoutTests::sharedWaveformRaster(directory);});
     test("Export selection follows Track Mixer and Hoz Mixer while the window stays open",[&]{WorkspaceLayoutTests::exportMixerSelection(directory);});
     if(SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_PROJECT",{}).isNotEmpty())
         test("Overview zoom profile on an isolated real project",[&]{WorkspaceLayoutTests::overviewProfile(directory);});
@@ -1097,6 +1307,7 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Tuner gestures retain the project and audio graph while playing and stopped",[&]{WorkspaceLayoutTests::pitchResponsiveness(directory);});
     test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
+    test("Repeated multi-track paste selects the last copy and immediately reveals it in both 900-track mixers while retaining controls",[&]{WorkspaceLayoutTests::duplicateTrackFollow(directory);});
     test("Native transport repairs externally displaced input bounds",[&]{WorkspaceLayoutTests::transportHitBounds(directory);});
     test("Fullscreen transport keeps controls, Master drawing and native hit areas aligned",[&]{WorkspaceLayoutTests::fullscreenTransport(directory);});
     test("Toolbar timer and hints match item-knob style",[&]{WorkspaceLayoutTests::toolbarTimerAndHints(directory);});

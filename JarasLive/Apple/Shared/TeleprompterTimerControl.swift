@@ -80,7 +80,7 @@ import Combine
         return HStack(spacing: 2) {
             ForEach(0..<3, id: \.self) { index in
                 Group {
-                    if timer.running {
+                    if timer.running || timer.mode == .progressive {
                         TimerReadout(text: values.indices.contains(index) ? values[index] : "00", expired: expired)
                             .opacity(opacity)
                     } else {
@@ -123,6 +123,7 @@ import Combine
         invalid = false
     }
     @discardableResult private func commit() -> Bool {
+        if timer.mode == .progressive { return true }
         guard timer.setTargetText(draft) else {
             invalid = true
             withAnimation(.linear(duration: 0.3)) { shake += 1 }

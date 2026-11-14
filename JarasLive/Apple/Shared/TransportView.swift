@@ -6,7 +6,6 @@ enum SetlistPlacement: String { case left, right, detached }
 
 struct TransportView: View {
     @State private var showingPortableExport = false
-    @State private var showingPartialExport = false
     @State private var showingReduction = false
     @State private var showingExport = false
     @State private var showingResolume = false
@@ -67,13 +66,12 @@ struct TransportView: View {
             .workspaceEditor("Fadeout", isPresented: $showingFadeout) { TransportFadeoutSettings(show: show) }
             #if os(macOS)
             .background { if !remotePresentation { TransportFadeoutPresenter(show: show).frame(width: 0, height: 0) } }
-            .workspaceEditor("Resolume", isPresented: $showingResolume) { ResolumeSettingsView(show: show) }
-            .workspaceEditor("grandMA2", isPresented: $showingGrandMA2) { GrandMA2SettingsView(show: show) }
+            .workspaceEditor("Resolume", isPresented: $showingResolume,
+                size: CGSize(width: 680, height: show.snapshot.project.resolume?.usesIntegration == true ? 660 : 560)) { ResolumeSettingsView(show: show) }
+            .workspaceEditor("grandMA2", isPresented: $showingGrandMA2,
+                size: CGSize(width: 720, height: 650)) { GrandMA2SettingsView(show: show) }
             .sheet(isPresented: $showingPortableExport) {
                 if let documents { PortableProjectExportView(documents: documents) }
-            }
-            .sheet(isPresented: $showingPartialExport) {
-                if let documents { PartialProjectTransferView(documents: documents, mode: .export) }
             }
             .sheet(isPresented: $showingReduction) {
                 if let documents { ProjectReductionView(documents: documents) }
@@ -169,9 +167,9 @@ struct TransportView: View {
                 }
                 HStack(spacing: remainingSpacing) {
                     HStack(spacing: playbackSpacing) {
-                    Button { show.send(transport.playing ? .stop : .play) } label: {
-                        Label { Text(verbatim: transport.playing ? "Stop" : "Play") } icon: {
-                            Image(systemName: transport.playing ? "stop.fill" : "play.fill").frame(width: 12)
+                    Button { show.send(transport.playing || show.preparingAudio ? .stop : .play) } label: {
+                        Label { Text(verbatim: transport.playing || show.preparingAudio ? "Stop" : "Play") } icon: {
+                            Image(systemName: transport.playing || show.preparingAudio ? "stop.fill" : "play.fill").frame(width: 12)
                         }
                     }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: transport.playing, fontSize: TransportControlMetrics.font, width: max(46, buttonWidth - 8), height: TransportControlMetrics.height)).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
                         #if os(macOS)
@@ -217,7 +215,6 @@ struct TransportView: View {
                     ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message,
                                       projectName: documents?.currentURL?.deletingPathExtension().lastPathComponent ?? show.snapshot.project.name, rename: documents.map { documents in { name in try await documents.renameProject(name) } },
                                       exportToIPad: documents == nil ? nil : { showingPortableExport = true },
-                                      exportPartial: documents == nil ? nil : { showingPartialExport = true },
                                       reduceProject: documents == nil ? nil : { showingReduction = true }) { Task { await show.save() } }
                     Spacer(minLength: 0)
                     PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist", tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
@@ -355,6 +352,7 @@ struct FooterInformationDisplay: View {
         return song.parts.contains { $0.parentRegionID == region.id && ($0.totalLoop == true || !($0.multiLoops ?? []).isEmpty) }
     }
     private var information: String {
+        if show.preparingAudio { return JarasLocalization.string("Preparing audio…") }
         if show.snapshot.transport.loop.enabled { return "Loop Ativo" }
         if show.snapshot.transport.ignoreNextAfter != nil { return "Ignore Next" }
         if hasMultiLoop { return JarasLocalization.string("This song has an active multiloop") }
@@ -753,7 +751,6 @@ private struct ProjectSaveButton: View {
     var projectName = ""
     var rename: ((String) async throws -> Void)? = nil
     var exportToIPad: (() -> Void)? = nil
-    var exportPartial: (() -> Void)? = nil
     var reduceProject: (() -> Void)? = nil
     let action: () -> Void
     @State private var showingOptions = false
@@ -781,9 +778,6 @@ private struct ProjectSaveButton: View {
                         .onSubmit { saveName() }.disabled(renaming)
                     if !renameError.isEmpty { Text(verbatim: JarasLocalization.string(renameError)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                     Button("Save") { saveName() }.disabled(rename == nil || renaming || draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if let exportPartial {
-                        Button("Export Partial") { showingOptions = false; exportPartial() }
-                    }
                     if let exportToIPad {
                         Divider()
                         HStack {

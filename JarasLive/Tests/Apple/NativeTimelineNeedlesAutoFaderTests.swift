@@ -6,6 +6,11 @@ private struct AutoFaderTickSnapshot {
     var nextSongId: UUID?
     var gain: Double = 1
 }
+private enum AutoFaderTickCommand { case selectRegion }
+private enum FinishedSetlistSelection {
+    static func shouldClear(_ id: UUID, song: PresentationTestSong, playlist: UUID?,
+                            before: TransportState, after: TransportState) -> Bool { false }
+}
 @MainActor private final class AutoFaderTickExecutor {
     var transport: TransportState
     var change: ((inout TransportState) -> Void)?
@@ -20,6 +25,7 @@ private struct AutoFaderTickSnapshot {
         if fail { throw NSError(domain: "Fixture", code: 1) }
         return AutoFaderTickSnapshot(transport: transport)
     }
+    func execute(_ command: AutoFaderTickCommand, target: UUID, value: Double) throws {}
 }
 @MainActor private final class AutoFaderTickController {
 __PRODUCTION_FLAGS__
@@ -42,6 +48,13 @@ __PRODUCTION_FLAGS__
     var audioUpdate: (AutoFaderTickSnapshot, Int) -> Void = { _, _ in }
     let audioProjectRevision = 0
     var message = ""
+    var regionSetlist: (autoAdvance: Bool, autoUntilBlockEnd: Bool?) = (false, nil)
+    var focusedRegion: UUID?
+    var current: PresentationTestSong?
+    var selectedRegionPlaylist: UUID?
+    var regionFocusRequest = UUID()
+    private func playlistRegion(_ id: UUID) -> UUID? { nil }
+    private func clearFinishedSetlistSelection(before: TransportState, after: TransportState) {}
     private(set) var projectNotifications = 0
     init(_ transport: TransportState) {
         snapshot = AutoFaderTickSnapshot(transport: transport)

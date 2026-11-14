@@ -94,13 +94,13 @@ int main() {
             expect(!clip(engine, "loose").regionOwnerID, "initialized reload preserves an intentionally loose crossing item");
             engine.moveRegion("group", 40);
             near(clip(engine, "owned").startTime, 48, "persisted foreign membership still follows its unified group");
-            near(clip(engine, "loose").startTime, 9, "moving a region leaves its loose item stationary");
+            near(clip(engine, "loose").startTime, 49, "moving a region carries loose items covered by its source area");
             engine.loadProject(engine.project());
             engine.moveRegion("group", 0);
             auto next = engine.project(); next.name = "Unrelated project edit";
             engine.applyProjectEdit(next);
-            expect(!clip(engine, "loose").regionOwnerID, "moving a region over a loose onset, reloading, and unrelated edits never recapture it");
-            near(clip(engine, "loose").startTime, 9, "loose audio remains stationary after the region returns");
+            expect(clip(engine, "loose").regionOwnerID == "group", "the region carrying loose material records its ownership through reload");
+            near(clip(engine, "loose").startTime, 9, "carried audio returns with its region");
             auto resized = engine.project(); resized.songs[0].tracks[0].clips[0].duration = 40;
             engine.applyProjectEdit(resized);
             expect(clip(engine, "owned").regionOwnerID == "b", "resizing an item without moving its onset preserves its explicit owner");
@@ -142,8 +142,8 @@ int main() {
             engine.addRecordedClip("track", captured);
             expect(!clip(engine, "captured-loose").regionOwnerID, "MIDI finalization preserves frozen nil when a region moves over the capture onset");
             engine.loadProject(engine.project()); engine.moveRegion("group", 0);
-            expect(!clip(engine, "captured-loose").regionOwnerID, "captured nil remains loose after reload and region departure");
-            near(clip(engine, "captured-loose").startTime, 48, "a region passing over a MIDI take never transports it");
+            expect(clip(engine, "captured-loose").regionOwnerID == "group", "a later region drag acquires MIDI currently covered by its source area");
+            near(clip(engine, "captured-loose").startTime, 8, "covered MIDI follows the region on its next drag");
         }
         {
             auto project = fixture();

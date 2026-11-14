@@ -129,7 +129,7 @@ struct DAWRemoteCommand: Codable {
         case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, openRecentProjectInNewTab, selectProjectTab, closeProjectTab
         case remotePanel, noticeSend, noticeClear, noticePin, noticePinStopped, noticeDestination, noticeSaveTemplate
         case requestImage
-        case timerStart, timerStop, transportFadeout
+        case timerStart, timerStartProgressive, timerSetMode, timerStop, transportFadeout
         case togglePreview, selectPreviewPage, toggleRecord, browseRegion
         case vinhetasDown, vinhetasUp, vinhetasPreset, vinhetasVolume, vinhetasGate, vinhetasPanic
         case editRegion, deleteRegion, duplicateRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
@@ -174,6 +174,8 @@ struct DAWRemoteCommand: Codable {
         case .resetMeterPeak: return value == 0
         case .timerStart: return target == nil && (0...359999).contains(value) && value.rounded() == value
         case .transportFadeout: return target == nil && value == 0 && enabled != nil
+        case .timerSetMode: return target == nil && (value == 0 || value == 1)
+        case .timerStartProgressive: return target == nil && value == 0
         case .timerStop: return target == nil && value == 0
         case .togglePreview, .toggleRecord: return target == nil && value == 0
         case .selectPreviewPage: return target == nil && (0...5).contains(value) && value.rounded() == value
@@ -938,7 +940,9 @@ struct DAWRemoteTimerState: Codable, Equatable {
     var running: Bool
     var remainingSeconds: Double
     var commandID: UUID? = nil
-    var valid: Bool { (0...359999).contains(targetSeconds) && remainingSeconds.isFinite }
+    var mode: String? = nil // Missing on older hosts means countdown.
+    var valid: Bool { (0...359999).contains(targetSeconds) && remainingSeconds.isFinite &&
+        (mode == nil || mode == "progressive" || mode == "countdown") }
 }
 
 /// Parts consumes the remaining grid, never the saved Setlist or mixer widths.

@@ -55,7 +55,7 @@ def main():
         archive.unlink()
         python = staging / 'python/bin/python3.11'
         subprocess.run([str(python), '-m', 'pip', 'install', '--no-cache-dir', '-r', str(lock)], check=True)
-        download('https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/' + MODEL, staging / MODEL, MODEL_HASH)
+        download('https://huggingface.co/musicfy/uvr/resolve/2afc13a29f3b11bdd051221c425629e013591e13/' + MODEL, staging / MODEL, MODEL_HASH)
         subprocess.run([str(python), '-I', '-c', 'import torch, demucs, soundfile; print(torch.__version__)'], check=True)
         # A universal CatLive includes a matching helper for both architectures.
         other = 'x86_64' if arch == 'arm64' else 'arm64'

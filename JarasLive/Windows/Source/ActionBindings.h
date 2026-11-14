@@ -46,7 +46,7 @@ struct ActionDefinition {
     bool supportsMIDI() const {
         const String action(id);
         return action != "normalizeItems" && action != "reRenderItems" &&
-               action != "unifyAudioItems" && action != "createTempoMarker" && action != "toggleFullscreen";
+               action != "unifyAudioItems" && action != "createRegionsFromItems" && action != "createTempoMarker" && action != "toggleFullscreen";
     }
     bool fixedKeyboard() const { return String(id) == "setlistUp" || String(id) == "setlistDown"; }
     bool repeats() const {
@@ -92,6 +92,7 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"toggleFullscreen", "Toggle fullscreen", 5, "ctrl + F11"},
         {"addTrack", "Add Track", 5, "ctrl + T"},
         {"splitItems", "Split stems", 5, "S"},
+        {"createRegionsFromItems", "Create region from selected items", 5, "shift + R"},
         {"projectStart", "Go to project start", 5, "Q"},
         {"projectEnd", "Go to project end", 5, "["},
         {"nextRegion", "Go to next region", 5, "D"},

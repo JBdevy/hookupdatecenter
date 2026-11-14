@@ -453,6 +453,7 @@ var ProjectCodec::canonicalIDs(const var &input) {
             identityField(track, "fx", canonicalFX); identityField(track, "automation", canonicalAutomation);
             identityElements(track, "clips", [](var &clip) {
                 canonicalIDFields(clip, {"id", "regionOwnerID"});
+                identityElements(clip,"tempoRateReferences",[](var& reference){canonicalIDFields(reference,{"markerID"});});
                 canonicalIDArray(clip, "separatedStemTracks");
                 identityField(clip, "fx", canonicalFX); identityField(clip, "automation", canonicalAutomation);
                 identityField(clip, "midi", [](var &midi) {
@@ -572,6 +573,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
     if (get(root, "partialImportIDs").isArray()) { p.partialImportIDs.emplace(); for (auto id : list(get(root, "partialImportIDs"))) p.partialImportIDs->push_back(utf8(id.toString())); }
     if (get(root, "timelineMovementLocked").isBool())
         p.timelineMovementLocked = flag(root, "timelineMovementLocked");
+    if (!get(root, "timelineLockOptions").isVoid()) p.timelineLockOptions = (int)num(root, "timelineLockOptions") & 7;
     p.projectFormatVersion = (int)num(root, "projectFormatVersion", 1);
     require(p.projectFormatVersion == 1, "This project version requires a newer CatLive.");
     p.minimumJarasVersion = s(root, "minimumJarasVersion");
@@ -720,6 +722,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 optionalNum(rc, "tempoBasePlaybackRate", c.tempoBasePlaybackRate);
                 optionalNum(rc, "renderedTempo", c.renderedTempo);
                 optionalNum(rc, "clickDouble", c.clickDouble);
+                for(const auto& reference:list(get(rc,"tempoRateReferences")))c.tempoRateReferences.push_back({utf8(str(reference,"markerID")),num(reference,"rate",1)});
                 optionalJSON(rc, "automation", c.automationJSON);
                 if (get(rc, "timecode").isObject())
                     c.timecode = timecode(get(rc, "timecode"));
@@ -778,6 +781,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 optionalNum(rm, "tempoBeats", m.tempoBeats);
                 optionalNum(rm, "tempoUnit", m.tempoUnit);
                 optionalNum(rm, "tempoReferenceBPM", m.tempoReferenceBPM);
+                optionalNum(rm, "tempoPlaybackRate", m.tempoPlaybackRate);
                 optionalText(rm, "tempoTimebase", m.tempoTimebase);
                 optionalNum(rm, "section", m.section);
                 optionalNum(rm, "loopSection", m.loopSection);
@@ -867,6 +871,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
     if (p.reductionDraftJSON) put(root, "reductionDraft", JSON::parse(text(*p.reductionDraftJSON)));
     else root.getDynamicObject()->removeProperty("reductionDraft");
     emit(root, "timelineMovementLocked", p.timelineMovementLocked);
+    emit(root, "timelineLockOptions", p.timelineLockOptions);
     emit(root, "importedTimeline", p.importedTimeline);
     if (p.projectSyncID) put(root, "projectSyncID", text(*p.projectSyncID));
     else root.getDynamicObject()->removeProperty("projectSyncID");
@@ -1038,6 +1043,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 emit(rc, "tempoBasePlaybackRate", c.tempoBasePlaybackRate);
                 emit(rc, "renderedTempo", c.renderedTempo);
                 emit(rc, "clickDouble", c.clickDouble);
+                if(c.tempoRateReferences.empty())remove(rc,"tempoRateReferences");
+                else {Array<var> references;for(const auto& r:c.tempoRateReferences){auto value=object();put(value,"markerID",text(r.markerID));put(value,"rate",r.rate);references.add(value);}put(rc,"tempoRateReferences",references);}
                 if (c.midi)
                     put(rc, "midi", midiJSON(*c.midi, get(rc, "midi")));
                 else
@@ -1135,6 +1142,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 emit(rm, "tempoBeats", m.tempoBeats);
                 emit(rm, "tempoUnit", m.tempoUnit);
                 emit(rm, "tempoReferenceBPM", m.tempoReferenceBPM);
+                emit(rm, "tempoPlaybackRate", m.tempoPlaybackRate);
                 emit(rm, "tempoTimebase", m.tempoTimebase);
                 emit(rm, "unifiedRegionID", m.unifiedRegionID);
                 emit(rm, "sourceRegionID", m.sourceRegionID);

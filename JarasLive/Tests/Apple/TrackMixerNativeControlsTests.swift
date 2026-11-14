@@ -53,13 +53,60 @@
     expect(Counts.update == 0, "Height thresholds must only reposition retained controls")
     print("MIXER_FADER_BOUNDARIES_47_ROWS_ZERO_ROOT_UPDATES_OK timings=\(timings) layouts=\(Counts.slotLayouts)")
 }
+@MainActor private func verifyNativePanelInteraction(_ fixture: FixtureWindow) {
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let slider = descendants(row, of: DirectVolumeSliderView.self).first { !$0.mini }!
+    let label = descendants(row, of: TrackMixerNativeGainLabel.self).first!
+    let phase = descendants(row, of: TrackMixerNativePhaseButton.self).first!
+    let mapping = descendants(row, of: MappingClickView.self).first!
+    slider.doubleValue = -18
+    expect(label.value == -18, "Native gain readout must follow the live slider without a row publication")
+    let beforeReset = fixture.state.calls
+    label.reset?()
+    expect(slider.doubleValue == 0 && label.value == 0 && fixture.state.calls == beforeReset + 1,
+           "Gain-label reset must publish through the same fader callbacks")
+    let point = mapping.convert(NSPoint(x: mapping.bounds.midX, y: mapping.bounds.midY), to: nil)
+    let event = NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: 100,
+        windowNumber: fixture.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    let beforeMapping = fixture.state.calls
+    expect(RightClickRouter.shared.handle(event) && fixture.state.calls == beforeMapping + 100,
+           "Native volume must retain the real priority-based MIDI mapping route")
+    fixture.state.enabled = false; fixture.settle()
+    let disabledCalls = fixture.state.calls
+    label.reset?(); phase.performClick(nil)
+    let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 101, windowNumber: fixture.window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 124)!
+    slider.keyDown(with: key)
+    expect(!slider.isEnabled && !phase.isEnabled && mapping.isHidden && fixture.state.calls == disabledCalls,
+           "Disabled native controls must reject changes and remove their mapping target")
+    fixture.state.enabled = true; fixture.settle()
+    let indicator = row.activity
+    fixture.state.activity.pulse(127)
+    let bar = indicator.layer!.sublayers!.first!
+    expect(abs(bar.frame.height - indicator.bounds.height) < 0.01, "MIDI velocity must drive the native activity bar")
+    let next = TrackMIDIActivity()
+    indicator.bind(next)
+    fixture.state.activity.pulse(100)
+    expect(bar.frame.height == 0, "A reused MIDI indicator must stop observing its previous track")
+    next.pulse(64)
+    expect(abs(bar.frame.height - indicator.bounds.height * 64 / 127) < 0.01, "The new MIDI source must update immediately")
+    next.reset()
+    expect(bar.frame.height == 0, "MIDI reset must clear the meter model even during its release animation")
+    indicator.bind(nil)
+    expect(indicator.layer?.backgroundColor == nil && bar.frame.height == 0, "Tracks without MIDI must have a transparent indicator")
+    indicator.bind(fixture.state.activity)
+    print("NATIVE_PANEL_GAIN_RESET_PHASE_DISABLED_MAPPING_MIDI_REBIND_OK")
+}
+
 @MainActor private func verifyBehavior() {
     verifyFooterGainReadout()
     verifyFooterPanReadout()
+    verifyLiveSidebarResize()
     let fixture = FixtureWindow(candidate: true, kinds: [.standard])
     fixture.change(80)
+    verifyNativePanelInteraction(fixture)
     verifyGeometryKeepsNativeContent(fixture)
     verifyPeakResetInput(fixture)
+    verifyClippedControlsSkipWork(fixture)
     let title = descendants(fixture.host, of: TrackDragTitleView.self).first!
     let faders = descendants(fixture.host, of: DirectVolumeSliderView.self)
     let original = faders.map(ObjectIdentifier.init)
@@ -107,8 +154,12 @@
     expect(controls.hitTest(fxPoint) != nil, "FX hit area disappeared")
     let baseline = FixtureWindow(candidate: false, kinds: [.standard]); baseline.change(80)
     let oldButtons = axButtons(baseline.host), buttons = axButtons(fixture.host)
-    if oldButtons.isEmpty && buttons.isEmpty {
-        print("AX_OFFSCREEN_UNAVAILABLE_IN_BASELINE_AND_CANDIDATE; app smoke required")
+    if oldButtons.isEmpty {
+        let phase = descendants(fixture.host, of: TrackMixerNativePhaseButton.self).first!
+        let calls = fixture.state.calls
+        phase.performClick(nil)
+        expect(fixture.state.calls == calls + 7, "Native phase must use the current action after row rebinding")
+        print("SWIFTUI_AX_OFFSCREEN_UNAVAILABLE_IN_BASELINE; NATIVE_PHASE_ACTION_OK; app smoke required")
     } else {
         expect(buttons.count >= oldButtons.count, "Accessible controls were lost")
         let fx = buttons.first { $0.accessibilityLabel() == "FX" }
@@ -121,6 +172,75 @@
     baseline.window.close()
     print("NATIVE_ROW_BEHAVIOR_OK actions rebind state focus locale disabled hit-area")
     fixture.window.close()
+}
+@MainActor private func verifyLiveSidebarResize() {
+    let fixture = FixtureWindow(candidate: true, kinds: [.standard])
+    fixture.change(80)
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let original = row.snapshot
+    let hosts = descendants(row, of: TrackMixerControlHost.self)
+    let title = descendants(row, of: TrackDragTitleView.self).first!
+    let stateful = descendants(row, of: StatefulProbeView.self).first!
+    let activity = NativeSidebarResizeActivity.shared
+    activity.begin(owner: fixture.host)
+    Counts.reset()
+    for width in [260.0,280,310,248] { fixture.change(80, width: width) }
+    expect(row.snapshot === original && Counts.update == 0 && Counts.slotLayouts == 0,
+           "A lateral drag must reposition retained buttons without rebuilding their unchanged layout")
+    fixture.state.title = "Updated during sidebar drag"
+    fixture.state.locale = "pt_BR"; fixture.state.enabled = false
+    fixture.settle()
+    expect(title.title == fixture.state.title && stateful.locale == "pt_BR" && !stateful.enabled,
+           "Content and environment changes must reach controls during a sidebar drag")
+    expect(Counts.slotLayouts > 0, "Changed controls must lay out during a sidebar drag")
+    fixture.state.enabled = true; fixture.settle()
+    let value = stateful.value
+    stateful.action?()
+    fixture.change(24); fixture.change(80)
+    expect(descendants(row, of: TrackDragTitleView.self).first === title,
+           "Height mode changes during a lateral drag must retain the title")
+    row.isHidden = true; fixture.settle(); row.isHidden = false; fixture.settle()
+    expect(hosts.allSatisfy { $0.window === fixture.window },
+           "Returning controls must reattach while a divider is still active")
+    for host in hosts { host.needsLayout = true; host.layoutSubtreeIfNeeded() }
+    Counts.reset()
+    activity.end(owner: fixture.host)
+    fixture.settle()
+    expect(Counts.slotLayouts > 0 && stateful.value == value + 1,
+           "Releasing a divider must flush deferred layout and local SwiftUI state")
+    activity.begin(owner: fixture.host)
+    for host in hosts { host.needsLayout = true; host.layoutSubtreeIfNeeded() }
+    Counts.reset()
+    NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: fixture.window)
+    fixture.settle()
+    expect(Counts.slotLayouts > 0, "Losing the active window must finish pending divider layout")
+    fixture.window.close()
+    print("SIDEBAR_DRAG_RETAINS_BUTTON_LAYOUT_UPDATES_CONTENT_ENVIRONMENT_AND_FLUSHES_ON_RELEASE_OK")
+}
+@MainActor private func verifyClippedControlsSkipWork(_ fixture: FixtureWindow) {
+    let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
+    let controls = row.controls
+    let title = descendants(controls, of: TrackDragTitleView.self).first!
+    let snapshot = row.snapshot
+    let outside = NSPoint(x: controls.frame.maxX + 10, y: controls.frame.midY)
+    controls.needsLayout = true
+    Counts.reset()
+    expect(controls.hitTest(outside) == nil && Counts.slotLayouts == 0,
+           "Input outside a control host must not enter SwiftUI layout")
+    row.isHidden = true
+    controls.layout()
+    expect(Counts.slotLayouts == 0, "Hidden row controls must defer SwiftUI layout")
+    expect(controls.hitTest(NSPoint(x: controls.frame.midX, y: controls.frame.midY)) == nil,
+           "Hidden controls must not claim input")
+    row.isHidden = false
+    fixture.settle()
+    expect(Counts.slotLayouts > 0 && row.snapshot === snapshot,
+           "Returning rows must lay out their retained controls")
+    expect(descendants(controls, of: TrackDragTitleView.self).contains { $0 === title },
+           "Returning rows must preserve control identity")
+    expect(controls.hitTest(controls.convert(NSPoint(x: 113, y: 13), to: controls.superview)) != nil,
+           "Returning rows must expose their controls without an extra scroll")
+    print("NATIVE_ROW_CLIPPED_INPUT_AND_HIDDEN_LAYOUT_SKIPPED_VISIBLE_CONTROLS_RESTORED_OK")
 }
 @MainActor private func verifyGeometryKeepsNativeContent(_ fixture: FixtureWindow) {
     let row = descendants(fixture.host, of: TrackMixerNativeControlView.self).first!
@@ -297,6 +417,7 @@ private extension EnvironmentValues {
     @Published var project = UUID()
     @Published var track = UUID()
     @Published var locale = "en"
+    let activity = TrackMIDIActivity()
     let meter = TrackMeterLevel()
     let drag = TrackReorderState()
 }
@@ -320,16 +441,14 @@ private struct FixtureRow: View, Equatable {
     private var lowerTitle: Bool { kind != .teleprompter }
     private var meter: some View { VerticalTrackMeter(meter: state.meter, showScale: true, peakOnly: true).clipped() }
     private var midi: some View { Color.green.frame(width: 4).allowsHitTesting(false) }
-    @ViewBuilder private func controls(split: Bool) -> some View {
-        TrackMixerContinuousContainer(meterWidth: 52, standard: kind == .standard, lowerTitle: lowerTitle) {
-            Group { if split { Color.clear } else { meter } }.jarasPlaced(at: 0)
-            Group { if split { Color.clear } else { midi } }.jarasPlaced(at: 1)
-            TrackDragTitle(title: title, foreground: 0xffffff, project: project, track: track, state: state.drag, select: { state.calls += actionStep }).jarasPlaced(at: 2)
+    private var buttons: some View {
             TrackMixerButtonsContainer(standard: kind == .standard, showsFader: true) {
                 if kind == .standard {
-                    Button("FX") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 0)
-                    Button("REC") { state.calls += 1 }.contextMenu { Button("Mono") {} ; Button("Stereo") {} ; Button("MIDI") {} }.jarasPlaced(at: 1)
-                    DirectVolumeSlider(identity: .init(project: project, track: track), value: 0, minimum: -1, maximum: 1, mini: true, changed: { _ in state.calls += 1 }, editingChanged: { _,_ in }).frame(width: 42, height: 24).clipped().jarasPlaced(at: 2)
+                    Button("Patch") { state.calls += 1 }.frame(width: 34).jarasPlaced(at: 0)
+                    Button("Env") { state.calls += 1 }.frame(width: 28).jarasPlaced(at: 1)
+                    Button("FX") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 2)
+                    Button("REC") { state.calls += 1 }.contextMenu { Button("Mono") {} ; Button("Stereo") {} ; Button("MIDI") {} }.jarasPlaced(at: 3)
+                    DirectVolumeSlider(identity: .init(project: project, track: track), value: 0, minimum: -1, maximum: 1, mini: true, changed: { _ in state.calls += 1 }, editingChanged: { _,_ in }).frame(width: 42, height: 24).clipped().jarasPlaced(at: 4)
                 } else if kind == .click {
                     Button("Insert") { state.calls += 1 }.buttonStyle(CompactTrackButtonStyle(width: 47)).fixedSize(horizontal: true, vertical: false)
                 } else {
@@ -338,17 +457,39 @@ private struct FixtureRow: View, Equatable {
                         else { Button(kind == .video ? "Add media" : "Add text") { state.calls += 1 } }
                     }.buttonStyle(TrackControlButtonStyle()).fixedSize()
                 }
-                Button("M") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 3)
-                Button("S") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 4)
-            }.buttonStyle(CompactTrackButtonStyle()).background { if CommandLine.arguments.contains("--behavior") { StatefulControl() } }.clipped().modifier(LegacyControlsWidth()).jarasPlaced(at: 3)
-            Group { if lowerTitle { DirectVolumeSlider(identity: .init(project: project, track: track), value: value, changed: { _ in state.calls += 1 }, editingChanged: { _,_ in }) } else { Color.clear } }.clipped().jarasPlaced(at: 4)
+                Button("M") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 5)
+                Button("S") { state.calls += 1 }.frame(width: 22).jarasPlaced(at: 6)
+            }.buttonStyle(CompactTrackButtonStyle()).background { if CommandLine.arguments.contains("--behavior") { StatefulControl() } }.clipped().modifier(LegacyControlsWidth())
+    }
+    private var volumeSlider: DirectVolumeSlider { DirectVolumeSlider(identity: .init(project: project, track: track), value: value, changed: { _ in state.calls += 1 }, editingChanged: { _,_ in }) }
+    private var phase: some View { Button("Ø") { state.calls += 1 }.frame(width:20,height:20) }
+    private var volume: some View {
+        HStack(spacing:3) {
+            Text("+0.0").font(.system(size:9)).frame(width:34,alignment:.leading)
+            volumeSlider.frame(height:20).frame(maxWidth:.infinity)
+            phase
+        }.frame(height:20).padding(.horizontal,4)
+    }
+    private var nativePanel: TrackMixerNativePanelContent {
+        TrackMixerNativePanelContent(
+            title: TrackDragTitle(title:title,foreground:0xffffff,project:project,track:track,state:state.drag,select:{state.calls += actionStep}),
+            slider:volumeSlider,buttons:AnyView(buttons),folder:AnyView(Color.clear),phase:TrackMixerNativePhase(inverted:false,action:{state.calls += actionStep}),
+            showsVolume:true,isFolder:false,expandedButtonsWidth:210,mapVolume:{state.calls += 100})
+    }
+    @ViewBuilder private func controls(split: Bool) -> some View {
+        TrackMixerContinuousContainer(meterWidth: 52, standard: kind == .standard, lowerTitle: lowerTitle) {
+            Group { if split { Color.clear } else { meter } }.jarasPlaced(at: 0)
+            Group { if split { Color.clear } else { midi } }.jarasPlaced(at: 1)
+            TrackDragTitle(title: title, foreground: 0xffffff, project: project, track: track, state: state.drag, select: { state.calls += actionStep }).jarasPlaced(at: 2)
+            buttons.jarasPlaced(at: 3)
+            Group { if lowerTitle { volume } else { Color.clear } }.clipped().jarasPlaced(at: 4)
             Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(Color.green).allowsHitTesting(false).jarasPlaced(at: 5)
             Group { if kind == .teleprompter { Button("Add media") { state.calls += 1 }.buttonStyle(TrackControlButtonStyle()) } else { Color.clear } }.clipped().jarasPlaced(at: 6)
         }
     }
     var body: some View {
         Group {
-            if candidate { NativeTrackMixerControls(track: track, meterWidth: 52, standard: kind == .standard, meter: { meter }, activity: { midi }, controls: { controls(split: true) }) }
+            if candidate { NativeTrackMixerControls(track: track, meterWidth: 52, standard: kind == .standard, meter: state.meter, activity: state.activity, controls: { controls(split: true) }, nativePanel: kind == .standard && !CommandLine.arguments.contains("--retained") ? nativePanel : nil) }
             else { controls(split: false) }
         }.frame(maxHeight: .infinity).clipped()
          .background { HStack(spacing: 0) { Color(red: 0.12, green: 0.2, blue: 0.16).opacity(0.5) }.allowsHitTesting(false) }
@@ -419,7 +560,7 @@ if CommandLine.arguments.contains("--automatic-height") { verifyAutomaticHeightL
             baseline.change(height, width: width); candidate.change(height, width: width)
             let a = frames(baseline), b = frames(candidate)
             for key in ["title", "slider", "meter"] {
-                expect(a[key]!.count == b[key]!.count, "View identities mismatch \(kind) \(key)")
+                expect(a[key]!.count == b[key]!.count, "View identities mismatch \(kind) h\(height) w\(width) \(key): \(a[key]!.count) vs \(b[key]!.count)")
                 for (old,new) in zip(a[key]!,b[key]!) {
                     // Hidden zero-sized controls stay outside the clipped row.
                     if old.minX > width || old.width <= 0 || old.height <= 0 { continue }
@@ -437,8 +578,13 @@ if CommandLine.arguments.contains("--automatic-height") { verifyAutomaticHeightL
     for height in [64.0,72,64] { fixture.change(height) }
     Counts.reset()
     let started = ProcessInfo.processInfo.systemUptime
-    let heights = Array(stride(from: 64.0, through: 112, by: 2)) + Array(stride(from: 110.0, through: 64, by: -2))
-    for height in heights { fixture.change(height) }
+    let widths = CommandLine.arguments.contains("--width")
+    let heights = widths ? Array(stride(from: 248.0, through: 416, by: 6)) + Array(stride(from: 410.0, through: 248, by: -6))
+        : Array(stride(from: 64.0, through: 112, by: 2)) + Array(stride(from: 110.0, through: 64, by: -2))
+    if CommandLine.arguments.contains("--live-resize") { NativeSidebarResizeActivity.shared.begin(owner: fixture.host) }
+    for value in heights { if widths { fixture.change(64, width: value) } else { fixture.change(value) } }
+    NativeSidebarResizeActivity.shared.end(owner: fixture.host)
+    fixture.settle()
     let elapsed = (ProcessInfo.processInfo.systemUptime-started)*1000
     let result: [String:Any] = ["candidate":variant,"steps":heights.count,"origin":Counts.origin,"size":Counts.size,"slotLayouts":Counts.slotLayouts,"rootUpdates":Counts.update,"nativeSliders":descendants(fixture.host,of:DirectVolumeSliderView.self).count,"elapsedMS":elapsed]
     print(String(data: try! JSONSerialization.data(withJSONObject: result,options:.sortedKeys),encoding:.utf8)!)

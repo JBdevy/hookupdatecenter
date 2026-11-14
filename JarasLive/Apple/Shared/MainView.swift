@@ -65,11 +65,12 @@ struct MainView: View {
     @State private var clipFXTargets: [UUID] = []
     #endif
     @State private var textItemTarget: UUID?
+    @State private var fullLyricsTarget: FullLyricsTarget?
     @State private var lastObservedProjectID: UUID?
     @State private var presentedSessionID: UUID?
     @AppStorage("jaras.language") private var language = "en"
     @State private var navigationOpen = false
-    @AppStorage("jaras.layout.mixer.open") private var footerMixerOpen = false
+    @AppStorage("jaras.layout.mixer.open", store: WorkspaceLayoutPreferences.storage) private var footerMixerOpen = false
     #if os(macOS)
     @StateObject private var detachedMixer = DetachedMixerWindow()
     @StateObject private var detachedParts = DetachedPartsWindow()
@@ -78,41 +79,41 @@ struct MainView: View {
     #endif
     @State private var keyboardOpen = false
     #if os(macOS)
-    @AppStorage("jaras.vinhetas.visible") private var vinhetasOpen = false
+    @AppStorage("jaras.vinhetas.visible", store: WorkspaceLayoutPreferences.storage) private var vinhetasOpen = false
     @StateObject private var vinhetasWindow = VinhetasWindow()
     #endif
-    @AppStorage("jaras.layout.parts.open") private var partsLeftOpen = false
-    @AppStorage("jaras.layout.partsRight.open") private var partsRightOpen = false
-    @AppStorage("jaras.layout.setlist.placement") private var setlistPlacement: SetlistPlacement = .right
-    @AppStorage("jaras.layout.setlist.dockSide") private var setlistDockPlacement: SetlistPlacement = .right
+    @AppStorage("jaras.layout.parts.open", store: WorkspaceLayoutPreferences.storage) private var partsLeftOpen = false
+    @AppStorage("jaras.layout.partsRight.open", store: WorkspaceLayoutPreferences.storage) private var partsRightOpen = false
+    @AppStorage("jaras.layout.setlist.placement", store: WorkspaceLayoutPreferences.storage) private var setlistPlacement: SetlistPlacement = .right
+    @AppStorage("jaras.layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage) private var setlistDockPlacement: SetlistPlacement = .right
     @State private var keyboardSettings = false
-    @AppStorage("catlive.footerDisplayHeight") private var storedFooterHeight = 27.0
-    @AppStorage("jaras.footerMixerHeight") private var footerMixerHeight = 273.0
+    @AppStorage("catlive.footerDisplayHeight", store: WorkspaceLayoutPreferences.storage) private var storedFooterHeight = 27.0
+    @AppStorage("jaras.footerMixerHeight", store: WorkspaceLayoutPreferences.storage) private var footerMixerHeight = 273.0
     @State private var footerResizeCoordinator = FooterVerticalResizeCoordinator()
     private func maximumFooterHeight(workspaceHeight: CGFloat) -> CGFloat {
         min(161.046875, max(27, workspaceHeight - 150 - (keyboardOpen ? 108 : 0)
             - (footerMixerOpen ? min(723.55859375, max(273, footerMixerHeight)) : 0)))
     }
-    @AppStorage("jaras.trackColumnWidth") private var mixerWidth = Double(SidebarWidthLimits.trackMixer)
-    @AppStorage("jaras.trackColumnRestoreWidth") private var mixerRestoreWidth = Double(SidebarWidthLimits.trackMixer)
+    @AppStorage("jaras.trackColumnWidth", store: WorkspaceLayoutPreferences.storage) private var mixerWidth = Double(SidebarWidthLimits.trackMixer)
+    @AppStorage("jaras.trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var mixerRestoreWidth = Double(SidebarWidthLimits.trackMixer)
     #if os(macOS)
     @State private var setlistScrollController = SidebarScrollController()
     #endif
-    @AppStorage("jaras.setlistWidth") private var setlistWidth = Double(SidebarWidthLimits.setlistDefault)
-    @AppStorage("jaras.setlistRestoreWidth") private var setlistRestoreWidth = 240.0
+    @AppStorage("jaras.setlistWidth", store: WorkspaceLayoutPreferences.storage) private var setlistWidth = Double(SidebarWidthLimits.setlistDefault)
+    @AppStorage("jaras.setlistRestoreWidth", store: WorkspaceLayoutPreferences.storage) private var setlistRestoreWidth = 240.0
     init(show: ShowController, remotePresentation: Bool = false, auth: AuthService, backend: any BackendClient, documents: ProjectDocuments) {
         self.show = show; self.remotePresentation = remotePresentation
         self.auth = auth; self.backend = backend; self.documents = documents
         let prefix = remotePresentation ? "jaras.remote." : "jaras."
-        _footerMixerOpen = AppStorage(wrappedValue: false, prefix + "layout.mixer.open")
-        _partsLeftOpen = AppStorage(wrappedValue: false, prefix + "layout.parts.open")
-        _partsRightOpen = AppStorage(wrappedValue: false, prefix + "layout.partsRight.open")
-        _setlistPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.placement")
-        _setlistDockPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.dockSide")
-        _mixerWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnWidth")
-        _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnRestoreWidth")
-        _setlistWidth = AppStorage(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth")
-        _setlistRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth")
+        _footerMixerOpen = AppStorage(wrappedValue: false, prefix + "layout.mixer.open", store: WorkspaceLayoutPreferences.storage)
+        _partsLeftOpen = AppStorage(wrappedValue: false, prefix + "layout.parts.open", store: WorkspaceLayoutPreferences.storage)
+        _partsRightOpen = AppStorage(wrappedValue: false, prefix + "layout.partsRight.open", store: WorkspaceLayoutPreferences.storage)
+        _setlistPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.placement", store: WorkspaceLayoutPreferences.storage)
+        _setlistDockPlacement = AppStorage(wrappedValue: .right, prefix + "layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage)
+        _mixerWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnWidth", store: WorkspaceLayoutPreferences.storage)
+        _mixerRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 280 : Double(SidebarWidthLimits.trackMixer), prefix + "trackColumnRestoreWidth", store: WorkspaceLayoutPreferences.storage)
+        _setlistWidth = AppStorage(wrappedValue: remotePresentation ? 370 : Double(SidebarWidthLimits.setlistDefault), prefix + "setlistWidth", store: WorkspaceLayoutPreferences.storage)
+        _setlistRestoreWidth = AppStorage(wrappedValue: remotePresentation ? 370 : 240, prefix + "setlistRestoreWidth", store: WorkspaceLayoutPreferences.storage)
     }
     private func toggleBarMixer() {
         #if os(macOS)
@@ -173,7 +174,7 @@ struct MainView: View {
     #if os(macOS)
     private func restoreGlobalPanels() {
         guard !remotePresentation, DesktopProjectTabs.shared.isForeground(show) else { return }
-        let defaults = UserDefaults.standard
+        let defaults = WorkspaceLayoutPreferences.storage
         if defaults.bool(forKey: "jaras.layout.vinhetas.detached") {
             let visible = defaults.object(forKey: "jaras.layout.vinhetas.visible") as? Bool ?? true
             vinhetasOpen = false; vinhetasWindow.open(show: show)
@@ -427,6 +428,14 @@ struct MainView: View {
                 textItemTarget = id
                 #endif
             })
+            .environment(\.addFullLyrics, { track in
+                #if os(macOS)
+                toolWindows.openFullLyrics(show: show, track: track)
+                #else
+                do { fullLyricsTarget = try FullLyricsTarget(show: show, track: track) }
+                catch { show.message = error.localizedDescription }
+                #endif
+            })
             #if os(macOS)
             .background(NativeTimelineModalGate(blocked: navigationOpen || textItemTarget != nil || trackEdit != nil || mappings.editing != nil))
             #else
@@ -578,6 +587,9 @@ struct MainView: View {
                             .id(id)
                     }
                 }
+            }
+            .sheet(item: $fullLyricsTarget) { target in
+                FullLyricsEditor(show: show, target: target, close: { fullLyricsTarget = nil })
             }
             .sheet(item: $panel) { selected in
                 VStack(spacing: 0) {
@@ -1074,6 +1086,8 @@ private struct FooterProjectNameDisplay: View {
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     @State private var showingBackups = false
+    @State private var pendingBackup: URL?
+    @State private var confirmingBackup = false
     @State private var backups: [(url: URL, date: Date)] = []
     @State private var loadingBackups = false
     @State private var backupError = ""
@@ -1120,7 +1134,8 @@ private struct FooterProjectNameDisplay: View {
                         ForEach(backups, id: \.url) { backup in
                             Button {
                                 showingBackups = false
-                                documents.open(backup.url)
+                                pendingBackup = backup.url
+                                DispatchQueue.main.async { confirmingBackup = true }
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(verbatim: backup.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
@@ -1150,6 +1165,12 @@ private struct FooterProjectNameDisplay: View {
             .onAppear(perform: updateDate).onChange(of: timestamp) { _ in updateDate() }
         }.buttonStyle(.plain)
             .popover(isPresented: $showingBackups, arrowEdge: titlebar ? .bottom : .top) { backupList }
+            .alert("Open backup?", isPresented: $confirmingBackup, presenting: pendingBackup) { url in
+                Button("Cancel", role: .cancel) { pendingBackup = nil }
+                Button("Open") { pendingBackup = nil; documents.open(url) }
+            } message: { url in
+                Text("Open this backup as a recovered project?") + Text(verbatim: "\n\n" + url.lastPathComponent)
+            }
     }
 }
 
@@ -1224,6 +1245,7 @@ struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
             // descendants. Forward presentation and actions explicitly instead.
             AnyView(content().environment(\.locale, environment.locale)
                     .environment(\.colorScheme, environment.colorScheme)
+                .environment(\.controlActiveState, .active)
                 .environment(\.font, environment.font)
                 .environment(\.controlSize, environment.controlSize).environment(\.isEnabled, environment.isEnabled)
                 .environment(\.layoutDirection, environment.layoutDirection).environment(\.dynamicTypeSize, environment.dynamicTypeSize)
@@ -1238,6 +1260,13 @@ struct FooterNativeHeightHost<Content: View>: NSViewRepresentable {
     }
 }
 
+private final class RetainedFooterHostingView: NSHostingView<AnyView> {
+    override func layout() {
+        guard !isHiddenOrHasHiddenAncestor else { return }
+        super.layout()
+    }
+    override func viewDidUnhide() { super.viewDidUnhide(); needsLayout = true }
+}
 final class FooterHeightContainerView: NSView {
     private var storedHeight: CGFloat = 27
     private var minimum: CGFloat = 27
@@ -1253,7 +1282,7 @@ final class FooterHeightContainerView: NSView {
     var editTrackDetails: (TrackDetailsEditRequest) -> Void = { _ in }
     private(set) var contentAssignments = 0
     private(set) var effectiveHeight: CGFloat = 27
-    private let host = NSHostingView(rootView: AnyView(EmptyView()))
+    private let host = RetainedFooterHostingView(rootView: AnyView(EmptyView()))
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         if #available(macOS 13, *) { host.sizingOptions = [] }
@@ -1274,15 +1303,15 @@ final class FooterHeightContainerView: NSView {
         if let pendingCommit, storedHeight != pendingCommit.previous || !active { self.pendingCommit = nil }
         self.storedHeight = storedHeight; self.minimum = minimum; self.maximum = maximum
         self.active = active; self.role = role; self.coordinator = coordinator
-        // Hiding a zero-height panel still leaves its entire hosting tree in
-        // AppKit's window layout/environment walks when another panel opens.
-        // Keep the root and its last geometry, but detach it while closed.
+        // Once opened, keep the controls in their original window. Detaching
+        // this hosting root tears down nested SwiftUI window environments on
+        // close and forces cold preparation again on every reopen.
         host.isHidden = !active
         if active {
             if host.superview !== self { addSubview(host) }
         } else {
             FooterVerticalResizeView.cancelDrags(in: self); preview = nil
-            if host.superview === self { host.removeFromSuperview() }
+            if contentAssignments == 0, host.superview === self { host.removeFromSuperview() }
         }
         refreshHeight(); coordinator?.register(self, role: role)
     }
@@ -1329,6 +1358,7 @@ struct FooterDisplayResizeInput: NSViewRepresentable {
     }
 }
 class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
+    var defersWindowLayoutDuringDrag: Bool { false }
     var height: CGFloat = 27
     var minimum: CGFloat = 27
     var maximum: CGFloat = 900
@@ -1337,6 +1367,9 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
     private var origin: (y: CGFloat, height: CGFloat)?
     private weak var dragBoundary: FooterHeightContainerView?
     private var lastHeight: CGFloat?
+    private var pendingHeight: CGFloat?
+    private var resizeTimer: Timer?
+    private var lastResizeTime: TimeInterval?
     private var keyMonitor: Any?
     private var notifications: [NSObjectProtocol] = []
     private(set) var cursorPushed = false
@@ -1368,8 +1401,10 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         guard event.buttonNumber == 0, !isHiddenOrHasHiddenAncestor,
               !NativeTimelineInputGate.shared.isBlocked(window), boundary?.active != false else { return }
         dragBoundary = boundary
+        cancelPendingHeight(); lastResizeTime = nil
         origin = (event.locationInWindow.y, boundary?.effectiveHeight ?? height)
         lastHeight = origin?.height
+        NativeSidebarResizeActivity.shared.begin(owner: self)
         NotificationCenter.default.post(name: Notification.Name("CatLiveFooterResizeBegan"), object: window)
         NSCursor.resizeUpDown.push(); cursorPushed = true
         if let window, !(window.firstResponder is TimelineGridKeyboardTarget) { window.makeFirstResponder(self) }
@@ -1383,22 +1418,54 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
     private func apply(_ value: CGFloat) {
         guard lastHeight != value else { return }
         lastHeight = value
-        CATransaction.begin(); CATransaction.setDisableActions(true)
+        let disabled = CATransaction.disableActions()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.setDisableActions(disabled) }
         boundary?.previewHeight(value); changed?(value)
-        window?.contentView?.layoutSubtreeIfNeeded()
-        CATransaction.commit()
+        // Invalidate the real viewport now; AppKit presents it in its normal
+        // display pass. Synchronously walking the whole project here repeats
+        // that pass inside every pointer event, before the next event can run.
+        if !defersWindowLayoutDuringDrag { window?.contentView?.layoutSubtreeIfNeeded() }
+    }
+    private func cancelPendingHeight() {
+        resizeTimer?.invalidate(); resizeTimer = nil; pendingHeight = nil
+    }
+    private func commitPendingHeight() {
+        resizeTimer?.invalidate(); resizeTimer = nil
+        guard let value = pendingHeight, origin != nil else { pendingHeight = nil; return }
+        pendingHeight = nil; lastResizeTime = ProcessInfo.processInfo.systemUptime
+        apply(value)
+    }
+    private func scheduleHeight(_ value: CGFloat) {
+        pendingHeight = value
+        let interval = 1.0 / 60
+        let elapsed = lastResizeTime.map { ProcessInfo.processInfo.systemUptime - $0 } ?? .infinity
+        guard elapsed < interval else { commitPendingHeight(); return }
+        guard resizeTimer == nil else { return }
+        // A burst of pointer events has one newest destination. Reflow the
+        // real viewport once per display frame rather than once per sample.
+        let timer = Timer(timeInterval: interval - elapsed, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.commitPendingHeight() }
+        }
+        resizeTimer = timer; RunLoop.main.add(timer, forMode: .common)
     }
     override func mouseDragged(with event: NSEvent) {
+        // scheduleHeight already retains the newest pointer destination. Reading
+        // NSApplication's event queue here reenters Ventura's display/layout
+        // cycle inside the drag callback, before the pending height is applied.
         guard let value = resizedHeight(event) else { return }
-        apply(value)
+        scheduleHeight(value)
     }
     override func mouseUp(with event: NSEvent) {
         guard let value = resizedHeight(event) else { return }
+        cancelPendingHeight()
         apply(value); origin = nil
+        window?.contentView?.layoutSubtreeIfNeeded()
         boundary?.finishHeight(commit: true); dragBoundary = nil; finishCursor(); ended?(value)
     }
     func cancelDrag() {
         guard origin != nil else { return }
+        cancelPendingHeight()
         origin = nil; lastHeight = nil
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let container = boundary
@@ -1407,6 +1474,7 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         CATransaction.commit(); finishCursor()
     }
     private func finishCursor() {
+        NativeSidebarResizeActivity.shared.end(owner: self)
         NotificationCenter.default.post(name: Notification.Name("CatLiveFooterResizeEnded"), object: window)
         if cursorPushed { NSCursor.pop(); cursorPushed = false }
         window?.invalidateCursorRects(for: self)
@@ -1435,6 +1503,7 @@ class FooterVerticalResizeView: NSView, NativeTimelineInputObserver {
         }
     }
     deinit {
+        resizeTimer?.invalidate()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         notifications.forEach(NotificationCenter.default.removeObserver)
         if cursorPushed { NSCursor.pop() }
@@ -1453,6 +1522,7 @@ struct FooterMixerResizeInput: NSViewRepresentable {
     }
 }
 final class FooterMixerResizeView: FooterVerticalResizeView {
+    override var defersWindowLayoutDuringDrag: Bool { true }
     private var tracking: NSTrackingArea?
     private var hovered = false { didSet { if hovered != oldValue { needsDisplay = true } } }
     override func updateTrackingAreas() {

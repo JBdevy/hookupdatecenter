@@ -59,6 +59,39 @@ import SwiftUI
 }
 #endif
 
+/// Audible timeline segments are selected by their output deadline, not by
+/// the earlier transport tick that promotes a prepared head. This clock owns
+/// presentation only; scheduling continues to use the original host anchors.
+struct AudioPresentationClock {
+    struct Anchor {
+        let position: Double
+        let hostTime: Double
+    }
+    private var anchors: [Anchor]
+
+    init(position: Double, hostTime: Double) {
+        anchors = [Anchor(position: position, hostTime: hostTime)]
+    }
+
+    mutating func transition(position: Double, hostTime: Double, sampledAt: Double) {
+        // A replaced deadline invalidates later pending display segments.
+        anchors.removeAll { $0.hostTime >= hostTime }
+        anchors.append(Anchor(position: position, hostTime: hostTime))
+        // The UI asks for the current transport sample epoch. Retain its
+        // active segment and every future handoff, even across short loops.
+        if let current = anchors.lastIndex(where: { $0.hostTime <= sampledAt }), current > 0 {
+            anchors.removeFirst(current)
+        }
+    }
+
+    func position(at hostTime: Double) -> Double {
+        let anchor = anchors.last(where: { $0.hostTime <= hostTime }) ?? anchors[0]
+        // First Play/seek can be waiting for its output deadline. Hold the
+        // requested position instead of drawing source time before it starts.
+        return max(0, anchor.position + max(0, hostTime - anchor.hostTime))
+    }
+}
+
 @MainActor final class MetronomeSettings: ObservableObject {
     static let shared = MetronomeSettings()
     @Published var enabled = UserDefaults.standard.bool(forKey: "jaras.metronome.enabled") { didSet { persist("enabled", enabled) } }
@@ -238,6 +271,7 @@ struct TimecodePlaybackSpan {
     let time: Double
     let end: Double
     let delay: Double
+    let speed: Double
     init?(song: Song, track: Track, position: Double, settings: TimecodeSettings, preferredRegion: UUID?) {
         let preferred = preferredRegion.map(Project.timecodeItemID)
         var current: AudioClip?, upcoming: AudioClip?
@@ -255,8 +289,12 @@ struct TimecodePlaybackSpan {
         let region = song.parts.first { $0.id == regionID }
         let origin = settings.regionRelative ? region?.startTime ?? clip.startTime : 0
         delay = max(0, clip.startTime - position)
-        time = max(position, clip.startTime) - origin + settings.offset
-        end = clip.startTime + clip.duration - origin + settings.offset
+        let at = max(position, clip.startTime)
+        let fragments = song.timecodePlaybackSegments(clip, origin: origin)
+        guard let fragment = fragments.first(where: { at >= $0.startTime && at < $0.startTime + $0.duration }) else { return nil }
+        speed = fragment.audioRate
+        time = fragment.sourceOffset + (at - fragment.startTime) * speed + settings.offset
+        end = fragment.sourceOffset + fragment.duration * speed + settings.offset
     }
 }
 
@@ -265,7 +303,48 @@ struct TimecodePlaybackSpan {
     static var shared = StemAudioPlayback(engine: AudioDeviceSettings.shared.engine)
     private let auxiliarySelectedHardware: Bool
     private let engine: AVAudioEngine
+    private let preparedTiming: JarasPreparedClipTiming
     private var mobileOutput: JarasMobileAudioOutput?
+    #if os(macOS)
+    private let bufferedOutput: JarasBufferedAudioOutput?
+    #endif
+    private var manualHardwareRenderTime: AVAudioTime? {
+        #if os(macOS)
+        if let bufferedOutput { return bufferedOutput.renderTime }
+        #endif
+        return mobileOutput?.renderTime
+    }
+    private var usesManualHardwareOutput: Bool {
+        #if os(macOS)
+        if bufferedOutput != nil { return true }
+        #endif
+        return mobileOutput != nil
+    }
+    private var outputIsRunning: Bool {
+        #if os(macOS)
+        if let bufferedOutput { return engine.isRunning && bufferedOutput.hardwareEngine.isRunning }
+        #endif
+        return engine.isRunning
+    }
+    private func stopEngine() {
+        #if os(macOS)
+        bufferedOutput?.stop()
+        #endif
+        engine.stop()
+    }
+    private func pauseEngine() {
+        #if os(macOS)
+        bufferedOutput?.stop()
+        #endif
+        engine.pause()
+    }
+    func bufferedAudioDiagnostics() -> [String: Any]? {
+        #if os(macOS)
+        return bufferedOutput?.diagnostics()
+        #else
+        return nil
+        #endif
+    }
     #if os(iOS)
     private var mobileTrackGraphNeedsRestart = false
     #endif
@@ -274,7 +353,7 @@ struct TimecodePlaybackSpan {
         #if os(iOS)
         realtime && (engine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware)
         #else
-        realtime && !engine.isInManualRenderingMode && (engine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware)
+        realtime && ((bufferedOutput != nil && (bufferedOutput?.hardwareEngine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware)) || (!engine.isInManualRenderingMode && (engine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware)))
         #endif
     }
     private var outputAllowed: Bool {
@@ -291,12 +370,12 @@ struct TimecodePlaybackSpan {
         try AudioDeviceSettings.shared.requireSelectedOutput()
         guard auxiliarySelectedHardware else { return }
         guard let device = AudioDeviceSettings.shared.devices.first(where: { $0.id == AudioDeviceSettings.shared.selectedUID }),
-              let unit = engine.outputNode.audioUnit else { throw ProjectError.invalid("Audio output is unavailable") }
+              let unit = (bufferedOutput?.hardwareEngine ?? engine).outputNode.audioUnit else { throw ProjectError.invalid("Audio output is unavailable") }
         var actual: AudioDeviceID = 0
         var bytes = UInt32(MemoryLayout<AudioDeviceID>.size)
         let read = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &actual, &bytes)
         if read == noErr, actual == device.hardwareID { return }
-        engine.stop()
+        stopEngine()
         var selected = AudioDeviceID(device.hardwareID)
         let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &selected, bytes)
         guard status == noErr else { throw ProjectError.invalid(String(format: "Unable to open audio device (%d).", status)) }
@@ -312,6 +391,9 @@ struct TimecodePlaybackSpan {
         let routeConfirmed = true
         #endif
         engine.mainMixerNode.outputVolume = allowed && outputAllowed && routeConfirmed ? 1 : 0
+        #if os(macOS)
+        bufferedOutput?.setOutputEnabled(allowed && outputAllowed && routeConfirmed)
+        #endif
     }
     // An independent silent source keeps the hardware rendering even with an
     // empty project, a muted Master, or no transport voices scheduled.
@@ -325,6 +407,7 @@ struct TimecodePlaybackSpan {
     private var deviceSilenceAttached = false
     private var deviceSessionActive = false
     private var lastDeviceHealthCheck = 0.0
+    private var lastBufferedDiagnostics = 0.0
     private var deviceActivity: NSObjectProtocol?
     private var clickGenerators: [JarasMetronomeGenerator] = []
     private var clickTrackID: UUID?
@@ -406,8 +489,8 @@ struct TimecodePlaybackSpan {
                     "sourceClock": sourcePositionAtRenderClock(voice) ?? -1,
                     "gainHost": voice.gain.lastRenderTime?.hostTime ?? 0,
                     "gainSample": voice.gain.lastRenderTime?.sampleTime ?? -1,
-                    "stretchHost": voice.stretch.lastRenderTime?.hostTime ?? 0,
-                    "stretchSample": voice.stretch.lastRenderTime?.sampleTime ?? -1,
+                    "stretchHost": voice.stretch?.lastRenderTime?.hostTime ?? 0,
+                    "stretchSample": voice.stretch?.lastRenderTime?.sampleTime ?? -1,
                     "masterHost": engine.outputNode.lastRenderTime?.hostTime ?? 0,
                     "masterSample": engine.outputNode.lastRenderTime?.sampleTime ?? -1]
         }
@@ -482,7 +565,7 @@ struct TimecodePlaybackSpan {
             if let voice = voices.removeValue(forKey: key) { retireSilently(voice) }
         }
         for voice in voices.values { voice.effects?.setPlaybackBoundary() }
-        headAudioClock[2] = nil; lastPosition[2] = nil; preparedJump = nil
+        setHeadAudioClock(nil, head: 2); lastPosition[2] = nil; preparedJump = nil
     }
     private func upcomingJump(_ transport: TransportState, song: Song, setlist: RegionSetlist?) -> (Double, Double, UUID?, UUID?)? {
         guard transport.playing else { return nil }
@@ -532,11 +615,11 @@ struct TimecodePlaybackSpan {
         recordingGraphNeedsRestart = true
         #endif
     }
-    // Keep the prepared audio graph clock running throughout the device session.
-    // A disarmed instrument may still be sustaining a note, so its graph stays
-    // awake until an explicit Stop releases MIDI notes.
+    // Keep live sources and their unknown plugin tails clocked until Stop.
+    // An open device alone needs only deviceSilence, not every track's FX.
     private var renderEnabled = false
     private var instrumentRenderPending = false
+    private var liveRenderPending = false
     @MainActor private struct TrackBus {
         var padSource: JarasPadSource?
         let mix = AVAudioMixerNode()
@@ -570,10 +653,14 @@ struct TimecodePlaybackSpan {
         let format = node.outputFormat(forBus: 0)
         node.installTap(onBus: 0, bufferSize: 512, format: format) { buffer, _ in ring.push(buffer) }
         recordingTaps[track] = node
+        refreshGraphRendering()
         if !engine.isRunning { try engine.start() }
         return format
     }
-    func detachOutputCapture(_ track: UUID) { recordingTaps.removeValue(forKey: track)?.removeTap(onBus: 0) }
+    func detachOutputCapture(_ track: UUID) {
+        recordingTaps.removeValue(forKey: track)?.removeTap(onBus: 0)
+        refreshGraphRendering()
+    }
     var outputCaptureFormat: AVAudioFormat { AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)! }
     private struct PadVoice {
         let source: JarasPadSource
@@ -597,6 +684,7 @@ struct TimecodePlaybackSpan {
         }
         padVoices[id] = PadVoice(source: source, token: token)
         padTracks[id] = track; padCompletions[id] = finished
+        liveRenderPending = true
         startMeterClock()
     }
     func stopPad(_ id: UUID) {
@@ -679,7 +767,9 @@ struct TimecodePlaybackSpan {
             engine.connect(source, to: gate, format: format)
             engine.connect(gate, to: bus.mix, fromBus: 0, toBus: availableInputBus(track: track, node: bus.mix), format: format)
             inputMonitors[track] = InputMonitor(source: source, gate: gate, input: input, firstChannel: firstChannel, channels: channels)
+            liveRenderPending = true
         }
+        refreshGraphRendering()
         if deviceSessionActive { startMeterClock() }
     }
     func hasInputMonitor(_ track: UUID) -> Bool { inputMonitors[track] != nil }
@@ -696,10 +786,22 @@ struct TimecodePlaybackSpan {
         #endif
     }
     private func setGraphRenderEnabled(_ requested: Bool) {
-        // Suspending upstream pulls freezes prepared player/time-stretch clocks;
-        // waking only the output device still delays the first PCM after idle.
-        // Stop silences and resets sources, but the live graph remains clocked.
+        #if os(macOS)
+        // PreparedClip sources start against the device's host clock. Keep the
+        // device running, but stop pulling silent track/plugin graphs. Legacy
+        // multichannel players still need their continuously warmed converter
+        // clocks; never suspend those, live input, captures or sounding tails.
+        // External processors can generate audio without transport or REC,
+        // including a keyboard in their own editor or an effect generator.
+        // Their capability is unknown, so retain their existing render policy.
+        let enabled = requested || instrumentRenderPending || liveRenderPending
+            || !inputMonitors.isEmpty || !recordingTaps.isEmpty || !padVoices.isEmpty
+            || !effectTails.isEmpty || !boundaryTails.isEmpty || !clockedIdlePlayers.isEmpty
+            || !masterEffects.externalNodes.isEmpty
+            || trackBuses.values.contains { !$0.effects.externalNodes.isEmpty }
+        #else
         let enabled = requested || deviceSessionActive
+        #endif
         guard realtime, renderEnabled != enabled else { return }
         renderEnabled = enabled
         for route in masterRoutes { JarasChannelRouter.setRenderEnabled(route, enabled: enabled) }
@@ -708,6 +810,9 @@ struct TimecodePlaybackSpan {
         }
         for route in timecodeRoutes { JarasChannelRouter.setRenderEnabled(route, enabled: enabled) }
         if metronome != nil { JarasChannelRouter.setRenderEnabled(metronomeRoute, enabled: enabled) }
+    }
+    private func refreshGraphRendering() {
+        setGraphRenderEnabled(transportWasRunning)
     }
     private var groupConnections: [UUID: UUID] = [:]
     private var trackConnections: Set<TrackConnection> = []
@@ -903,7 +1008,6 @@ struct TimecodePlaybackSpan {
     private var failedPlaybackFiles = Set<String>()
     private var tempo: Double?
     private var preparedSourcesByPlayer: [ObjectIdentifier: JarasPreparedClip] = [:]
-    private var preparedSourcesByStretch: [ObjectIdentifier: JarasPreparedClip] = [:]
     private var preparedSourceEnabled: Bool { realtime && ProcessInfo.processInfo.environment["CATLIVE_PREPARED_SOURCE"] != "0" }
     private var allowsTempoChanges = false
     private var voiceClockAnchors: [ObjectIdentifier: (node: AVAudioTime, player: AVAudioTime)] = [:]
@@ -923,6 +1027,7 @@ struct TimecodePlaybackSpan {
     private var masterSolo = false
     private var lastPosition: [Int: Double] = [:]
     private var headAudioClock: [Int: (position: Double, host: UInt64)] = [:]
+    private var headPresentationClocks: [Int: AudioPresentationClock] = [:]
     #if os(macOS)
     private var pluginTempoRevision: UInt64?
     private var pluginTempoSong: UUID?
@@ -961,11 +1066,17 @@ struct TimecodePlaybackSpan {
     /// Position scheduled at the output, expressed at the UI sample epoch.
     /// The transport is ahead while players fill their processing latency.
     func presentationPosition(head: Int, sampledAt: Double) -> Double? {
-        guard realtime, let anchor = headAudioClock[head] else { return nil }
-        let host = mach_absolute_time()
-        let elapsed = host >= anchor.host ? AVAudioTime.seconds(forHostTime: host - anchor.host) : -AVAudioTime.seconds(forHostTime: anchor.host - host)
-        let sinceSample = ProcessInfo.processInfo.systemUptime - sampledAt
-        return max(0, anchor.position + elapsed - sinceSample)
+        guard realtime, let clock = headPresentationClocks[head] else { return nil }
+        return clock.position(at: presentationHostTime(sampledAt: sampledAt))
+    }
+    private func presentationHostTime(sampledAt: Double) -> Double {
+        AVAudioTime.seconds(forHostTime: mach_absolute_time()) - (ProcessInfo.processInfo.systemUptime - sampledAt)
+    }
+    private func setHeadAudioClock(_ anchor: (position: Double, host: UInt64)?, head: Int) {
+        headAudioClock[head] = anchor
+        headPresentationClocks[head] = anchor.map {
+            AudioPresentationClock(position: $0.position, hostTime: AVAudioTime.seconds(forHostTime: $0.host))
+        }
     }
     private func audioHostTime(position: Double, head: Int) -> UInt64? {
         guard let anchor = headAudioClock[head] else { return nil }
@@ -975,7 +1086,7 @@ struct TimecodePlaybackSpan {
     }
     private func nodeSampleTime(host: UInt64, anchor: AVAudioTime?) -> AVAudioFramePosition? {
         guard let anchor, anchor.isSampleTimeValid, anchor.sampleRate > 0 else { return nil }
-        if let clock = mobileOutput?.renderTime, !anchor.isHostTimeValid {
+        if let clock = manualHardwareRenderTime, !anchor.isHostTimeValid {
             let elapsed = host >= clock.hostTime ? AVAudioTime.seconds(forHostTime: host - clock.hostTime) : -AVAudioTime.seconds(forHostTime: clock.hostTime - host)
             return AVAudioFramePosition(((Double(clock.sampleTime) / clock.sampleRate + elapsed) * anchor.sampleRate).rounded())
         }
@@ -983,11 +1094,13 @@ struct TimecodePlaybackSpan {
         let elapsed = host >= anchor.hostTime ? AVAudioTime.seconds(forHostTime: host - anchor.hostTime) : -AVAudioTime.seconds(forHostTime: anchor.hostTime - host)
         return anchor.sampleTime + AVAudioFramePosition((elapsed * anchor.sampleRate / (anchor.audioTimeStamp.mRateScalar > 0 ? anchor.audioTimeStamp.mRateScalar : 1)).rounded())
     }
-    private func configureStretch(_ stretch: AVAudioUnitTimePitch, clock: AVAudioUnitVarispeed, rate: Double, pitch: Float) {
-        if let source = preparedSourcesByStretch[ObjectIdentifier(stretch)] {
-            source.setRate(rate, pitch: Double(pitch) / 100)
-            return
+    private func configureStretch(_ voice: Voice, rate: Double, pitch: Float) {
+        if let source = voice.prepared { source.setRate(rate, pitch: Double(pitch) / 100) }
+        else if let stretch = voice.stretch, let clock = voice.rateClock {
+            configureStretch(stretch, clock: clock, rate: rate, pitch: pitch)
         }
+    }
+    private func configureStretch(_ stretch: AVAudioUnitTimePitch, clock: AVAudioUnitVarispeed, rate: Double, pitch: Float) {
         let rate = Float(rate)
         // TimePitch rounds fractional rates to its analysis hop: 61/60 can
         // render as 521/512, accumulating ~54 ms/min against the sample clock.
@@ -1031,8 +1144,8 @@ struct TimecodePlaybackSpan {
     private struct Voice {
         let player: AVAudioPlayerNode
         let gain: AVAudioUnitEffect
-        let stretch: AVAudioUnitTimePitch
-        let rateClock: AVAudioUnitVarispeed
+        let stretch: AVAudioUnitTimePitch?
+        let rateClock: AVAudioUnitVarispeed?
         var pitch: Float
         let usesStretch: Bool
         let track: UUID
@@ -1075,7 +1188,8 @@ struct TimecodePlaybackSpan {
         }
         var effectsInput: AVAudioNode {
             if let preparedMix { return preparedMix }
-            return usesStretch ? rateClock : player
+            if usesStretch, let rateClock { return rateClock }
+            return player
         }
         var automationApplied = false
         var automationNativeApplied = false
@@ -1101,14 +1215,25 @@ struct TimecodePlaybackSpan {
     }
     init(engine: AVAudioEngine, realtime: Bool = true, mobileOutput: JarasMobileAudioOutput? = nil, auxiliarySelectedHardware: Bool = false, pauseForRoutingChanges: Bool? = nil) {
         self.auxiliarySelectedHardware = auxiliarySelectedHardware
-        self.engine = engine; self.realtime = realtime
+        self.realtime = realtime
         #if os(macOS)
+        // Explicit test switch until transport, live input and device recovery
+        // have been checked on the older Intel hardware with the real project.
+        if realtime, !engine.isInManualRenderingMode,
+           engine === AudioDeviceSettings.shared.engine || auxiliarySelectedHardware,
+           ProcessInfo.processInfo.environment["CATLIVE_BUFFERED_MAC_AUDIO"] == "1" {
+            let graph = AVAudioEngine()
+            self.engine = graph
+            bufferedOutput = JarasBufferedAudioOutput(engine: graph, hardwareEngine: engine)
+        } else { self.engine = engine; bufferedOutput = nil }
         if #available(macOS 13, *) { self.pauseForRoutingChanges = pauseForRoutingChanges ?? false }
         else { self.pauseForRoutingChanges = pauseForRoutingChanges ?? true }
         #else
+        self.engine = engine
         self.pauseForRoutingChanges = pauseForRoutingChanges ?? false
         #endif
         self.mobileOutput = mobileOutput
+        self.preparedTiming = JarasPreparedClipTiming(engine: self.engine)
         #if os(iOS)
         if mobileOutput == nil, realtime, engine === AudioDeviceSettings.shared.engine {
             self.mobileOutput = JarasMobileAudioOutput(engine: engine)
@@ -1132,6 +1257,10 @@ struct TimecodePlaybackSpan {
         // the physical clock. AVAudioEngine's cached format is not sufficient.
         if usesSelectedHardware, let rate = AudioDeviceSettings.shared.currentOutputSampleRate,
            abs(previous.sampleRate - rate) > 0.5 { return true }
+        if let bufferedOutput {
+            let current = bufferedOutput.hardwareEngine.outputNode.outputFormat(forBus: 0)
+            return previous.sampleRate != current.sampleRate || previous.channelCount != current.channelCount
+        }
         #endif
         #if os(iOS)
         if mobileOutput != nil {
@@ -1154,7 +1283,7 @@ struct TimecodePlaybackSpan {
         #if os(macOS)
         if usesSelectedHardware && !AudioDeviceSettings.shared.outputDeviceIsBound {
             engine.mainMixerNode.outputVolume = 0
-            engine.stop()
+            stopEngine()
         }
         #endif
         guard deviceSessionActive, realtime else { return }
@@ -1162,10 +1291,10 @@ struct TimecodePlaybackSpan {
             // Gate the old-rate graph during the coalesced control-thread rebuild.
             // No format preparation or allocation belongs to the render callback.
             engine.mainMixerNode.outputVolume = 0
-            engine.stop()
+            stopEngine()
         }
         deviceRecovery?.cancel()
-        guard outputAllowed else { deviceRecovery = nil; stop(); engine.stop(); return }
+        guard outputAllowed else { deviceRecovery = nil; stop(); stopEngine(); return }
         // Core Audio may finish the output format change after CurrentDevice is
         // set. Coalesce that notification and the settings callback into one rebuild.
         deviceRecovery = Task { @MainActor [weak self] in
@@ -1182,12 +1311,12 @@ struct TimecodePlaybackSpan {
                 if self.usesSelectedHardware { try self.requireSelectedOutput() }
                 #endif
                 self.engine.mainMixerNode.outputVolume = self.licenseAllowed && self.outputAllowed ? 1 : 0
-                guard !self.engine.isRunning || self.outputFormatChanged else { return }
+                guard !self.outputIsRunning || self.outputFormatChanged else { return }
                 try self.reconfigureDevice()
             } catch {
                 #if os(macOS)
                 if self.usesSelectedHardware && !AudioDeviceSettings.shared.outputDeviceIsBound {
-                    self.stop(); self.engine.stop(); self.onOutputDisconnected?()
+                    self.stop(); self.stopEngine(); self.onOutputDisconnected?()
                 }
                 #endif
                 self.onError(error)
@@ -1205,7 +1334,7 @@ struct TimecodePlaybackSpan {
         let rebuild = !masterConfigured || outputFormatChanged
         if rebuild { beforeAudioGraphReset() }
         defer { if rebuild { afterAudioGraphReset() } }
-        stop(); engine.stop()
+        stop(); stopEngine()
         discardNativeMeterPeaks()
         if rebuild {
             configureGraph(directory: directory, prepareMaster: false)
@@ -1239,7 +1368,7 @@ struct TimecodePlaybackSpan {
         timecodeGenerator = nil; timecodeRoutes = []; timecodeAnchor = nil
         appliedRoutes.removeAll()
         // A project swap rebuilds the graph before it is warmed again by update.
-        engine.stop()
+        stopEngine()
         discardMIDITakeVoices()
         discardNativeMeterPeaks()
         instrumentGeneration = UUID(); instrumentRequests.removeAll(); instrumentNames.removeAll()
@@ -1256,6 +1385,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             if let source = bus.padSource { engine.detach(source.node) }
             engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.controls); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
         }
+        #if os(macOS)
+        for branches in trackInputBranches.values {
+            for branch in branches { engine.detach(branch) }
+        }
+        trackInputBranches.removeAll()
+        #endif
         trackBuses.removeAll(); groupConnections.removeAll(); retiredTrackEffects.removeAll()
         #if os(iOS)
         mobileTrackGraphNeedsRestart = false
@@ -1292,7 +1427,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         missingAudioPaths.removeAll(); fragmentPlaybackStarts.removeAll(); clipIndices.removeAll()
         contiguousNext.removeAll(); contiguousPrevious.removeAll(); contiguousSourceEnd.removeAll()
         analysisEffects.removeAll(); armedMIDIRecordingTracks.removeAll(); armedInstrumentTracks.removeAll()
-        instrumentRenderPending = false; setGraphRenderEnabled(false)
+        instrumentRenderPending = false; liveRenderPending = false; setGraphRenderEnabled(false)
         midiPlans.removeAll(); appliedSharedMIDIValues.removeAll(); sharedMIDIIsolation = nil; midiPlanRevision = nil; midiPlanSong = nil; midiTakeCacheTick = 0
         automationSong = nil; itemAutomationVoiceKeys.removeAll(); voiceClockAnchors.removeAll()
         allowsTempoChanges = false; lastTempoEditTime = -.infinity
@@ -1311,8 +1446,44 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         meters.removeAll(); preparedOutputFormat = nil
         lastUpdate = ProcessInfo.processInfo.systemUptime; lastMeterUpdate = 0
     }
+    #if os(macOS)
+    private var trackInputBranches: [ObjectIdentifier: [AVAudioMixerNode]] = [:]
+    #endif
+    /// Expanding a mixer with hundreds of input buses repeatedly recompiles
+    /// its formats on Core Audio. Small unity-gain branches bound that work
+    /// when adding tracks, without pausing the device or existing sources.
+    private func connectTrackBusInput(_ source: AVAudioNode, to mixer: AVAudioMixerNode, format: AVAudioFormat) {
+        #if os(macOS)
+        let key = ObjectIdentifier(mixer)
+        let destination: AVAudioMixerNode
+        let port: AVAudioNodeBus
+        if let branch = trackInputBranches[key]?.last, branch.nextAvailableInputBus < 16 {
+            destination = branch
+            port = branch.nextAvailableInputBus
+        } else {
+            let branch = AVAudioMixerNode()
+            engine.attach(branch)
+            // The caller has already connected the complete source path.
+            // A live engine drops connections between two empty mixers, so
+            // establish the input before connecting this new branch's output.
+            engine.connect(source, to: branch, fromBus: 0, toBus: 0, format: format)
+            engine.connect(branch, to: mixer, fromBus: 0, toBus: mixer.nextAvailableInputBus, format: format)
+            trackInputBranches[key, default: []].append(branch)
+            return
+        }
+        engine.connect(source, to: destination, fromBus: 0, toBus: port, format: format)
+        #else
+        engine.connect(source, to: mixer, fromBus: 0, toBus: mixer.nextAvailableInputBus, format: format)
+        #endif
+    }
     private func trackBus(for id: UUID) -> TrackBus {
         if let bus = trackBuses[id] { return bus }
+        let parent = tracks[id].flatMap { track -> UUID? in
+            guard track.outputPatches.contains(.masterGroup), let parent = track.parentTrackID,
+                  parent != id, tracks[parent] != nil else { return nil }
+            return parent
+        }
+        let parentBus = parent.map { trackBus(for: $0) }
         #if os(iOS)
         // RemoteIO can keep pulling the old manual render graph after tracks
         // are attached to a running iOS engine. Its output clock advances, but
@@ -1324,14 +1495,27 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         engine.attach(bus.controls); engine.attach(bus.internalSend)
         for route in bus.hardware {
             JarasChannelRouter.setRenderEnabled(route, enabled: !realtime || renderEnabled)
-            engine.attach(route); engine.connect(route, to: engine.mainMixerNode, fromBus: 0, toBus: engine.mainMixerNode.nextAvailableInputBus, format: hardwareFormat)
+            engine.attach(route)
+            #if !os(macOS)
+            connectTrackBusInput(route, to: engine.mainMixerNode, format: hardwareFormat)
+            #endif
         }
         let format = AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)!
-        engine.connect(bus.masterSend, to: masterBus, fromBus: 0, toBus: masterBus.nextAvailableInputBus, format: format)
+        #if !os(macOS)
+        connectTrackBusInput(bus.masterSend, to: masterBus, format: format)
+        #endif
         // The permanent Master send keeps this source graph clocked. Group
         // and internal sends acquire an output in connectTrackRouting
         // when first routed, so unused branches need no silent mixer render.
         for send in [bus.groupSend, bus.internalSend] {
+            if send === bus.groupSend, let parentBus {
+                // A newly attached fanout needs its group destination before
+                // the controls are connected below. Adding that output only
+                // afterwards can leave the new branch silent on a live graph.
+                engine.connect(send, to: parentBus.mix, fromBus: 0,
+                               toBus: parentBus.mix.nextAvailableInputBus, format: format)
+                continue
+            }
             do {
                 // An unconnected mixer defaults to 44.1 kHz. Prepare its output
                 // now so first use at another rate preserves the live input.
@@ -1358,6 +1542,14 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // AVAudioEngine, installing the splitter before it has an input leaves
         // newly added tracks unclocked (including their native Click source).
         engine.connect(bus.controls, to: destinations, fromBus: 0, format: format)
+        #if os(macOS)
+        // New summing branches must receive a complete upstream path. If the
+        // sends and the branch are both empty when connected, Core Audio drops
+        // their pending edges while running; later tracks then reuse bus zero
+        // and never reach Master. Existing sounding tracks stay connected.
+        for route in bus.hardware { connectTrackBusInput(route, to: engine.mainMixerNode, format: hardwareFormat) }
+        connectTrackBusInput(bus.masterSend, to: masterBus, format: format)
+        #endif
         bus.effects.apply(tracks[id]?.fx ?? NativeFXSettings())
         configureTransportFade(bus, id: id)
         #if os(macOS)
@@ -1367,6 +1559,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         bus.masterSend.outputVolume = 0; bus.groupSend.outputVolume = 0
         JarasEqualizer.setOutputMeteringEnabled(bus.controls, enabled: trackPeaks[id] != nil)
         trackBuses[id] = bus
+        if let parent { groupConnections[id] = parent }
         return bus
     }
     private var hardwareFormat: AVAudioFormat {
@@ -1399,10 +1592,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // Hardware channel changes use the existing atomic matrix and never
         // reach this transaction. Do not stop/reset or rebuild the project.
         let resume = pauseForRoutingChanges && engine.isRunning
-        if resume { engine.pause() }
+        if resume { pauseEngine() }
         defer {
             if resume {
-                do { try engine.start() }
+                do { try startEngineIfNeeded() }
                 catch { onError(error) }
             }
         }
@@ -1437,6 +1630,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         guard !masterConfigured else { return }
         engine.mainMixerNode.outputVolume = 0
         let output: AVAudioFormat
+        #if os(macOS)
+        if let bufferedOutput { _ = try bufferedOutput.configure() }
+        #endif
         #if os(iOS)
         if let mobileOutput {
             let session = AVAudioSession.sharedInstance()
@@ -1559,7 +1755,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             return
         }
         #endif
-        engine.stop()
+        stopEngine()
         finishDeviceSuspension()
     }
     private func finishDeviceSuspension() {
@@ -1580,7 +1776,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         armedMIDIRecordingTracks = []
         setArmedInstrumentTracks([])
         stop()
-        engine.stop()
+        stopEngine()
         if let deviceActivity { ProcessInfo.processInfo.endActivity(deviceActivity); self.deviceActivity = nil }
     }
     private func startEngineIfNeeded() throws {
@@ -1593,6 +1789,18 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #endif
         if engine.isRunning {
             try mobileOutput?.start()
+            #if os(macOS)
+            bufferedOutput?.setOutputEnabled(licenseAllowed && outputAllowed)
+            try bufferedOutput?.start()
+            // Binding/license transitions can mute this final gain while the
+            // device remains clocked. Reconcile it only after the selected
+            // physical output was validated above; track/Master gains and
+            // channel patches keep their own independent controls.
+            let allowedGain: Float = licenseAllowed && outputAllowed ? 1 : 0
+            if engine.mainMixerNode.outputVolume != allowedGain {
+                engine.mainMixerNode.outputVolume = allowedGain
+            }
+            #endif
             return
         }
         // prepare/start can resolve the system's default route again. Keep
@@ -1607,13 +1815,15 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             try mobileOutput?.start()
             #if os(macOS)
             if usesSelectedHardware { try requireSelectedOutput() }
+            bufferedOutput?.setOutputEnabled(licenseAllowed && outputAllowed)
+            try bufferedOutput?.start()
             #endif
             guard engine.isRunning else {
                 throw ProjectError.invalid(JarasLocalization.string("Audio output is unavailable"))
             }
             engine.mainMixerNode.outputVolume = licenseAllowed && outputAllowed ? 1 : 0
         } catch {
-            engine.mainMixerNode.outputVolume = 0; engine.stop()
+            engine.mainMixerNode.outputVolume = 0; stopEngine()
             throw error
         }
     }
@@ -1624,7 +1834,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         if realtime {
             deviceSessionActive = true
             #if os(macOS)
-            if deviceActivity == nil, !engine.isInManualRenderingMode {
+            if deviceActivity == nil, !engine.isInManualRenderingMode || bufferedOutput != nil {
                 deviceActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "CatLive realtime audio")
             }
             #endif
@@ -1640,7 +1850,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // Stop hardware pulls before releasing the render resources; retain
         // all tracks, processors and decoded onsets for the next Play.
         mobileOutput.stop()
-        engine.stop()
+        stopEngine()
         voiceClockAnchors.removeAll()
         try startEngineIfNeeded()
         mobileTrackGraphNeedsRestart = false
@@ -1651,6 +1861,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #if os(iOS)
         guard !usesSelectedHardware || AudioDeviceSettings.shared.localSessionEnabled else { return }
         #endif
+        refreshGraphRendering()
         let active = transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padVoices.isEmpty
             || masterMeter.level > 0 || meters.values.contains { $0.level > 0 }
         guard meterTimer == nil || meterTimerActive != active else { return }
@@ -1671,6 +1882,21 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     private func maintainDeviceSession() {
         guard deviceSessionActive, realtime else { return }
         let now = ProcessInfo.processInfo.systemUptime
+        #if os(macOS)
+        if now - lastBufferedDiagnostics >= 5,
+           ProcessInfo.processInfo.environment["CATLIVE_BUFFERED_MAC_AUDIO_DIAGNOSTICS"] == "1",
+           let bufferedOutput {
+            lastBufferedDiagnostics = now
+            var report = bufferedOutput.diagnostics()
+            report["voices"] = voices.count
+            report["sourceUnderruns"] = voices.values.reduce(UInt64(0)) { $0 + ($1.prepared?.underruns ?? 0) }
+            report["playing"] = transportWasRunning
+            report["masterLevel"] = masterMeter.level
+            let processing = voices.values.compactMap { $0.prepared?.processingDiagnostics }
+            report["sourceProcessing"] = processing
+            NSLog("CATLIVE_BUFFERED_AUDIO %@", report as NSDictionary)
+        }
+        #endif
         guard now - lastDeviceHealthCheck >= 1 else { return }
         lastDeviceHealthCheck = now
         guard outputAllowed, deviceRecovery == nil else { return }
@@ -1680,7 +1906,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             return
         }
         #endif
-        if !engine.isRunning || outputFormatChanged { scheduleDeviceRecovery() }
+        if !outputIsRunning || outputFormatChanged { scheduleDeviceRecovery() }
     }
     func effects(for target: UUID?) -> NativeEffectsChain? {
         guard masterConfigured else { return nil }
@@ -1792,8 +2018,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             for voice in pooled {
                 voice.stopSource()
                 JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
-                voice.stretch.auAudioUnit.reset()
-                voice.rateClock.auAudioUnit.reset()
+                voice.stretch?.auAudioUnit.reset()
+                voice.rateClock?.auAudioUnit.reset()
                 voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
             }
         }
@@ -1802,17 +2028,20 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         for mixer in stoppedConverterMixers.values { mixer.auAudioUnit.reset() }
         resetEffectTails()
         instrumentRenderPending = !armedInstrumentTracks.isEmpty
+        // Stop does not stop live input or pads. They can create fresh tails
+        // immediately after this reset, including after their later removal.
+        liveRenderPending = !inputMonitors.isEmpty || !padVoices.isEmpty
         setGraphRenderEnabled(instrumentRenderPending)
         if !realtime {
             // Stop releases the converters' render resources but retains the
             // manual sample counter. Reset it as well: the next Play's players
             // and converter clocks must all begin on the same timeline.
-            engine.stop()
+            stopEngine()
             engine.reset()
         }
         preparedJump = nil
         appliedJumpBoundaries.removeAll(keepingCapacity: true)
-        lastPosition.removeAll(); headAudioClock.removeAll()
+        lastPosition.removeAll(); headAudioClock.removeAll(); headPresentationClocks.removeAll()
         // Audio stops now; keep the last displayed levels only for their
         // short visual descent, driven by the UI clock after rendering stops.
         if !realtime { for meter in meters.values { meter.reset() }; masterMeter.reset() }
@@ -1821,6 +2050,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
         // Offline rendering uses sample time, not the device's uptime clock.
         lastMeterUpdate = realtime ? ProcessInfo.processInfo.systemUptime : 0
+        #if os(macOS)
+        bufferedOutput?.discardPreparedOutput()
+        #endif
         if deviceSessionActive { startMeterClock() }
     }
     func prepareForClosing() {
@@ -1849,6 +2081,11 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         preparationGeneration = UUID()
         voicePreparation?.cancel(); voicePreparation = nil; preparationKey = nil
     }
+    func pendingPlaybackPreparation(_ snapshot: ShowSnapshot, revision: UInt64) throws -> Task<Void, Never>? {
+        guard realtime, !snapshot.transport.playing, !snapshot.transport.subPlay.playing else { return nil }
+        try update(snapshot, revision: revision)
+        return voicePreparation
+    }
     private func discardIdleVoices() {
         cancelVoicePreparation()
         for pooled in idleVoices.values { for voice in pooled { detach(voice) } }
@@ -1864,8 +2101,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
         voice.volume = 0
         voice.stopSource()
-        voice.stretch.auAudioUnit.reset()
-        voice.rateClock.auAudioUnit.reset()
+        voice.stretch?.auAudioUnit.reset()
+        voice.rateClock?.auAudioUnit.reset()
         voice.effects?.resetTails()
         voice.gain.auAudioUnit.reset()
         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
@@ -1907,26 +2144,34 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         onError(error)
     }
     private func makeVoice(track: UUID, clip: AudioClip, file: AVAudioFile, preparedPlaybackFile: AVAudioFile? = nil) throws -> Voice {
-        // Each player owns its reader; scheduling overlapping copies must not share a mutable file cursor.
-        let playbackFile = try preparedPlaybackFile ?? AVAudioFile(forReading: file.url)
-        let player = AVAudioPlayerNode(), gain = JarasVoiceGain.makeNode(), stretch = AVAudioUnitTimePitch()
-        let rateClock = AVAudioUnitVarispeed()
+        // Prepared sources use independent cursors over the shared immutable
+        // PCM cache. Only AVAudioPlayerNode's legacy path needs a private file.
+        let usesPreparedSource = preparedSourceEnabled && file.processingFormat.channelCount <= 2
+        let playbackFile = try usesPreparedSource ? file : preparedPlaybackFile ?? AVAudioFile(forReading: file.url)
+        let player = AVAudioPlayerNode(), gain = JarasVoiceGain.makeNode()
+        // Prepared PCM already owns pitch/rate processing. Unconnected legacy
+        // units still allocate resources and enlarge every engine graph rebuild.
+        let stretch: AVAudioUnitTimePitch? = usesPreparedSource ? nil : AVAudioUnitTimePitch()
+        let rateClock: AVAudioUnitVarispeed? = usesPreparedSource ? nil : AVAudioUnitVarispeed()
         // Rate conversion may request more input frames than the device's
         // output block. Reserve the upstream capacity before allocating the
         // live graph so a BPM edit cannot exceed a processor's default slice.
-        for node in [player, stretch, rateClock, gain] as [AVAudioNode] {
+        for node in ([player, stretch, rateClock, gain] as [AVAudioNode?]).compactMap({ $0 }) {
             node.auAudioUnit.maximumFramesToRender = 8192
         }
         player.volume = 0
         let pitch = clipPitches[clip.id] ?? 0
         let usesStretch = allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(pitch) >= 0.000001
-        configureStretch(stretch, clock: rateClock, rate: clip.audioRate, pitch: pitch); stretch.overlap = 8
-        engine.attach(player); engine.attach(gain); engine.attach(stretch); engine.attach(rateClock)
+        engine.attach(player); engine.attach(gain)
+        if let stretch, let rateClock {
+            configureStretch(stretch, clock: rateClock, rate: clip.audioRate, pitch: pitch)
+            stretch.overlap = 8
+            engine.attach(stretch); engine.attach(rateClock)
+        }
         let bus = trackBus(for: track).input(for: clip)
         let inputBus = availableInputBus(track: track, node: bus)
-        let prepared = preparedSourceEnabled && file.processingFormat.channelCount <= 2
-            ? JarasPreparedClip(format: file.processingFormat) : nil
-        if usesStretch && prepared == nil {
+        let prepared = usesPreparedSource ? JarasPreparedClip(format: file.processingFormat, timing: preparedTiming) : nil
+        if usesStretch, let stretch, let rateClock {
             engine.connect(player, to: stretch, format: file.processingFormat)
             engine.connect(stretch, to: rateClock, format: file.processingFormat)
         }
@@ -1944,7 +2189,6 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             // and re-enter track delays after their state has been cleared.
             voice.preparedFormat = AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)!
             preparedSourcesByPlayer[ObjectIdentifier(player)] = prepared
-            preparedSourcesByStretch[ObjectIdentifier(stretch)] = prepared
         }
         applyClipFX(clip.fx ?? emptyFX, to: &voice)
         engine.connect(gain, to: bus, fromBus: 0, toBus: inputBus, format: voice.processingFormat)
@@ -1962,14 +2206,24 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         return inputBus
     }
     private func takeVoice(track: UUID, clip: AudioClip, file: AVAudioFile) throws -> Voice {
-        let pool = idleVoices[track] ?? []
         func matches(_ voice: Voice) -> Bool {
-            (voice.clip.frozenMIDI == true) == (clip.frozenMIDI == true) &&
-                abs(voice.clip.audioRate - clip.audioRate) < 0.000001 &&
+            guard (voice.clip.frozenMIDI == true) == (clip.frozenMIDI == true),
+                  voice.file.processingFormat.isEqual(file.processingFormat) else { return false }
+            // Prepared sources support live rate/pitch changes without a new
+            // graph. A previous BPM is not a reason to discard an idle voice.
+            if voice.prepared != nil { return true }
+            return abs(voice.clip.audioRate - clip.audioRate) < 0.000001 &&
                 abs(voice.pitch - (clipPitches[clip.id] ?? 0)) < 0.000001 &&
-                voice.file.processingFormat.isEqual(file.processingFormat) &&
                 voice.usesStretch == (allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(clipPitches[clip.id] ?? 0) >= 0.000001)
         }
+        if !(idleVoices[track]?.contains(where: matches) ?? false),
+           let retired = retiredVoices.firstIndex(where: { $0.track == track && matches($0) }) {
+            // The outgoing head has already crossed its audible boundary and
+            // is gated. Reclaim the needed track now rather than allocating a
+            // replacement while hundreds wait in the one-per-tick cleanup queue.
+            recycle(retiredVoices.remove(at: retired))
+        }
+        let pool = idleVoices[track] ?? []
         let preferred = pool.firstIndex { $0.clip.id == clip.id && matches($0) }
         let reusable = pool.firstIndex { matches($0) && analysisEffects[$0.clip.id.uuidString]?.isEmpty != false }
         if let index = preferred ?? reusable {
@@ -1977,7 +2231,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             // path. Open its replacement before taking ownership of the pooled
             // graph; a failed read must leave all attached nodes tracked so
             // they can be reused or released when the project closes.
-            let playbackFile = pool[index].file.url == file.url ? pool[index].file : try AVAudioFile(forReading: file.url)
+            let playbackFile = pool[index].prepared != nil ? file
+                : pool[index].file.url == file.url ? pool[index].file : try AVAudioFile(forReading: file.url)
             var voice = idleVoices[track]!.remove(at: index)
             // A pooled player's render gate may have been suspended for an
             // entire song. Format converters can then report a fresh sample
@@ -1987,8 +2242,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             if voice.player.isPlaying && !wasClockedWhileIdle {
                 voice.stopSource()
                 voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
-                voice.stretch.auAudioUnit.reset()
-                voice.rateClock.auAudioUnit.reset()
+                voice.stretch?.auAudioUnit.reset()
+                voice.rateClock?.auAudioUnit.reset()
                 voice.effects?.resetTails()
             }
             voice.file = playbackFile
@@ -2023,8 +2278,16 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         cancelVoicePreparation(); preparationKey = key
         let generation = preparationGeneration
         if onsetPreparationKey != key { preparedOnsets.removeAll(keepingCapacity: true); onsetPreparationKey = key }
-        let upcoming = clips.filter { $0.1.startTime <= position + 2 && $0.1.startTime + $0.1.duration > position && $0.1.audioFile != nil }
+        let candidates = clips.filter { $0.1.startTime <= position + 2 && $0.1.startTime + $0.1.duration > position && $0.1.audioFile != nil }
+        // Large sessions need both sides of the next transition ready before
+        // playback. Preparing a second graph at a short loop boundary is late.
+        let reserveTransition = preparedSourceEnabled && candidates.count >= 32
+        let upcoming = reserveTransition ? candidates.flatMap { [$0, $0] } : candidates
         voicePreparation = Task { @MainActor [weak self] in
+            defer {
+                if self?.preparationGeneration == generation { self?.voicePreparation = nil }
+                self?.refreshGraphRendering()
+            }
             var required: [UUID: [(AVAudioFormat, Double)]] = [:]
             var preparedPlayers = Set<ObjectIdentifier>()
             var playersToWarm: [Voice] = []
@@ -2039,13 +2302,17 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                     if self.failedPlaybackFiles.contains(source.path) { continue }
                     if clip.isProjectionMedia && self.silentVideoFiles.contains(source.path) { continue }
                     guard let directory = self.directory else { return }
-                    // A cached URL may already point to a converted soundtrack.
-                    // Open fresh readers on the worker, never mutate a reader
-                    // retained by a live/pooled AVAudioPlayerNode off its owner.
+                    // Prepared sources only inspect this file's metadata. Keep
+                    // one reference per media path; their PCM reader is shared
+                    // separately. Legacy players still own mutable readers.
                     let url = self.files[source.path]?.url ?? directory.appendingPathComponent(source.path)
                     let transportStart = self.realtime
+                    let allowsPreparedSource = self.preparedSourceEnabled
+                    let cachedFile = allowsPreparedSource ? self.files[source.path].flatMap {
+                        $0.processingFormat.channelCount <= 2 ? $0 : nil
+                    } : nil
                     let media = try await AudioFileRead.prepare { cancelled in
-                        let file = try AudioFileRead.openMedia(url, cancelled: cancelled)
+                        let file = try cachedFile ?? AudioFileRead.openMedia(url, cancelled: cancelled)
                         let rate = file.processingFormat.sampleRate
                         var first = AVAudioFramePosition((clip.sourceOffset + max(0, position - clip.startTime) * clip.audioRate) * rate)
                         var available = file.length - first
@@ -2059,6 +2326,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                             }
                         }
                         if cancelled() { throw CancellationError() }
+                        if allowsPreparedSource && file.processingFormat.channelCount <= 2 {
+                            return IdleMedia(file: file, playbackFile: file, first: first, frames: 0)
+                        }
                         let playbackFile = try AVAudioFile(forReading: file.url)
                         var media = IdleMedia(file: file, playbackFile: playbackFile, first: first, frames: 0)
                         if first >= 0, available > 0 {
@@ -2079,8 +2349,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                     let file = media.file
                     self.files[source.path] = file
                     required[track, default: []].append((file.processingFormat, clip.audioRate))
-                    let count = required[track]!.filter { $0.0.isEqual(file.processingFormat) && abs($0.1 - clip.audioRate) < 0.000001 }.count
-                    let ready = self.idleVoices[track, default: []].filter { $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001 }.count
+                    let count = required[track]!.filter { $0.0.isEqual(file.processingFormat) && (allowsPreparedSource || abs($0.1 - clip.audioRate) < 0.000001) }.count
+                    let ready = self.idleVoices[track, default: []].filter { $0.file.processingFormat.isEqual(file.processingFormat) && ($0.prepared != nil || abs($0.clip.audioRate - clip.audioRate) < 0.000001) }.count
                     if let onset = media.onset {
                         let onsetKey = OnsetKey(path: file.url.path, first: media.first, frames: media.frames)
                         self.preparedOnsets[onsetKey] = onset
@@ -2104,7 +2374,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                         #endif
                     }
                     if var voice = self.idleVoices[track, default: []].filter({
-                        $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001
+                        $0.file.processingFormat.isEqual(file.processingFormat) && ($0.prepared != nil || abs($0.clip.audioRate - clip.audioRate) < 0.000001)
                     }).prefix(count).last, voice.prepared != nil {
                         voice.clip = clip; voice.file = file
                         try self.prepareSource(voice, position: max(position, clip.startTime))
@@ -2113,7 +2383,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                     #if os(macOS)
                     if self.realtime, self.deviceSessionActive, self.outputAllowed, abs(clip.audioRate - 1) < 0.000001,
                        let voice = self.idleVoices[track, default: []].filter({
-                           $0.file.processingFormat.isEqual(file.processingFormat) && abs($0.clip.audioRate - clip.audioRate) < 0.000001
+                           $0.file.processingFormat.isEqual(file.processingFormat) && ($0.prepared != nil || abs($0.clip.audioRate - clip.audioRate) < 0.000001)
                        }).prefix(count).last {
                         let identity = ObjectIdentifier(voice.player)
                         preparedPlayers.insert(identity)
@@ -2217,7 +2487,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // Translate that timestamp to the player's sample epoch, accounting for
         // callbacks that updated the two nodes in different render blocks.
         if voice.usesStretch, abs(voice.clip.audioRate - 1) < 0.000001,
-           let reference = voice.stretch.lastRenderTime,
+           let reference = voice.stretch?.lastRenderTime,
            reference.isHostTimeValid, reference.isSampleTimeValid,
            reference.sampleRate == node.sampleRate {
             let sample = player.sampleTime + reference.sampleTime - node.sampleTime
@@ -2259,11 +2529,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         voice.effects?.detach(from: engine)
         if let prepared = voice.prepared {
             preparedSourcesByPlayer[ObjectIdentifier(voice.player)] = nil
-            preparedSourcesByStretch[ObjectIdentifier(voice.stretch)] = nil
             engine.detach(prepared.node)
             if let mix = voice.preparedMix { engine.detach(mix) }
         }
-        engine.detach(voice.player); engine.detach(voice.gain); engine.detach(voice.stretch); engine.detach(voice.rateClock)
+        engine.detach(voice.player); engine.detach(voice.gain)
+        if let stretch = voice.stretch { engine.detach(stretch) }
+        if let clock = voice.rateClock { engine.detach(clock) }
     }
     private func remove(_ key: VoiceKey, keepingTailAt position: Double? = nil) {
         guard let voice = voices.removeValue(forKey: key) else { return }
@@ -2296,7 +2567,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                 voices[key] = nil; key = VoiceKey(clip: next, head: head)
                 voice.clip = successor
                 voice.pitch = clipPitches[next] ?? voice.pitch
-                configureStretch(voice.stretch, clock: voice.rateClock, rate: successor.audioRate, pitch: voice.pitch)
+                configureStretch(voice, rate: successor.audioRate, pitch: voice.pitch)
                 setVoice(voice, for: key)
             }
         }
@@ -2402,7 +2673,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // Prepare the complete path before scheduling PCM. AVAudioEngine graph
         // rewiring can invalidate an active player's scheduled file segments.
         if voice.effects == nil {
-            let chain = NativeEffectsChain(reorderable: false)
+            let chain = NativeEffectsChain(reorderable: false, preparesInactiveEffects: voice.prepared == nil)
             chain.mediaDirectory = directory
             chain.attach(to: engine, input: voice.effectsInput, format: voice.processingFormat,
                          destinations: [AVAudioConnectionPoint(node: voice.gain, bus: 0)])
@@ -3451,11 +3722,12 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         let delay = span?.delay ?? 0
         let time = span?.time ?? position + settings.offset
         let end = span?.end ?? time
+        let speed = span?.speed ?? 1
         let active = transport.playing && span != nil && !track.mute && span?.clip.muted != true
         let mode = track.mute || span == nil || span?.clip.muted == true ? "" : settings.mode
         let destination = AudioDeviceSettings.shared.resolvedMIDIDestination(settings.midiDestination)
-        let key = "\(span?.clip.id.uuidString ?? "")-\(span?.clip.startTime ?? 0)-\(active)-\(mode)-\(settings.frameRate)-\(destination)-\(settings.regionRelative)-\(settings.offset)-\(end)"
-        let changed = timecodeAnchor.map { $0.key != key || (!mode.isEmpty && abs(time - ($0.position + (active ? now + delay - $0.host : 0))) > (active ? 0.08 : 0.000001)) } ?? true
+        let key = "\(span?.clip.id.uuidString ?? "")-\(span?.clip.startTime ?? 0)-\(active)-\(mode)-\(settings.frameRate)-\(destination)-\(settings.regionRelative)-\(settings.offset)-\(end)-\(speed)"
+        let changed = timecodeAnchor.map { $0.key != key || (!mode.isEmpty && abs(time - ($0.position + (active ? (now + delay - $0.host) * speed : 0))) > (active ? 0.08 : 0.000001)) } ?? true
         // Re-anchoring clears the generator's native peak. Consume the audio
         // already rendered before a seek or delayed transport update resets it.
         // Inactive/MTC states discard pending readings immediately instead.
@@ -3469,7 +3741,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             }
         }
         if changed {
-            timecodeGenerator?.configurePosition(time, end: end, hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: delay), rate: settings.frameRate, mode: mode, running: active, destination: destination)
+            timecodeGenerator?.configurePosition(time, end: end, hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: delay), rate: settings.frameRate, speed: speed, mode: mode, running: active, destination: destination)
             timecodeAnchor = (key,time,now + delay)
         }
         if timecodePreviewGain?.original != track.volume { timecodePreviewGain = nil }
@@ -3548,7 +3820,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             }
             let position = index == 0 ? transport.position : transport.subPlay.position
             let host = audioHostTime(position: position, head: index) ?? mach_absolute_time()
-            let sample = realtime ? nodeSampleTime(host: host, anchor: click.node.lastRenderTime ?? engine.outputNode.lastRenderTime).map(Double.init) ?? .nan : Double(engine.manualRenderingSampleTime)
+            let sample = realtime ? nodeSampleTime(host: host, anchor: click.node.lastRenderTime ?? manualHardwareRenderTime ?? engine.outputNode.lastRenderTime).map(Double.init) ?? .nan : Double(engine.manualRenderingSampleTime)
             click.configurePosition(position, hostTime: host, running: index == 0 ? transport.playing : transport.subPlay.playing,
                 loopStart: index == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0,
                 loopEnd: index == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0, sampleTime: sample)
@@ -3572,7 +3844,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         func gain(_ db: Double) -> Float { db <= -60 ? 0 : Float(pow(10, min(6, db) / 20)) }
         metronome.setGainA(gain(settings.gainA), gainB: gain(settings.gainB))
         let host = audioHostTime(position: transport.position, head: 0) ?? mach_absolute_time()
-        let sample = nodeSampleTime(host: host, anchor: metronome.node.lastRenderTime ?? engine.outputNode.lastRenderTime)
+        let sample = nodeSampleTime(host: host, anchor: metronome.node.lastRenderTime ?? manualHardwareRenderTime ?? engine.outputNode.lastRenderTime)
         metronome.configurePosition(transport.position, hostTime: host, running: settings.enabled && transport.playing,
             loopStart: transport.loop.enabled ? transport.loop.start ?? 0 : 0, loopEnd: transport.loop.enabled ? transport.loop.end ?? 0 : 0,
             sampleTime: sample.map(Double.init) ?? .nan)
@@ -3608,6 +3880,8 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         // Build its graph only after a valid hardware format is available.
         try configureMaster()
         var tempoResetCommands: [@Sendable () -> Void] = []
+        preparedTiming.beginUpdates()
+        defer { preparedTiming.endUpdates() }
         func cancelPendingTempoVoice(_ key: VoiceKey, _ voice: Voice) {
             // Stop only pending sources: interrupting a buffer does not clear
             // the separately queued file continuation. Keep the graph attached.
@@ -3665,7 +3939,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         if tempoChanged {
             for head in Array(lastPosition.keys) {
                 let old = lastPosition[head]!
-                if let host = audioHostTime(position: old, head: head) { headAudioClock[head] = (old * timelineScale, host) }
+                if let host = audioHostTime(position: old, head: head) { setHeadAudioClock((old * timelineScale, host), head: head) }
                 lastPosition[head] = old * timelineScale
             }
         }
@@ -3850,7 +4124,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                        old >= voice.clip.startTime, old < voice.clip.startTime + voice.clip.duration {
                         let mapped = current.1.startTime + (sourcePosition - current.1.sourceOffset) / current.1.audioRate
                         if abs(mapped - old) > 0.0000001 {
-                            if let host = audioHostTime(position: old, head: key.head) { headAudioClock[key.head] = (mapped, host) }
+                            if let host = audioHostTime(position: old, head: key.head) { setHeadAudioClock((mapped, host), head: key.head) }
                             // Keep the UI snapshot's age separate from the
                             // audible head. Initial source preparation/preroll
                             // can put them on opposite sides of a tempo edge.
@@ -3893,7 +4167,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 let requiresStretch = allowsTempoChanges || abs(current.1.audioRate - 1) >= 0.000001 || abs(voice.pitch) >= 0.000001
                 if voice.usesStretch != requiresStretch { remove(key); continue }
                 if current.1.audioRate != voice.clip.audioRate {
-                    configureStretch(voice.stretch, clock: voice.rateClock, rate: current.1.audioRate, pitch: voice.pitch)
+                    configureStretch(voice, rate: current.1.audioRate, pitch: voice.pitch)
                 }
                 var updated = voice
                 if current.1.loopLength != nil && (tempoChanged || markerTempoChanged) {
@@ -3941,7 +4215,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
            padVoices.isEmpty, recordingTaps.isEmpty {
             // Recording can add the first player branch to an input-only live
             // graph. Reallocate its render resources once before the next Play.
-            engine.stop()
+            stopEngine()
             voiceClockAnchors.removeAll()
             try startEngineIfNeeded()
             recordingGraphNeedsRestart = false
@@ -4012,6 +4286,9 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 let previousContext = clickPlaybackContexts[0]
                 clickPlaybackContexts[0] = clickPlaybackContexts[1]; clickPlaybackContexts[1] = previousContext
             }
+            // SubPlay is already audible: its display clock follows the same
+            // promotion immediately, including any still-pending first onset.
+            headPresentationClocks[0] = headPresentationClocks.removeValue(forKey: 1)
             headAudioClock[0] = headAudioClock[1]; headAudioClock[1] = nil
             lastPosition[0] = lastPosition[1]
             lastPosition[1] = nil
@@ -4042,6 +4319,14 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 }
                 clearEffectTails(head: 0)
                 for key in Array(voices.keys) where key.head == 2 { setVoice(voices.removeValue(forKey: key), for: VoiceKey(clip: key.clip, head: 0)) }
+                if let incoming = headAudioClock[2] {
+                    if var clock = headPresentationClocks[0] {
+                        clock.transition(position: incoming.position, hostTime: AVAudioTime.seconds(forHostTime: incoming.host),
+                                         sampledAt: presentationHostTime(sampledAt: sampledAt))
+                        headPresentationClocks[0] = clock
+                    } else { headPresentationClocks[0] = headPresentationClocks[2] }
+                } else { headPresentationClocks[0] = nil }
+                headPresentationClocks[2] = nil
                 headAudioClock[0] = headAudioClock[2]; headAudioClock[2] = nil
                 lastPosition[0] = transport.position - elapsed; lastPosition[2] = nil
                 preparedJump = nil; promotedJump = true
@@ -4051,7 +4336,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             sectionJumpSerial = transport.sectionJumpSerial ?? 0
             if !promotedJump {
                 cancelPreparedJump()
-                headAudioClock[0] = nil; lastPosition[0] = nil
+                setHeadAudioClock(nil, head: 0); lastPosition[0] = nil
                 clearEffectTails(head: 0)
                 for key in Array(voices.keys) where key.head == 0 { remove(key) }
             }
@@ -4062,10 +4347,16 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             cancelPreparedJump()
         }
         if realtime, preparedJump == nil, let next = nextJump, next.0 - transport.position <= 2.0,
-           let host = audioHostTime(position: next.0, head: 0), host > nowHost + AVAudioTime.hostTime(forSeconds: 0.015) {
+           let host = audioHostTime(position: next.0, head: 0), host > nowHost + AVAudioTime.hostTime(forSeconds: 0.015),
+           // A promoted head can still be queued ahead of the speakers. Wait
+           // for the previous head's short tail before preparing another one,
+           // so it can reuse that graph instead of allocating a third set of
+           // hundreds of processors at every loop. Very short transitions
+           // retain the immediate preparation path when there is no time left.
+           boundaryTails.isEmpty || host <= (boundaryTails.map(\.1).max() ?? nowHost) + AVAudioTime.hostTime(forSeconds: 0.15) {
             appliedJumpBoundaries.removeAll(keepingCapacity: true)
             preparedJump = PreparedJump(boundary: next.0, destination: next.1, host: host, section: next.2, region: next.3, revision: revision)
-            headAudioClock[2] = (next.1, host)
+            setHeadAudioClock((next.1, host), head: 2)
         }
         var heads = [(0, transport.playing, transport.position), (1, transport.subPlay.playing, transport.subPlay.position)]
         if let jump = preparedJump { heads.append((2, true, jump.destination)) }
@@ -4073,7 +4364,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             if !playing {
                 clearEffectTails(head: head)
                 for key in Array(voices.keys) where key.head == head { remove(key) }
-                lastPosition[head] = nil; headAudioClock[head] = nil
+                lastPosition[head] = nil; setHeadAudioClock(nil, head: head)
                 continue
             }
             // A tempo edit remaps project time explicitly. Time spent applying
@@ -4081,7 +4372,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             // stem and synchronously rebuilds the live audio graph.
             if head != 2, !tempoChanged, !markerTempoChanged,
                let previous = lastPosition[head], abs(position - previous - elapsed) > 0.15 {
-                headAudioClock[head] = nil
+                setHeadAudioClock(nil, head: head)
                 clearEffectTails(head: head)
                 for key in Array(voices.keys) where key.head == head { remove(key) }
             }
@@ -4119,9 +4410,9 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             for key in Array(voices.keys) where key.head == head {
                 if var voice = voices[key] {
                     let cents = clipPitches[voice.clip.id] ?? 0
-                    if voice.usesStretch != (allowsTempoChanges || abs(voice.clip.audioRate - 1) >= 0.000001 || abs(cents) >= 0.000001) { remove(key); continue }
+                    if voice.prepared == nil && voice.usesStretch != (allowsTempoChanges || abs(voice.clip.audioRate - 1) >= 0.000001 || abs(cents) >= 0.000001) { remove(key); continue }
                     if voice.pitch != cents {
-                        configureStretch(voice.stretch, clock: voice.rateClock, rate: voice.clip.audioRate, pitch: cents)
+                        configureStretch(voice, rate: voice.clip.audioRate, pitch: cents)
                         voice.pitch = cents; setVoice(voice, for: key)
                     }
                 }
@@ -4203,7 +4494,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 // Recycled processors are reset before warming. Do not reset a
                 // running prepared stretcher here: that breaks its input clock.
                 voice.pitch = clipPitches[clip.id] ?? 0
-                configureStretch(voice.stretch, clock: voice.rateClock, rate: clip.audioRate, pitch: voice.pitch)
+                configureStretch(voice, rate: clip.audioRate, pitch: voice.pitch)
                 #if !os(macOS)
                 if realtime && !player.isPlaying {
                     do { try warmPlayer(voice) }
@@ -4248,7 +4539,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             // stop()/AU reset does not necessarily clear that converter epoch.
             // Never extrapolate this pair into an audible onset: renew only the
             // affected idle path before choosing the shared playback deadline.
-            if realtime, mobileOutput == nil, let outputTime = engine.outputNode.lastRenderTime, outputTime.isHostTimeValid {
+            if realtime, !usesManualHardwareOutput, let outputTime = engine.outputNode.lastRenderTime, outputTime.isHostTimeValid {
                 for index in scheduled.indices {
                     let (key, old, first, count, delay) = scheduled[index]
                     let sourceTime = old.player.lastRenderTime
@@ -4284,7 +4575,8 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 guard realtime else { return 0 }
                 return max(0, (entry.1.effects.map { presentationLatency($0.equalizer) } ?? referenceLatency) - referenceLatency)
             }
-            let commands = try scheduled.map { entry -> (end: Double, command: @Sendable (AVAudioTime?) -> Void)? in
+            let continuingHead = headAudioClock[head] != nil
+            var commands = try scheduled.map { entry -> (end: Double, command: @Sendable (AVAudioTime?) -> Void)? in
                 let voice = entry.1, clip = voice.clip
                 do {
                     if let source = voice.prepared {
@@ -4319,7 +4611,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             if realtime && headAudioClock[head] == nil {
                 let preroll = preparedDelays.max() ?? 0
                 // Rendering can already be ahead of wall time by an I/O buffer.
-                let renderHost = mobileOutput?.renderTime?.hostTime ?? engine.outputNode.lastRenderTime?.hostTime ?? 0
+                let renderHost = manualHardwareRenderTime?.hostTime ?? engine.outputNode.lastRenderTime?.hostTime ?? 0
                 let base = max(mach_absolute_time(), renderHost)
                 #if os(macOS)
                 // Prepared sources have already decoded/primed their onset;
@@ -4331,7 +4623,59 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 #else
                 let enqueueMargin = 0.05
                 #endif
-                headAudioClock[head] = (position, base + AVAudioTime.hostTime(forSeconds: enqueueMargin + preroll))
+                setHeadAudioClock((position, base + AVAudioTime.hostTime(forSeconds: enqueueMargin + preroll)), head: head)
+            }
+            var scheduledPositions = scheduled.map { schedulingPosition + $0.4 }
+            if realtime, continuingHead, let anchor = headAudioClock[head] {
+                // Creating/priming a copied item can consume its original
+                // deadline while the other sources keep playing. Rebase only
+                // these new prepared voices onto a future shared clock point;
+                // starting their old PCM immediately would leave them behind.
+                let bufferSeconds = Double(AudioDeviceSettings.shared.bufferFrames) / max(1, AudioDeviceSettings.shared.sampleRate)
+                var preparationBudget = max(0.008, bufferSeconds)
+                for _ in 0..<3 {
+                    let host = max(mach_absolute_time(), manualHardwareRenderTime?.hostTime ?? engine.outputNode.lastRenderTime?.hostTime ?? 0)
+                    let earliest = host + AVAudioTime.hostTime(forSeconds: bufferSeconds)
+                    let late = scheduled.indices.filter { index in
+                        commands[index] != nil && scheduled[index].1.prepared != nil &&
+                            (audioHostTime(position: scheduledPositions[index] - preparedDelays[index], head: head) ?? 0) < earliest
+                    }
+                    if late.isEmpty { break }
+                    let targetHost = host + AVAudioTime.hostTime(forSeconds: bufferSeconds + preparationBudget + (preparedDelays.max() ?? 0))
+                    let target = anchor.position + (targetHost >= anchor.host
+                        ? AVAudioTime.seconds(forHostTime: targetHost - anchor.host)
+                        : -AVAudioTime.seconds(forHostTime: anchor.host - targetHost))
+                    let began = ProcessInfo.processInfo.systemUptime
+                    for index in late {
+                        let (key, voice, _, _, _) = scheduled[index]
+                        let clip = voice.clip, start = max(clip.startTime, target)
+                        guard start < clip.startTime + clip.duration else {
+                            commands[index] = nil; setVoice(nil, for: key); recycle(voice); continue
+                        }
+                        do {
+                            try prepareSource(voice, position: start)
+                            let rate = voice.file.processingFormat.sampleRate
+                            let first = AVAudioFramePosition((clip.sourceOffset + (start - clip.startTime) * clip.audioRate) * rate)
+                            let end = AVAudioFramePosition((contiguousSourceEnd[clip.id] ?? (clip.sourceOffset + clip.duration * clip.audioRate)) * rate)
+                            let count = AVAudioFrameCount(max(0, min(Int64(UInt32.max), min(voice.file.length, end) - first)))
+                            scheduled[index] = (key, voice, first, count, start - schedulingPosition)
+                            scheduledPositions[index] = start
+                        } catch {
+                            commands[index] = nil; setVoice(nil, for: key); recycle(voice)
+                            if let media = clip.audioFile { try handlePlaybackMediaFailure(error, audio: media) }
+                        }
+                    }
+                    preparationBudget = max(preparationBudget, 2 * (ProcessInfo.processInfo.systemUptime - began))
+                }
+                // A slow storage read must not commit stale audio. Retry only
+                // the affected new source on the following transport update.
+                let earliest = max(mach_absolute_time(), manualHardwareRenderTime?.hostTime ?? engine.outputNode.lastRenderTime?.hostTime ?? 0)
+                for index in scheduled.indices where commands[index] != nil && scheduled[index].1.prepared != nil {
+                    if (audioHostTime(position: scheduledPositions[index] - preparedDelays[index], head: head) ?? 0) < earliest {
+                        commands[index] = nil
+                        setVoice(nil, for: scheduled[index].0); recycle(scheduled[index].1)
+                    }
+                }
             }
             if head == 0 { updateMetronome(song: song, transport: transport) }
             if head < 2 { updateClickPosition(transport, only: head) }
@@ -4341,7 +4685,8 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 let (key, prepared, first, count, delay) = entry
                 var voice = prepared
                 let clip = voice.clip
-                var playbackTime = realtime ? AVAudioTime(hostTime: audioHostTime(position: schedulingPosition + delay - preparedDelays[index], head: head)!) : nil
+                let onsetPosition = scheduledPositions[index]
+                var playbackTime = realtime ? AVAudioTime(hostTime: audioHostTime(position: onsetPosition - preparedDelays[index], head: head)!) : nil
                 if !realtime && delay > 0 {
                     playbackTime = AVAudioTime(sampleTime: AVAudioFramePosition((delay * voice.file.processingFormat.sampleRate * clip.audioRate).rounded()), atRate: voice.file.processingFormat.sampleRate)
                 }
@@ -4352,7 +4697,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                     if let anchor = voiceClockAnchors[key], let sample = nodeSampleTime(host: hostTime.hostTime, anchor: anchor.node) {
                         playbackTime = AVAudioTime(sampleTime: anchor.player.sampleTime + sample - anchor.node.sampleTime, atRate: anchor.player.sampleRate)
                     }
-                    if mobileOutput != nil, playbackTime?.isHostTimeValid == true {
+                    if usesManualHardwareOutput, playbackTime?.isHostTimeValid == true {
                         // A just-created player may not have rendered its warm
                         // buffer yet. Its player timeline starts at zero now.
                         let now = mach_absolute_time()
@@ -4365,13 +4710,13 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 if voice.prepared != nil {
                     let gainLatency = max(0, presentationLatency(voice.gain) - referenceLatency)
                     JarasVoiceGain.setStartHostTime(voice.gain,
-                        hostTime: audioHostTime(position: schedulingPosition + delay - gainLatency, head: head) ?? 0)
+                        hostTime: audioHostTime(position: onsetPosition - gainLatency, head: head) ?? 0)
                 }
                 voice.scheduledSourceStart = first
                 let fadeLatency = preparedFadeDelays[index]
-                let fadeHost = realtime ? (audioHostTime(position: schedulingPosition + delay - fadeLatency, head: head) ?? 0) : 0
+                let fadeHost = realtime ? (audioHostTime(position: onsetPosition - fadeLatency, head: head) ?? 0) : 0
                 let fadeSample = realtime ? 0 : (Double(engine.manualRenderingSampleTime) / engine.manualRenderingFormat.sampleRate + delay) * voice.file.processingFormat.sampleRate
-                voice.effects?.configureItemFade(clip, position: max(clip.startTime, schedulingPosition), hostTime: fadeHost, sampleTime: fadeSample)
+                voice.effects?.configureItemFade(clip, position: onsetPosition, hostTime: fadeHost, sampleTime: fadeSample)
                 let command = preparedCommand.command
                 let time = playbackTime
                 startCommands.append { command(time) }
@@ -4404,7 +4749,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             // edge has rendered, so a short loop cannot overwrite the first beat
             // while the UI is already preparing the following jump.
             for generator in [metronome, clickGenerators.first].compactMap({ $0 }) {
-                let sample = nodeSampleTime(host: jump.host, anchor: generator.node.lastRenderTime ?? engine.outputNode.lastRenderTime)
+                let sample = nodeSampleTime(host: jump.host, anchor: generator.node.lastRenderTime ?? manualHardwareRenderTime ?? engine.outputNode.lastRenderTime)
                 generator.scheduleJump(jump.destination, hostTime: jump.host, sampleTime: sample.map(Double.init) ?? .nan,
                     loopStart: jump.section == nil && jump.region == nil ? transport.loop.start ?? 0 : 0,
                     loopEnd: jump.section == nil && jump.region == nil ? transport.loop.end ?? 0 : 0)
@@ -4464,7 +4809,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         // Instruments can generate audio while the transport is stopped.
         // Keep polling the existing stereo taps whenever the device is running.
         if !realtime && !transport.playing && !transport.subPlay.playing && padVoices.isEmpty {
-            if engine.isRunning { engine.pause() }
+            if engine.isRunning { pauseEngine() }
             for meter in meters.values { meter.reset() }
             drainNativeMeterPeaks()
             masterMeter.reset(); _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)

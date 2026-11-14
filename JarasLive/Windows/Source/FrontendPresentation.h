@@ -59,6 +59,7 @@ inline var project(const jaras::Project &p) {
     auto v=object();value(v,"id",p.id);value(v,"name",p.name);value(v,"masterVolume",p.masterVolume);
     value(v,"masterPan",p.masterPan);value(v,"masterMute",p.masterMute);value(v,"masterSolo",p.masterSolo);value(v,"masterMono",p.masterMono);
     optional(v,"timelineMovementLocked",p.timelineMovementLocked);
+    optional(v,"timelineLockOptions",p.timelineLockOptions);
     if(p.regionSetlist) {
         const auto &s=*p.regionSetlist;auto setlist=object();optional(setlist,"selectedId",s.selectedId);
         value(setlist,"autoAdvance",s.autoAdvance);optional(setlist,"stopAtRegionEnd",s.stopAtRegionEnd);

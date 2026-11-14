@@ -50,8 +50,17 @@ import AVFoundation
         catch { show.message = error.localizedDescription }
     }
     static func captureAllForSaving(show: ShowController) throws {
-        let targets: [UUID?] = [nil] + (show.current?.tracks.filter { $0.kind == .standard }.map { Optional($0.id) } ?? [])
-        for target in targets { for plugin in show.fxSettings(target).externalPlugins ?? [] { try captureForSaving(show: show, track: target, identifier: plugin.id) } }
+        // The track already owns its FX metadata. Looking it up by UUID for
+        // every row repeatedly flattened/searched the whole project, even
+        // when none of those tracks had a plugin to capture.
+        for plugin in show.snapshot.project.masterFX?.externalPlugins ?? [] {
+            try captureForSaving(show: show, track: nil, identifier: plugin.id)
+        }
+        for track in show.current?.tracks ?? [] where track.kind == .standard {
+            for plugin in track.fx?.externalPlugins ?? [] {
+                try captureForSaving(show: show, track: track.id, identifier: plugin.id)
+            }
+        }
         // Only open take editors can have uncaptured UI edits. Do not instantiate
         // every project's item chain merely because the user saved the project.
         try ClipExternalPluginHostView.captureAllForSaving(show: show)

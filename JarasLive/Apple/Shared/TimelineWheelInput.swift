@@ -73,6 +73,7 @@ final class TimelineTrackHeightMotion {
     private var timer: Timer?
     private var cancelDisplayLink: (() -> Void)?
     private weak var window: NSWindow?
+    private weak var retainedLayoutOwner: NSView?
     private var running: Bool { timer != nil || cancelDisplayLink != nil }
     private var limits = TimelineTrackHeightLimits.minimum...TimelineTrackHeightLimits.maximum
 
@@ -111,9 +112,13 @@ final class TimelineTrackHeightMotion {
         // remains key. Follow the input's window for display and modal checks.
         window = NSApp?.currentEvent?.window ?? NSApp?.keyWindow
         applied = current
+        if let owner = window?.contentView {
+            retainedLayoutOwner = owner
+            MainActor.assumeIsolated { NativeSidebarResizeActivity.shared.begin(owner: owner) }
+        }
         commit()
         // Fractional input accumulates without scheduling idle layout work.
-        guard requested?.rounded() != current else { return }
+        guard requested?.rounded() != current else { releaseRetainedLayouts(); return }
         if #available(macOS 14.0, *), let host = window?.contentView, window?.isVisible == true {
             let target = TimelineDisplayLinkTarget { [weak self] in self?.tick() }
             let link = host.displayLink(target: target, selector: #selector(TimelineDisplayLinkTarget.tick))
@@ -151,10 +156,21 @@ final class TimelineTrackHeightMotion {
         timer?.invalidate(); timer = nil
         apply = nil
         wheelTransition = nil
+        releaseRetainedLayouts()
         if !preservingRemainder { requested = nil; applied = nil; wheelDirection = 0 }
     }
+    private func releaseRetainedLayouts() {
+        if let owner = retainedLayoutOwner {
+            MainActor.assumeIsolated { NativeSidebarResizeActivity.shared.end(owner: owner) }
+        }
+        retainedLayoutOwner = nil
+    }
     func cancel() { stop(preservingRemainder: false) }
-    deinit { timer?.invalidate(); cancelDisplayLink?() }
+    deinit {
+        timer?.invalidate(); cancelDisplayLink?()
+        let owner = retainedLayoutOwner
+        DispatchQueue.main.async { if let owner { NativeSidebarResizeActivity.shared.end(owner: owner) } }
+    }
 }
 
 struct TimelineTrackHeightResponse {
@@ -287,9 +303,16 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
     }
     /// Consulted before the mixer's global click/reorder monitor handles a border.
     static func handlesPointer(_ event: NSEvent) -> Bool {
-        guard event.type == .leftMouseDown, let root = event.window?.contentView else { return false }
-        let point = root.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
-        return root.hitTest(point) is TimelineTrackHeightResizeView
+        guard event.type == .leftMouseDown, let window = event.window,
+              event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
+        // The overlay already owns its live row geometry. Asking the complete
+        // SwiftUI window to hit-test every track click repeats the same routing
+        // that NSWindow will perform after this monitor returns.
+        return owners.allObjects.contains { view in
+            guard view.window === window else { return false }
+            let point = view.convert(event.locationInWindow, from: nil)
+            return view.visibleRect.contains(point) && view.edge(at: point) != nil
+        }
     }
     @discardableResult static func cancelActiveDrag(in window: NSWindow?) -> Bool {
         guard let owner = owners.allObjects.first(where: { $0.window === window && $0.drag != nil }) else { return false }

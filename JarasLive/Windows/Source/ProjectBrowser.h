@@ -52,7 +52,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     void setPlaybackRunning(bool value) { playbackRunning = value; updateEnabled(); }
     void beginLoading(const File &);
     void setLoadingCancellation(std::function<void()>);
-    void updateLoading(const String &);
+    void updateLoading(const String &, double progress = -1);
     void finishLoading(const String &error = {});
     bool isLoading() const { return loading; }
     String loadingMessage() const { return loadingStatus.getText(); }
@@ -94,6 +94,8 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     ListBox recents;
     Label loadingStatus, loadingError;
     juce::Rectangle<int> spinnerBounds;
+    juce::Rectangle<int> loadingBarBounds;
+    double loadingProgress = -1;
     StringArray filtered;
     std::map<String, std::pair<double, String>> storageSizes;
     std::set<String> storagePending;

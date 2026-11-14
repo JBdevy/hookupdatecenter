@@ -9,7 +9,8 @@ public struct TrackRole: Codable, Hashable, Sendable, RawRepresentable {
     public func encode(to encoder: Encoder) throws { var box = encoder.singleValueContainer(); try box.encode(rawValue) }
 }
 public struct AudioFile: Codable, Equatable, Sendable { public var path: String; public var sha256: String? }
-public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeInCurve: Double? = nil; public var fadeInSCurve: Double? = nil; public var fadeOutCurve: Double? = nil; public var fadeOutSCurve: Double? = nil;  public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var clickDouble: Bool? = nil; public var audioRate: Double { playbackRate ?? 1 } }
+public struct ItemTempoReference: Codable, Equatable, Sendable { public var markerID: UUID; public var rate: Double; public init(markerID: UUID, rate: Double) { self.markerID = markerID; self.rate = rate } }
+public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeInCurve: Double? = nil; public var fadeInSCurve: Double? = nil; public var fadeOutCurve: Double? = nil; public var fadeOutSCurve: Double? = nil;  public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var clickDouble: Bool? = nil; public var tempoRateReferences: [ItemTempoReference]? = nil; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
     var isImage: Bool { isProjectionMedia && ["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains(URL(fileURLWithPath: audioFile?.path ?? "").pathExtension.lowercased()) }
@@ -244,6 +245,7 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
     public var tempoUnit: Int? = nil
     public var tempoTimebase: TempoMarkerTimebase? = nil
     public var tempoReferenceBPM: Double? = nil
+    public var tempoPlaybackRate: Double? = nil
     public var section: Bool? = nil
     public var loopSection: Bool? = nil
     public var automaticSectionTargetID: UUID? = nil
@@ -599,6 +601,10 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     public var projectSyncID: UUID? = nil
     /// Protect timeline positions and boundaries; nil keeps older projects unlocked.
     public var timelineMovementLocked: Bool? = nil
+    /// Independent edit locks: regions/markers=1, item geometry=2, item gain/pan=4.
+    public var timelineLockOptions: Int? = nil
+    public var configuredTimelineLocks: Int { (timelineLockOptions ?? 7) & 7 }
+    public var effectiveTimelineLocks: Int { timelineMovementLocked == true ? configuredTimelineLocks : 0 }
     /// Windows grandMA2 assignments and reserved destinations must survive a Mac save.
     public var windowsLighting: PortableProjectJSON? = nil
     public var resolume: ResolumeSettings? = nil
@@ -629,7 +635,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
         let digit = Int(String(text.removeFirst()), radix: 16)!
         return UUID(uuidString: String(digit ^ 8, radix: 16) + text)!
     }
-    public func validate() throws {
+    public func validate() throws { try validate(reusing: nil) }
+    fileprivate func validate(reusing cache: ProjectValidationCache?) throws {
         guard projectFormatVersion == 1, minimumJarasVersion == "1.0.0", !name.isEmpty else { throw ProjectError.invalid("Versão ou nome do projeto inválido.") }
         if let savedCursor {
             guard savedCursor.position.isFinite, savedCursor.position >= 0 else { throw ProjectError.invalid("Invalid saved cursor position") }
@@ -677,6 +684,13 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                           (input == .none && otherInput == .none) ||
                             (input.channelCount == 1 && otherInput.channelCount == 1 &&
                              otherInput.firstChannel == input.firstChannel + (link.left ? 1 : -1)) else { throw ProjectError.invalid("Invalid linked tracks") }
+                }
+                // Cross-track links, hierarchy and all global IDs are checked
+                // on every edit. Only unchanged local metadata can reuse a
+                // successful validation; populated waveform arrays never skip.
+                if cache?.canReuse(track, song: song, project: id) == true {
+                    for clip in track.clips { try register(clip.id) }
+                    continue
                 }
                 if track.kind == .programChange {
                     guard track.clips.isEmpty, track.audioFile == nil, track.fx == nil, track.parentTrackID == nil,
@@ -741,6 +755,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                     try register(clip.id)
                     guard (clip.waveformChannels ?? []).allSatisfy({ $0.allSatisfy { $0.isFinite && (0...1).contains($0) } }) else { throw ProjectError.invalid("Invalid channel waveform") }
                     guard clip.audioRate.isFinite, (1.0/32...32).contains(clip.audioRate) else { throw ProjectError.invalid("Invalid audio playback rate.") }
+                    let tempoReferences = clip.tempoRateReferences ?? []
+                    guard Set(tempoReferences.map(\.markerID)).count == tempoReferences.count, tempoReferences.allSatisfy({ $0.rate.isFinite && $0.rate > 0 }) else { throw ProjectError.invalid("Invalid item tempo reference") }
                     if let reference = clip.tempoBasePlaybackRate { guard reference.isFinite, (1.0/32...32).contains(reference) else { throw ProjectError.invalid("Invalid tempo playback reference.") } }
                     guard clip.channelMode == nil || (0...4).contains(clip.channelMode!) else { throw ProjectError.invalid("Invalid item channel mode") }
                 guard (clip.pitchSemitones ?? 0).isFinite, (-12...12).contains(clip.pitchSemitones ?? 0) else { throw ProjectError.invalid("Invalid item pitch") }
@@ -761,7 +777,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 if let bpm = marker.tempoBPM {
                     guard bpm.isFinite, TimelineTempo.bpmRange.contains(bpm), (1...32).contains(marker.tempoBeats ?? 4), TimelineTempo.beatUnits.contains(marker.tempoUnit ?? 4), marker.unifiedRegionID == nil, marker.sourceRegionID == nil else { throw ProjectError.invalid("Invalid tempo marker") }
                     if let reference = marker.tempoReferenceBPM, !reference.isFinite || !TimelineTempo.bpmRange.contains(reference) { throw ProjectError.invalid("Invalid tempo reference") }
-                } else if marker.tempoBeats != nil || marker.tempoUnit != nil || marker.tempoTimebase != nil || marker.tempoReferenceBPM != nil { throw ProjectError.invalid("Invalid tempo marker") }
+                    if let rate = marker.tempoPlaybackRate, !rate.isFinite || rate <= 0 { throw ProjectError.invalid("Invalid tempo playback rate") }
+                } else if marker.tempoBeats != nil || marker.tempoUnit != nil || marker.tempoTimebase != nil || marker.tempoReferenceBPM != nil || marker.tempoPlaybackRate != nil { throw ProjectError.invalid("Invalid tempo marker") }
                 try register(marker.id)
                 guard !marker.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       (marker.unifiedRegionID != nil || marker.name.count <= (marker.isSection ? TimelineMarker.maximumSectionNameLength : TimelineMarker.maximumNameLength)), marker.color <= 0xffffff,
@@ -1165,6 +1182,31 @@ public extension Song {
     func markerBelongs(_ marker: TimelineMarker, to root: UUID) -> Bool {
         marker.unifiedRegionID == root || regionOwns(root, owner: regionOwnershipInitialized == true ? marker.regionOwnerID : marker.sourceRegionID ?? regionOwner(at: marker.position))
     }
+    /// Drag membership follows the largest portion of an item currently
+    /// covered by a root region. Existing attachment only resolves equal spans.
+    func regionMovementOwner(at start: Double, end: Double? = nil, preferred: UUID? = nil) -> UUID? {
+        var selected: Part?
+        var largest = 0.0
+        for part in parts where part.parentRegionID == nil {
+            let overlap = end.map { max(0, min($0, part.endTime) - max(start, part.startTime)) }
+                ?? (start >= part.startTime - 1e-6 && start < part.endTime - 1e-6 ? 1 : 0)
+            guard overlap > 0 else { continue }
+            let same = selected != nil && abs(overlap - largest) <= 1e-9
+            let preferredHere = regionOwns(part.id, owner: preferred)
+            let preferredBefore = selected.map { regionOwns($0.id, owner: preferred) } ?? false
+            let tie = selected.map { previous in
+                preferredHere != preferredBefore ? preferredHere :
+                    part.endTime - part.startTime != previous.endTime - previous.startTime
+                    ? part.endTime - part.startTime < previous.endTime - previous.startTime
+                    : part.id.uuidString < previous.id.uuidString
+            } ?? false
+            if selected == nil || overlap > largest + 1e-9 || same && tie { selected = part; largest = overlap }
+        }
+        return selected?.id
+    }
+    func markerMoves(_ marker: TimelineMarker, with root: UUID) -> Bool {
+        marker.unifiedRegionID == root || regionMovementOwner(at: marker.position, preferred: marker.regionOwnerID ?? marker.sourceRegionID) == root
+    }
 }
 
 public extension Song {
@@ -1176,6 +1218,28 @@ public extension Song {
         let delta = start - region.startTime
         var result = self
         for track in result.tracks.indices {
+            if var automation = result.tracks[track].automation {
+                for envelope in automation.envelopes.indices {
+                    var points = automation.envelopes[envelope].points
+                    for point in points.indices where regionMovementOwner(at: points[point].time) == id {
+                        points[point].time = max(0, points[point].time + delta)
+                    }
+                    points.sort { $0.time < $1.time }
+                    if points.count > 1 {
+                        for point in 1..<points.count where points[point].time <= points[point - 1].time {
+                            points[point].time = points[point - 1].time.nextUp
+                        }
+                    }
+                    automation.envelopes[envelope].points = points
+                }
+                result.tracks[track].automation = automation
+            }
+            if var changes = result.tracks[track].programChanges {
+                for marker in changes.indices where regionMovementOwner(at: changes[marker].position) == id {
+                    changes[marker].position = max(0, changes[marker].position + delta)
+                }
+                result.tracks[track].programChanges = changes.sorted { $0.position < $1.position }
+            }
             for index in result.tracks[track].clips.indices {
                 let clip = result.tracks[track].clips[index]
                 if result.tracks[track].kind == .timecode && result.tracks[track].importedTimecodeItems != true {
@@ -1186,7 +1250,7 @@ public extension Song {
                     result.tracks[track].clips[index].startTime = newStart
                     result.tracks[track].clips[index].duration = newEnd - newStart
                     result.duration = max(result.duration, newEnd)
-                } else if itemBelongs(clip, to: id) {
+                } else if regionMovementOwner(at: clip.startTime, end: clip.startTime + clip.duration, preferred: clip.regionOwnerID) == id {
                     result.tracks[track].clips[index].startTime = max(0, clip.startTime + delta)
                     result.duration = max(result.duration, result.tracks[track].clips[index].startTime + clip.duration)
                 }
@@ -1200,7 +1264,7 @@ public extension Song {
         if var markers = result.markers {
             for index in markers.indices {
                 let marker = markers[index]
-                if markerBelongs(marker, to: id) {
+                if markerMoves(marker, with: id) {
                     markers[index].position = max(0, marker.position + delta)
                     result.duration = max(result.duration, markers[index].position)
                 }
@@ -1222,7 +1286,7 @@ public struct RegionMarkerRepulsion {
         let gap = minimumGap.isFinite ? max(0.01, minimumGap) : 0.01
         var offsets: [Double] = [], stationary: [Double] = []
         for marker in song.markers ?? [] {
-            if song.markerBelongs(marker, to: region.id) { offsets.append(marker.position - region.startTime) }
+            if song.markerMoves(marker, with: region.id) { offsets.append(marker.position - region.startTime) }
             else { stationary.append(marker.position) }
         }
         minimumStart = max(0, -(offsets.min() ?? 0))
@@ -1395,5 +1459,39 @@ public enum SetlistDisplayOrder {
         return sorted(groups, mode: mode, name: { $0.part.name }, start: { $0.part.startTime }).enumerated().flatMap {
             $0.element.blocks + [.region($0.element.part, number: $0.offset + 1)]
         } + pending
+    }
+}
+
+/// Certificates contain only successfully validated metadata. Callers cannot
+/// seed or mutate them, and project-wide relationships are never cached.
+public final class ProjectValidationCache {
+    private struct SongMetadata {
+        let duration: Double
+        let tracks: [UUID: Track]
+    }
+    private var project: UUID?
+    private var songs: [UUID: SongMetadata] = [:]
+    public init() {}
+    public func validate(_ value: Project) throws {
+        try value.validate(reusing: self)
+        var next: [UUID: SongMetadata] = [:]
+        for song in value.songs {
+            var tracks: [UUID: Track] = [:]
+            for source in song.tracks {
+                var track = source
+                for index in track.clips.indices where !track.clips[index].waveform.isEmpty || track.clips[index].waveformChannels != nil {
+                    track.clips[index].waveform = []
+                    track.clips[index].waveformChannels = nil
+                }
+                tracks[track.id] = track
+            }
+            next[song.id] = SongMetadata(duration: song.duration, tracks: tracks)
+        }
+        project = value.id; songs = next
+    }
+    fileprivate func canReuse(_ track: Track, song: Song, project id: UUID) -> Bool {
+        guard project == id, let previous = songs[song.id], previous.duration == song.duration,
+              track.clips.allSatisfy({ $0.waveform.isEmpty && $0.waveformChannels == nil }) else { return false }
+        return previous.tracks[track.id] == track
     }
 }

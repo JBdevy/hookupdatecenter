@@ -486,7 +486,7 @@ struct MappingTransferRequest: Identifiable {
             if event.keyCode == 8, show?.selectedProgramChange != nil { return show?.copyProgramChange() == true }
             if event.keyCode == 9, show?.hasProgramChangeClipboard == true { show?.pasteProgramChange(); return true }
         }
-        if event.modifiers == .command, [8, 7, 9].contains(event.keyCode) { return false }
+        if event.modifiers == .command || event.modifiers == .control, [2, 8, 7, 9].contains(event.keyCode) { return false }
         let input = event.input
         let mappedAction = actions.matching(input)
         guard current.contains(where: { $0.input.matches(input) }) || mappedAction != nil else { return false }
@@ -531,7 +531,7 @@ struct MappingTransferRequest: Identifiable {
         }
         // Standard editing shortcuts belong to the menu/grid or the active
         // text editor; a user mapping must not intermittently consume them.
-        if flags == .command, [8, 7, 9].contains(event.keyCode) { return false }
+        if flags == .command || flags == .control, [2, 8, 7, 9].contains(event.keyCode) { return false }
         if [125, 126].contains(event.keyCode), flags.isEmpty { return false }
         let input = ControlInput(kind: "keyboard", label: "", key: event.keyCode, modifiers: flags.rawValue)
         let mappedAction = actions.matching(input)
@@ -621,7 +621,7 @@ private struct MappingClickAnchor: NSViewRepresentable {
     func makeNSView(context: Context) -> MappingClickView { MappingClickView() }
     func updateNSView(_ view: MappingClickView, context: Context) { view.action = action; view.hitHeight = hitHeight }
 }
-private final class MappingClickView: RightClickTargetView {
+final class MappingClickView: RightClickTargetView {
     var hitHeight: CGFloat?
     override var clickBounds: NSRect {
         guard let hitHeight else { return bounds }

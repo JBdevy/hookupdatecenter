@@ -4,9 +4,9 @@
 #include "../../Core/Transport/PlaybackScope.hpp"
 namespace catlive {
 struct ClickProgram {
-    struct ItemGate { std::optional<double> playbackStart; std::uint32_t owner=0; int rate=1; };
+    struct ItemGate { std::optional<double> playbackStart; std::uint32_t owner=0; double rate=1; int subdivisions=1; };
     struct Section {
-        double start=0,end=0,origin=0,bpm=120; int beats=4,unit=4,rate=1;
+        double start=0,end=0,origin=0,bpm=120; int beats=4,unit=4; double rate=1; int subdivisions=1;
         // Prepared on control; the callback only checks overlapping item gates.
         std::vector<ItemGate> items;
     };
@@ -29,19 +29,20 @@ struct ClickProgram {
         for(const auto &clip:track->clips)if(!clip.muted&&!clip.audioFile&&clip.duration>0){edges.push_back(clip.startTime);edges.push_back(clip.startTime+clip.duration);}
         std::sort(edges.begin(),edges.end());edges.erase(std::unique(edges.begin(),edges.end()),edges.end());
         for(size_t i=1;i<edges.size();++i){
-            const double start=edges[i-1],end=edges[i]; int rate=0;
+            const double start=edges[i-1],end=edges[i]; double rate=0; int subdivisions=1;
             std::vector<ItemGate> items;
             for(const auto &clip:track->clips) if(!clip.muted&&!clip.audioFile&&clip.startTime<end&&clip.startTime+clip.duration>start) {
-                const int itemRate=clip.clickDouble.value_or(false)?2:1;
-                rate=std::max(rate,itemRate);
+                const int itemSubdivisions=clip.clickDouble.value_or(false)?2:1;
+                const double itemRate=clip.tempoBasePlaybackRate.value_or(clip.playbackRate)*itemSubdivisions;
+                if(itemRate>rate){rate=itemRate;subdivisions=itemSubdivisions;}
                 jaras::AudioClip owned;owned.startTime=clip.startTime;owned.regionOwnerID=clip.regionOwnerID;
                 if (!owned.regionOwnerID) if (const auto *region = clipEditing::generatedClickRegion(song,clip)) owned.regionOwnerID=region->id;
-                items.push_back({jaras::playbackItemStart(song,owned),jaras::playbackOwnerIndex(song,owned.regionOwnerID),itemRate});
+                items.push_back({jaras::playbackItemStart(song,owned),jaras::playbackOwnerIndex(song,owned.regionOwnerID),itemRate,itemSubdivisions});
             }
             if(!rate)continue;
             for(auto section:timing)if(section.end>start&&section.start<end){
                 section.start=std::max(start,section.start);section.end=std::min(end,section.end);
-                section.bpm*=rate;section.beats*=rate;section.rate=rate;section.items=items;sections.push_back(std::move(section));
+                section.bpm*=rate;section.beats*=subdivisions;section.rate=rate;section.subdivisions=subdivisions;section.items=items;sections.push_back(std::move(section));
             }
         }
     }
@@ -68,14 +69,14 @@ struct ClickProgram {
     float sample(double time,int mode=0,float gainA=1,float gainB=1,const jaras::PlaybackScope *scope=nullptr)const{
         const auto next=std::upper_bound(sections.begin(),sections.end(),time,[](double t,const Section &s){return t<s.start;});
         if(next==sections.begin())return 0;const auto &section=*(next-1);if(time>=section.end||section.bpm<=0||section.unit<=0)return 0;
-        int rate=section.rate;
+        double rate=section.rate; int subdivisions=section.subdivisions;
         if(scope && *scope!=jaras::PlaybackScope{} && !section.items.empty()) {
             rate=0;
-            for(const auto &item:section.items) if(scope->allows(item.playbackStart,item.owner)) rate=std::max(rate,item.rate);
+            for(const auto &item:section.items) if(scope->allows(item.playbackStart,item.owner)) if(item.rate>rate){rate=item.rate;subdivisions=item.subdivisions;}
             if(!rate)return 0;
         }
         const double bpm=section.bpm/section.rate*rate;
-        const int beats=section.beats/section.rate*rate;
+        const int beats=section.beats/section.subdivisions*subdivisions;
         const double beat=60./bpm*4/section.unit;const auto index=(int64)std::floor((time-section.origin)/beat+1e-9);
         const bool accent=mode==1||(mode==0&&index%std::max(1,beats)==0);
         const auto &sound=accent?a:b;const double offset=(time-section.origin-index*beat)*sound.rate;

@@ -38,6 +38,7 @@ private final class ProjectionFixtureController {
     let backdrop = TimelineNativeGridView()
     let ruler = TimelineNativeRulerView()
     let header = ProjectionFixtureHeader()
+    let selection = NSView()
     var zoom = 0.1203
     var pixelsPerSecond: CGFloat { zoom * 10 }
     var value = ProjectionFixtureContent()
@@ -54,6 +55,7 @@ PRODUCTION_DRAWING_INVALIDATION
         let value = value, style = style
         let nativeBounds = viewport, left = viewport.minX
         let width = value.extent * pixelsPerSecond
+PRODUCTION_SELECTION_VIEWPORT
 PRODUCTION_TILE_PROJECTION
     }
 }
@@ -145,7 +147,21 @@ for scale: CGFloat in [1, 2] {
     controller.style.displayScale = scale == 1 ? 2 : 1
     controller.contentChanged(); controller.project(viewport)
     matchesFresh("backing scale")
+    let savedViewportWidth = controller.value.viewportSize.width
+    for liveWidth: CGFloat in [480, 180, 650, 320] {
+        viewport.size.width = liveWidth
+        controller.project(viewport)
+        precondition(controller.value.viewportSize.width == savedViewportWidth,
+                     "a native divider drag does not publish the saved SwiftUI viewport per pixel")
+        precondition(controller.selection.frame.width == liveWidth && controller.selection.frame.height == controller.value.viewportSize.height,
+                     "the selection input surface follows the actual clip even while the saved width is unchanged")
+        precondition(controller.selection.hitTest(CGPoint(x: liveWidth - 1, y: 10)) === controller.selection &&
+                     controller.selection.hitTest(CGPoint(x: liveWidth + 1, y: 10)) == nil,
+                     "newly exposed grid pixels accept input and the input surface stops at the real sidebar boundary")
+        matchesFresh("native divider viewport")
+    }
     precondition((controller.backdrop.layer!.sublayers! + controller.ruler.layer!.sublayers!).allSatisfy { $0.animationKeys()?.isEmpty != false },
                  "cache invalidation never introduces implicit animation")
 }
 print("NATIVE_BASE_REUSES_TILES_BEFORE_TICK_BUILD_AND_INVALIDATES_COVERAGE_ZOOM_CONTENT_STYLE_RETINA_PIXELS_OK")
+print("NATIVE_BASE_SELECTION_INPUT_FOLLOWS_LIVE_CLIP_WITHOUT_SAVED_WIDTH_PUBLICATION_OK")

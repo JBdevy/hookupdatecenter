@@ -33,8 +33,12 @@ private final class TrackReorderState: ObservableObject {
     func finish() { active = false }
 }
 '''
+scroll=Path('Apple/Shared/GridScrollView.swift').read_text()
+edge=scroll[scroll.index('@MainActor final class NativeDragEdgeScroll'):scroll.index('\n#endif',scroll.index('@MainActor final class NativeDragEdgeScroll'))]
+selection_start=source.index('struct EditorSelectionArea: NSViewRepresentable')
+selection=source[selection_start:source.index('\n#endif',selection_start)]
 typography=Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1]
-Path(sys.argv[1]).write_text(stubs+'// App-owned typography.'+typography+geometry+height+source[start:end]+source[title_start:title_end]+'\n'+Path('Tests/Apple/TrackRowRecyclingTests.swift').read_text())
+Path(sys.argv[1]).write_text(stubs+'// App-owned typography.'+typography+geometry+height+edge+'\n'+selection+'\n'+source[start:end]+source[title_start:title_end]+'\n'+Path('Tests/Apple/TrackRowRecyclingTests.swift').read_text())
 PY
 swiftc -swift-version 5 Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

@@ -152,7 +152,7 @@ private:
                             output->sendMessageNow(MidiMessage(bytes, 10));
                         }
                         if (advancing) {
-                            const auto target = static_cast<int64>(std::floor((now - baseHost) * rate * 4));
+                            const auto target = static_cast<int64>(std::floor((now - baseHost) * rate * 4 * span->speed));
                             if (target - quarter > 8) quarter = (target / 8) * 8 - 1;
                             while (quarter < target) {
                                 ++quarter;

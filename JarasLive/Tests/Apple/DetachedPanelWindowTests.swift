@@ -9,6 +9,18 @@ for name in ["Mixer", "Parts"] {
     @MainActor func hide() { if name == "Mixer" { mixer.hide() } else { parts.hide() } }
     func current() -> NSWindow { app.windows.first { $0.isVisible && $0.title == (name == "Mixer" ? "CatLive · Hoz-Mixer" : "CatLive · Parts") }! }
     open(); pump()
+    if name == "Mixer" {
+        let panel = current() as! DetachedTestWindow
+        panel.simulatedLiveResize = true
+        let saved = DetachedSaveProbe.mixer
+        for _ in 0..<100 { mixer.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: panel)) }
+        precondition(DetachedSaveProbe.mixer == saved, "Live resize must not save window preferences for every pointer sample")
+        panel.simulatedLiveResize = false
+        mixer.windowDidEndLiveResize(Notification(name: NSWindow.didEndLiveResizeNotification, object: panel))
+        precondition(DetachedSaveProbe.mixer == saved + 1, "The final floating mixer placement must be saved once")
+        mixer.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: panel))
+        precondition(DetachedSaveProbe.mixer == saved + 2, "Programmatic resize and maximize must still save their geometry")
+    }
     let frame = NSRect(x: 80, y: 90, width: 620, height: 410)
     current().setFrame(frame, display: true); pump(); hide(); open(); pump()
     precondition(current().frame == frame, "Hidden window must retain frame")

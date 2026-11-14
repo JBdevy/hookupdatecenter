@@ -9,6 +9,7 @@ extension Font {
 }
 enum FooterJournal {
     static var rootBodies = 0, playlistReads = 0, made = 0
+    static var rootLayouts = 0
     static var fontScales: [CGFloat] = []
     static var mixerCommits: [CGFloat] = [], displayCommits: [CGFloat] = []
 }
@@ -90,6 +91,9 @@ private struct FooterResizeFixture: View {
 private final class FooterKeyboardTarget: NSView, TimelineGridKeyboardTarget {
     override var acceptsFirstResponder: Bool { true }
 }
+private final class FooterMeasuredRoot<Content: View>: NSHostingView<Content> {
+    override func layout() { FooterJournal.rootLayouts += 1; super.layout() }
+}
 private func expect(_ condition: @autoclosure () -> Bool, _ message: String, line: UInt = #line) {
     guard condition() else { FileHandle.standardError.write(Data("line \(line): \(message)\n".utf8)); exit(1) }
 }
@@ -108,7 +112,7 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared; app.setActivationPolicy(.accessory); app.finishLaunching()
     if CommandLine.arguments.contains("--accessibility") { runFooterAccessibilityFixture(); exit(0) }
     let coordinator = FooterVerticalResizeCoordinator()
-    let root = NSHostingView(rootView: FooterResizeFixture(coordinator: coordinator, show: ShowController()))
+    let root = FooterMeasuredRoot(rootView: FooterResizeFixture(coordinator: coordinator, show: ShowController()))
     let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: 1200, height: 900),
         styleMask: [.borderless], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false; window.contentView = root; window.orderFront(nil)
@@ -141,7 +145,7 @@ MainActor.assumeIsolated {
     initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: false, role: .mixer, coordinator: nil)
     initiallyClosed.frame.size.height = 0
     initiallyClosed.layoutSubtreeIfNeeded()
-    expect(retainedMixerRoot.isHidden && retainedMixerRoot.superview == nil && initiallyClosed.subviews.isEmpty, "closing detaches retained controls from window layout and tracking traversal")
+    expect(retainedMixerRoot.isHidden && retainedMixerRoot.superview === initiallyClosed, "closing retains prepared controls in their same native hierarchy")
     expect(retainedMixerRoot.frame == retainedFrame, "hidden mixer must retain its geometry instead of reflowing every control to zero height")
     initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: true, role: .mixer, coordinator: nil)
     initiallyClosed.setContent(identity: "closed", environment: EnvironmentValues()) {
@@ -150,7 +154,7 @@ MainActor.assumeIsolated {
     }
     expect(madeClosedContent == 1 && initiallyClosed.subviews.first === retainedMixerRoot,
            "reopening preserves the hosted root and its state")
-    print("FOOTER_CLOSED_LAZY_MOUNT_DETACHED_NATIVE_TREE_AND_REOPEN_IDENTITY_OK")
+    print("FOOTER_CLOSED_LAZY_MOUNT_RETAINS_PREPARED_NATIVE_TREE_AND_REOPEN_IDENTITY_OK")
     let mixer = descendants(FooterMixerResizeView.self, in: root).first!
     let display = descendants(FooterDisplayResizeView.self, in: root).first!
     let mixerHost = parent(FooterHeightContainerView.self, of: mixer)!
@@ -172,12 +176,18 @@ MainActor.assumeIsolated {
     let mixerY = initialY(mixer)
     mixer.mouseDown(with: at(.leftMouseDown, y: mixerY))
     expect(window.firstResponder === keyboard, "resizing must preserve the timeline keyboard target")
+    expect(NativeSidebarResizeActivity.shared.deferUnchangedLayout(keyboard), "footer drag must retain unchanged track controls in the same window")
     var timings: [Double] = []
     for delta in 1...60 {
         let started = CFAbsoluteTimeGetCurrent()
+        let layouts = FooterJournal.rootLayouts
         mixer.mouseDragged(with: at(.leftMouseDragged, y: mixerY + CGFloat(delta)))
+        expect(FooterJournal.rootLayouts == layouts, "pointer input must not synchronously relayout the whole project before the display pass")
         timings.append((CFAbsoluteTimeGetCurrent() - started) * 1000)
-        expect(near(mixerHost.frame.height, 273 + CGFloat(delta)), "every one-pixel event must reach native mixer geometry synchronously; \(mixerHost.frame.height)")
+        // A manual layout would conceal a viewport that only catches up on
+        // release. Let the normal display pass present the live geometry.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        expect(near(mixerHost.frame.height, 273 + CGFloat(delta)), "each display frame must use the latest exact mixer height; \(mixerHost.frame.height)")
         expect(near(scroll.frame.height, mixerHost.frame.height - 8), "the native clip viewport must grow in the same event")
         expect(near(mixerHost.convert(mixerHost.bounds, to: root).minY, initialMixerTop - CGFloat(delta)), "the moving edge must follow the exact pointer displacement")
         expect(document.frame == documentFrame && near(scroll.contentView.bounds.minX, 650) && near(scroll.contentView.bounds.minY, 300), "resize must preserve document coordinates and scroll offsets")
@@ -189,9 +199,11 @@ MainActor.assumeIsolated {
     expect(near(mixerHost.effectiveHeight, 273 + 60), "stale configuration during drag must preserve its live height")
     for delta: CGFloat in [90, 25, -1000, 5000, 0, 61] {
         mixer.mouseDragged(with: at(.leftMouseDragged, y: mixerY + delta))
-        expect(near(mixerHost.frame.height, min(723.55859375, max(273, 273 + delta))), "bursts, reversal and bounds must apply without a frame wait")
+        pump(0.02)
+        expect(near(mixerHost.frame.height, min(723.55859375, max(273, 273 + delta))), "bursts, reversal and bounds must reach the next display frame")
     }
     mixer.mouseUp(with: at(.leftMouseUp, y: mixerY + 47))
+    expect(!NativeSidebarResizeActivity.shared.deferUnchangedLayout(keyboard), "release must restore ordinary layout immediately")
     expect(FooterJournal.mixerCommits == [273 + 47] && near(mixerHost.frame.height, 273 + 47), "mouse-up must apply and commit its own final position once")
     mixerHost.configure(storedHeight: 273, minimum: 273, maximum: 723.55859375, active: true, role: .mixer, coordinator: coordinator)
     pump()
@@ -199,7 +211,7 @@ MainActor.assumeIsolated {
     mixer.mouseDragged(with: at(.leftMouseDragged, y: mixerY + 200))
     expect(FooterJournal.mixerCommits.count == 1 && near(mixerHost.frame.height, 273 + 47), "events after mouse-up must be inert")
     expect(!mixer.cursorPushed, "mouse-up must release its owned cursor")
-    print("FOOTER_MIXER_EXACT_60_DELTAS_NATIVE_LAYOUT_ROOT_IDENTITY_SCROLL_AND_FINAL_COMMIT_OK mean_ms=\(timings.reduce(0,+)/Double(timings.count))")
+    print("FOOTER_MIXER_EXACT_60_DISPLAY_FRAMES_NATIVE_LAYOUT_ROOT_IDENTITY_SCROLL_AND_FINAL_COMMIT_OK mean_ms=\(timings.reduce(0,+)/Double(timings.count))")
 
     let displayY = initialY(display)
     FooterJournal.fontScales.removeAll()
@@ -213,8 +225,10 @@ MainActor.assumeIsolated {
     let savedMixerY = initialY(mixer)
     mixer.mouseDown(with: at(.leftMouseDown, y: savedMixerY))
     mixer.mouseDragged(with: at(.leftMouseDragged, y: savedMixerY + 400))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.02))
     expect(near(mixerHost.frame.height, 720) && near(displayHost.frame.height, 130), "both native footers must share available height during mixer drag")
     mixer.mouseDragged(with: at(.leftMouseDragged, y: savedMixerY + 309))
+    pump(0.02)
     expect(near(mixerHost.frame.height, 629) && near(displayHost.frame.height, 147), "display must restore its preferred height as soon as space returns")
     mixer.mouseUp(with: at(.leftMouseUp, y: savedMixerY + 400))
     expect(near(displayHost.frame.height, 130) && FooterJournal.mixerCommits.last == 720, "coordinated limits must not jump after final commit")
@@ -237,6 +251,7 @@ MainActor.assumeIsolated {
     let baseline = mixerHost.effectiveHeight, commits = FooterJournal.mixerCommits.count
     func begin() {
         let y = initialY(mixer); mixer.mouseDown(with: at(.leftMouseDown, y: y)); mixer.mouseDragged(with: at(.leftMouseDragged, y: y + 33))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         expect(mixer.isDragging && mixer.cursorPushed && near(mixerHost.frame.height, baseline + 33), "fixture must enter a live drag")
     }
     func cancelled(_ reason: String) {

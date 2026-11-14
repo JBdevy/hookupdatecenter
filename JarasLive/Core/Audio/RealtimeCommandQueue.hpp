@@ -68,6 +68,13 @@ public:
     // runs here. The queue does not make the command handler realtime-safe.
     template<class Apply>
     std::size_t consume(std::size_t budget, Apply&& apply) noexcept(noexcept(apply(std::declval<const T&>()))) {
+        return consumeWhile(budget, [](const T&) noexcept { return true; }, std::forward<Apply>(apply));
+    }
+    // A scheduled command remains at the head until its boundary is ready.
+    // Later commands cannot overtake it; neither branch waits on the consumer.
+    template<class Ready, class Apply>
+    std::size_t consumeWhile(std::size_t budget, Ready&& ready, Apply&& apply)
+        noexcept(noexcept(ready(std::declval<const T&>())) && noexcept(apply(std::declval<const T&>()))) {
         std::size_t consumed = 0;
         while (consumed < budget) {
             if (readIndex_ == BlockSize) {
@@ -79,6 +86,7 @@ public:
                 readerPosition_.store(reader_, std::memory_order_release);
             }
             if (readIndex_ == reader_->published.load(std::memory_order_acquire)) break;
+            if (!ready(static_cast<const T&>(reader_->values[readIndex_]))) break;
             apply(static_cast<const T&>(reader_->values[readIndex_]));
             ++readIndex_;
             ++consumed;

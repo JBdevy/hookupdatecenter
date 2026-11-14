@@ -48,7 +48,7 @@ int main() {
     disabled.applyProjectEdit(enabledProject);
     assert(disabled.transport().multiLoop && disabled.transport().loop.enabled);
     assert(disabled.transport().multiLoop->config.tracks[0].autoFader);
-    assert(!disabled.transport().multiLoop->config.tracks[0].mute && !disabled.transport().multiLoop->config.tracks[0].solo);
+    assert(disabled.transport().multiLoop->config.tracks[0].mute && disabled.transport().multiLoop->config.tracks[0].solo);
     assert(disabled.project().songs[0].parts[0].multiLoops[0].tracks[0].mute); // Presets remain saved.
     enabledProject.songs[0].parts[0].multiLoops[0].mixerEnabled = true;
     disabled.applyProjectEdit(enabledProject);

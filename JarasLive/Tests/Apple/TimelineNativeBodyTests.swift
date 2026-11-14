@@ -199,13 +199,13 @@
         body.project(viewport: viewport, documentSize: CGSize(width: 12 * scale, height: 400), scale: scale)
         let frame = body.fillsForTest!, origin = frame.coordinateSpace!.documentOrigin
         let item = frame.items.first { abs($0.rect.minX + origin.x - 1) < 0.001 && abs($0.rect.minY + origin.y - 58) < 0.001 }!
-        precondition(item.topColor == item.headerColor && item.bottomColor == item.headerColor,
-            "Inverted item body must use its header gray at every zoom")
+        precondition(item.topColor == TimelineItemWaveformColors.invertedBackgroundRGB && item.bottomColor == item.topColor,
+            "Inverted item body must use dark gray at every zoom")
         awaitValue({ body.waveformsForTest?.strokes.contains { $0.block.key != "timeline-centerline-unit" } == true },
             "Overview/detail readiness must update the inverted waveform without another zoom event")
         let waves = body.waveformsForTest!.strokes.filter { $0.block.key != "timeline-centerline-unit" }
-        precondition(waves.allSatisfy { $0.color.x == 0 && $0.color.y == 0 && $0.color.z == 0 },
-            "Every waveform primitive must remain black, including cached overviews")
+        precondition(waves.allSatisfy { $0.color == TimelineItemWaveformColors.ink(rgb: mixed.palettes[0].normal, silenced: false) },
+            "Inverted waveform primitives follow the track color, including cached overviews")
         let text = frame.items.first { abs($0.rect.minY + origin.y - 186) < 0.001 }!
         precondition(text.topColor == mixed.palettes[2].normal,
             "Inverting waveform colors must not recolor teleprompter items")

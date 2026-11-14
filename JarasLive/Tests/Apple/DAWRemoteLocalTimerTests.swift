@@ -85,6 +85,34 @@ let firstClock = RemoteLocalTimer.localTime(at: now)
 let nextClock = RemoteLocalTimer.localTime(at: now.addingTimeInterval(1))
 precondition(firstClock.count == 8 && firstClock != nextClock, "wall-clock readout uses local Date independently of the countdown")
 
+// Progressive snapshots and local controls keep counting upwards without bridge frames.
+timer.resetSynchronization()
+timer.synchronize(.init(revision: UUID(), targetSeconds: 90, running: false, remainingSeconds: 0))
+let modeID = timer.setMode(.progressive)!
+timer.synchronize(.init(revision: UUID(), targetSeconds: 90, running: false, remainingSeconds: 90))
+precondition(timer.mode == .progressive, "stale countdown snapshot cannot undo a pending mode change")
+timer.synchronize(.init(revision: UUID(), targetSeconds: 90, running: false, remainingSeconds: 0,
+                        commandID: modeID, mode: "progressive"))
+precondition(timer.mode == .progressive && !timer.expired() && timer.displayText() == "00:00:00")
+let progressiveStart = timer.start(seconds: 90)!
+uptime += 0.2
+precondition(timer.displayText() == "00:00:00" && !timer.expired(), "progressive starts from zero and rounds elapsed time down")
+precondition(timer.setMode(.countdown) == nil, "mode cannot change during a run")
+uptime += 65
+precondition(timer.displayText() == "00:01:05" && !timer.expired() && timer.displayOpacity() == 1)
+timer.synchronize(.init(revision: UUID(), targetSeconds: 90, running: true, remainingSeconds: 65.2,
+                        commandID: progressiveStart, mode: "progressive"))
+uptime += 2
+precondition(timer.displayText() == "00:01:07", "progressive host anchor advances upwards")
+timer.stop()
+precondition(timer.mode == .progressive && timer.targetSeconds == 90 && timer.displayText() == "00:00:00")
+let invalidModePublications = publications
+timer.synchronize(.init(revision: UUID(), targetSeconds: 90, running: true, remainingSeconds: 0, mode: "invalid"))
+precondition(publications == invalidModePublications)
+let legacyJSON = try! JSONEncoder().encode(DAWRemoteTimerState(revision: UUID(), targetSeconds: 90, running: false, remainingSeconds: 0))
+let legacy = try! JSONDecoder().decode(DAWRemoteTimerState.self, from: legacyJSON)
+precondition(legacy.mode == nil && legacy.valid, "legacy hosts still decode as countdown")
+
 let app = NSApplication.shared
 app.setActivationPolicy(.regular); app.finishLaunching()
 func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }

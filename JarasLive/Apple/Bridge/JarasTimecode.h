@@ -5,6 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithFormat:(AVAudioFormat *)format;
 // Host time is the instant represented by position. end is in the same timebase.
 - (void)configurePosition:(double)position end:(double)end hostTime:(uint64_t)hostTime rate:(double)fps mode:(NSString *)mode running:(BOOL)running destination:(int32_t)destination;
+- (void)configurePosition:(double)position end:(double)end hostTime:(uint64_t)hostTime rate:(double)fps speed:(double)speed mode:(NSString *)mode running:(BOOL)running destination:(int32_t)destination;
 - (void)setGain:(float)gain;
 - (float)takePeak;
 + (NSArray<NSDictionary *> *)destinations;

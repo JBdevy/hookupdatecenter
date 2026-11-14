@@ -53,7 +53,22 @@ final class ReaperMIDIImportTests: XCTestCase {
         XCTAssertEqual(notes.count, 5)
         for (actual, expected) in zip(notes.map(\.start), [10.0, 10.375, 10.875, 11.375, 11.875]) { XCTAssertEqual(actual, expected, accuracy: 1e-8) }
         for (actual, expected) in zip(notes.map(\.end), [10.125, 10.625, 11.125, 11.625, 12.0]) { XCTAssertEqual(actual, expected, accuracy: 1e-8) }
-        XCTAssertEqual(item.sourceOffset, 0); XCTAssertEqual(item.audioRate, 1); XCTAssertNil(item.loopLength)
+        XCTAssertEqual(item.sourceOffset, 0); XCTAssertEqual(item.audioRate, 2); XCTAssertNil(item.loopLength)
+    }
+    func testImportedMIDIRateRetainsExactPrecisionAndStillMatchesAudibleNoteTimes() throws {
+        let rate = 1.1234567890123456
+        let result = try imported("HASDATA 1 960 QN\nE 960 90 3c 64\nE 960 80 3c 00", item: "POSITION 2\nLENGTH 4\nLOOP 0\nPLAYRATE \(rate) 1 0")
+        let item = try clip(result)
+        XCTAssertEqual(item.audioRate.bitPattern, rate.bitPattern)
+        let notes = item.midiPlaybackNotes()
+        XCTAssertEqual(notes[0].start, 2 + 0.5 / rate, accuracy: 1e-12)
+        XCTAssertEqual(notes[0].end, 2 + 1 / rate, accuracy: 1e-12)
+        let roundTrip = try JSONDecoder().decode(AudioClip.self, from: JSONEncoder().encode(item))
+        XCTAssertEqual(roundTrip.audioRate.bitPattern, rate.bitPattern)
+        let song = result.project.songs[0]
+        let reset = song.item(item, withRate: 1)
+        XCTAssertEqual(reset.midiPlaybackNotes()[0].start, 2.5, accuracy: 1e-12)
+        XCTAssertEqual(reset.duration, item.duration * rate, accuracy: 1e-12)
     }
     func testProjectTempoChangesAndIgnoredTempo() throws {
         let events = "HASDATA 1 960 QN\nE 0 90 3c 64\nE 3840 80 3c 00\nE 0 90 40 64\nE 960 80 40 00"

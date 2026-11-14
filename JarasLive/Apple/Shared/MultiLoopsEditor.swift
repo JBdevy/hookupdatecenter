@@ -14,6 +14,8 @@ struct MultiLoopsEditor: View {
     @State private var draft: MultiLoop?
     @State private var pairWarning = false
     @State private var markerWarning = false
+    @State private var trackSelection = MultiLoopTrackSelection()
+    @State private var gainDrag: MultiLoopGainDrag?
     @FocusState private var nameFocused: Bool
     private var region: Part? { show.current?.parts.first { $0.id == regionID } }
     private var totalLoop: Bool { region?.totalLoop == true }
@@ -42,7 +44,7 @@ struct MultiLoopsEditor: View {
             }
         }.padding(20)
             #if os(macOS)
-            .frame(width: 660, height: 490)
+            .frame(width: 760, height: 540)
             #else
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             #endif
@@ -167,7 +169,7 @@ struct MultiLoopsEditor: View {
         let availableIDs = Set(channels.map { $0.0 })
         next.tracks.removeAll { !availableIDs.contains($0.id) }
         for (id, volume) in channels where !next.tracks.contains(where: { $0.id == id }) { next.tracks.append(MultiLoopTrack(id: id, gain: volume)) }
-        draft = next; stage = 3
+        draft = next; trackSelection = MultiLoopTrackSelection(); gainDrag = nil; stage = 3
     }
     private func commit(_ loop: MultiLoop) {
         var next = loops
@@ -175,40 +177,115 @@ struct MultiLoopsEditor: View {
         if show.setMultiLoops(next, region: regionID) { stage = 0; draft = nil }
     }
     private func trackForm(_ loop: MultiLoop) -> some View {
-        VStack(alignment: .leading) {
+        let tracks = availableTracks
+        let groups = Set(tracks.compactMap(\.parentTrackID))
+        let depths = show.current?.trackGroupDepths ?? [:]
+        return VStack(alignment: .leading) {
             Text(loop.name).font(.jarasHeadline)
             HStack {
-                flag("M/S", active: loop.usesMixer, color: .yellow) { draft?.mixerEnabled = !loop.usesMixer }
-                    .jarasHelp("Apply saved mute and solo settings")
                 Text("Auto Fader")
                 Button("−") { draft?.fadeSeconds = max(1, loop.fadeSeconds - 1) }.disabled(loop.fadeSeconds <= 1)
                 Text("\(Int(loop.fadeSeconds))s").monospacedDigit().frame(width: 32)
                 Button("+") { draft?.fadeSeconds = min(5, loop.fadeSeconds + 1) }.disabled(loop.fadeSeconds >= 5)
             }
             ScrollView {
-                LazyVStack {
+                LazyVStack(spacing: 4) {
                     trackRow(id: MultiLoopTrack.masterID, name: "Master", ceiling: show.snapshot.project.masterVolume ?? 1)
-                    ForEach(availableTracks) { track in trackRow(id: track.id, name: track.name, ceiling: track.volume) }
+                    ForEach(tracks) { track in
+                        trackRow(id: track.id, name: track.name, ceiling: track.volume,
+                                 group: groups.contains(track.id), depth: depths[track.id] ?? 0)
+                    }
                 }
+                // Overlay scrollers must never cover a row's Solo button.
+                .padding(.trailing, 20)
             }
         }
     }
-    private func trackRow(id: UUID, name: String, ceiling: Double) -> some View {
+    private func trackRow(id: UUID, name: String, ceiling: Double, group: Bool = false, depth: Int = 0) -> some View {
         let rule = draft?.tracks.first { $0.id == id } ?? MultiLoopTrack(id: id, gain: ceiling)
+        let master = id == MultiLoopTrack.masterID
+        let selected = trackSelection.ids.contains(id)
         return HStack {
-            Text(name).lineLimit(1).frame(width: 155, alignment: .leading)
-            Slider(value: Binding(get: { min(ceiling, rule.gain) }, set: { value in change(id) { $0.gain = min(ceiling, value) } }), in: 0...max(0.000001, ceiling)).disabled(ceiling <= 0)
+            Button { selectTrack(id, additive: true) } label: {
+                Image(systemName: selected ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(selected ? JarasTheme.green : Color.secondary)
+            }.buttonStyle(.plain).accessibilityLabel(name).accessibilityValue(selected ? "Selected" : "Not selected")
+            HStack(spacing: 7) {
+                Image(systemName: master ? "slider.horizontal.3" : group ? "folder.fill" : "waveform")
+                    .foregroundStyle(group ? JarasTheme.green : Color.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(group || master ? .jarasCallout.bold() : .jarasCallout).lineLimit(1)
+                    if !master { Text(group ? "Track group" : "Track").font(.jarasCaption).foregroundStyle(.secondary) }
+                }
+            }
+            .padding(.leading, CGFloat(min(depth, 4)) * 10)
+            .frame(width: 166, alignment: .leading)
+            .contentShape(Rectangle())
+            #if os(macOS)
+            .overlay(MultiLoopSelectionClick { shift, additive in selectTrack(id, extending: shift, additive: additive) })
+            #else
+            .onTapGesture { selectTrack(id, additive: true) }
+            #endif
+            .jarasHelp(name)
+            Slider(value: Binding(get: { min(ceiling, rule.gain) }, set: { setGain($0, from: id) }),
+                   in: 0...max(0.000001, ceiling), onEditingChanged: { editing in
+                if editing { beginGainDrag(id) } else { gainDrag = nil }
+            }).disabled(ceiling <= 0)
             Text(rule.gain <= 0 ? "−∞" : String(format: "%.1f dB", 20 * log10(max(0.000001,min(ceiling,rule.gain))))).monospacedDigit().font(.jarasCaption).frame(width: 62)
-            flag("Auto Fader", active: rule.autoFader, color: .green) { change(id) { $0.autoFader.toggle() } }
-            flag("M", active: rule.mute, color: .red) { change(id) { $0.mute.toggle() } }
-            flag("S", active: rule.solo, color: .yellow) { change(id) { $0.solo.toggle() } }
-        }.padding(.vertical, 5)
+            flag("Auto Fader", active: rule.autoFader, color: .green) { change(id) { $0.autoFader = !rule.autoFader } }
+            flag("M", active: rule.mute, color: .red) { change(id) { $0.mute = !rule.mute } }
+            flag("S", active: rule.solo, color: .yellow) { change(id) { $0.solo = !rule.solo } }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 7)
+        .background(selected ? JarasTheme.green.opacity(0.16) : Color.white.opacity(group || master ? 0.07 : 0.025), in: RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(selected ? JarasTheme.green.opacity(0.7) : .clear))
     }
     private func flag(_ label: String, active: Bool, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(LocalizedStringKey(label)).font(.jarasCaption.bold()).padding(5).background(active ? color : Color.white.opacity(0.1)).foregroundStyle(active ? .black : .white).cornerRadius(3) }.buttonStyle(.plain)
     }
     private func change(_ id: UUID, edit: (inout MultiLoopTrack) -> Void) {
-        guard var next = draft, let i = next.tracks.firstIndex(where: { $0.id == id }) else { return }
-        edit(&next.tracks[i]); draft = next
+        guard var next = draft else { return }
+        gainDrag = nil
+        let targets = trackSelection.targets(for: id)
+        for i in next.tracks.indices where targets.contains(next.tracks[i].id) { edit(&next.tracks[i]) }
+        draft = next
+    }
+    private func selectTrack(_ id: UUID, extending: Bool = false, additive: Bool = false) {
+        gainDrag = nil
+        trackSelection.select(id, ordered: [MultiLoopTrack.masterID] + availableTracks.map(\.id), extending: extending, additive: additive)
+    }
+    private func beginGainDrag(_ id: UUID) {
+        guard let draft else { return }
+        let targets = trackSelection.targets(for: id)
+        var ceilings = Dictionary(uniqueKeysWithValues: availableTracks.map { ($0.id, $0.volume) })
+        ceilings[MultiLoopTrack.masterID] = show.snapshot.project.masterVolume ?? 1
+        gainDrag = MultiLoopGainDrag(source: id, targets: targets, rules: draft.tracks, ceilings: ceilings)
+    }
+    private func setGain(_ value: Double, from id: UUID) {
+        if gainDrag?.source != id { beginGainDrag(id) }
+        guard var next = draft, let gains = gainDrag?.gains(at: value) else { return }
+        for i in next.tracks.indices { if let gain = gains[next.tracks[i].id] { next.tracks[i].gain = gain } }
+        draft = next
     }
 }
+
+#if os(macOS)
+private struct MultiLoopSelectionClick: NSViewRepresentable {
+    let action: (Bool, Bool) -> Void
+    func makeNSView(context: Context) -> MultiLoopSelectionClickView { MultiLoopSelectionClickView() }
+    func updateNSView(_ view: MultiLoopSelectionClickView, context: Context) { view.action = action }
+}
+private final class MultiLoopSelectionClickView: NSView {
+    var action: ((Bool, Bool) -> Void)?
+    override func mouseDown(with event: NSEvent) {
+        action?(event.modifierFlags.contains(.shift), !event.modifierFlags.intersection([.command, .control]).isEmpty)
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { mouseDown(with: event) }
+    }
+    override func scrollWheel(with event: NSEvent) {
+        if let scroll = enclosingScrollView { scroll.scrollWheel(with: event) } else { super.scrollWheel(with: event) }
+    }
+}
+#endif

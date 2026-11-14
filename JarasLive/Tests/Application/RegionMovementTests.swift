@@ -39,7 +39,9 @@ final class RegionMovementTests: XCTestCase {
             var expected = song.tracks[track].clips[0]; expected.startTime += 30
             XCTAssertEqual(moved.tracks[track].clips[0], expected)
         }
-        XCTAssertEqual(moved.tracks[0].clips.dropFirst(), song.tracks[0].clips.dropFirst())
+        XCTAssertEqual(moved.tracks[0].clips[1], song.tracks[0].clips[1])
+        XCTAssertEqual(moved.tracks[0].clips[2].startTime, 38, "An item beginning outside the region still follows its covered duration")
+        XCTAssertEqual(moved.tracks[0].clips[2].duration, 5)
         XCTAssertEqual(moved.previewMovingRegion(root.id, to: 10), song)
         XCTAssertEqual(song.previewMovingRegion(child.id, to: 50), song)
         XCTAssertEqual(song.previewMovingRegion(root.id, to: -1), song)
@@ -63,7 +65,10 @@ final class RegionMovementTests: XCTestCase {
         let overLoose = reopened.previewMovingRegion(a.id, to: 70)
         XCTAssertEqual(overLoose.tracks[0].clips[2].startTime, 75)
         XCTAssertEqual(overLoose.markers?[2].position, 78)
-        XCTAssertEqual(overLoose.previewMovingRegion(a.id, to: 10), song)
+        let carriedLoose = overLoose.previewMovingRegion(a.id, to: 10)
+        XCTAssertEqual(carriedLoose.tracks[0].clips[2].startTime, 15, "Material covered at the beginning of this drag moves with the region")
+        XCTAssertEqual(carriedLoose.markers?[2].position, 18)
+        XCTAssertEqual(carriedLoose.tracks[0].clips[1], song.tracks[0].clips[1], "Equal overlap preserves the other region's explicit membership")
         // The obstacle belongs to B even when it lies underneath moved A.
         let repulsion = RegionMarkerRepulsion(song: overlap, region: overlap.parts[0])
         XCTAssertEqual(repulsion.resolve(43), 43.01, accuracy: 1e-8)

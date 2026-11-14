@@ -165,3 +165,60 @@ MainActor.assumeIsolated {
     needles.stop(); window.orderOut(nil); window.close()
     print("NATIVE_NEEDLES_HOSTED_CADENCE_OK snapshots=30 frames=60 paints=60 extraConfigureCalls=0")
 }
+
+// A display frame may cross the scheduled output deadline before the next
+// 30 Hz transport sample. Exercise the real output-clock history and paint.
+MainActor.assumeIsolated {
+    let window = NSWindow(contentRect: CGRect(x: -10000, y: 0, width: 800, height: 240),
+        styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let host = NSView(frame: CGRect(x: 0, y: 0, width: 800, height: 240))
+    window.contentView = host
+    let needles = NativeTimelineNeedlesView(frame: CGRect(x: 0, y: 0, width: 10000, height: 240))
+    host.addSubview(needles)
+    let show = ShowController()
+    show.publish(main: 19.98)
+    show.snapshot.transport.loop = LoopState(enabled: true, start: 10, end: 20)
+    var output = AudioPresentationClock(position: 19.98, hostTime: 100)
+    output.transition(position: 10, hostTime: 100.02, sampledAt: 100)
+    var frameTime = 100.01
+    var queries: [(Int, Double)] = []
+    show.audioPresentationPosition = { head, now in
+        queries.append((head, now))
+        return head == 0 ? output.position(at: frameTime) : 70.025
+    }
+    needles.configure(show: show, size: CGSize(width: 10000, height: 240), rulerHeight: 48,
+        verticalOffset: 0, extent: 1000, seek: { _, _ in }, marker: { _ in })
+    needles.freezeTimerForTest()
+    func position(_ index: Int) -> Double { needles.layer!.sublayers![index].position.x / 10 }
+    let generation = show.generation
+    queries.removeAll()
+    let before = ProcessInfo.processInfo.systemUptime
+    needles.fireFrameForTest()
+    precondition(abs(position(1) - 19.99) < 1e-9)
+    precondition(queries.count == 1 && queries[0].0 == 0 && queries[0].1 >= before,
+        "paint queries only active audio heads at this display frame's actual epoch")
+    frameTime = 100.025
+    needles.fireFrameForTest()
+    precondition(abs(position(1) - 10.005) < 1e-9 && show.generation == generation,
+        "the first frame beyond an audible loop deadline wraps without another transport publication")
+    output.transition(position: 50, hostTime: 100.03, sampledAt: 100.025)
+    frameTime = 100.035
+    needles.fireFrameForTest()
+    precondition(abs(position(1) - 50.005) < 1e-9,
+        "a scheduled jump uses actual output time rather than the previous loop's boundary")
+    show.publish(main: 50, sub: 70, subPlaying: true)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.002))
+    needles.freezeTimerForTest(); queries.removeAll(); needles.fireFrameForTest()
+    precondition(queries.map(\.0) == [0, 1] && queries[0].1 == queries[1].1 && position(2) == 70.025,
+        "both active heads share one frame epoch and no second interpolation is applied")
+    show.publish(main: 42, playing: false)
+    show.snapshot.transport.paused = true
+    RunLoop.main.run(until: Date().addingTimeInterval(0.002))
+    queries.removeAll()
+    needles.updateProjection(size: CGSize(width: 20000, height: 240), rulerHeight: 48, extent: 1000)
+    precondition(queries.isEmpty && position(1) == 84,
+        "stopped or paused heads do not revive a retained audio clock")
+    needles.stop(); window.orderOut(nil); window.close()
+    print("NATIVE_NEEDLES_AUDIBLE_FRAME_DEADLINE_WITHOUT_TRANSPORT_TICK_OK")
+}

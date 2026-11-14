@@ -41,6 +41,79 @@ void validBuffer(const void* destination, std::size_t channels, std::size_t fram
         frames > std::numeric_limits<std::size_t>::max() / channels / sizeof(float))
         throw std::invalid_argument("Invalid audio destination buffer.");
 }
+
+// Some exporters pad a short MP3 with zero bytes up to the other stems' file
+// sizes. Expose only its complete MPEG frames to the decoder, as Core Audio
+// does. Never rewrite the source or accept a nonzero/truncated trailing frame.
+struct PaddedMP3Input {
+    std::ifstream stream;
+    std::uint64_t length = 0;
+    explicit PaddedMP3Input(const std::filesystem::path& path) : stream(path, std::ios::binary) {}
+    bool findAudioEnd(std::uint64_t encodedBytes) {
+        std::array<drmp3_uint8, 10> header{};
+        if (!stream.read(reinterpret_cast<char*>(header.data()), header.size())) return false;
+        std::uint64_t cursor = 0;
+        if (std::memcmp(header.data(), "ID3", 3) == 0) {
+            if (header[3] < 2 || header[3] > 4) return false;
+            for (int i = 6; i < 10; ++i) {
+                if (header[i] & 0x80) return false;
+                cursor = (cursor << 7) | header[i];
+            }
+            cursor += 10 + ((header[3] == 4 && (header[5] & 0x10)) ? 10 : 0);
+        }
+        std::array<drmp3_uint8, 4> first{};
+        std::size_t frames = 0;
+        while (cursor + 4 <= encodedBytes) {
+            stream.seekg(static_cast<std::streamoff>(cursor));
+            if (!stream.read(reinterpret_cast<char*>(header.data()), 4)) return false;
+            if (!drmp3_hdr_valid(header.data())) break;
+            if (frames && !drmp3_hdr_compare(first.data(), header.data())) return false;
+            const int bytes = drmp3_hdr_frame_bytes(header.data(), 0) + drmp3_hdr_padding(header.data());
+            if (bytes < 4 || static_cast<std::uint64_t>(bytes) > encodedBytes - cursor) return false;
+            if (!frames) std::copy_n(header.begin(), 4, first.begin());
+            cursor += static_cast<std::uint64_t>(bytes);
+            ++frames;
+        }
+        if (frames < 2 || cursor >= encodedBytes) return false;
+        length = cursor;
+        stream.clear(); stream.seekg(static_cast<std::streamoff>(cursor));
+        std::array<char, 65536> padding{};
+        while (cursor < encodedBytes) {
+            const auto count = static_cast<std::streamsize>(std::min<std::uint64_t>(padding.size(), encodedBytes - cursor));
+            if (!stream.read(padding.data(), count) ||
+                !std::all_of(padding.begin(), padding.begin() + count, [](char value) { return value == 0; })) return false;
+            cursor += static_cast<std::uint64_t>(count);
+        }
+        stream.clear(); stream.seekg(0);
+        return true;
+    }
+    static size_t read(void* context, void* destination, size_t bytes) {
+        auto& input = *static_cast<PaddedMP3Input*>(context);
+        const auto position = input.stream.tellg();
+        if (position < 0 || static_cast<std::uint64_t>(position) >= input.length) return 0;
+        const auto count = static_cast<std::streamsize>(std::min<std::uint64_t>(bytes, input.length - static_cast<std::uint64_t>(position)));
+        input.stream.read(static_cast<char*>(destination), count);
+        return static_cast<size_t>(input.stream.gcount());
+    }
+    static drmp3_bool32 seek(void* context, int offset, drmp3_seek_origin origin) {
+        auto& input = *static_cast<PaddedMP3Input*>(context);
+        const auto base = origin == DRMP3_SEEK_SET ? std::int64_t(0)
+            : origin == DRMP3_SEEK_END ? static_cast<std::int64_t>(input.length)
+            : static_cast<std::int64_t>(input.stream.tellg());
+        if (base < 0 || offset < -base ||
+            (offset > 0 && base > std::numeric_limits<std::int64_t>::max() - offset)) return DRMP3_FALSE;
+        const auto target = base + offset;
+        if (static_cast<std::uint64_t>(target) > input.length) return DRMP3_FALSE;
+        input.stream.clear(); input.stream.seekg(target);
+        return input.stream ? DRMP3_TRUE : DRMP3_FALSE;
+    }
+    static drmp3_bool32 tell(void* context, drmp3_int64* position) {
+        const auto value = static_cast<PaddedMP3Input*>(context)->stream.tellg();
+        if (value < 0) return DRMP3_FALSE;
+        *position = static_cast<drmp3_int64>(value);
+        return DRMP3_TRUE;
+    }
+};
 } // namespace
 
 struct AudioFile::Impl {
@@ -48,6 +121,7 @@ struct AudioFile::Impl {
     AudioFileInfo info;
     drwav wav{};
     drmp3 mp3{};
+    std::unique_ptr<PaddedMP3Input> paddedMP3;
     drflac* flac = nullptr;
     bool wavOpen = false, mp3Open = false;
     bool truncatedWaveChunk = false;
@@ -224,6 +298,15 @@ struct AudioFile::Impl {
 #else
         mp3Open = drmp3_init_file(&mp3, path.c_str(), nullptr) != 0;
 #endif
+        if (!mp3Open) {
+            auto input = std::make_unique<PaddedMP3Input>(path);
+            if (input->findAudioEnd(info.encodedBytes)) {
+                mp3 = {};
+                mp3Open = drmp3_init(&mp3, PaddedMP3Input::read, PaddedMP3Input::seek,
+                                    PaddedMP3Input::tell, nullptr, input.get(), nullptr) != 0;
+                if (mp3Open) paddedMP3 = std::move(input);
+            }
+        }
         if (!mp3Open) throw std::runtime_error("Invalid MP3 audio.");
         info.format = AudioFileFormat::mp3;
         info.sampleRate = mp3.sampleRate;

@@ -60,9 +60,10 @@ inline jaras::TimelineMarker boundary(const jaras::Song &song, double at) {
     marker.tempoUnit = previous ? previous->tempoUnit.value_or(song.beatUnit) : song.beatUnit;
     marker.tempoTimebase = previous ? previous->tempoTimebase : std::optional<std::string>("global");
     marker.tempoReferenceBPM = previous ? previous->tempoReferenceBPM : std::nullopt;
+    marker.tempoPlaybackRate = previous ? jaras::tempoPlayback::rate(song,*previous) : 1.;
     return marker;
 }
-inline std::vector<jaras::TimelineMarker> regionChange(const jaras::Song &song, const jaras::Part &part, double delta) {
+inline std::vector<jaras::TimelineMarker> regionChange(const jaras::Song &song, const jaras::Part &part, double delta, double referenceBPM=0) {
     std::vector<jaras::TimelineMarker> targets;
     const double end = jaras::TempoEditMap::tempoEditEnd(song, part);
     bool hasStart = false, hasEnd = false;
@@ -76,10 +77,13 @@ inline std::vector<jaras::TimelineMarker> regionChange(const jaras::Song &song, 
     if (!hasStart) targets.push_back(boundary(song, part.startTime));
     double low = 300, high = 60;
     for (const auto &marker : targets) { low = std::min(low, *marker.tempoBPM); high = std::max(high, *marker.tempoBPM); }
-    delta = jlimit(60 - low, 300 - high, delta);
-    if (std::abs(delta) < .0000001) return {};
+    if(referenceBPM<=0)referenceBPM=bpm(song,part.startTime);
+    const double factor=jlimit(60/low,300/high,(referenceBPM+delta)/referenceBPM);
+    if (std::abs(factor-1) < .000000001) return {};
     for (auto &marker : targets) {
-        *marker.tempoBPM += delta;
+        const auto previous=marker;
+        *marker.tempoBPM *= factor;
+        jaras::tempoPlayback::edited(song,&previous,marker);
         marker.tempoBeats = marker.tempoBeats.value_or(song.beatsPerBar);
         marker.tempoUnit = marker.tempoUnit.value_or(song.beatUnit);
     }

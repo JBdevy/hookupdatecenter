@@ -1,6 +1,7 @@
 #pragma once
 #include "Localization.h"
 #include "Session.h"
+#include "RegionPitch.h"
 namespace catlive {
 class TunerControl final : public Component, private Timer {
   public:
@@ -24,22 +25,7 @@ class TunerControl final : public Component, private Timer {
     }
     const jaras::Part *region() const {
         const auto *song = session.song();
-        if (!song)
-            return nullptr;
-        const auto &transport = session.transport();
-        if (transport.playing) {
-            for (const auto &part : song->parts) if (transport.ignoreNextRegionId == part.id) return &part;
-            if (const auto *part = regionPitch::at(*song, transport.position)) return part;
-        }
-        for (const auto &part : song->parts)
-            if (transport.regionId == part.id) {
-                if (transport.playing) return &part;
-                const jaras::Part *first = nullptr;
-                for (const auto &child : song->parts)
-                    if (child.parentRegionID == part.id && (!first || child.startTime < first->startTime)) first = &child;
-                return first ? first : &part;
-            }
-        return nullptr;
+        return song ? regionPitch::target(*song, session.transport()) : nullptr;
     }
     void paint(Graphics &g) override {
         auto bounds = getLocalBounds().toFloat().reduced(.5f);

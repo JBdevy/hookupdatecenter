@@ -3,6 +3,119 @@ import XCTest
 @testable import JarasApplication
 
 final class ReaperProjectImportTests: XCTestCase {
+    func testIgnoredItemsReportTheirSourceFilesAndIndividualReasonsWithoutBlockingRecovery() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          <TRACK
+            NAME "Órgãos %"
+            <ITEM
+              POSITION nan
+              LENGTH 3
+              NAME "Broken position"
+              <SOURCE WAVE
+                FILE "A/Órgão % 1.wav"
+              >
+            >
+            <ITEM
+              POSITION 4
+              LENGTH 3
+              PLAYRATE invalid
+              <SOURCE SECTION
+                <SOURCE WAVE
+                  FILE "B/Órgão % 2.wav"
+                >
+              >
+            >
+            <ITEM
+              POSITION 8
+              LENGTH 3
+              <SOURCE UNKNOWN
+                FILE "C/Unsupported.xyz"
+              >
+            >
+            <ITEM
+              POSITION 12
+              LENGTH 3
+              <SOURCE WAVE
+                FILE "Survives.wav"
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(source)
+        XCTAssertEqual(result.project.songs[0].tracks[0].clips.count, 1)
+        for path in ["A/Órgão % 1.wav", "B/Órgão % 2.wav"] {
+            let notice = try XCTUnwrap(result.warnings.first { $0.contains(path) })
+            XCTAssertTrue(notice.contains("Órgãos %") && notice.contains("Invalid numeric value"), notice)
+        }
+        let unsupported = try XCTUnwrap(result.warnings.first { $0.contains("C/Unsupported.xyz") })
+        XCTAssertTrue(unsupported.contains("Unsupported REAPER source type: UNKNOWN"))
+        try result.project.validate()
+    }
+    func testImportedTimecodeRetainsRateAndItsOriginalFPSAndOffset() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = try fixture("""
+        <REAPER_PROJECT 0.1
+          TEMPO 120 4 4
+          <TRACK
+            NAME TIMECODE
+            <ITEM
+              POSITION 5
+              LENGTH 7
+              PLAYRATE 1.159123456789 1 0
+              SOFFS 2
+              <SOURCE LTC
+                STARTTIME 3600
+                FRAMERATE 25 0
+                SEND 2
+                USERDATA 0 0 0 0
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let result = try ReaperProjectImporter.read(file)
+        let clip = try XCTUnwrap(result.project.songs[0].tracks[0].clips.first)
+        XCTAssertEqual(clip.audioRate, 1.159123456789)
+        XCTAssertEqual(clip.timecode?.frameRate, 25)
+        XCTAssertEqual(clip.timecode?.offset, 3602)
+        XCTAssertFalse(result.warnings.contains { $0.contains("Timecode") })
+    }
+    func testImportedTakeRateKeepsFullDoublePrecisionThroughProjectSave() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = try fixture("""
+        <REAPER_PROJECT 0.1
+          TEMPO 146 4 4
+          <TRACK
+            NAME "Precision reference"
+            <ITEM
+              POSITION 0.667123456789
+              LENGTH 184.66123456789
+              SOFFS 0.123456789012345
+              PLAYRATE 1.1234567890123456 1 0
+              <SOURCE WAVE
+                FILE "missing-reference.wav"
+              >
+            >
+          >
+        >
+        """, in: directory)
+        let imported = try ReaperProjectImporter.read(source).project
+        let clip = try XCTUnwrap(imported.songs[0].tracks.first(where: { $0.kind == .standard })?.clips.first)
+        let expected = 1.1234567890123456
+        XCTAssertEqual(clip.audioRate.bitPattern, expected.bitPattern)
+        let saved = try JSONEncoder().encode(imported)
+        let reopened = try JSONDecoder().decode(Project.self, from: saved)
+        let restored = try XCTUnwrap(reopened.songs[0].tracks.first(where: { $0.kind == .standard })?.clips.first)
+        XCTAssertEqual(restored.audioRate.bitPattern, expected.bitPattern)
+        XCTAssertEqual(restored.duration, 184.66123456789)
+        XCTAssertEqual(Double(ItemRateSettings(baseBPM: 146, rate: restored.audioRate).rateText)?.bitPattern, expected.bitPattern)
+    }
     private func fixture(_ text: String, in directory: URL) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("Migration.rpp")

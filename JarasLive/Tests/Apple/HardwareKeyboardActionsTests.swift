@@ -42,6 +42,14 @@ import Foundation
         precondition(probe.executed.count == 4, "Continuous tempo shortcuts must repeat")
         precondition(!probe.handleHardwareKey(event(0x06, .command)), "Copy belongs to the editor")
 
+        for modifiers: HardwareKeyboardModifiers in [.command, .control] {
+            let duplicate = event(0x07, modifiers)
+            precondition(probe.actions.setInput(duplicate.input, action: .togglePreview, kind: "keyboard"))
+            let before = probe.executed.count
+            precondition(!probe.handleHardwareKey(duplicate) && probe.executed.count == before,
+                         "Duplicate must reach the native editor even when an Action uses Command/Ctrl D")
+        }
+
         let custom = event(0x09, [.control, .option]).input
         precondition(probe.actions.setInput(custom, action: .togglePreview, kind: "keyboard"))
         precondition(probe.handleHardwareKey(event(0x09, [.control, .option])))

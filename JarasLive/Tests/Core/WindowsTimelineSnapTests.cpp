@@ -57,9 +57,13 @@ int main() {
         check(snapSelection(10.74,song,scale,transport,false),target,"item snaps to visible bars then beats and subdivisions");
         check(snap(10.74,song,scale,false),target,"marker snaps to visible bars then beats and subdivisions");
     }
+    check(visibleGridStep(2,4,4,8,20),1,"intermediate beat groups fill the zoom gap");
+    song.beatsPerBar=7; song.beatUnit=8;
+    check(snap(2.12,song,40,false),2.25,"odd meter subdivisions restart at each visible bar");
+    song.beatsPerBar=4; song.beatUnit=4;
     song.timeSettings->divisions = 4;
     check(snapSelection(1.12,song,60,transport,false),1,"nearby grid attracts");
-    check(snapSelection(1.24,song,60,transport,false),1.24,"distant grid does not force drop");
+    check(snapSelection(1.24,song,60,transport,false),1,"enabled grid quantizes even beyond the edge capture radius");
     check(snapCursor(1.24,song,60,false),1,"cursor click keeps division quantization");
     for (double scale : {.05,.3,1.,100.}) {
         transport.editPosition = transport.position = 1000;

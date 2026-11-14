@@ -22,7 +22,7 @@ try:
     probe.write_text(pathlib.Path('Tests/Apple/HardwareKeyboardActionsTests.swift').read_text().replace('    // PRODUCTION_HANDLER', handler))
     subprocess.run(['swiftc','-swift-version','5','-parse-as-library',
                     'Application/Controls/ControlInput.swift','Application/Controls/HardwareKeyboardInput.swift',
-                    'Application/Controls/DAWActions.swift',str(probe),'-o',str(folder/'ActionsProbe')], check=True)
+                    'Application/Controls/SMK37Integration.swift','Application/Controls/DAWActions.swift',str(probe),'-o',str(folder/'ActionsProbe')], check=True)
     subprocess.run([str(folder/'ActionsProbe')], check=True)
     app = folder / 'KeyboardProbe.app'; app.mkdir()
     (app / 'Info.plist').write_bytes(plistlib.dumps({

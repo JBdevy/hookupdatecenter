@@ -4,5 +4,12 @@ cd "$(dirname "$0")/.."
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-region-input.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 cp Tests/Apple/RegionResizeInputTests.swift "$test_dir/main.swift"
-swiftc -swift-version 5 Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift Apple/Shared/RegionEditor.swift "$test_dir/main.swift" -o "$test_dir/test"
+python3 - "$test_dir/environment.swift" <<'PY'
+from pathlib import Path
+import sys
+source = Path('Apple/Shared/FXWindows.swift').read_text()
+start = source.index('private struct WorkspaceEditorDismissKey:')
+Path(sys.argv[1]).write_text('import SwiftUI\n' + source[start:source.index('\nextension View {', start)])
+PY
+swiftc -swift-version 5 Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/RightClickRouting.swift Apple/Shared/RegionEditor.swift "$test_dir/environment.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

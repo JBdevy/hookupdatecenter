@@ -7,6 +7,7 @@
 #include "CatDynamicsAssets.h"
 #include "Appearance.h"
 #include "ClipEditing.h"
+#include "TimelineMovementLock.h"
 #include "FrontendPresentation.h"
 #include "GridMediaClipboard.h"
 #include <shobjidl.h>
@@ -602,7 +603,7 @@ void FrontendBridge::receive(const String &json) {
             const bool moving=action=="cutItems";
             if(moving) {
                 requireEditable();
-                if(session.project().timelineMovementLocked.value_or(false))throw std::runtime_error("Unlock item movement first.");
+                if(timelineGrid::itemsLocked(session.project()))throw std::runtime_error("Unlock item movement first.");
             }
             auto copied=GridItemClipboard::copy(session.project(),session.song()->id,itemIDs(),moving);
             if(!copied)throw std::invalid_argument("The selected items cannot be copied.");
@@ -613,7 +614,7 @@ void FrontendBridge::receive(const String &json) {
             validateClipboardScope(payload);requireEditable();refreshClipboard();
             if(!itemClipboard)throw std::runtime_error("Copy items from this timeline before pasting. External file paste is not available in this interface yet.");
             if(itemClipboard->song!=session.song()->id)throw std::runtime_error("Return to the copied items' timeline before pasting.");
-            if(itemClipboard->moving && session.project().timelineMovementLocked.value_or(false))throw std::runtime_error("Unlock item movement first.");
+            if(itemClipboard->moving && timelineGrid::itemsLocked(session.project()))throw std::runtime_error("Unlock item movement first.");
             const auto position=get(payload,"seconds").isVoid()?session.transport().editPosition:finiteNumber(payload,"seconds");
             const auto clipboard=*itemClipboard;
             const auto entries=clipboard.items(session.project(),position);
@@ -643,7 +644,7 @@ void FrontendBridge::receive(const String &json) {
         }
         else if(action=="moveItems") {
             requireEditable();const auto items=itemIDs();const auto delta=finiteNumber(payload,"delta");
-            if(session.project().timelineMovementLocked.value_or(false))throw std::runtime_error("Unlock item movement first.");
+            if(timelineGrid::itemsLocked(session.project()))throw std::runtime_error("Unlock item movement first.");
             const auto destination=utf8(str(payload,"trackID"));if(!destination.empty())requireTrack(destination);
             std::vector<std::pair<ID,double>> moves;
             if(const auto *song=session.song())for(const auto &track:song->tracks)for(const auto &clip:track.clips)if(items.count(clip.id)){

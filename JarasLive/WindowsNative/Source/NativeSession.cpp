@@ -301,6 +301,7 @@ json NativeSession::state() const {
     const auto& t = transport();
     return {{"revision", revision_}, {"dirty", dirty_}, {"path", path_.u8string()},
         {"timelineMovementLocked", project().timelineMovementLocked.value_or(false)},
+        {"timelineLockOptions", project().configuredTimelineLocks()},
         {"canUndo", !past_.empty()}, {"canRedo", !future_.empty()},
         {"transport", {{"playing", t.playing}, {"paused", t.paused},
             {"position", t.position}, {"editPosition", t.editPosition},

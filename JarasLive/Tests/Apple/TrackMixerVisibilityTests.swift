@@ -1,14 +1,6 @@
 import AppKit
 import SwiftUI
 
-@MainActor final class TrackSelectionRouter {
-    static let shared = TrackSelectionRouter()
-    var pinnedTracks = Set<UUID>()
-}
-
-final class NativeVerticalTrackMeterView: NSView {}
-private enum JarasTheme { static let text = Color.white }
-
 private enum VisibilityJournal { static var windowTransitions = 0 }
 
 // INSERT_NATIVE_TRACK_MIXER_VISIBILITY
@@ -37,11 +29,11 @@ MainActor.assumeIsolated {
     let distantAncestor = VisibilityDocument(frame: CGRect(x: 0, y: 1800, width: 248, height: 64))
     let distant = TrackMixerNativeControlView(frame: CGRect(x: 0, y: 0, width: 248, height: 64))
     first.track = UUID(); distant.track = UUID()
-    distant.controls.rootView = AnyView(Button("Warm control") {})
+    distant.controls.update(TrackMixerNativeContent(controls: AnyView(Button("Warm control") {})), meterWidth: 52, enabled: true)
     document.addSubview(first); document.addSubview(distantAncestor); distantAncestor.addSubview(distant)
     document.layoutSubtreeIfNeeded()
     first.place(); distant.place()
-    let hosts = [distant.meter, distant.activity, distant.controls]
+    let hosts: [NSView] = [distant.meter, distant.activity, distant.controls]
     let identities = hosts.map(ObjectIdentifier.init)
     let accessibility = app.isFullKeyboardAccessEnabled || NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
     precondition(!first.isHidden, "visible rows remain available")
@@ -112,5 +104,35 @@ MainActor.assumeIsolated {
     scroll.contentView.scroll(to: .zero)
     precondition(!first.isHidden && first.controls.window === window,
                  "an idle-detached row reattaches synchronously when scrolled into view")
+
+    // Command-wheel also moves rows across the reserve without scrolling:
+    // the document grows/shrinks while the clip remains at the same origin.
+    RunLoop.main.run(until: Date().addingTimeInterval(0.22))
+    distantAncestor.setFrameOrigin(CGPoint(x: 0, y: 150))
+    let beforeHeight = VisibilityJournal.windowTransitions
+    let clipOrigin = scroll.contentView.bounds.origin
+    for _ in 0..<20 {
+        document.setFrameSize(CGSize(width: 320, height: 8192))
+        distantAncestor.setFrameOrigin(CGPoint(x: 0, y: 1800))
+        precondition(distant.isHidden != accessibility, "resizing must still hide controls outside the warm viewport")
+        document.setFrameSize(CGSize(width: 320, height: 4096))
+        distantAncestor.setFrameOrigin(CGPoint(x: 0, y: 150))
+        precondition(!distant.isHidden && distant.controls.window === window,
+                     "height reversal must reveal the retained controls immediately")
+    }
+    let heightTransitions = VisibilityJournal.windowTransitions - beforeHeight
+    print("TRACK_MIXER_FAST_HEIGHT_HOST_WINDOW_TRANSITIONS=\(heightTransitions)")
+    precondition(scroll.contentView.bounds.origin == clipOrigin, "fixture must exercise resize without scrolling")
+    if !CommandLine.arguments.contains("--legacy") {
+        precondition(heightTransitions == 0, "height reversal must not rebuild the native window environment")
+    }
+    document.setFrameSize(CGSize(width: 320, height: 8192))
+    distantAncestor.setFrameOrigin(CGPoint(x: 0, y: 1800))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.22))
+    precondition(accessibility || hosts.allSatisfy { $0.superview == nil },
+                 "after height changes rest, offscreen controls must detach normally")
+    distantAncestor.setFrameOrigin(CGPoint(x: 0, y: 150))
+    precondition(!distant.isHidden && hosts.map(ObjectIdentifier.init) == identities && hosts.allSatisfy { $0.window === window },
+                 "revealing an idle-detached row must preserve every control and its identity")
     print("TRACK_MIXER_NATIVE_VISIBILITY_DETACH_WARM_SCROLL_IDENTITY_PINNED_FOCUS_RESIZE_AND_REATTACH_OK")
 }

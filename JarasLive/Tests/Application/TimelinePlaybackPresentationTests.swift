@@ -41,6 +41,33 @@ final class TimelinePlaybackPresentationTests: XCTestCase {
         XCTAssertEqual(frame.followPosition, frame.mainPosition)
     }
 
+    func testAudibleFrameOwnsLoopHandoffWithoutAnotherTransportTickOrExtrapolation() {
+        var sample = transport(main: 19.99, subPlaying: true)
+        sample.loop = LoopState(enabled: true, start: 10, end: 20)
+        let frame = TimelinePlaybackPresentation(transport: sample, elapsed: 0.04, songDuration: 100,
+            mainBoundary: 20, audibleMainPosition: 10.012, audibleSubPosition: 70.045)
+        XCTAssertEqual(frame.mainPosition, 10.012)
+        XCTAssertEqual(frame.subPosition, 70.045)
+        XCTAssertEqual(frame.followPosition, 70.045)
+        let nextRegion = TimelinePlaybackPresentation(transport: sample, elapsed: 0.04, songDuration: 100,
+            mainBoundary: 20, audibleMainPosition: 50.015)
+        XCTAssertEqual(nextRegion.mainPosition, 50.015, "The audible destination wins over stale loop/region bounds.")
+    }
+
+    func testInvalidAudioClockFallsBackAndStoppedHeadsIgnoreRetainedAudioClock() {
+        for invalid in [Double.nan, .infinity, -.infinity] {
+            let frame = TimelinePlaybackPresentation(transport: transport(subPlaying: true), elapsed: 0.02,
+                songDuration: 100, audibleMainPosition: invalid, audibleSubPosition: invalid)
+            XCTAssertEqual(frame.mainPosition, 10.02, accuracy: 1e-12)
+            XCTAssertEqual(frame.subPosition, 70.02, accuracy: 1e-12)
+        }
+        let stopped = TimelinePlaybackPresentation(transport: transport(playing: false), elapsed: 0.05,
+            songDuration: 100, audibleMainPosition: 99, audibleSubPosition: 98)
+        XCTAssertEqual(stopped.mainPosition, 10)
+        XCTAssertEqual(stopped.subPosition, 70)
+        XCTAssertNil(stopped.followPosition)
+    }
+
     func testPausedAndStoppedSamplesDoNotAdvanceOrFollow() {
         var sample = transport(playing: false)
         sample.paused = true

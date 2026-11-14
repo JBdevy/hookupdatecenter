@@ -68,7 +68,7 @@ import Foundation
         }
         precondition(show.snapshot.project == locked && show.projectRevision == revision,
             "blocked drags and trims neither mutate the arrangement nor enter history")
-        precondition(show.copyItems([audioItem.id], moving: true))
+        precondition(!show.copyItems([audioItem.id], moving: true))
         show.send(.editSeek, value: 80)
         precondition(show.pasteItems().isEmpty && show.snapshot.project == locked,
             "Cut/Paste cannot bypass movement locking")
@@ -121,5 +121,51 @@ import Foundation
         let unlocked = try await store.load()!
         precondition(unlocked.timelineMovementLocked == false)
         print("TIMELINE_LOCK_REAL_CORE_ENCRYPTED_SAVE_REOPEN_UNLOCK_OK")
+
+        let scoped = try ShowController(executor: LocalCommandExecutor(), persistence: store, initialProject: original)
+        scoped.setTimelineLockOptions(2)
+        precondition(!scoped.timelineMovementLocked && scoped.timelineActiveLockOptions == 0 && scoped.timelineLockOptions == 2,
+            "the popover configures the lock without enabling it")
+        scoped.setTimelineMovementLocked(true)
+        scoped.moveClip(audioItem.id, start: 90, track: audioTrack.id)
+        precondition(scoped.current!.tracks.first { $0.id == audioTrack.id }!.clips[0].startTime == audioItem.startTime)
+        scoped.moveRegion(region.id, start: region.startTime + 10)
+        precondition(scoped.current!.tracks.first { $0.id == audioTrack.id }!.clips[0].startTime == audioItem.startTime + 10,
+            "item lock prevents only individual moves; unlocked region carries its contents")
+        scoped.setTimelineLockOptions(1)
+        let regionStart = scoped.current!.parts.first { $0.id == region.id }!.startTime
+        scoped.moveRegion(region.id, start: 90)
+        precondition(scoped.current!.parts.first { $0.id == region.id }!.startTime == regionStart)
+        scoped.moveClip(audioItem.id, start: 60, track: audioTrack.id)
+        precondition(scoped.current!.tracks.first { $0.id == audioTrack.id }!.clips[0].startTime == 60)
+        var heardGain: [UUID: Double] = [:], heardPan: [UUID: Double] = [:]
+        scoped.audioItemGain = { heardGain[$0] = $1 }
+        scoped.audioItemPan = { heardPan[$0] = $1 }
+        scoped.previewItemGain(audioItem.id, gain: 0.1)
+        scoped.previewItemPan(audioItem.id, pan: -0.75)
+        scoped.setTimelineLockOptions(4)
+        let mixBefore = scoped.current!.tracks.first { $0.id == audioTrack.id }!.clips[0]
+        precondition(heardGain[audioItem.id] == (mixBefore.gain ?? 1) && heardPan[audioItem.id] == (mixBefore.pan ?? 0),
+            "locking mix during a live preview restores committed audio values")
+        scoped.setItemGain(audioItem.id, gain: 0.25); scoped.setItemPan(audioItem.id, pan: -0.5)
+        scoped.setItemsMix([audioItem.id], gain: 0.5, pan: 0.5)
+        scoped.send(.clipGain, target: audioItem.id, value: 0.2)
+        let mixAfter = scoped.current!.tracks.first { $0.id == audioTrack.id }!.clips[0]
+        precondition(mixAfter.gain == mixBefore.gain && mixAfter.pan == mixBefore.pan)
+        scoped.moveClip(audioItem.id, start: 65, track: audioTrack.id)
+        precondition(scoped.current!.tracks.first { $0.id == audioTrack.id }!.clips[0].startTime == 65)
+        try await scoped.flushProject()
+        let partial = try await store.load()!
+        precondition(partial.effectiveTimelineLocks == 4 && partial.timelineMovementLocked == true)
+        scoped.setTimelineMovementLocked(false); scoped.setItemGain(audioItem.id, gain: 0.25)
+        precondition(scoped.current!.tracks.first { $0.id == audioTrack.id }!.clips[0].gain == 0.25)
+        precondition(scoped.timelineLockOptions == 4 && scoped.timelineActiveLockOptions == 0)
+        try await scoped.flushProject()
+        let configured = try await store.load()!
+        precondition(configured.configuredTimelineLocks == 4 && configured.effectiveTimelineLocks == 0)
+        scoped.setTimelineMovementLocked(true)
+        precondition(scoped.timelineActiveLockOptions == 4 && !scoped.timelineItemsLocked && !scoped.timelineRegionsLocked,
+            "re-enabling restores the remembered categories, not all categories")
+        print("TIMELINE_LOCK_INDEPENDENT_SCOPES_REGION_CONTENTS_MIX_AND_PARTIAL_SAVE_OK")
     }
 }

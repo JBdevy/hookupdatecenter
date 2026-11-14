@@ -127,6 +127,19 @@ public struct TrackAutomation: Codable, Equatable, Sendable {
     /// Env controls both lane visibility and playback automation.
     public var lanesVisible: Bool?
     public init() {}
+    public mutating func mapTimelineTimes(_ position: (Double) -> Double) {
+        for envelope in envelopes.indices {
+            for point in envelopes[envelope].points.indices {
+                envelopes[envelope].points[point].time = position(envelopes[envelope].points[point].time)
+            }
+            envelopes[envelope].points.sort { $0.time < $1.time }
+            if envelopes[envelope].points.count > 1 {
+                for point in 1..<envelopes[envelope].points.count where envelopes[envelope].points[point].time <= envelopes[envelope].points[point - 1].time {
+                    envelopes[envelope].points[point].time = envelopes[envelope].points[point - 1].time.nextUp
+                }
+            }
+        }
+    }
     public var active: [TrackEnvelope] { enabled ? visibleEnvelopes.filter(\.enabled) : [] }
     public var visibleEnvelopes: [TrackEnvelope] { !enabled || lanesVisible == false ? [] : envelopes.filter(\.visible) }
     public mutating func toggleLanes(volume: Double, volumeName: String) {

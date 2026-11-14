@@ -11,6 +11,10 @@
 #include <charconv>
 #include "SplitPlaybackTests.h"
 #include "MixerFeedbackTests.h"
+#include "MultiLoopPlaybackTests.h"
+#include "TempoProjectStressTests.h"
+#include "ParallelClipAudioTests.h"
+#include "AudioDSPKernelTests.h"
 #include "SaveAsyncTests.h"
 #include "ProjectionSelection.h"
 #include "AudioSeparationTests.h"
@@ -67,7 +71,6 @@
 #include "ProjectDeletionPanel.h"
 #include "ShowMode.h"
 #include "PortablePackage.h"
-#include "PartialProjectPackage.h"
 #include "TimelinePlaybackFollow.h"
 #include "RecordingProject.h"
 #include "TrackEditing.h"
@@ -662,6 +665,7 @@ int runTests(const File &directory) {
                "Another project inherited the old meter state");
     });
     transportFadeoutTests::registerTests(directory, test);
+    test("Multiloop audio applies grouped M/S, Auto Fader, release, bypass and fader feedback", [&] { multiLoopPlaybackTests::playback(directory); });
     addActionBindingsTests(directory, test);
     nativeWindowBoundsTests::registerTests(test);
     addUIFeatureTests(directory, test);
@@ -4641,6 +4645,10 @@ int runTests(const File &directory) {
         core.execute({jaras::CommandKind::stopAll}); core.execute({jaras::CommandKind::selectRegion, a}); core.execute({jaras::CommandKind::play}); core.advance(3.99);
         core.execute({jaras::CommandKind::ignoreNext}); render(0, "Ignore Next rendered past last owned audio");
     });
+    test("Constant audio item gain preserves PCM and channel modes", [&] { audioDSPKernelTests::gain(); });
+    test("Accelerated FFT preserves portable spectrum and round trip", [&] { audioDSPKernelTests::fft(); });
+    test("Parallel clip DSP preserves serial PCM across seeks loops and tempo changes", [&] { parallelClipAudioTests::run(directory); });
+    test("Realtime project tempo stress benchmark", [&] { tempoProjectStressTests::run(directory); });
     test("Offline export project throughput benchmark", [&] {
         const auto path = SystemStats::getEnvironmentVariable("CATLIVE_EXPORT_BENCH_PROJECT", {});
         if (path.isEmpty()) return;
@@ -5387,6 +5395,12 @@ int runTests(const File &directory) {
         track.clips[0].clickDouble = true; program.prepare(song, &track);
         expect(beatEnergy(.75) > 1, "Double click did not produce the intermediate beat");
         expect(program.sections.front().beats == 8, "Double click moved the bar accent");
+        auto ratedTrack=track;ratedTrack.clips[0].clickDouble=false;ratedTrack.clips[0].playbackRate=1.25;
+        ClickProgram ratedProgram;ratedProgram.prepare(song,&ratedTrack);
+        expect(ratedProgram.sections.front().bpm==150,"Generated click ignored its independent item rate");
+        auto fasterSong=song;fasterSong.bpm=180;ratedTrack.clips[0].playbackRate=1.875;ratedTrack.clips[0].tempoBasePlaybackRate=1.25;
+        ratedProgram.prepare(fasterSong,&ratedTrack);
+        expect(ratedProgram.sections.front().bpm==225,"Global BPM was applied twice to the generated click");
         auto normalPeaks = timelineGrid::clickBeats(song, clip, .5, 1.5, 100);
         auto doublePeaks = timelineGrid::clickBeats(song, track.clips[0], .5, 1.5, 100);
         expect(doublePeaks.size() > normalPeaks.size(), "Click waveform did not follow double speed");
@@ -6871,46 +6885,6 @@ int runTests(const File &directory) {
         directory.getChildFile("remote-state.json")
             .replaceWithText(JSON::toString(presentation.snapshot(1)));
     });
-    test("Partial export adds native FX and only new media without changing the baseline", [&] {
-        const auto root = directory.getChildFile("partial-package");
-        root.getChildFile("Stems").createDirectory();
-        auto base = projectFixture();
-        base.partialImportIDs = std::vector<ID>{uuid()};
-        auto saved = ProjectCodec::encode(base);
-        expect(ProjectCodec::decode(saved).partialImportIDs == base.partialImportIDs, "Partial import ledger lost in codec");
-        auto track = list(get(list(get(saved, "songs"))[0], "tracks"))[0];
-        auto fx = fxschema::defaults(true); put(fx, "inserted", Array<var>{"EQ"}); put(track, "fx", fx);
-        const auto existing = root.getChildFile("Stems/Piano.wav");
-        expect(existing.replaceWithText("existing audio"), "Partial baseline media");
-        auto snapshot = object(); put(snapshot, "format", "catlive-jlpartial"); put(snapshot, "version", 1);
-        put(snapshot, "id", text(uuid())); put(snapshot, "createdAt", Time::getCurrentTime().toISO8601(true));
-        put(snapshot, "project", saved.clone()); put(snapshot, "instruments", object());
-        put(snapshot, "files", Array<var>{portablePackage::recordJSON(packageZIP::fingerprint("Stems/Piano.wav", existing))});
-        const auto baseline = root.getChildFile("Baseline.jlpartial");
-        expect(baseline.replaceWithText(JSON::toString(snapshot)), "Partial snapshot");
-        const auto original = JSON::toString(snapshot);
-        put(fx, "inserted", Array<var>{"EQ", "Reverb"}); put(fx, "reverbEnabled", true); put(fx, "reverbMix", 37.);
-        auto clips = list(get(track, "clips"));
-        for (auto path : {"Stems/desktop.wav", "Stems/new.wav"}) {
-            auto clip = clips[0].clone(); put(clip, "id", text(uuid())); put(clip, "startTime", 22. + clips.size());
-            auto file = get(clip, "audioFile"); put(file, "path", path); clips.add(clip);
-        }
-        put(track, "clips", clips);
-        expect(root.getChildFile("Stems/desktop.wav").replaceWithText("existing audio") &&
-                   root.getChildFile("Stems/new.wav").replaceWithText("new audio"), "Partial new media");
-        const auto archive = root.getChildFile("Windows.ziplivepartial"); double progress = 0;
-        partialPackage::exportPackage(saved, root, baseline, archive, [&](double value) {
-            expect(value >= progress && value <= 1, "Partial progress"); progress = value;
-        });
-        packageZIP::Reader zip(archive);
-        expect(progress == 1 && zip.entries.size() == 3, "Partial sent existing media or did not finish");
-        auto payload = JSON::parse(zip.data("Partial.json", 134217728).toString());
-        auto deltaTrack = list(get(list(get(get(payload, "project"), "songs"))[0], "tracks"))[0];
-        expect(list(get(get(deltaTrack, "fx"), "inserted")) == Array<var>{"Reverb"}, "Existing EQ sent as an addition");
-        const auto deltaClips = list(get(deltaTrack, "clips"));
-        expect(deltaClips.size() == 2 && str(get(deltaClips[0], "audioFile"), "path") == "Stems/Piano.wav", "Identical media was not reused");
-        expect(JSON::toString(snapshot) == original, "Partial export modified its baseline");
-    });
     test("Portable packages exchange encrypted projects and UTF-8 media with Mac, including ZIP64", [&] {
         const auto root=directory.getChildFile("portable-package");
         root.getChildFile("Stems/Primeiro").createDirectory();root.getChildFile("Stems/Segundo").createDirectory();
@@ -7132,6 +7106,9 @@ int runTests(const File &directory) {
         auto altered=clip;altered.playbackRate=1.25;altered.tempoBasePlaybackRate=1;
         expect(ClipTempo(altered).itemTitle(altered)=="[1.25] "+text(clip.name),
                "Item header omitted its changed source rate");
+        altered.playbackRate=1.159;altered.tempoBasePlaybackRate.reset();
+        expect(ClipTempo(altered).itemTitle(altered)=="[1.159] "+text(clip.name),
+               "Imported and configured rates need three decimal places in item headers");
         expect(timing.spans.size()==3 && timing.sourceAt(2)==2.5 && timing.sourceAt(4)==6.5 &&
                timing.sourceAt(6)==8.5, "Tempo change discarded source samples");
         for(double time : {0.,1.,2.,3.,4.,5.,6.})

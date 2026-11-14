@@ -6,5 +6,51 @@ Signalsmith Linear 0.6.4 (Stretch's declared dependency)
 https://github.com/Signalsmith-Audio/linear
 Commit de55e6a50ffcf6f8f43f649692d94691c7025151
 
-Unmodified portable headers; optional platform backends are not enabled.
+Opt-in CatLive changes, enabled only by Apple/JarasPreparedClip:
+- signalsmith-stretch.h retains raw input and overlap-add history during inaudible neutral
+  warmup, and batches output between unchanged processing steps. Analysis is restored from
+  that history at the next spectral block when rate/pitch processing becomes necessary.
+- signalsmith-linear/stft.h performs identity synthesis directly from windowed PCM during
+  that warmup, retaining overlap-add and normalisation for later live pitch/rate changes.
+  FFT processing remains in use for changed spectra and unsupported window configurations.
+Tests compare batched output bit for bit, and identity synthesis within FFT rounding error,
+including seeks, stereo, changing input/output block sizes and live pitch/rate transitions.
+Apple playback enables the FFT Accelerate backend from the same Linear commit
+(platform/fft-accelerate.h). Windows uses the same-revision PFFFT backend (platform/fft-pffft.h) with the
+vendored single-precision SSE implementation in Windows/ThirdParty/PFFFT.
+The DSP preset and spectral algorithm are unchanged.
 Both projects are MIT licensed. See LICENSE-stretch.txt and LICENSE-linear.txt.
+
+CatLive additionally opts into CATLIVE_SIGNALSMITH_STATE_COPY on Apple and Windows. It copies
+streaming histories between identically configured processors while retaining each
+destination's FFT plans and allocated buffers. Shared source results fork through
+this operation before an item's rate, pitch, timing or loop diverges. Neither the
+DSP preset nor the synthesis algorithm is changed. SharedStretchAudioTests compares
+the resulting PCM against independent processors at 44.1/48 kHz, including live
+edits, different callback sizes, seeks, loops and stop/restart.
+
+Windows ClipAudio uses the same history-fork operation for identical source renderings.
+Per-item gain, pan, fades, effects, routing and transport heads remain independent.
+ClipAudioReadTests compares pooled and independent PCM through divergence, seeks and tempo edits.
+
+The spectral bands now use contiguous input, history, output and energy arrays.
+Constant rotations are prepared once, and stereo prediction has a fixed-channel
+implementation. These changes retain the preset and spectral calculations;
+the Intel PCM comparison is bit-identical through changing pitch values.
+Unmapped frequency prediction reads the corresponding band directly.
+
+process() also accepts an optional absolute input-frame clock and tempo ratio.
+Apple prepared playback uses this for direct time stretching, so splitting a
+converter pull into a prefix and suffix cannot round the tempo differently.
+The default four-argument calls keep their original input/output-count mapping.
+ParallelPreparedAudioTests and SharedStretchConverterTests compare split,
+independent and shared PCM through live tempo/pitch edits.
+
+The PFFFT adapter destructors release their buffers directly. Upstream resize(0)
+allocates an aligned zero-length buffer, which otherwise leaks on destruction.
+FFT arithmetic and normalization remain unmodified.
+
+Windows also enables CATLIVE_SIGNALSMITH_BATCH_OUTPUT: output spans between
+unchanged processing steps replace the one-sample output loop. The MSVC
+reference comparison is bit-identical through stereo, seeks, pitch/rate edits
+and varying input/output sizes.

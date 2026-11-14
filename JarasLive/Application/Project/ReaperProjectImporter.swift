@@ -49,6 +49,23 @@ public enum ReaperProjectImporter {
         mutating func insert(_ key: String, _ arguments: CVarArg...) {
             values.insert(arguments.isEmpty ? localize(key) : String(format: localize(key), arguments: arguments))
         }
+        mutating func ignored(_ key: String, context: String, error: Error) {
+            values.insert(context + "\n" + String(format: localize(key), errorDescription(error)))
+        }
+    }
+    /// Recovering one malformed item must still identify its original media,
+    /// including nested SECTION sources and alternate takes with the same name.
+    private static func importContext(_ node: Chunk, track: String, item: Chunk? = nil) -> String {
+        var details = [track]
+        if let name = node.value("NAME") ?? item?.value("NAME"), !name.isEmpty { details.append(name) }
+        if let position = (item ?? node).value("POSITION") { details.append(position + " s") }
+        var paths: [String] = []
+        func collect(_ chunk: Chunk) {
+            if let path = chunk.value("FILE"), !paths.contains(path) { paths.append(path) }
+            for child in chunk.children { collect(child) }
+        }
+        collect(node)
+        return details.joined(separator: " / ") + (paths.isEmpty ? "" : "\n" + paths.joined(separator: "\n"))
     }
     private struct ImportedFX {
         var settings: NativeFXSettings?
@@ -556,7 +573,11 @@ public enum ReaperProjectImporter {
             do {
                 let start = try item.number("POSITION"), duration = try item.number("LENGTH")
                 guard duration > 0, (start + duration).isFinite else { throw invalid("Invalid item position or length.") }
-                if start < 0 { ignoredItems += 1; continue }
+                if start < 0 {
+                    ignoredItems += 1
+                    warnings.insert("%@\n%@", importContext(item, track: track.name), warnings.localize("Item starts before the project timeline."))
+                    continue
+                }
                 // Audio/MIDI tracks can expose alternate takes as stacked items.
                 // Special projection tracks have one lane, so importing all
                 // REAPER takes from the same item would create invalid overlaps.
@@ -564,7 +585,9 @@ public enum ReaperProjectImporter {
                 if item.child("SOURCE") != nil || takes.isEmpty { takes.insert(item, at: 0) }
                 let activeTake = takes.first { $0 !== item && ($0.header.contains("SEL") || $0.value("SEL") == "1") } ?? takes.first
                 if special != nil, let activeTake {
-                    if takes.count > 1 { warnings.insert("%@: alternate REAPER takes ignored on this single-lane special track; the active take was imported.", track.name) }
+                    for skipped in takes where skipped !== activeTake {
+                        warnings.insert("%@: alternate REAPER takes ignored on this single-lane special track; the active take was imported.", importContext(skipped, track: track.name, item: item))
+                    }
                     takes = [activeTake]
                 }
                 let playAllTakes = try item.integer("ALLTAKES") != 0
@@ -584,7 +607,8 @@ public enum ReaperProjectImporter {
                         settings.frameRate = try source.number("FRAMERATE", default: 30)
                         settings.offset = try source.number("STARTTIME") + take.number("SOFFS")
                         settings.regionRelative = true
-                        guard try take.number("PLAYRATE", default: 1) == 1 else { throw invalid("Timecode com velocidade alterada não pode ser recriado com a mesma configuração.") }
+                        clip.playbackRate = try take.number("PLAYRATE", default: 1)
+                        guard (1.0 / 32...32).contains(clip.audioRate) else { throw invalid("Invalid Timecode playback rate") }
                         guard source.line("USERDATA").dropFirst().allSatisfy({ Double($0) == 0 }) else { throw invalid("Timecode com user bits personalizados ainda não é suportado pelo CatLive.") }
                         try settings.validate()
                         clip.timecode = settings; clip.name = settings.mode.uppercased()
@@ -662,9 +686,9 @@ public enum ReaperProjectImporter {
                 } else if let audio, kind == "MIDI" {
                     clip.midi = try midiItem(source: audio, take: take, item: item, clip: clip, base: base,
                                             tempo: midiTempo, pools: midiPools, warnings: &warnings)
-                    // The imported notes contain the audible repetitions and
-                    // tempo/rate/trim mapping; playback must apply them once.
-                    clip.sourceOffset = 0; clip.playbackRate = 1
+                    // Notes materialize trims, repetitions and tempo mapping in
+                    // the take's source clock; retain its editable original rate.
+                    clip.sourceOffset = 0
                     clip.loopStart = nil; clip.loopLength = nil
                     clip.channelMode = nil; clip.fadeIn = nil; clip.fadeOut = nil
                     if !hasTakeInstrument, clip.fx?.externalPlugins?.isEmpty == false {
@@ -676,21 +700,18 @@ public enum ReaperProjectImporter {
                 } else {
                     // Do not create silent placeholders or interrupt opening for
                     // empty/unsupported takes. Special media tracks are handled above.
+                    if audio != nil {
+                        let reason = ["WAVE", "MP3", "FLAC", "VORBIS", "AIFF", "AIF", "OPUS", "WAVPACK", "VIDEO"].contains(kind)
+                            ? warnings.localize("REAPER source has no file reference.")
+                            : warnings.localize("Unsupported REAPER source type: ") + kind
+                        warnings.insert("%@\n%@", importContext(take, track: track.name, item: item), reason)
+                    }
                     continue
                 }
-                var takeAutomation = try importAutomation(take, fx: takeFX.envelopes, take: true, offset: clip.sourceOffset, scope: track.name + " / " + clip.name, warnings: &warnings)
-                if clip.midi != nil, var automation = takeAutomation {
-                    // MIDI notes were flattened into timeline seconds above.
-                    // REAPER take envelopes use item-relative time multiplied
-                    // by take rate (unaffected by media SOFFS or source loops).
-                    // Flatten this clock to match the reset clip rate of one.
-                    let rate = try take.number("PLAYRATE", default: 1)
-                    for envelope in automation.envelopes.indices {
-                        for point in automation.envelopes[envelope].points.indices {
-                            automation.envelopes[envelope].points[point].time /= rate
-                        }
-                    }
-                    takeAutomation = automation
+                let takeAutomation = try importAutomation(take, fx: takeFX.envelopes, take: true, offset: clip.sourceOffset, scope: track.name + " / " + clip.name, warnings: &warnings)
+                if clip.midi != nil, takeAutomation != nil {
+                    // Take envelopes and materialized notes both retain the
+                    // original source-rate clock, so no second remap is needed.
                     if !hasTakeInstrument {
                         warnings.insert("%@ / %@: MIDI take automation was retained, but cannot be applied independently through a shared track instrument. An active VST3 instrument on the take is required.", track.name, clip.name)
                     }
@@ -699,11 +720,11 @@ public enum ReaperProjectImporter {
                 track.clips.append(clip)
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.insert("REAPER take ignored: %@", warnings.errorDescription(error)) }
+            catch { warnings.ignored("REAPER take ignored: %@", context: importContext(take, track: track.name, item: item), error: error) }
 }
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.insert("REAPER item ignored: %@", warnings.errorDescription(error)) }
+            catch { warnings.ignored("REAPER item ignored: %@", context: importContext(item, track: track.name), error: error) }
 }
             if track.kind.isSingleLane {
                 // VS Hook projects can contain empty placeholders underneath their
@@ -731,7 +752,7 @@ public enum ReaperProjectImporter {
                     let layer = track.kind.isTeleprompter && clip.isProjectionMedia ? 1 : 0
                     if ends[layer] > clip.startTime + 0.0000001 {
                         rejected.insert(index)
-                        warnings.insert("%@: item \"%@\" at %.6f s was ignored because it overlaps another item on the same special-track layer. The rest of the project was imported.", track.name, clip.name, clip.startTime)
+                        warnings.insert("%@: item \"%@\" at %.6f s was ignored because it overlaps another item on the same special-track layer. The rest of the project was imported.", track.name + (clip.audioFile.map { "\n" + $0.path } ?? ""), clip.name, clip.startTime)
                     } else { ends[layer] = clip.startTime + clip.duration }
                 }
                 track.clips = track.clips.enumerated().compactMap { rejected.contains($0.offset) ? nil : $0.element }
@@ -740,7 +761,7 @@ public enum ReaperProjectImporter {
             if delta < 0 { folders.removeLast(-delta) }
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.insert("REAPER track ignored: %@", warnings.errorDescription(error)) }
+            catch { warnings.ignored("REAPER track ignored: %@", context: importContext(node, track: node.value("NAME") ?? "TRACK"), error: error) }
 }
         var regionStarts: [String: (Double, String, UInt32?)] = [:]
         for row in root.lines where row.first == "MARKER" {
@@ -1010,8 +1031,9 @@ public enum ReaperProjectImporter {
                 let begin = max(clip.startTime, time(at: note.start + displacement))
                 let end = min(clip.startTime + clip.duration, time(at: note.end + displacement))
                 if end > begin {
-                    // 120 BPM is the neutral source coordinate system (2 QN/s).
-                    notes.append(MIDINote(start: (begin - clip.startTime) * 2, length: (end - begin) * 2,
+                    // 120 BPM source coordinates retain the original take rate;
+                    // playback divides by it exactly once, like audio.
+                    notes.append(MIDINote(start: (begin - clip.startTime) * 2 * rate, length: (end - begin) * 2 * rate,
                                           pitch: note.pitch, velocity: note.velocity, channel: note.channel))
                     guard notes.count <= 100_000 else { throw invalid("Too many imported MIDI notes.") }
                 }

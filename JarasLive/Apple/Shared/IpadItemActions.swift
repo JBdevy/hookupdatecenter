@@ -32,6 +32,35 @@ import UniformTypeIdentifiers
     }
 }
 
+/// The item body owns context menus; header knobs retain direct touch tracking.
+struct IpadItemBodyContextMenu: UIViewRepresentable {
+    let commands: () -> [IpadItemMenuCommand]
+    @Environment(\.isEnabled) private var enabled
+    func makeUIView(context: Context) -> Surface { Surface() }
+    func updateUIView(_ view: Surface, context: Context) {
+        view.commands = commands; view.isUserInteractionEnabled = enabled
+    }
+    final class Surface: UIView, UIContextMenuInteractionDelegate {
+        var commands: () -> [IpadItemMenuCommand] = { [] }
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            backgroundColor = .clear
+            addInteraction(UIContextMenuInteraction(delegate: self))
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+            configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+            let actions = commands()
+            guard !actions.isEmpty else { return nil }
+            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+                UIMenu(children: actions.map { command in
+                    UIAction(title: command.title, attributes: command.destructive ? .destructive : []) { _ in command.action() }
+                })
+            }
+        }
+    }
+}
+
 /// Context actions use the same project mutations and offline rendering as macOS.
 @MainActor struct IpadItemActions: View {
     @ObservedObject var show: ShowController
@@ -46,7 +75,10 @@ import UniformTypeIdentifiers
         self.show = show; self.documents = documents; self.item = item; self.targets = targets; self.initialAction = initialAction; self.close = close
         projectID = show.snapshot.project.id; songID = show.current?.id
     }
+    @State private var mixParameter: String?
     @State private var resetRate = false
+    @State private var configuringRate = false
+    @State private var resetDuration = false
     @State private var normalize = false
     @State private var editingText = false
     @State private var editingName = false
@@ -74,6 +106,7 @@ import UniformTypeIdentifiers
         }
     }
     private var audioIDs: Set<UUID> { Set(audio.map { $0.1.id }) }
+    private var rateIDs: Set<UUID> { Set(entries.filter { $0.1.supportsRate(on: $0.0) }.map { $0.1.id }) }
     private var midiIDs: Set<UUID> { Set(standard.filter { $0.1.midi != nil }.map { $0.1.id }) }
     private var glueIDs: Set<UUID> {
         Set(standard.filter { $0.1.midi != nil || (!$0.1.isImage && ($0.1.audioFile ?? $0.0.audioFile) != nil) }.map { $0.1.id })
@@ -84,7 +117,7 @@ import UniformTypeIdentifiers
               let directory = documents.currentURL?.deletingLastPathComponent() else { return nil }
         return URL(fileURLWithPath: file.path, relativeTo: directory).standardizedFileURL
     }
-    private var childOpen: Bool { normalize || editingText || editingName || exportingMIDI || fx || exporting || processing.running || separating }
+    private var childOpen: Bool { configuringRate || mixParameter != nil || normalize || editingText || editingName || exportingMIDI || fx || exporting || processing.running || separating }
     private var actionList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
@@ -101,6 +134,10 @@ import UniformTypeIdentifiers
                     if entries.count == 1, clip.midi != nil || (clip.audioFile ?? track.audioFile) != nil {
                         action("Editar nome", symbol: "pencil") { editingName = true }
                     }
+                    if track.kind == .standard || clip.isProjectionMedia {
+                        action("Adjust volume", symbol: "speaker.wave.2") { mixParameter = "volume" }
+                        action("Adjust pan", symbol: "slider.horizontal.3") { mixParameter = "pan" }
+                    }
                     if entries.count == 1, clip.midi != nil { action("Exportar MIDI", symbol: "square.and.arrow.up") { exportMIDI() } }
                     if fileURL != nil { action("Open file location", symbol: "folder") { locatingFile = true } }
                     if track.kind.isText && !clip.isProjectionMedia { action("Edit", symbol: "text.alignleft") { editingText = true } }
@@ -116,12 +153,16 @@ import UniformTypeIdentifiers
                     if track.kind != .timecode {
                         action("Criar região do item", symbol: "rectangle.dashed") { show.regionsFromSelection(Set(entries.map { $0.1.id })); close() }
                     }
+                    if !rateIDs.isEmpty {
+                        action("Config rate", symbol: "speedometer") { configuringRate = true }
+                    }
                     if !audio.isEmpty {
                         tuner
                         if entries.count == 1, AudioSeparation.accepts(clip, on: track) {
                             action("Separation audio", symbol: "waveform.path") { beginSeparation() }
                         }
                         action("Reset rate", symbol: "arrow.counterclockwise") { resetRate = true }
+                        action("Reset duration", symbol: "arrow.left.and.right") { resetDuration = true }
                         action("Normalize…", symbol: "waveform") { normalize = true }
                         action("Re-render", symbol: "arrow.triangle.2.circlepath") {
                             processing.start(show: show, documents: documents, ids: audioIDs, operation: .render)
@@ -161,7 +202,10 @@ import UniformTypeIdentifiers
     var body: some View {
         actionList.onAppear {
             switch initialAction {
+            case "volume", "pan": mixParameter = initialAction
             case "resetRate": resetRate = true
+            case "configRate": configuringRate = true
+            case "resetDuration": resetDuration = true
             case "normalize": normalize = true
             case "fx": fx = true
             case "text": editingText = true
@@ -181,6 +225,14 @@ import UniformTypeIdentifiers
             Button("Cancel", role: .cancel) {}
             Button("Reset rate") { show.resetItemsRate(audioIDs) }
         } message: { Text("Reset selected items to 1x without changing tempo markers?") }
+        .alert("Reset duration", isPresented: $resetDuration) {
+            Button("Cancel", role: .cancel) { if initialAction != nil { close() } }
+            Button("Reset duration") {
+                let ids = audioIDs, directory = documents.currentURL?.deletingLastPathComponent()
+                Task { await show.resetItemsDuration(ids, mediaDirectory: directory) }
+                close()
+            }
+        } message: { Text("Restore the full original file duration for the selected items?") }
         .onChange(of: locatingFile) { if !$0 && initialAction == "file" { close() } }
         .onChange(of: normalize) { if !$0 && initialAction == "normalize" { close() } }
         .onChange(of: fx) { if !$0 && initialAction == "fx" { close() } }
@@ -223,7 +275,20 @@ import UniformTypeIdentifiers
         separating = true; separation.start(item: item, show: show, documents: documents)
     }
     @ViewBuilder private var childEditor: some View {
-        if separating {
+        if configuringRate {
+            IpadCompactModal { ItemRateEditor(show: show, items: rateIDs, close: { configuringRate = false; if initialAction == "configRate" { close() } }) }
+        } else if let parameter = mixParameter, let clip = context?.1 {
+            IpadCompactModal {
+                IpadItemMixEditor(clip: clip, pan: parameter == "pan", apply: { value in
+                    let ids = Set(entries.filter { $0.0.kind == .standard || $0.1.isProjectionMedia }.map { $0.1.id })
+                    if parameter == "pan" { show.setItemsMix(ids, pan: value) }
+                    else { show.setItemsMix(ids, gain: value) }
+                }, close: {
+                    mixParameter = nil
+                    if initialAction == parameter { close() }
+                })
+            }
+        } else if separating {
             IpadCompactModal {
                 CatStemProgressView(session: separation) {
                     separating = false
@@ -478,6 +543,36 @@ private struct IpadItemFileBrowser: UIViewControllerRepresentable {
         init(finished: @escaping () -> Void) { self.finished = finished }
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finished() }
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { finished() }
+    }
+}
+/// Numeric entry and a wide slider replace a hold on the small header knobs.
+private struct IpadItemMixEditor: View {
+    let clip: AudioClip
+    let pan: Bool
+    let apply: (Double) -> Void
+    let close: () -> Void
+    @State private var value = 0.0
+    var body: some View {
+        VStack(spacing: 16) {
+            IpadModalHeader(title: pan ? "Adjust pan" : "Adjust volume", close: close)
+            Text(verbatim: clip.name).font(.jarasCaption).lineLimit(2)
+            HStack {
+                Text(pan ? "Pan" : "dB")
+                TextField("", value: $value, format: .number.precision(.fractionLength(1)))
+                    .textFieldStyle(.roundedBorder).keyboardType(.numbersAndPunctuation)
+            }
+            Slider(value: $value, in: pan ? -100...100 : -60...24)
+            HStack {
+                Button("Reset") { value = 0 }
+                Spacer()
+                Button("Apply") {
+                    guard value.isFinite else { return }
+                    apply(pan ? min(1, max(-1, value / 100)) : (value <= -60 ? 0 : pow(10, min(24, value) / 20)))
+                    close()
+                }.buttonStyle(.borderedProminent)
+            }
+        }.padding(20).frame(width: 340)
+        .onAppear { value = pan ? (clip.pan ?? 0) * 100 : (clip.gain == 0 ? -60 : 20 * log10(max(0.000001, clip.gain ?? 1))) }
     }
 }
 #endif

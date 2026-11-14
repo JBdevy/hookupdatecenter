@@ -474,7 +474,7 @@ struct DAWRemoteClientView: View {
                 tracks: (song?.tracks ?? []).filter { remote.isLocalWorkspace || $0.kind == .standard }.map { track in
                     let items = remote.isLocalWorkspace ? cachedItems[track.id] : cachedNetworkItems[track.id]
                     return .init(id: track.id, name: track.name, color: track.color ?? JarasTheme.roleHex(track.role),
-                          volume: track.volume, pan: track.pan, mute: track.mute, solo: track.solo,
+                          volume: show.mixerPlaybackGain(track: track.id, manual: track.volume), pan: track.pan, mute: track.mute, solo: track.solo,
                           clips: items?.clips ?? [],
                           nameColor: JarasTheme.trackNameHex(track, emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute),
                           emphasized: show.mixerTrackSelection.contains(track.id), silenced: song?.isSilenced(track) ?? track.mute, laneCount: items?.lanes ?? 1, linkedTrack: track.stereoLink?.partner, heightScale: track.heightScale,
@@ -489,7 +489,7 @@ struct DAWRemoteClientView: View {
                 bpm: show.tempoControlBPM,
                 playing: transport.playing, paused: transport.paused ?? false,
                 subPlaying: transport.subPlay.playing, loop: transport.loop.enabled,
-                masterVolume: snapshot.project.masterVolume ?? 1, masterMute: snapshot.project.masterMute ?? false,
+                masterVolume: show.mixerPlaybackGain(track: nil, manual: snapshot.project.masterVolume ?? 1), masterMute: snapshot.project.masterMute ?? false,
                 masterSolo: snapshot.project.masterSolo ?? false, masterMono: snapshot.project.masterMono ?? false,
                 pendingSave: show.hasUnsavedChanges, saving: show.saving, message: show.message,
                 tempoNeedsRender: show.tempoControlNeedsRender,
@@ -557,7 +557,7 @@ struct DAWRemoteClientView: View {
         }
         session.commandHandler = { [weak show, weak session] command in
             guard command.valid else { return }
-            if command.action == .timerStart || command.action == .timerStop {
+            if [.timerStart, .timerStartProgressive, .timerSetMode, .timerStop].contains(command.action) {
                 lastTimerCommandID = command.id; timerRevision = UUID()
             }
             if command.action == .vinhetasUp { VinhetasController.shared.applyRemote(command); return }
@@ -572,9 +572,18 @@ struct DAWRemoteClientView: View {
             if command.action == .togglePreview { TeleprompterWindow.shared.togglePreview(); return }
             if command.action == .selectPreviewPage { TeleprompterWindow.shared.selectPreviewPage(Int(command.value)); return }
             if handleNotice(command) { return }
+            if command.action == .timerSetMode {
+                TeleprompterTimerController.shared.setMode(command.value == 0 ? .progressive : .countdown)
+                return
+            }
+            if command.action == .timerStartProgressive {
+                let timer = TeleprompterTimerController.shared
+                timer.stopAndReset(); timer.setMode(.progressive); timer.start()
+                return
+            }
             if command.action == .timerStart {
                 let timer = TeleprompterTimerController.shared, seconds = Int(command.value)
-                timer.stopAndReset()
+                timer.stopAndReset(); timer.setMode(.countdown)
                 if timer.setTargetText(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)) { timer.start() }
                 return
             }
@@ -687,7 +696,7 @@ struct DAWRemoteClientView: View {
         let state = TeleprompterTimerController.shared.state
         if lastTimerState != state { lastTimerState = state; timerRevision = UUID() }
         return .init(revision: timerRevision, targetSeconds: state.targetSeconds, running: state.running,
-                     remainingSeconds: state.displaySeconds(at: ProcessInfo.processInfo.systemUptime), commandID: lastTimerCommandID)
+                     remainingSeconds: state.displaySeconds(at: ProcessInfo.processInfo.systemUptime), commandID: lastTimerCommandID, mode: state.mode.rawValue)
     }
 
     private static func boundedNotice(_ text: String) -> String {
@@ -995,6 +1004,7 @@ private struct RemoteSidebarRail<Content: View>: View {
     var addTrack: (() -> Void)? = nil
     var addTrackAudio: ((UUID) -> Void)? = nil
     var addTrackText: ((UUID) -> Void)? = nil
+    var addTrackLyrics: ((UUID) -> Void)? = nil
     var addTrackMedia: ((UUID) -> Void)? = nil
     var createPlaylist: ((String, [UUID]) -> Bool)? = nil
     var addBlock: (() -> Void)? = nil
@@ -1003,8 +1013,6 @@ private struct RemoteSidebarRail<Content: View>: View {
     @State private var addingToPlaylist: UUID?
     @State private var creatingPlaylist = false
     var exportProject: (() -> Void)? = nil
-    var exportPartial: (() -> Void)? = nil
-    var importPartial: (() -> Void)? = nil
     var groupTracks: ((Set<UUID>) -> Void)? = nil
     var groupableTracks: Set<UUID> = []
     @State private var regionMovePreview: IpadRegionMovePreview?
@@ -1515,6 +1523,10 @@ private struct RemoteSidebarRail<Content: View>: View {
         }
         .onReceive(localShow?.$itemProcessingRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { request in
             guard nativeInputEnabled, let request, !trackScrolling.itemSelection.items.isEmpty else { return }
+            if request.action == .createRegionsFromItems {
+                localShow?.regionsFromSelection(trackScrolling.itemSelection.items)
+                return
+            }
             processSelectedItems?(trackScrolling.itemSelection.items, request.action)
         }
         .onReceive(localShow?.$tempoMarkerRequest.dropFirst().eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher()) { _ in beginNativeMarker(tempo: true) }
@@ -1663,10 +1675,6 @@ private struct RemoteSidebarRail<Content: View>: View {
         if ControlMappings.shared.handleHardwareKey(event) { return true }
         if (flags == .shift || flags == .option), event.keyCode == 46 {
             if !event.isRepeat { beginNativeMarker(section: flags == .option) }
-            return true
-        }
-        if flags == .shift, event.keyCode == 15 {
-            if !event.isRepeat { show.regionsFromSelection(trackScrolling.itemSelection.items) }
             return true
         }
         return false
@@ -1883,7 +1891,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                 RemoteNativeTimerView(timer: timer, send: {
                     guard state.timer != nil else { return }
                     send(.init(id: $2, project: state.project, song: state.song, action: $0, value: $1))
-                }, close: { timerOpen = false }).presentationDetents([.height(230)]).preferredColorScheme(.dark)
+                }, close: { timerOpen = false }).presentationDetents([.height(280)]).preferredColorScheme(.dark)
             }
             .sheet(isPresented: $settingsOpen) { NativeRemoteSettingsView().presentationDetents([.large]).preferredColorScheme(.dark) }
             .sheet(isPresented: $projectsOpen) {
@@ -2560,7 +2568,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                     .modifier(RemoteControlSurface(color: state.pendingSave ? JarasTheme.green.opacity(0.16) : nil))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(state.pendingSave ? JarasTheme.green.opacity(0.7) : JarasTheme.line))
             }.disabled(state.saving || (!local && !state.pendingSave))
-                .modifier(RemoteProjectExportHold(export: exportProject, exportPartial: exportPartial, importPartial: importPartial))
+                .modifier(RemoteProjectExportHold(export: exportProject))
             }
                 HStack(spacing: 4) {
                 Button {
@@ -2806,7 +2814,7 @@ private struct RemoteSidebarRail<Content: View>: View {
                                 } }, openFX: openTrackFX.map { callback in {
                                     if editingTracks { openSelectedFX?(selectionTargets(track.id)) } else { callback(track.id) }
                                 } }, openAutomation: openTrackAutomation.map { callback in { callback(track.id) } }, addText: addTrackText.map { callback in { callback(track.id) } },
-                                addMedia: addTrackMedia.map { callback in { callback(track.id) } }) { command, value in
+                                addLyrics: addTrackLyrics.map { callback in { callback(track.id) } }, addMedia: addTrackMedia.map { callback in { callback(track.id) } }) { command, value in
                                 action(command, target: track.id, value: value)
                             }.equatable().frame(height: DAWRemoteItemLayout.rowHeight(track, scale: trackScrolling.heightScale))
                                 .modifier(IpadTrackReorderModifier(show: localShow, track: track.id,
@@ -3264,6 +3272,15 @@ private struct RemoteSidebarRail<Content: View>: View {
                                             Button("Duplicate region") { action(.duplicateRegion, target: region.id, playlist: playlist) }
                                         }
                                         if local { Button("Config Init") { configInitRegion = region.sourceRegionId ?? region.id } }
+                                        if local, state.selectedPlaylist == nil, let song = localShow?.current,
+                                           let source = song.parts.first(where: { $0.id == (region.sourceRegionId ?? region.id) }),
+                                           song.isOrdinaryRegion(source) {
+                                            let targets = selectedSetlistEntries.contains(region.id) ? selectedSetlistEntries : [region.id]
+                                            Button("Set region end to longest item") { localShow?.fitRegionEndsToItems(targets) }
+                                                .disabled(localShow?.timelineRegionsLocked == true)
+                                            Button("Space regions by 30 s") { localShow?.spaceRegionsAfter(targets) }
+                                                .disabled(localShow?.timelineRegionsLocked == true)
+                                        }
                                         if row.hasDrawer { Button(drawerExpanded ? "Close drawer" : "Open drawer") { toggleDrawer(region.id) } }
                                         if region.parentRegion == nil {
                                             Button(state.selectedPlaylist == nil ? "Delete region" : "Remove from playlist", role: .destructive) {
@@ -4015,7 +4032,7 @@ private struct RemoteNativeTimeline: View {
             .onDisappear { scrolling.manualGridScroll = nil; scrolling.pointerEditing = false; cancelPointer(); cancelItemMix() }
             .onChange(of: scrolling.pointerReset) { _ in cancelPointer(); cancelItemMix() }
             .onChange(of: state.project) { _ in cancelPointer(); cancelItemMix() }
-            .onChange(of: localShow?.timelineMovementLocked) { locked in if locked == true { cancelPointer() } }
+            .onChange(of: localShow?.timelineActiveLockOptions) { options in if options != 0 { cancelPointer() } }
             .onChange(of: timelineFocus) { request in
                 if local, let request { gestureControl.cancelMotion(); viewport.center(on: request.position); playbackControl.controller?.navigate(to: viewport) }
             }
@@ -4035,7 +4052,7 @@ private struct RemoteNativeTimeline: View {
             let song = presentationSong
             let markers = visibleMarkers(song: song)
             let marks = gridMarks(width: width, preview: regionDrag == nil ? nil : song)
-            VStack(spacing: local ? 0 : 1) {
+            return VStack(spacing: local ? 0 : 1) {
                 regionLane(width: width, song: song)
                 markerLane(width: width, markers: markers, song: song)
                 if local { tempoLane(width: width, song: song) }
@@ -4240,10 +4257,10 @@ private struct RemoteNativeTimeline: View {
             var ids = Set(hits.filter { $0.rect.intersects(rectangle) }.map(\.id))
             if !event.modifiers.intersection([.command, .control, .shift]).isEmpty { ids.formUnion(initial.selection.items) }
             if scrolling.itemSelection.items != ids { scrolling.itemSelection.replace(ids) }
-        } else if pointerDragged, drawingMIDI, !show.timelineMovementLocked {
+        } else if pointerDragged, drawingMIDI, !show.timelineItemsLocked {
             selectionRectangle = CGRect(x: min((initial.time - start) / span * width, event.position.x), y: initial.point.y - 10,
                 width: abs((initial.time - time) / span * width), height: 20)
-        } else if pointerDragged, let anchor = initial.item, !show.timelineMovementLocked,
+        } else if pointerDragged, let anchor = initial.item, !show.timelineItemsLocked,
                   let original = initial.song.tracks.flatMap(\.clips).first(where: { $0.id == anchor }),
                   let target = pointerTrack(at: event.position.y) {
             if !pointerDragged || scrolling.itemSelection.anchor != anchor || !scrolling.itemSelection.items.contains(anchor) { scrolling.itemSelection.beginDrag() }
@@ -4272,7 +4289,7 @@ private struct RemoteNativeTimeline: View {
                     show.moveItems(move.items, anchor: move.anchor, start: move.start, track: move.track)
                 }
                 scrolling.itemSelection.end(dragged: pointerDragged)
-                if drawingMIDI, pointerDragged, !show.timelineMovementLocked, let track = pointerTrack(at: initial.point.y) {
+                if drawingMIDI, pointerDragged, !show.timelineItemsLocked, let track = pointerTrack(at: initial.point.y) {
                     let enabled = TimelineSnapPreference.enabled && !event.modifiers.contains(.shift)
                     let from = TimelineTempo.snap(min(initial.time, time), song: song, pixelsPerSecond: width / span,
                         enabled: enabled, includeItemEdges: true)
@@ -4495,7 +4512,7 @@ private struct RemoteNativeTimeline: View {
                             pauseFollowing(); openRegionActions?(part.id)
                         }, moved: { translation in
                             // Use original document coordinates throughout the gesture.
-                            guard localShow?.timelineMovementLocked == false,
+                            guard localShow?.timelineRegionsLocked == false,
                                   let original = localShow?.current?.parts.first(where: { $0.id == part.id }) else { return }
                             pauseFollowing()
                             regionDrag = IpadRegionMovePreview(id: part.id, start: regionDestination(part.id, original: original.startTime, translation: translation, width: width))
@@ -4585,7 +4602,7 @@ private struct RemoteNativeTimeline: View {
                 })
     }
     private func draggedMarker(_ id: UUID, translation: Double, pixelsPerSecond: Double) -> TimelineMarker? {
-        guard local, editorEnabled, let show = localShow, !show.timelineMovementLocked,
+        guard local, editorEnabled, let show = localShow, !show.timelineRegionsLocked,
               let song = show.current, var marker = song.markers?.first(where: { $0.id == id }),
               song.canDragMarker(marker), pixelsPerSecond > 0 else { return nil }
         marker.position = song.markerDragPosition(marker, to: marker.position + translation / pixelsPerSecond,
@@ -4656,6 +4673,7 @@ private struct RemoteNativeTimeline: View {
     }
     private func updateNativeItemMix(_ id: UUID, _ parameter: IpadItemMixParameter, _ value: Double, _ finished: Bool, _ cancelled: Bool) {
         guard let show = localShow, show.snapshot.project.id == state.project, let song = show.current, song.id == state.song else { return }
+        guard !show.timelineItemMixLocked else { scrolling.itemMix = nil; return }
         if !cancelled && (!editorEnabled || !show.canControl()) { cancelItemMix(); return }
         scrolling.selectionScope = .grid
         let requested = scrolling.itemMix?.items ?? (scrolling.itemSelection.items.contains(id) ? scrolling.itemSelection.items : [id])
@@ -4693,7 +4711,8 @@ private struct RemoteNativeTimeline: View {
             scrolling: scrolling, local: local, headersHidden: itemHeadersHidden, invertWaveformColors: local && invertWaveformColors, nativeTrack: nativeContent?.tracks[track.id], nativeSong: nativeSong, preparedTrack: nativeContent?.track(track.id),
             nativeDirectory: local ? DAWRemoteHostBridge.documents?.currentURL?.deletingLastPathComponent() : nil,
             nativeRevision: localShow?.projectRevision ?? 0, mixPreview: scrolling.itemMix, selectedItem: scrolling.selectedItem,
-            selectedItems: scrolling.itemSelection.items, movementLocked: localShow?.timelineMovementLocked ?? false,
+            selectedItems: scrolling.itemSelection.items, movementLocked: localShow?.timelineItemsLocked ?? false,
+            itemMixLocked: localShow?.timelineItemMixLocked ?? false,
             resizeEnabled: editorEnabled && localShow?.canControl() == true, interactionID: scrolling.pointerReset,
             cursorPosition: { [weak show = localShow] in
                 guard let transport = show?.snapshot.transport else { return nil }
@@ -4707,6 +4726,9 @@ private struct RemoteNativeTimeline: View {
                 guard editorEnabled, let show = localShow, show.canControl(),
                       show.snapshot.project.id == state.project, show.current?.id == state.song else { return }
                 show.resizeItem(id, start: left, end: right)
+            }, resizeShared: { left, right, position in
+                guard editorEnabled, let show = localShow, show.snapshot.project.id == state.project, show.current?.id == state.song else { return }
+                show.resizeSharedItemBoundary(left: left, right: right, position: position)
             },
             openItemMenu: { id in
                 let ids = scrolling.itemSelection.items.contains(id) ? scrolling.itemSelection.items : [id]
@@ -4792,6 +4814,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     var selectedItem: UUID? = nil
     var selectedItems: Set<UUID> = []
     var movementLocked = false
+    var itemMixLocked = false
     var resizeEnabled = false
     let interactionID: UUID
     var cursorPosition: () -> Double? = { nil }
@@ -4799,6 +4822,8 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     var itemFade: ((UUID, Bool, Double, Bool) -> Void)? = nil
     var beginResize: (() -> Void)? = nil
     var resizeItem: ((UUID, Double, Double) -> Void)? = nil
+    var resizeShared: ((UUID, UUID, Double) -> Void)? = nil
+    @State private var sharedResizePreview: SharedItemBoundaryEdit?
     @State private var resizing: IpadItemResizePreview?
     @State private var fadePreview: (id: UUID, fadeIn: Bool, value: Double)?
     var openItemMenu: ((UUID) -> Void)? = nil
@@ -4813,7 +4838,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
             lhs.track.silenced == rhs.track.silenced &&
             lhs.track.laneCount == rhs.track.laneCount && lhs.track.heightScale == rhs.track.heightScale && lhs.track.emphasized == rhs.track.emphasized &&
             lhs.width == rhs.width && lhs.displayScale == rhs.displayScale && lhs.heightScale == rhs.heightScale &&
-            lhs.selectedItem == rhs.selectedItem && lhs.selectedItems == rhs.selectedItems && lhs.movementLocked == rhs.movementLocked && lhs.resizeEnabled == rhs.resizeEnabled && lhs.interactionID == rhs.interactionID && lhs.start == rhs.start && lhs.end == rhs.end && lhs.span == rhs.span && lhs.nativeRevision == rhs.nativeRevision && lhs.mixPreview == rhs.mixPreview && lhs.nativeDirectory == rhs.nativeDirectory && lhs.hasRegion == rhs.hasRegion && lhs.local == rhs.local && lhs.headersHidden == rhs.headersHidden &&
+            lhs.selectedItem == rhs.selectedItem && lhs.selectedItems == rhs.selectedItems && lhs.itemMixLocked == rhs.itemMixLocked && lhs.movementLocked == rhs.movementLocked && lhs.resizeEnabled == rhs.resizeEnabled && lhs.interactionID == rhs.interactionID && lhs.start == rhs.start && lhs.end == rhs.end && lhs.span == rhs.span && lhs.nativeRevision == rhs.nativeRevision && lhs.mixPreview == rhs.mixPreview && lhs.nativeDirectory == rhs.nativeDirectory && lhs.hasRegion == rhs.hasRegion && lhs.local == rhs.local && lhs.headersHidden == rhs.headersHidden &&
             lhs.invertWaveformColors == rhs.invertWaveformColors && lhs.backgroundColor == rhs.backgroundColor && lhs.primaryColor == rhs.primaryColor &&
             lhs.secondaryColor == rhs.secondaryColor && lhs.gridLines == rhs.gridLines &&
             lhs.marks.elementsEqual(rhs.marks) { $0.time == $1.time && $0.primary == $1.primary }
@@ -4822,6 +4847,10 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         floor((time - start) / span * width * displayScale) / displayScale + 0.5 / displayScale
     }
     private func nativeClip(_ id: UUID) -> AudioClip? {
+        if let shared = sharedResizePreview {
+            if id == shared.left.id { return shared.left }
+            if id == shared.right.id { return shared.right }
+        }
         if let resizing, resizing.original.id == id { return resizing.candidate }
         return preparedTrack?.clips[id] ?? nativeTrack?.clips.first(where: { $0.id == id })
     }
@@ -4829,24 +4858,58 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         guard var result = nativeTrack, let resizing,
               let index = result.clips.firstIndex(where: { $0.id == resizing.original.id }) else { return nativeTrack }
         result.clips[index] = resizing.candidate
+        if let shared = sharedResizePreview {
+            for i in result.clips.indices {
+                if result.clips[i].id == shared.left.id { result.clips[i] = shared.left }
+                else if result.clips[i].id == shared.right.id { result.clips[i] = shared.right }
+            }
+        }
         return result
     }
     private var previewClips: [DAWRemoteState.Clip] {
         guard let resizing else { return track.clips }
         return track.clips.map { source in
+            if let shared = sharedResizePreview {
+                let candidate = source.id == shared.left.id ? shared.left : source.id == shared.right.id ? shared.right : nil
+                if let candidate { var result = source; result.start = candidate.startTime; result.duration = candidate.duration; return result }
+            }
             guard source.id == resizing.original.id else { return source }
             var result = source; result.start = resizing.candidate.startTime; result.duration = resizing.candidate.duration
             return result
         }
     }
     private func resize(_ id: UUID, left: Bool, translation: Double, finished: Bool, cancelled: Bool) {
-        if cancelled { resizing = nil; return }
+        if cancelled { resizing = nil; sharedResizePreview = nil; return }
         guard local, resizeEnabled, !movementLocked, let nativeSong, let nativeTrack,
               let clip = nativeTrack.clips.first(where: { $0.id == id }) else { resizing = nil; return }
         if let preview = resizing, preview.original != clip { resizing = nil; return }
         if resizing == nil { beginResize?(); resizing = IpadItemResizePreview(original: clip, candidate: clip, secondsPerPoint: span / max(1, width)) }
         guard var preview = resizing else { return }
         let original = preview.original
+        let selectedLane = track.clips.first(where: { $0.id == id })?.lane ?? 0
+        let neighbour = nativeTrack.clips.first { other in
+            other.id != id && (track.clips.first(where: { $0.id == other.id })?.lane ?? 0) == selectedLane &&
+            abs(left ? other.startTime + other.duration - original.startTime : original.startTime + original.duration - other.startTime) < 1e-7
+        }
+        if let neighbour {
+            let a = left ? neighbour : original, b = left ? original : neighbour
+            let target = TimelineTempo.snap(max(0, b.startTime + translation * preview.secondsPerPoint), song: nativeSong,
+                pixelsPerSecond: 1 / preview.secondsPerPoint, cursor: cursorPosition(),
+                enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift), includeItemEdges: true, excludingItems: [a.id,b.id])
+            var durations: [UUID: Double] = [:]
+            for clip in [a,b] where clip.midi == nil && !clip.isImage {
+                if let file = clip.audioFile ?? nativeTrack.audioFile, let nativeDirectory {
+                    let url = file.path.hasPrefix("/") ? URL(fileURLWithPath: file.path) : nativeDirectory.appendingPathComponent(file.path)
+                    if let header = TimelineAudioWaveform.shared.header(url), header.rate > 0 { durations[clip.id] = Double(header.frames) / header.rate }
+                }
+            }
+            if let edit = SharedItemBoundaryEdit(song: nativeSong, track: nativeTrack, left: a, right: b, position: target, sourceDurations: durations) {
+                preview.candidate = left ? edit.right : edit.left; resizing = preview; sharedResizePreview = edit
+                if finished { resizing = nil; sharedResizePreview = nil; resizeShared?(a.id,b.id,edit.position) }
+            }
+            return
+        }
+        sharedResizePreview = nil
         let edge = left ? original.startTime : original.startTime + original.duration
         let target = TimelineTempo.snap(max(0, edge + translation * preview.secondsPerPoint), song: nativeSong,
                                        pixelsPerSecond: 1 / preview.secondsPerPoint, cursor: cursorPosition(),
@@ -4859,7 +4922,15 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         if nativeTrack.kind == .click, !original.isProjectionMedia {
             guard let resized = nativeSong.resizedClick(original, start: lower, end: upper) else { return }
             candidate = resized
-        } else { candidate = unchanged ? original : original.resized(start: lower, end: upper) }
+        } else {
+            let duration = (original.audioFile ?? nativeTrack.audioFile).flatMap { file -> Double? in
+                guard original.midi == nil, !original.isImage, let nativeDirectory else { return nil }
+                let url = file.path.hasPrefix("/") ? URL(fileURLWithPath: file.path) : nativeDirectory.appendingPathComponent(file.path)
+                guard let header = TimelineAudioWaveform.shared.header(url), header.rate > 0 else { return nil }
+                return Double(header.frames) / header.rate
+            }
+            candidate = unchanged ? original : original.resized(start: lower, end: upper, sourceDuration: duration)
+        }
         if nativeTrack.canPlaceItem(start: candidate.startTime, duration: candidate.duration, excluding: id) {
             preview.candidate = candidate; resizing = preview
         }
@@ -4872,9 +4943,15 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         guard nativeTrack?.kind == .click, let nativeSong, let item = nativeClip(clip.id), right > left else { return [] }
         let scale = width / (right - left)
         return ClickTrackProgram.visibleBeats(sections: nativeSong.tempoSections(until: max(nativeSong.duration, right)), start: clip.start, end: clip.start + clip.duration,
-            visibleStart: left, visibleEnd: right, pixelsPerSecond: scale, doubled: item.clickDouble == true).map { ($0 - left) * scale }
+            visibleStart: left, visibleEnd: right, pixelsPerSecond: scale, doubled: item.clickDouble == true, rate: item.clickRate).map { ($0 - left) * scale }
     }
     private func gridItem(_ clip: DAWRemoteState.Clip, width itemWidth: Double, height itemHeight: Double, left: Double, right: Double) -> RemoteNativeGridItem {
+        let seams: [Double]
+        if local, let item = nativeClip(clip.id), item.loopLength != nil, let nativeSong, right > left {
+            let scale = itemWidth / (right - left)
+            seams = ClipRepetitionBoundaries.positions(clip: item, fragments: nativeSong.tempoAudioSegments(item),
+                visible: left...right, minimumSpacing: 10 / max(0.001, scale)).map { ($0 - left) * scale }
+        } else { seams = [] }
         return
                 RemoteNativeGridItem(clip: clip, width: itemWidth, height: itemHeight, color: track.color, nameColor: track.nameColor ?? 0xffffff,
                     scrolling: scrolling,
@@ -4882,11 +4959,13 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     visibleFraction: (right - left) / max(0.001, clip.duration),
                     mute: { control(.clipMute, clip.id, 0) },
                     setGain: { control(.clipGain, clip.id, $0) }, local: local, headersHidden: headersHidden, trackSilenced: track.silenced == true,
-                    nativeClip: nativeClip(clip.id), nativeKind: nativeTrack?.kind,
+                    nativeClip: nativeClip(clip.id), nativeKind: nativeTrack?.kind, itemMixLocked: itemMixLocked,
                     invertedWaveformColors: local && invertWaveformColors && nativeTrack.map { track in
                         nativeClip(clip.id).map { TimelineItemWaveformColors.hasWaveform($0, track: track) } ?? false
                     } == true,
                     clickBeats: nativeClickBeats(clip, left: left, right: right, width: itemWidth),
+                    loopSeams: seams,
+                    itemTitle: local ? nativeClip(clip.id).map { TimelineItemPlaybackRate.title(clip.name, rates: nativeSong?.tempoAudioSegments($0).map(\.audioRate) ?? [$0.audioRate]) } : nil,
                     itemMix: { parameter, value, finished, cancelled in itemMix?(clip.id, parameter, value, finished, cancelled) },
                     itemPhase: { itemPhase?(clip.id) },
                     nativeWaveform: nativeDirectory != nil && nativeClip(clip.id).map { !$0.isImage && ($0.audioFile ?? nativeTrack?.audioFile) != nil } == true,
@@ -4997,15 +5076,14 @@ private struct IpadNativeWaveformRow: View {
         let viewport = CGRect(x: start * scale, y: 0, width: width, height: DAWRemoteItemLayout.rowHeight(remoteTrack, scale: heightScale))
         let lanes = Dictionary(uniqueKeysWithValues: remoteTrack.clips.map { ($0.id, $0.lane ?? 0) })
         let rgb = TrackNameContrast.components(track.color ?? 0x705264, emphasized: false)
-        let luminance = 0.2126 * rgb.red + 0.7152 * rgb.green + 0.0722 * rgb.blue
-        let gray: Float = luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8
+        let gray: Float = 0
         let items = sources.entries(track: track, song: song, directory: directory, revision: revision)
             .filter { $0.clip.startTime < end && $0.clip.startTime + $0.clip.duration > start }
             .map { source in
                 TimelineWaveformItem(clip: source.clip, fragments: source.fragments, url: source.url,
                     rect: CGRect(x: source.clip.startTime * scale, y: itemGeometry.offset(source.clip.id, fallbackLane: lanes[source.clip.id] ?? 0),
                                  width: source.clip.duration * scale, height: itemGeometry.height(source.clip.id)),
-                    gray: remoteTrack.silenced == true || source.clip.muted == true ? 0.78 : gray, sourcePath: source.path,
+                    gray: gray, sourcePath: source.path,
                     tint: invertWaveformColors && TimelineItemWaveformColors.hasWaveform(source.clip, track: track)
                         ? TimelineItemWaveformColors.ink(rgb: SIMD4(Float(rgb.red), Float(rgb.green), Float(rgb.blue), 1),
                             silenced: remoteTrack.silenced == true || source.clip.muted == true) : nil)
@@ -5036,6 +5114,31 @@ private final class IpadWaveformRowSources {
     }
 }
 
+private struct RemoteNativeLoopOutline: Shape {
+    let seams: [Double]
+    func path(in rect: CGRect) -> Path {
+        let radius: CGFloat = rect.width < 20 ? 0 : 3
+        guard !seams.isEmpty else { return Path(roundedRect: rect, cornerRadius: radius) }
+        var path = Path(); let depth = min(5, rect.height / 3)
+        path.move(to: CGPoint(x: rect.minX + radius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + radius), control: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX - radius, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
+        for seam in seams.reversed() {
+            let x = rect.minX + CGFloat(seam)
+            guard x > rect.minX + radius, x < rect.maxX - radius else { continue }
+            path.addLine(to: CGPoint(x: min(rect.maxX - radius, x + 4), y: rect.maxY))
+            path.addLine(to: CGPoint(x: x, y: rect.maxY - depth))
+            path.addLine(to: CGPoint(x: max(rect.minX + radius, x - 4), y: rect.maxY))
+        }
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+        path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - radius), control: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addQuadCurve(to: CGPoint(x: rect.minX + radius, y: rect.minY), control: rect.origin)
+        path.closeSubpath(); return path
+    }
+}
 private struct RemoteNativeGridItem: View, Equatable {
     let clip: DAWRemoteState.Clip
     let width: CGFloat
@@ -5052,8 +5155,11 @@ private struct RemoteNativeGridItem: View, Equatable {
     var trackSilenced = false
     var nativeClip: AudioClip? = nil
     var nativeKind: TrackKind? = nil
+    var itemMixLocked = false
     var invertedWaveformColors = false
     var clickBeats: [Double] = []
+    var loopSeams: [Double] = []
+    var itemTitle: String? = nil
     var itemMix: ((IpadItemMixParameter, Double, Bool, Bool) -> Void)? = nil
     var itemPhase: (() -> Void)? = nil
     var nativeWaveform = false
@@ -5066,7 +5172,7 @@ private struct RemoteNativeGridItem: View, Equatable {
         lhs.clip == rhs.clip && lhs.width == rhs.width && lhs.height == rhs.height && lhs.color == rhs.color &&
             lhs.nameColor == rhs.nameColor && lhs.scrolling === rhs.scrolling &&
             lhs.sourceFraction == rhs.sourceFraction && lhs.visibleFraction == rhs.visibleFraction &&
-            lhs.invertedWaveformColors == rhs.invertedWaveformColors && lhs.local == rhs.local && lhs.headersHidden == rhs.headersHidden && lhs.trackSilenced == rhs.trackSilenced && lhs.nativeClip == rhs.nativeClip && lhs.nativeKind == rhs.nativeKind && lhs.clickBeats == rhs.clickBeats && lhs.nativeWaveform == rhs.nativeWaveform && (lhs.openMenu != nil) == (rhs.openMenu != nil) &&
+            lhs.invertedWaveformColors == rhs.invertedWaveformColors && lhs.local == rhs.local && lhs.headersHidden == rhs.headersHidden && lhs.trackSilenced == rhs.trackSilenced && lhs.nativeClip == rhs.nativeClip && lhs.itemMixLocked == rhs.itemMixLocked && lhs.nativeKind == rhs.nativeKind && lhs.clickBeats == rhs.clickBeats && lhs.nativeWaveform == rhs.nativeWaveform && lhs.loopSeams == rhs.loopSeams && lhs.itemTitle == rhs.itemTitle && (lhs.openMenu != nil) == (rhs.openMenu != nil) &&
             (lhs.openFX != nil) == (rhs.openFX != nil)
     }
     var body: some View {
@@ -5076,15 +5182,15 @@ private struct RemoteNativeGridItem: View, Equatable {
         let headerSourceOffset = pinnedHeader ? 0 : max(0, sourceFraction * clip.duration * headerScale)
         let silenced = trackSilenced || clip.muted == true
         let itemColor = silenced ? Color(white: 0.55) : remoteColor(color)
-        let waveformColor = invertedWaveformColors ? remoteColor(color).opacity(silenced ? 0.55 : 1) : nil
+        let waveformColor: Color? = invertedWaveformColors && !silenced ? remoteColor(color) : (local ? .black : nil)
         VStack(spacing: 0) {
             if headersHidden && pinnedHeader {
                 Color(white: 0.19).frame(width: width, height: headerHeight).allowsHitTesting(false)
             } else if local, let nativeClip {
                 IpadItemHeader(clip: nativeClip, editable: nativeKind == .standard || nativeClip.isProjectionMedia,
                     textEditable: nativeKind?.isText == true && !nativeClip.isProjectionMedia,
-                    interactionID: scrolling.pointerReset,
-                    pinsToViewport: pinnedHeader, sourceStartOffset: headerSourceOffset,
+                    interactionID: scrolling.pointerReset, itemTitle: itemTitle,
+                    pinsToViewport: pinnedHeader, sourceStartOffset: headerSourceOffset, mixLocked: itemMixLocked,
                     mix: { itemMix?($0, $1, $2, $3) }, mute: mute, phase: { itemPhase?() },
                     fx: { openFX?() }, menu: { openMenu?() })
                     .frame(width: width, height: headerHeight)
@@ -5098,7 +5204,7 @@ private struct RemoteNativeGridItem: View, Equatable {
                     Button("FX", action: openFX).font(.jarasSystem(size: 10, weight: .semibold))
                         .frame(width: local ? 20 * GridSelectionItem.headerScale : 32, height: headerHeight).contentShape(Rectangle()).buttonStyle(.plain)
                 }
-                Text(verbatim: clip.name).font(.jarasSystem(size: local ? GridSelectionItem.headerFontSize : 10 * GridSelectionItem.headerScale, weight: .semibold)).lineLimit(1)
+                Text(verbatim: itemTitle ?? clip.name).font(.jarasSystem(size: local ? GridSelectionItem.headerFontSize : 10 * GridSelectionItem.headerScale, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(remoteColor(nameColor)).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.horizontal, 3).frame(width: width + headerSourceOffset, height: headerHeight, alignment: .leading)
                 .offset(x: -headerSourceOffset).frame(width: width, alignment: .leading).clipped()
@@ -5145,11 +5251,11 @@ private struct RemoteNativeGridItem: View, Equatable {
             }.frame(height: max(0, height - headerHeight)).allowsHitTesting(false)
         }.frame(width: width, height: height, alignment: .topLeading).clipped()
             .background {
-                if invertedWaveformColors { Color(uiColor: IpadItemHeaderControl.itemBackgroundColor) }
+                if invertedWaveformColors && !silenced { TimelineItemWaveformColors.invertedBackground }
                 else { LinearGradient(colors: [itemColor.opacity(silenced ? 0.55 : 1), itemColor.opacity(silenced ? 0.25 : 0.78)], startPoint: .top, endPoint: .bottom) }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 3))
-            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(itemColor.opacity(0.75), lineWidth: 0.6).allowsHitTesting(false))
+            .clipShape(RemoteNativeLoopOutline(seams: loopSeams))
+            .overlay(RemoteNativeLoopOutline(seams: loopSeams).stroke(itemColor.opacity(0.75), lineWidth: 0.6).allowsHitTesting(false))
             .modifier(RemoteItemMenuGesture(local: local, item: clip.id, selection: scrolling.itemSelection.items,
                 openVolume: { editorOpen = true }))
             .background {
@@ -5173,9 +5279,13 @@ private struct RemoteItemMenuGesture: ViewModifier {
     let openVolume: () -> Void
     @ViewBuilder func body(content: Content) -> some View {
         if local {
-            content.contextMenu {
-                ForEach(IpadItemContextMenu.commands(item, selection)) { command in
-                    Button(command.title, role: command.destructive ? .destructive : nil, action: command.action)
+            content.overlay {
+                GeometryReader { geometry in
+                    // Keep the menu recognizer off the header's volume/pan
+                    // controls so holding a knob cannot open an editor.
+                    IpadItemBodyContextMenu { IpadItemContextMenu.commands(item, selection) }
+                        .frame(height: max(0, geometry.size.height - GridSelectionItem.headerHeight))
+                        .offset(y: GridSelectionItem.headerHeight)
                 }
             }
         } else {
@@ -5626,15 +5736,11 @@ private struct RemoteSetlistEntryEditor: View {
 /// Holding Save opens the package dialog; releasing a hold must not also save.
 private struct RemoteProjectExportHold: ViewModifier {
     let export: (() -> Void)?
-    let exportPartial: (() -> Void)?
-    let importPartial: (() -> Void)?
     @ViewBuilder func body(content: Content) -> some View {
         if let export {
             content.buttonStyle(IpadTapHoldButtonStyle(hold: export))
                 .contextMenu {
                     Button("Opções de salvar", action: export)
-                    if let exportPartial { Button("Export Partial", action: exportPartial) }
-                    if let importPartial { Button("Import Partial", action: importPartial) }
                 }
                 .accessibilityAction(named: Text("Export CatLive project"), export)
         } else { content.buttonStyle(RemoteFullAreaButtonStyle()) }
@@ -5851,6 +5957,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
     var openFX: (() -> Void)? = nil
     var openAutomation: (() -> Void)? = nil
     var addText: (() -> Void)? = nil
+    var addLyrics: (() -> Void)? = nil
     var addMedia: (() -> Void)? = nil
     let send: (DAWRemoteCommand.Action, Double) -> Void
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -5907,7 +6014,10 @@ private struct RemoteNativeMixerRow: View, Equatable {
                     Button("Insert") { localShow.insertClickItems(track: track.id) }
                         .buttonStyle(RemoteNativeTrackButtonStyle(width: 52, height: buttonHeight))
                 } else if kind.isText, let addText {
-                    Button("Add text", action: addText).buttonStyle(RemoteNativeTrackButtonStyle(width: 82, height: buttonHeight))
+                    VStack(spacing: 3) {
+                        Button("Add text", action: addText).buttonStyle(RemoteNativeTrackButtonStyle(width: 82, height: buttonHeight))
+                        if kind.isTeleprompter, let addLyrics { Button("Full lyrics", action: addLyrics).buttonStyle(RemoteNativeTrackButtonStyle(width: 82, height: buttonHeight)) }
+                    }
                 }
                 if !local || !kind.isTeleprompter {
                 Button { send(.mute, 0) } label: { Text(verbatim: "M") }
@@ -6360,7 +6470,7 @@ private final class IpadMixerMeterView: UIView {
         if pointerEditing && touch.type == .indirectPointer { return false }
         var view = touch.view
         while let candidate = view, candidate !== gridScrollView {
-            if candidate is UIControl { return false }
+            if candidate is UIControl || candidate is IpadItemBodyContextMenu.Surface { return false }
             view = candidate.superview
         }
         holdAreas = holdAreas.filter { $0.value.view != nil }
@@ -7077,12 +7187,15 @@ enum RemoteSurface {
 private struct RemoteControlSurface: ViewModifier {
     var color: Color? = nil
     var radius: CGFloat = 6
+    var bordered = true
     func body(content: Content) -> some View {
         content.background {
             if let color { RemoteSurface.fill(color) }
             else { RemoteSurface.panel }
         }.clipShape(RoundedRectangle(cornerRadius: radius))
-            .overlay(RoundedRectangle(cornerRadius: radius).stroke(RemoteSurface.edge, lineWidth: 0.5).allowsHitTesting(false))
+            .overlay {
+                if bordered { RoundedRectangle(cornerRadius: radius).stroke(RemoteSurface.edge, lineWidth: 0.5).allowsHitTesting(false) }
+            }
     }
 }
 
@@ -7109,6 +7222,7 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
 @MainActor final class RemoteLocalTimer: ObservableObject {
     private struct Anchor: Equatable {
         var targetSeconds = 0
+        var mode: TeleprompterTimerMode = .countdown
         var running = false
         var remainingSeconds = 0.0
         var uptime = 0.0
@@ -7120,6 +7234,7 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
     private let now: () -> Double
     init(now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) { self.now = now }
     var running: Bool { anchor.running }
+    var mode: TeleprompterTimerMode { anchor.mode }
     var targetSeconds: Int { anchor.targetSeconds }
     var targetText: String { TeleprompterTimer.formatted(targetSeconds) }
 
@@ -7135,11 +7250,21 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
         } else if snapshot.revision == hostRevision { return }
         hostRevision = snapshot.revision
         runID = UUID()
-        anchor = Anchor(targetSeconds: snapshot.targetSeconds, running: snapshot.running,
+        anchor = Anchor(targetSeconds: snapshot.targetSeconds,
+                        mode: snapshot.mode.flatMap(TeleprompterTimerMode.init(rawValue:)) ?? .countdown, running: snapshot.running,
                         remainingSeconds: snapshot.remainingSeconds, uptime: timestamp)
     }
     /// Use when reconnecting to a host so its latest remaining time is sampled.
     func resetSynchronization() { hostRevision = nil; pendingCommand = nil; runID = UUID() }
+    @discardableResult func setMode(_ mode: TeleprompterTimerMode) -> UUID? {
+        guard !running, mode != self.mode else { return nil }
+        let timestamp = now()
+        guard timestamp.isFinite else { return nil }
+        let id = UUID(); pendingCommand = (id, timestamp + 3)
+        anchor = Anchor(targetSeconds: targetSeconds, mode: mode, running: false,
+                        remainingSeconds: mode == .countdown ? Double(targetSeconds) : 0, uptime: timestamp)
+        return id
+    }
     @discardableResult func start(seconds: Int) -> UUID? {
         guard !running else { return nil }
         let timestamp = now()
@@ -7147,7 +7272,8 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
         let target = min(TeleprompterTimer.maximumTargetSeconds, max(0, seconds))
         let id = UUID(); pendingCommand = (id, timestamp + 3)
         runID = UUID()
-        anchor = Anchor(targetSeconds: target, running: true, remainingSeconds: Double(target), uptime: timestamp)
+        anchor = Anchor(targetSeconds: target, mode: mode, running: true,
+                        remainingSeconds: mode == .countdown ? Double(target) : 0, uptime: timestamp)
         return id
     }
     @discardableResult func stop() -> UUID? {
@@ -7156,7 +7282,7 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
         guard timestamp.isFinite else { return nil }
         let id = UUID(); pendingCommand = (id, timestamp + 3)
         runID = UUID()
-        anchor = Anchor(targetSeconds: targetSeconds, running: false, remainingSeconds: 0, uptime: timestamp)
+        anchor = Anchor(targetSeconds: targetSeconds, mode: mode, running: false, remainingSeconds: 0, uptime: timestamp)
         return id
     }
     @discardableResult func stop(ifRunID id: UUID) -> UUID? {
@@ -7166,13 +7292,14 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
     func displaySeconds() -> Double {
         let timestamp = now()
         guard running, timestamp.isFinite else { return anchor.remainingSeconds }
-        return anchor.remainingSeconds - max(0, timestamp - anchor.uptime)
+        let elapsed = max(0, timestamp - anchor.uptime)
+        return anchor.remainingSeconds + (mode == .progressive ? elapsed : -elapsed)
     }
     func displayText() -> String {
         let safe = max(-Double(Int.max / 2), min(Double(Int.max / 2), displaySeconds()))
-        return TeleprompterTimer.formatted(Int(ceil(safe)))
+        return TeleprompterTimer.formatted(Int(mode == .progressive ? floor(safe) : ceil(safe)))
     }
-    func expired() -> Bool { running && displaySeconds() <= 0 }
+    func expired() -> Bool { running && mode == .countdown && displaySeconds() <= 0 }
     func displayOpacity() -> Double { expired() && now().truncatingRemainder(dividingBy: 1) >= 0.5 ? 0.25 : 1 }
     private static let localClock: DateFormatter = {
         let formatter = DateFormatter()
@@ -7216,7 +7343,7 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
         if compact {
             HStack(spacing: 3) {
                 Image(systemName: "clock").foregroundStyle(Color.blue).font(.jarasSystem(size: 13))
-                if timer.running {
+                if timer.running || timer.mode == .progressive {
                     RemoteNativeTimerReadout(timer: timer).font(.jarasSystem(size: 14, weight: .semibold, design: .monospaced))
                         .frame(maxWidth: .infinity)
                 } else {
@@ -7238,6 +7365,13 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
         }.cornerRadius(5)
         } else {
         VStack(spacing: 12) {
+            Picker("Timer", selection: Binding(get: { timer.mode }, set: { mode in
+                focused = nil
+                if let id = timer.setMode(mode) { send(.timerSetMode, mode == .progressive ? 0 : 1, id) }
+            })) {
+                Text("Progressive").tag(TeleprompterTimerMode.progressive)
+                Text("Countdown").tag(TeleprompterTimerMode.countdown)
+            }.pickerStyle(.segmented).disabled(timer.running)
             HStack {
                 Text("Timer").font(.jarasSystem(size: 15, weight: .semibold))
                 Spacer()
@@ -7254,6 +7388,7 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
             #endif
         }
                 .clipShape(RoundedRectangle(cornerRadius: 5))
+            if timer.mode == .countdown {
             HStack(spacing: 8) {
                 ForEach(0..<3, id: \.self) { index in
                     VStack(spacing: 5) {
@@ -7263,6 +7398,7 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
                     }.frame(maxWidth: .infinity)
                 }
             }.disabled(timer.running)
+            }
             Button(action: toggleTimer) {
                 Text(LocalizedStringKey(timer.running ? "Stop" : "Start"))
                     .font(.jarasSystem(size: 14, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 38)
@@ -7309,7 +7445,7 @@ private struct RemoteFullAreaButtonStyle: ButtonStyle {
                 }
                 else {
                     let seconds = TeleprompterTimer.targetSeconds(from: digits.map { $0.isEmpty ? "00" : $0 }.joined(separator: ":")) ?? 0
-                    if let id = timer.start(seconds: seconds) { synchronizeDigits(); send(.timerStart, Double(seconds), id) }
+                    if let id = timer.start(seconds: seconds) { synchronizeDigits(); send(timer.mode == .progressive ? .timerStartProgressive : .timerStart, timer.mode == .progressive ? 0 : Double(seconds), id) }
                 }
     }
     private func durationField(_ index: Int) -> some View {

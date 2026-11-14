@@ -28,7 +28,7 @@ final class ProjectCloseGuard {
     func attach(window: NSWindow, documents: ProjectDocuments) {}
 }
 '''
-Path(sys.argv[1]).write_text(stubs + source[start:end] + '\n' + Path('Tests/Apple/ProjectWindowChromeTests.swift').read_text())
+Path(sys.argv[1]).write_text(stubs + source[start:end].replace('startsService: Bool = true', 'startsService: Bool = false') + '\n' + Path('Tests/Apple/ProjectWindowChromeTests.swift').read_text())
 PYTHON
-swiftc -swift-version 5 Application/Project/InterfaceScale.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -swift-version 5 Apple/Shared/AppUpdateNotice.swift Application/Project/InterfaceScale.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

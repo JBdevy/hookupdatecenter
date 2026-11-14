@@ -31,9 +31,9 @@ inline std::vector<Section> sections(const jaras::Song &song, double end) {
 inline double visibleGridStep(double bar, int beats, int unit, int divisions, double scale) {
     if (divisions <= 0 || bar <= 0 || beats <= 0 || scale <= 0) return 0;
     const double beat=bar/beats;
-    const double base=beat*scale>=16 ? std::min(beat,beat*unit/divisions) : bar;
-    const double spacing = beat*scale>=16 ? 16 : 8;
-    return base*std::pow(2.,std::max(0.,std::ceil(std::log2(spacing/std::max(.001,base*scale)))));
+    const double base=std::min(beat,beat*unit/divisions);
+    const double step=base*std::pow(2.,std::max(0.,std::ceil(std::log2(16/std::max(.001,base*scale)))));
+    return step<bar ? step : bar*std::pow(2.,std::max(0.,std::ceil(std::log2(8/std::max(.001,bar*scale)))));
 }
 // Match TimelineTempo.snap: visible divisions plus region/marker/cursor anchors.
 inline double snap(double time, const jaras::Song &song, double scale, bool free,
@@ -78,7 +78,13 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     const double step=visibleGridStep(bar,active.beats,active.unit,divisions,scale);
     double nearest=0,distance=position;
     auto consider=[&](double anchor) {if(!std::isfinite(anchor)||anchor<0)return;const auto d=std::abs(anchor-position);if(d<distance||(d==distance&&anchor<nearest)){nearest=anchor;distance=d;}};
-    if(step>0)consider(std::min(active.end,active.start+std::round((position-active.start)/step)*step));
+    if(step>0) {
+        const double origin=step<bar ? active.start+std::floor((position-active.start)/bar)*bar : active.start;
+        const double limit=std::min(active.end,step<bar ? origin+bar : active.end);
+        const double offset=(position-origin)/step;
+        consider(std::min(limit,origin+std::floor(offset)*step));
+        consider(std::min(limit,origin+std::ceil(offset)*step));
+    }
     for(const auto &part:song.parts) if(!excludedRegion || part.id!=*excludedRegion){consider(part.startTime);consider(part.endTime);}
     if(song.markers)for(const auto &marker:*song.markers)if(!excludedMarker || marker.id!=*excludedMarker)consider(marker.position);
     if(includeItemEdges) visitNearbyItemEdges(distance,consider);
@@ -88,7 +94,7 @@ inline double snap(double time, const jaras::Song &song, double scale, bool free
     }
     // Do not reconsider an out-of-range edge/cursor without the capture
     // radius: that used to pull a released item back to its original start.
-    return distance*scale<=maximumDistance+1e-9 ? nearest : position;
+    return step>0 || distance*scale<=maximumDistance+1e-9 ? nearest : position;
 }
 inline double snapSelection(double time, const jaras::Song &song, double scale,
                             const jaras::TransportState &transport, bool free, const std::set<ID> *excludedItems = nullptr,

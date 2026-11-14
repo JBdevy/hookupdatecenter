@@ -18,6 +18,26 @@ private final class AudioReadFailureSwitch {
     func rejectsReads() -> Bool { lock.lock(); defer { lock.unlock() }; return denied }
 }
 
+// Hold a decoder until the render assertions finish. A fixed sleep does not
+// reproduce a blocked disk when a loaded CI runner renders more slowly.
+private final class AudioReadBlock {
+    private let condition = NSCondition()
+    private var enabled = false
+    private var entered = false
+    func enable() { condition.lock(); enabled = true; condition.unlock() }
+    func release() {
+        condition.lock(); enabled = false; condition.broadcast(); condition.unlock()
+    }
+    func waitIfEnabled() {
+        condition.lock(); defer { condition.unlock() }
+        if enabled { entered = true }
+        while enabled { condition.wait() }
+    }
+    var didBlock: Bool {
+        condition.lock(); defer { condition.unlock() }; return entered
+    }
+}
+
 private typealias AudioReadImplementation = @convention(c) (
     AVAudioFile, Selector, AVAudioPCMBuffer, AVAudioFrameCount,
     AutoreleasingUnsafeMutablePointer<NSError?>?
@@ -121,6 +141,23 @@ for sampleRate in [44100.0, 48000.0] {
         _ = render()
         require(abs(source.sourcePosition - before - Double(block) * 1.25 / sampleRate) < 0.0000001,
                 "Live BPM change lost the source position")
+        // Neutral warming keeps FFT/history available without running phase
+        // prediction for dry PCM. Both the first real stretch and its return
+        // to unity must remain audible, stereo aligned and pitch preserving.
+        for speed in [1.25, 1.0] {
+            source.setRate(speed, pitch: 0)
+            var transition: [Float] = []
+            while transition.count < Int(sampleRate * 0.6) {
+                let block = render()
+                require(block.map(abs).max()! > 0.02, "Neutral-to-stretched transition introduced a silent block")
+                transition += block
+            }
+            let settled = Array(transition.dropFirst(Int(sampleRate * 0.4)))
+            let crossings = zip(settled, settled.dropFirst()).filter { $0 < 0 && $1 >= 0 }.count
+            let frequency = Double(crossings) * sampleRate / Double(settled.count)
+            print("PREPARED_LIVE_TRANSITION", sampleRate, block, speed, frequency)
+            require(abs(frequency - 440) < 10, "Live rate transition changed the musical pitch")
+        }
         source.stop(); engine.stop()
     }
 }
@@ -279,36 +316,48 @@ do {
 
 do {
  let slowURL = directory.appendingPathComponent("slow-source.wav")
- try FileManager.default.copyItem(at: directory.appendingPathComponent("source-48000.wav"), to: slowURL)
- let gate = AudioReadFailureSwitch()
+ // Keep the file longer than the initial batched lookahead, so this test
+ // necessarily requests a new page after the decoder is blocked.
+ let originalFile = try AVAudioFile(forReading: directory.appendingPathComponent("source-48000.wav"))
+ let samples = AVAudioPCMBuffer(pcmFormat: originalFile.processingFormat, frameCapacity: AVAudioFrameCount(originalFile.length))!
+ try originalFile.read(into: samples)
+ do {
+  let file = try AVAudioFile(forWriting: slowURL, settings: originalFile.processingFormat.settings)
+  for _ in 0..<6 { try file.write(from: samples) }
+ }
+ let gate = AudioReadBlock()
  let selector = NSSelectorFromString("readIntoBuffer:frameCount:error:")
  let method = class_getInstanceMethod(AVAudioFile.self, selector)!
  let original = method_getImplementation(method)
  let read = unsafeBitCast(original, to: AudioReadImplementation.self)
  let replacement: @convention(block) (AVAudioFile, AVAudioPCMBuffer, AVAudioFrameCount, AutoreleasingUnsafeMutablePointer<NSError?>?) -> Bool = { file, buffer, count, error in
-  if file.url == slowURL && !gate.rejectsReads() { Thread.sleep(forTimeInterval: 2) }
+  if file.url == slowURL { gate.waitIfEnabled() }
   return read(file, selector, buffer, count, error)
  }
  method_setImplementation(method, imp_implementationWithBlock(replacement))
+ defer { gate.release(); method_setImplementation(method, original) }
  let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
  let engine = AVAudioEngine()
  let slow = JarasPreparedClip(format: format), healthy = JarasPreparedClip(format: format)
  for (source, url) in [(slow, slowURL), (healthy, directory.appendingPathComponent("source-48000.wav"))] {
   engine.attach(source.node); engine.connect(source.node, to: engine.mainMixerNode, format: format)
-  try source.prepare(url, sourceFrame: 0, endFrame: 480000, rate: 8, pitch: 36, loopStart: 0, loopEnd: 480000)
+  let end = source === slow ? 2_880_000.0 : 480_000.0
+  try source.prepare(url, sourceFrame: 0, endFrame: end, rate: 8, pitch: 36, loopStart: 0, loopEnd: end)
  }
  try engine.enableManualRenderingMode(.realtime, format: format, maximumFrameCount: 512)
  try engine.start()
  let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
- gate.allowReads(); slow.start(atHostTime: 0, ramp: false); healthy.start(atHostTime: 0, ramp: false)
+ gate.enable(); slow.start(atHostTime: 0, ramp: false); healthy.start(atHostTime: 0, ramp: false)
  for _ in 0..<180 {
   var status: OSStatus = 0; output.frameLength = 512
-  _ = engine.manualRenderingBlock(512, output.mutableAudioBufferList, &status)
+  require(engine.manualRenderingBlock(512, output.mutableAudioBufferList, &status) == .success && status == 0,
+          "Blocked-decoder render failed")
   Thread.sleep(forTimeInterval: 512.0 / 48000)
  }
+ require(gate.didBlock, "Slow decoder fixture never requested uncached audio")
  require(slow.underruns > 0, "Slow decoder fixture did not exhaust its lookahead")
  require(healthy.underruns == 0, "Blocked decoder starved a healthy stem")
  print("PREPARED_CLIP_BLOCKED_DECODER_ISOLATION_OK")
+ gate.release()
  slow.stop(); healthy.stop(); engine.stop()
- method_setImplementation(method, original)
 }

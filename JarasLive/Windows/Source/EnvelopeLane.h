@@ -44,6 +44,8 @@ class EnvelopeLane final : public Component {
             g.fillEllipse(x - 3, y - 3, 6, 6);
         }
     }
+    bool displays(const ID &track, const var &curve) const { return trackID == track && str(envelope,"id") == str(curve,"id"); }
+    void refreshEnvelope(var curve) { envelope=std::move(curve); repaint(); }
     void mouseDown(const MouseEvent &e) override {
         grabKeyboardFocus();
         selected.clear();

@@ -7,11 +7,14 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSData *)applyProjectSyncData:(NSData *)data elapsed:(double)elapsed first:(BOOL)first error:(NSError **)error NS_SWIFT_NAME(applyProjectSync(_:elapsed:first:));
 - (BOOL)applyProjectEditData:(NSData *)data error:(NSError **)error;
 - (BOOL)applyProjectMetadataEditData:(NSData *)data preservingWaveforms:(NSArray<NSString *> *)identifiers error:(NSError **)error NS_SWIFT_NAME(applyProjectMetadataEdit(_:preservingWaveforms:));
+- (BOOL)applyTrackStructureEditData:(NSData *)data trackOrders:(NSDictionary<NSString *, NSArray<NSString *> *> *)orders preservingWaveforms:(NSDictionary<NSString *, NSString *> *)identifiers error:(NSError **)error NS_SWIFT_NAME(applyTrackStructureEdit(_:trackOrders:preservingWaveforms:));
 - (BOOL)loadProjectData:(NSData *)data error:(NSError **)error NS_SWIFT_NAME(load(projectData:));
+- (BOOL)loadProjectData:(NSData *)data waveforms:(NSDictionary<NSString *, NSArray<NSData *> *> *)waveforms error:(NSError **)error NS_SWIFT_NAME(load(projectData:waveforms:));
 - (BOOL)executeAutomation:(NSString *)command target:(nullable NSString *)target value:(double)value error:(NSError **)error NS_SWIFT_NAME(executeAutomation(command:target:value:));
 - (BOOL)executeCommand:(NSString *)command target:(nullable NSString *)target value:(double)value error:(NSError **)error NS_SWIFT_NAME(execute(command:target:value:));
 - (nullable NSData *)snapshotWithError:(NSError **)error NS_SWIFT_NAME(snapshot());
 - (nullable NSData *)metadataSnapshotWithError:(NSError **)error NS_SWIFT_NAME(metadataSnapshot());
+- (nullable NSData *)trackMetadataSnapshotWithRevision:(uint64_t)revision error:(NSError **)error NS_SWIFT_NAME(trackMetadataSnapshot(previousRevision:));
 - (nullable NSData *)playbackSnapshotWithError:(NSError **)error NS_SWIFT_NAME(playbackSnapshot());
 - (BOOL)configureRegionSetlistData:(NSData *)data error:(NSError **)error;
 - (BOOL)addTrackWithId:(NSString *)identifier name:(NSString *)name role:(NSString *)role error:(NSError **)error NS_SWIFT_NAME(addTrack(id:name:role:));

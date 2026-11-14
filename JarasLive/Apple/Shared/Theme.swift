@@ -338,11 +338,25 @@ private enum CatLiveTypeface {
         }
     }
 }
+private enum CatLiveNativeFonts {
+    // NSFont(name:size:) reparses Inter's variation data on Ventura. Native
+    // meters and timeline labels request these same immutable fonts every
+    // frame; keep a bounded, thread-safe cache shared by those drawing paths.
+    static let cache: NSCache<NSString, NSFont> = {
+        let cache = NSCache<NSString, NSFont>()
+        cache.countLimit = 96
+        return cache
+    }()
+}
 extension NSFont {
     static func jarasSystemFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
         _ = CatLiveTypeface.register
         let name = weight.rawValue >= NSFont.Weight.bold.rawValue ? "Bold" : weight.rawValue >= NSFont.Weight.semibold.rawValue ? "SemiBold" : weight.rawValue >= NSFont.Weight.medium.rawValue ? "Medium" : "Regular"
-        return NSFont(name: "Inter-" + name, size: size) ?? NSFont.systemFont(ofSize: size, weight: weight)
+        let key = "\(size):\(weight.rawValue)" as NSString
+        if let font = CatLiveNativeFonts.cache.object(forKey: key) { return font }
+        let font = NSFont(name: "Inter-" + name, size: size) ?? NSFont.systemFont(ofSize: size, weight: weight)
+        CatLiveNativeFonts.cache.setObject(font, forKey: key)
+        return font
     }
     static func jarasMonospacedSystemFont(ofSize size: CGFloat, weight: NSFont.Weight) -> NSFont { jarasSystemFont(ofSize: size, weight: weight) }
     static func jarasBoldSystemFont(ofSize size: CGFloat) -> NSFont { jarasSystemFont(ofSize: size, weight: .bold) }

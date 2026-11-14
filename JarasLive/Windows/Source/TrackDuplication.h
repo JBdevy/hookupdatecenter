@@ -153,7 +153,8 @@ inline void appendMapped(var &owner, const char *key, const IDs &ids) {
 // One document edit, with independent object identities and unchanged media and
 // plugin payloads. The caller commits document + model atomically in one Undo.
 inline TrackDuplicationResult duplicateDocument(const var &document, const ID &songID,
-    const std::set<ID> &selectedIDs, const std::function<ID()> &makeID = uuid, const var *copiedDocument = nullptr) {
+    const std::set<ID> &selectedIDs, const std::function<ID()> &makeID = uuid, const var *copiedDocument = nullptr,
+    const std::map<ID, ID> &insertingAfter = {}) {
     using namespace duplication;
     TrackDuplicationResult result{document.clone(), {}, {}};
     var song;
@@ -262,10 +263,26 @@ inline TrackDuplicationResult duplicateDocument(const var &document, const ID &s
                 if (copies.count(identity)) block.push_back(identity);
             }
         }
+        auto placementRoots = blockRoots;
+        const auto previous = insertingAfter.find(rootID);
+        const auto exists = [&](const ID &value) {
+            return std::any_of(destinationTracks.begin(), destinationTracks.end(), [&](const var &track) { return id(track) == value; });
+        };
+        const auto parentOf = [&](const ID &value) {
+            const auto at = destinationParents.find(value);
+            return at == destinationParents.end() ? ID{} : at->second;
+        };
+        if (previous != insertingAfter.end() && exists(previous->second) &&
+            parentOf(previous->second) == parentOf(rootID)) {
+            placementRoots.clear();
+            for (const auto &r : blockRoots) {
+                const auto at = insertingAfter.find(r);
+                placementRoots.insert(at != insertingAfter.end() && exists(at->second) ? at->second : r);
+            }
+        }
         for (int i = 0; i < destinationTracks.size(); ++i) {
             const auto identity = id(destinationTracks[i]);
-            if (std::find(block.begin(), block.end(), identity) != block.end() ||
-                std::any_of(blockRoots.begin(), blockRoots.end(), [&](const ID &r) { return identity == r || destinationDescendant(identity, r); })) last = i;
+            if (std::any_of(placementRoots.begin(), placementRoots.end(), [&](const ID &r) { return identity == r || destinationDescendant(identity, r); })) last = i;
         }
         auto &insertion = insertions[last]; insertion.insert(insertion.end(), block.begin(), block.end());
     }

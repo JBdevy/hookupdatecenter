@@ -11,8 +11,10 @@ struct EQAnalysisFrame: Sendable {
 // export owns separate instances and never touches the live graph.
 final class NativeEffectsChain {
     private let reorderable: Bool
-    init(reorderable: Bool = true) {
+    private let preparesInactiveEffects: Bool
+    init(reorderable: Bool = true, preparesInactiveEffects: Bool = true) {
         self.reorderable = reorderable
+        self.preparesInactiveEffects = preparesInactiveEffects
         if reorderable {
             equalizer = JarasEqualizer.makeNode()
             compressor = JarasDynamics.makeCompressor()
@@ -70,11 +72,27 @@ final class NativeEffectsChain {
             lowPass: p.lowPass, filterOutput: p.filterOutput)
     }
     private var pitch: AVAudioUnitTimePitch?
-    let delay = AVAudioUnitDelay()
-    let reverb = JarasDynamics.makeReverb()
+    private var delayNode: AVAudioUnitDelay?
+    private var reverbNode: AVAudioUnitEffect?
+    var delay: AVAudioUnitDelay {
+        if let delayNode { return delayNode }
+        let node = AVAudioUnitDelay(), value = settings ?? NativeFXSettings()
+        node.bypass = !value.delayEnabled; node.delayTime = value.delayTime
+        node.feedback = Float(value.feedback); node.wetDryMix = Float(value.delayMix)
+        delayNode = node; engine?.attach(node)
+        return node
+    }
+    var reverb: AVAudioUnitEffect {
+        if let reverbNode { return reverbNode }
+        let node = JarasDynamics.makeReverb(), value = settings ?? NativeFXSettings()
+        JarasDynamics.configureReverb(node, enabled: value.reverbEnabled, space: value.reverbRoom,
+            mix: value.reverbMix, decay: value.reverbDecay, lowCut: value.reverbLowCut, highCut: value.reverbHighCut)
+        reverbNode = node; engine?.attach(node)
+        return node
+    }
     private var itemInputMix: AVAudioMixerNode?
     private var trackEntryMix: AVAudioMixerNode?
-    private let outputMix = AVAudioMixerNode()
+    private lazy var outputMix = AVAudioMixerNode()
     private var outputDestination: AVAudioNode?
     private var instanceNodes: [String: AVAudioNode] = [:]
     private var instanceDelayProbes: [String: (JarasAudioAnalysisProbe, JarasAudioAnalysisProbe)] = [:]
@@ -282,8 +300,8 @@ final class NativeEffectsChain {
     private var nodes: [AVAudioUnit] {
         var result: [AVAudioUnit] = [equalizer]
         if equalizer !== compressor { result.append(compressor) }
-        result.append(delay)
-        result.append(reverb)
+        if let delayNode { result.append(delayNode) }
+        if let reverbNode { result.append(reverbNode) }
         if let pitch { result.append(pitch) }
         if let limiter { result.append(limiter) }
         if let trigger { result.append(trigger) }
@@ -322,17 +340,22 @@ final class NativeEffectsChain {
     private var sampleRate = 0.0
     func attach(to engine: AVAudioEngine, input: AVAudioNode, format: AVAudioFormat, destinations: [AVAudioConnectionPoint] = []) {
         self.engine = engine; self.input = input; self.format = format
-        if !reorderable {
+        if !reorderable && (preparesInactiveEffects || !(input is AVAudioMixerNode)) {
             let mix = AVAudioMixerNode()
             engine.attach(mix); engine.connect(input, to: mix, format: format)
             itemInputMix = mix; self.input = mix
         }
         settings = nil; sampleRate = 0
-        preparedEffects = reorderable ? ["EQ"] : Set(NativeFXSettings.order.dropFirst())
+        // Prepared PCM sources retain their own sample clock through an FX
+        // edit. They need the combined source/EQ stage, but hundreds of dry
+        // items must not render unused Delay and Reverb processors. An effect
+        // joins the stable prefix when first inserted and remains warm after.
+        preparedEffects = reorderable || !preparesInactiveEffects ? ["EQ"] : Set(NativeFXSettings.order.dropFirst())
         for node in nodes { engine.attach(node) }
-        // Track chains already end at a mixer. Items keep two stable mixer
-        // boundaries so editing their processors never resets the player's
-        // queue or the time-stretch samples already waiting to be heard.
+        // Prepared items already have a source-rate converter at the input.
+        // Reuse it for the stable fanout instead of inserting another mixer.
+        // Keep the output anchor: reconnecting even a prepared source's
+        // converter during playback discards its buffered rate-converted PCM.
         outputDestination = reorderable && destinations.count == 1 && destinations[0].bus == 0 ? destinations[0].node : nil
         if outputDestination == nil {
             engine.attach(outputMix)
@@ -350,13 +373,13 @@ final class NativeEffectsChain {
             source.destination(forMixer: destination, bus: anchorBus)!.volume = 0
         }
         apply(NativeFXSettings())
-        if let itemInputMix, let first = connected.first {
+        if !reorderable, let anchor = self.input as? AVAudioMixerNode, let first = connected.first {
             // Keep an inaudible connection alive through every graph edit.
             // Its per-destination volume leaves the FX branch at unity and
             // avoids the doubled signal of a temporary audible fanout.
-            engine.connect(itemInputMix, to: [AVAudioConnectionPoint(node: first, bus: 0),
+            engine.connect(anchor, to: [AVAudioConnectionPoint(node: first, bus: 0),
                 AVAudioConnectionPoint(node: outputMix, bus: 1)], fromBus: 0, format: format)
-            itemInputMix.destination(forMixer: outputMix, bus: 1)!.volume = 0
+            anchor.destination(forMixer: outputMix, bus: 1)!.volume = 0
         }
     }
     private func connect(_ next: NativeFXSettings) {
@@ -529,11 +552,13 @@ final class NativeEffectsChain {
         if previous?.compressorEnabled != next.compressorEnabled || previous?.threshold != next.threshold || previous?.ratio != next.ratio || previous?.attack != next.attack || previous?.release != next.release || previous?.makeup != next.makeup {
             JarasDynamics.configureCompressor(compressor, enabled: next.compressorEnabled, threshold: next.threshold, ratio: next.ratio, attack: next.attack, release: next.release, gain: next.makeup)
         }
-        if previous?.delayEnabled != next.delayEnabled { delay.bypass = !next.delayEnabled }
-        if previous?.delayTime != next.delayTime { delay.delayTime = next.delayTime }
-        if previous?.feedback != next.feedback { delay.feedback = Float(next.feedback) }
-        if previous?.delayMix != next.delayMix { delay.wetDryMix = Float(next.delayMix) }
-        if previous?.reverbEnabled != next.reverbEnabled || previous?.reverbRoom != next.reverbRoom || previous?.reverbMix != next.reverbMix || previous?.reverbDecay != next.reverbDecay || previous?.reverbLowCut != next.reverbLowCut || previous?.reverbHighCut != next.reverbHighCut {
+        if let delay = delayNode {
+            if previous?.delayEnabled != next.delayEnabled { delay.bypass = !next.delayEnabled }
+            if previous?.delayTime != next.delayTime { delay.delayTime = next.delayTime }
+            if previous?.feedback != next.feedback { delay.feedback = Float(next.feedback) }
+            if previous?.delayMix != next.delayMix { delay.wetDryMix = Float(next.delayMix) }
+        }
+        if let reverb = reverbNode, previous?.reverbEnabled != next.reverbEnabled || previous?.reverbRoom != next.reverbRoom || previous?.reverbMix != next.reverbMix || previous?.reverbDecay != next.reverbDecay || previous?.reverbLowCut != next.reverbLowCut || previous?.reverbHighCut != next.reverbHighCut {
             JarasDynamics.configureReverb(reverb, enabled: next.reverbEnabled, space: next.reverbRoom, mix: next.reverbMix, decay: next.reverbDecay, lowCut: next.reverbLowCut, highCut: next.reverbHighCut)
         }
     }
@@ -560,8 +585,10 @@ final class NativeEffectsChain {
         JarasEqualizer.setAnalysisEnabled(equalizer, enabled: effects.contains("EQ"))
         JarasDynamics.setCompressorMeteringEnabled(compressor, enabled: effects.contains("Compressor"))
         if let limiter { JarasDynamics.setCompressorMeteringEnabled(limiter, enabled: effects.contains("Limiter")) }
-        JarasDynamics.setAnalysisEnabled(reverb, input: true, enabled: effects.contains("Reverb"))
-        JarasDynamics.setAnalysisEnabled(reverb, input: false, enabled: effects.contains("Reverb"))
+        if let reverb = reverbNode {
+            JarasDynamics.setAnalysisEnabled(reverb, input: true, enabled: effects.contains("Reverb"))
+            JarasDynamics.setAnalysisEnabled(reverb, input: false, enabled: effects.contains("Reverb"))
+        }
         for (key, node) in [("CatLive Trigger", trigger), ("Cat Gate", gate)] {
             if let node {
                 JarasDynamics.setAnalysisEnabled(node, input: true, enabled: effects.contains(key))
@@ -649,8 +676,8 @@ final class NativeEffectsChain {
             let compressor = compressorPeaks()
             let delayIn = delayPeaks(delayInputProbe)
             let delayOut = delayPeaks(delayOutputProbe)
-            let reverbIn = JarasDynamics.analysisPeaks(reverb, input: true).map(\.floatValue)
-            let reverbOut = JarasDynamics.analysisPeaks(reverb, input: false).map(\.floatValue)
+            let reverbIn = reverbNode.map { JarasDynamics.analysisPeaks($0, input: true).map(\.floatValue) } ?? [0, 0]
+            let reverbOut = reverbNode.map { JarasDynamics.analysisPeaks($0, input: false).map(\.floatValue) } ?? [0, 0]
             meterCache = ["Compressor":compressor, "Delay":delayIn+delayOut, "Reverb":reverbIn+reverbOut, "Limiter":limiter.map { JarasDynamics.takeCompressorPeaks($0).map(\.floatValue) } ?? [0,0,0,0]]
         }
         return meterCache[effect] ?? [0,0,0,0]

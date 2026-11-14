@@ -115,8 +115,12 @@ template <typename Test> inline void run(Test &&test) {
         const auto fx = get(findTrack(result.document,rows[1].id),"fx");
         const auto plugin = list(get(fx,"externalPlugins"))[0];
         expect(str(plugin,"id")!="kontakt" && str(plugin,"componentState")=="bGlicmFyeS1zdGF0ZQ==", "Clipboard lost independent plugin state");
-        const auto again = trackEditing::duplicateDocument(result.document,song.id,{firstID,lastID},uuid,&captured);
+        const auto again = trackEditing::duplicateDocument(result.document,song.id,{firstID,lastID},uuid,&captured,result.trackIDMap);
         expect(again.trackIDMap.at(firstID)!=rows[1].id && ProjectCodec::decode(again.document).songs[0].tracks.size()==7, "Repeated Paste reused copied identities");
+        const auto repeatedRows = ProjectCodec::decode(again.document).songs[0].tracks;
+        expect(repeatedRows[1].id == rows[1].id && repeatedRows[2].id == again.trackIDMap.at(firstID) &&
+               repeatedRows[5].id == rows[4].id && repeatedRows.back().id == again.trackIDMap.at(lastID),
+               "Repeated Paste must advance past each previous copy");
         song.tracks.erase(song.tracks.begin());
         bool rejected = false;
         try { trackEditing::duplicateDocument(ProjectCodec::encode(p),song.id,{firstID,lastID},uuid,&captured); }

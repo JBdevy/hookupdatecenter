@@ -12,6 +12,21 @@ inline const jaras::Part *at(const jaras::Song &song, double position) {
         }
     return result;
 }
+// Local and Remote Tuner must address the same audible/selected source region.
+inline const jaras::Part *target(const jaras::Song &song, const jaras::TransportState &transport) {
+    if (transport.playing) {
+        for (const auto &part : song.parts) if (transport.ignoreNextRegionId == part.id) return &part;
+        if (const auto *part = at(song, transport.position)) return part;
+    }
+    for (const auto &part : song.parts) if (transport.regionId == part.id) {
+        if (transport.playing) return &part;
+        const jaras::Part *first = nullptr;
+        for (const auto &child : song.parts)
+            if (child.parentRegionID == part.id && (!first || child.startTime < first->startTime)) first = &child;
+        return first ? first : &part;
+    }
+    return nullptr;
+}
 inline bool contains(const std::optional<std::vector<ID>> &ids, const ID &id) {
     return !ids || std::find(ids->begin(), ids->end(), id) != ids->end();
 }

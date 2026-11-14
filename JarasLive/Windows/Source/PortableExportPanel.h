@@ -3,7 +3,6 @@
 #include "Session.h"
 #include "ModalSheet.h"
 #include "PortablePackage.h"
-#include "PartialProjectPackage.h"
 namespace catlive {
 class PortableExportPanel final : public Component, private Timer {
     struct Work {
@@ -17,9 +16,8 @@ class PortableExportPanel final : public Component, private Timer {
     std::unique_ptr<FileChooser> chooser;
     std::shared_ptr<Work> work;
     String error, excluded;
-    File exported, baseline;
-    bool partial = false;
-    String title() const { return partial ? "Export Partial" : localization::translate("Exportar para CatLive iPadOS"); }
+    File exported;
+    String title() const { return localization::translate("Exportar para CatLive iPadOS"); }
     bool requiresSave() const { return session.dirty || !session.document.existsAsFile(); }
     void start(const File &destination, const File &document, const ID &identity) {
         if (session.document != document || session.project().id != identity || requiresSave() ||
@@ -38,22 +36,20 @@ class PortableExportPanel final : public Component, private Timer {
         }
         work = std::make_shared<Work>();
         error = {};
-        exported = {};
+        exported = File{};
         ModalSheet::blockDismiss(*this, true);
         close.setButtonText(localization::translate("Cancelar"));
         timerCallback();
         const auto safe = SafePointer<PortableExportPanel>(this);
         auto state = work;
-        const auto inventory = baseline; const bool isPartial = partial;
-        Thread::launch([safe, state, committed, document, destination, inventory, isPartial] {
+        Thread::launch([safe, state, committed, document, destination] {
             String failure;
             try {
                 auto progress = [state](double value) {
                     if (state->cancel) throw std::runtime_error("Export canceled.");
                     state->progress = value;
                 };
-                if (isPartial) partialPackage::exportPackage(committed, document.getParentDirectory(), inventory, destination, progress);
-                else portablePackage::exportPackage(committed, document.getParentDirectory(), destination, progress);
+                portablePackage::exportPackage(committed, document.getParentDirectory(), destination, progress);
             } catch (const std::exception &e) {
                 failure = String::fromUTF8(e.what());
             }
@@ -72,8 +68,8 @@ class PortableExportPanel final : public Component, private Timer {
     }
 
   public:
-    PortableExportPanel(Session &value, std::function<void(std::function<void()>)> saveAction, bool partialExport = false)
-        : session(value), save(std::move(saveAction)), partial(partialExport) {
+    PortableExportPanel(Session &value, std::function<void(std::function<void()>)> saveAction)
+        : session(value), save(std::move(saveAction)) {
         exportButton.setButtonText(title());
         StringArray removed;
         std::set<String> capabilities;
@@ -101,25 +97,17 @@ class PortableExportPanel final : public Component, private Timer {
                 });
         };
         reveal.onClick = [this] { exported.revealToUser(); };
-        exportButton.onClick = [this, owner] {
+        exportButton.onClick = [this] {
             if (requiresSave() || work || session.busy || session.audio.isRecording()) return;
-            if (!partial) { chooseDestination(); return; }
-            chooser = std::make_unique<FileChooser>("Escolha o .jlpartial exportado no iPad", session.document.getParentDirectory(), "*.jlpartial", true);
-            chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [owner](const FileChooser &fc) {
-                if (!owner || fc.getResult() == File{}) return;
-                const auto file = fc.getResult();
-                try { partialPackage::delta(owner->session.snapshot(), partialPackage::readSnapshot(file)); owner->baseline = file; }
-                catch (const std::exception &e) { owner->error = String::fromUTF8(e.what()); owner->repaint(); return; }
-                MessageManager::callAsync([owner] { if (owner) owner->chooseDestination(); });
-            });
+            chooseDestination();
         };
         startTimerHz(10);
         timerCallback();
     }
     void chooseDestination() {
         const auto document = session.document; const auto identity = session.project().id;
-        const auto ext = partial ? String("ziplivepartial") : String("ziplive");
-        const auto destination = partial ? document.getSiblingFile(partialPackage::filename(document)) : document.withFileExtension(ext);
+        const String ext = "ziplive";
+        const auto destination = document.withFileExtension(ext);
         chooser = std::make_unique<FileChooser>(title(), destination, "*." + ext, true);
         chooser->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles | FileBrowserComponent::warnAboutOverwriting,
             [owner = SafePointer<PortableExportPanel>(this), document, identity, ext](const FileChooser &fc) {
@@ -139,7 +127,7 @@ class PortableExportPanel final : public Component, private Timer {
         g.setFont(theme::font(13));
         g.drawFittedText(
             String::fromUTF8(
-                partial ? "Leia o .jlpartial do iPad e envie somente mídias, itens, pistas e FX nativos novos. Os ajustes existentes serão preservados." : "Crie um pacote .ziplive com este projeto, suas mídias e instrumentos nativos."),
+                "Crie um pacote .ziplive com este projeto, suas mídias e instrumentos nativos."),
             24, 62, getWidth() - 48, 42, Justification::topLeft, 2, 1);
         g.setColour(theme::yellow);
         g.drawFittedText(

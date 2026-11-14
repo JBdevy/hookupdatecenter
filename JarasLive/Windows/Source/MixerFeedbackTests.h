@@ -61,6 +61,20 @@ inline void controlsWithoutArrangementRebuild() {
     require(session.project().masterSolo&&mixer==beforeMasterSolo+1&&general==0,"Master Solo failed to refresh its buttons immediately");
     session.command(jaras::CommandKind::solo);
     require(!session.project().masterSolo&&mixer==beforeMasterSolo+2&&general==0,"Master Solo off failed to refresh its buttons immediately");
+    for (auto kind : {jaras::CommandKind::mute, jaras::CommandKind::solo}) {
+        session.mixerCommand(kind,second,{second,child});
+        const auto beforeClear=mixer;const auto beforeRevision=session.revision;
+        session.mixerCommand(kind,first,{first},0,true);
+        for (const auto &track : session.song()->tracks)
+            require(!(kind==jaras::CommandKind::mute ? track.mute : track.solo),"Clear left an unselected or nested track active");
+        require(mixer==beforeClear+1 && general==0 && session.revision==beforeRevision+1,
+                "Clear must publish one mixer update without rebuilding the arrangement");
+        require(session.project().masterMute && !session.project().masterSolo,"Clearing tracks changed the Master");
+        session.dirty=false;
+        session.mixerCommand(kind,first,{},0,true);
+        require(mixer==beforeClear+1 && session.revision==beforeRevision+1 && !session.dirty,
+                "Clearing an empty state toggled a track or marked the project dirty");
+    }
     require(session.song()->tracks[0].clips[0].waveform.data()==peaks,"Mixer replaced waveform arrays");
     require(session.audio.preparationDiagnostics.getDynamicObject()==graph&&!session.preparingLiveAudio(),"Mixer rebuilt the audio graph");
     session.mixerChanged={};session.command(jaras::CommandKind::mute);

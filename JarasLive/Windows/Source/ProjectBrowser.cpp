@@ -152,6 +152,7 @@ void ProjectBrowser::selectMode(Mode value) {
 void ProjectBrowser::beginLoading(const File &file) {
     if (loading) return;
     loading = true;
+    loadingProgress = -1;
     cancelLoadingAction = {};
     mode = opening;
     loadingError.setText({}, dontSendNotification);
@@ -175,8 +176,11 @@ void ProjectBrowser::setLoadingCancellation(std::function<void()> action) {
     updateEnabled();
     resized();
 }
-void ProjectBrowser::updateLoading(const String &status) {
-    if (loading) loadingStatus.setText(localization::translate(status), dontSendNotification);
+void ProjectBrowser::updateLoading(const String &status, double progress) {
+    if (!loading) return;
+    loadingStatus.setText(localization::translate(status), dontSendNotification);
+    loadingProgress = progress < 0 ? -1 : jlimit(0.0, 1.0, progress);
+    repaint(loadingBarBounds.getUnion(spinnerBounds));
 }
 void ProjectBrowser::finishLoading(const String &error) {
     loading = false;
@@ -249,7 +253,11 @@ void ProjectBrowser::paint(Graphics &g) {
             g.drawText(localization::translate("Nenhum projeto recente encontrado."), 24, 202, getWidth() - 48, 24,
                        Justification::centredLeft);
     }
-    if (loading)
+    if (loading && loadingProgress >= 0) {
+        const auto bar = loadingBarBounds.toFloat();
+        g.setColour(Colours::white.withAlpha(.12f)); g.fillRoundedRectangle(bar, 4);
+        g.setColour(theme::green); g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * (float)loadingProgress), 4);
+    } else if (loading)
         getLookAndFeel().drawSpinningWaitAnimation(g, theme::secondary,
             spinnerBounds.getX(), spinnerBounds.getY(), spinnerBounds.getWidth(), spinnerBounds.getHeight());
 }
@@ -294,6 +302,7 @@ void ProjectBrowser::resized() {
     const int statusY = recents.getBottom() + 10;
     const bool canCancel = loading && (bool)cancelLoadingAction;
     spinnerBounds = {getWidth() / 2 - 10, statusY, 20, 20};
+    loadingBarBounds = {24, statusY + 6, std::max(1, width - (canCancel ? 90 : 0)), 8};
     loadingStatus.setJustificationType(Justification::centred);
     loadingStatus.setBounds(24, statusY + 26, width, 22);
     cancelLoading.setBounds(getWidth() - 104, statusY - 2, 80, 24);
@@ -344,6 +353,7 @@ void ProjectBrowser::listBoxItemClicked(int row, const MouseEvent &event) {
     File file(filtered[row]);
     PopupMenu menu;
     const bool missing=!file.existsAsFile();
+    menu.addItem(3,localization::translate("Open project location"),!missing);
     if (projectOpen && !missing && openInNewTab)
         menu.addItem(2,localization::translate("Open in new tab"));
     menu.addItem(1,localization::translate(missing?"Remove from recents":"Delete project"));
@@ -351,6 +361,7 @@ void ProjectBrowser::listBoxItemClicked(int row, const MouseEvent &event) {
     menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&recents)
                            .withTargetScreenArea({position.x, position.y, 1, 1}),[safe=Component::SafePointer<ProjectBrowser>(this),file,missing](int result){
         if(!safe || safe->loading)return;
+        if(result==3){if(file.existsAsFile())file.revealToUser();return;}
         if(result==2){if(safe->projectOpen && file.existsAsFile() && safe->openInNewTab)safe->openInNewTab(file);return;}
         if(result!=1)return;
         if(missing){RecentProjects::forget(file);safe->refresh();}

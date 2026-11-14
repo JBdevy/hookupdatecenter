@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.35" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "1.36" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -191,7 +191,30 @@ target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_ASIO=1 JUCE_WASAPI=1 JUCE_USE_WINRT_MIDI=1 JUCE_USE_MP3AUDIOFORMAT=1 JUCE_WIN_PER_MONITOR_DPI_AWARE=1
     JUCE_MODAL_LOOPS_PERMITTED=0 NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_compile_options(CatLive PRIVATE /utf-8 /bigobj)
+# Accelerate Signalsmith's existing FFT calculations without changing its
+# spectral preset or requiring AVX/AVX2 on older Windows x64 processors.
+add_library(CatLiveFFT STATIC ThirdParty/PFFFT/src/pffft.c ThirdParty/PFFFT/src/pffft_common.c)
+target_include_directories(CatLiveFFT PUBLIC ThirdParty/PFFFT/include PRIVATE ThirdParty/PFFFT/include/pffft)
+target_compile_definitions(CatLiveFFT PUBLIC PFFFT_STATIC_DEFINE=1)
+target_link_libraries(CatLive PRIVATE CatLiveFFT)
+target_compile_definitions(CatLive PRIVATE SIGNALSMITH_USE_PFFFT=1)
+add_custom_command(TARGET CatLive POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/Licenses/PFFFT"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/PFFFT/LICENSE.txt" "$<TARGET_FILE_DIR:CatLive>/Licenses/PFFFT/LICENSE.txt")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/PFFFT/LICENSE.txt" DESTINATION Licenses/PFFFT)
 enable_testing()
+foreach(mode Reference Batched)
+    add_executable(SignalsmithOutput${mode} "${CATLIVEROOT}/Tests/Apple/SignalsmithBatchOutputTests.cpp")
+    target_link_libraries(SignalsmithOutput${mode} PRIVATE CatLiveFFT)
+    if(mode STREQUAL Batched)
+        target_compile_definitions(SignalsmithOutput${mode} PRIVATE CATLIVE_SIGNALSMITH_BATCH_OUTPUT=1)
+    endif()
+endforeach()
+add_test(NAME SignalsmithOutputParity COMMAND "${CMAKE_COMMAND}"
+    "-DREFERENCE=$<TARGET_FILE:SignalsmithOutputReference>"
+    "-DBATCHED=$<TARGET_FILE:SignalsmithOutputBatched>"
+    "-DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/signalsmith-output-parity"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SignalsmithOutputParity.cmake")
 add_executable(Direct2DTextTests "${CATLIVEROOT}/WindowsNative/Tests/Direct2DTextTests.cpp")
 target_compile_definitions(Direct2DTextTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(Direct2DTextTests PRIVATE /utf-8)
@@ -202,10 +225,10 @@ target_compile_options(SavePulseTests PRIVATE /utf-8)
 target_link_libraries(SavePulseTests PRIVATE d3d11 dxgi d2d1 dcomp dwmapi ole32)
 # Requires a usable Windows graphics adapter, but creates no visible window and
 # never takes keyboard focus. Run explicitly on the validation PC, not CI VMs.
-foreach(name ProjectSync Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership TempoOwnership Timecode TimecodePlayback ClickTrack WindowsTimelineSnap WindowsMeterRepaint WindowsDrawingReuse)
+foreach(name ProjectSync Core PlaybackScope SmoothSeek MultiLoop RegionBoundaryOwnership RegionOnsetOwnership RegionArrangement RegionMovementCoverage ItemRateAndLoop TempoOwnership Timecode TimecodePlayback ClickTrack WindowsTimelineSnap WindowsMeterRepaint WindowsDrawingReuse WindowsTrackRowGeometry)
     add_executable(${name}Tests "${CATLIVEROOT}/Tests/Core/${name}Tests.cpp")
     target_link_libraries(${name}Tests PRIVATE CatLiveCore)
-    target_compile_options(${name}Tests PRIVATE /utf-8)
+    target_compile_options(${name}Tests PRIVATE /utf-8 /UNDEBUG)
     add_test(NAME ${name}Tests COMMAND ${name}Tests)
 endforeach()
 # Exercise the production native decoder, including exact MP3 seeking, in CI.

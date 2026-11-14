@@ -9,10 +9,11 @@ class StageState final {
         const auto saved = p.value("jaras.teleprompter.timer");
         target = jlimit(0, 359999, (int)num(saved, "targetSeconds"));
         autoStart = flag(saved, "initAutoEnabled");
+        progressive = str(saved, "mode") == "progressive";
     }
     Appearance &preferences;
     int target = 0, previewPage = 0;
-    bool running = false, autoStart = false, preview = false;
+    bool running = false, autoStart = false, preview = false, progressive = false;
     double started = 0;
     String notice;
     Image noticeImage;
@@ -34,9 +35,14 @@ class StageState final {
     }
     double noticeSent = 0, noticeDeadline = 0, pausedRemaining = 20;
     static double now() { return Time::getMillisecondCounterHiRes() / 1000; }
-    double seconds() const { return running ? target - std::max(0., now() - started) : target; }
+    double seconds() const {
+        const auto elapsed = running ? std::max(0., now() - started) : 0.;
+        return progressive ? elapsed : target - elapsed;
+    }
+    bool expired() const { return running && !progressive && seconds() <= 0; }
+    void setProgressive(bool value) { if (!running) { progressive = value; saveTimer(); } }
     String timeText(bool spaced = false) const {
-        const int remaining = (int)std::ceil(seconds());
+        const int remaining = (int)(progressive ? std::floor(seconds()) : std::ceil(seconds()));
         const auto value = clockText(std::abs(remaining), true);
         return (remaining < 0 ? String::fromUTF8("−") : String()) +
                (spaced ? value.replace(":", " : ") : value);
@@ -50,6 +56,7 @@ class StageState final {
     void reset() { running = false; }
     void saveTimer() {
         auto p = object();
+        put(p, "mode", progressive ? "progressive" : "countdown");
         put(p, "targetSeconds", target);
         put(p, "initAutoEnabled", autoStart);
         preferences.set("jaras.teleprompter.timer", p);
@@ -174,7 +181,7 @@ class StageTimerReadout final : public Label, private Timer {
     void refresh() {
         setVisible(state.running);
         if (!state.running) return;
-        const bool expired = state.seconds() <= 0;
+        const bool expired = state.expired();
         setText(state.timeText(), dontSendNotification);
         setColour(textColourId, expired ? Colours::red : theme::green);
         setAlpha(expired && (int)(StageState::now() * 2) % 2 ? .25f : 1.f);
@@ -198,7 +205,7 @@ class StageTimerControl final : public Component, private Timer {
             digits[i].setJustification(Justification::centred);
             digits[i].setFont(theme::semiboldFont(12));
             digits[i].onTextChange = [this] {
-                if (!state.running)
+                if (!state.running && !state.progressive)
                     state.target = jlimit(0, 99, digits[0].getText().getIntValue()) * 3600 +
                                    jlimit(0, 59, digits[1].getText().getIntValue()) * 60 +
                                    jlimit(0, 59, digits[2].getText().getIntValue());
@@ -221,7 +228,7 @@ class StageTimerControl final : public Component, private Timer {
                                                      safe->state.reset();
                                              }));
             } else {
-                state.target = jlimit(0, 99, digits[0].getText().getIntValue()) * 3600 +
+                if (!state.progressive) state.target = jlimit(0, 99, digits[0].getText().getIntValue()) * 3600 +
                                jlimit(0, 59, digits[1].getText().getIntValue()) * 60 +
                                jlimit(0, 59, digits[2].getText().getIntValue());
                 state.saveTimer();
@@ -262,7 +269,7 @@ class StageTimerControl final : public Component, private Timer {
         auto parts = StringArray::fromTokens(
             state.timeText().removeCharacters(String::fromUTF8("−")), ":", {});
         for (int i = 0; i < 3; ++i) {
-            digits[i].setReadOnly(state.running);
+            digits[i].setReadOnly(state.running || state.progressive);
             if (state.running || !digits[i].hasKeyboardFocus(true))
                 digits[i].setText(parts[i], false);
         }

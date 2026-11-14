@@ -6,10 +6,13 @@
 
 namespace catlive {
 // Matches TeleprompterTimerConfiguration: one selected time field, a numeric
-// keypad, and the same independent countdown shared by the transport and TP.
+// keypad, and the same independent timer shared by the transport and TP.
 class StageTimerSettings final : public Component, private Timer {
   public:
     explicit StageTimerSettings(StageState &value) : state(value) {
+        progressive.onClick = [this] { state.setProgressive(true); refresh(); };
+        countdown.onClick = [this] { state.setProgressive(false); refresh(); };
+        for (auto *tab : {&progressive, &countdown}) addAndMakeVisible(tab);
         for (int i = 0; i < 3; ++i) {
             fields[i].setName(StringArray{"Horas", "Minutos", "Segundos"}[i]);
             fields[i].onClick = [this, i] { field = i; caret = 0; refresh(); };
@@ -52,24 +55,26 @@ class StageTimerSettings final : public Component, private Timer {
     }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
-        const auto display = getLocalBounds().reduced(16).removeFromTop(48).toFloat();
+        const auto display = getLocalBounds().reduced(16).withTrimmedTop(36).removeFromTop(48).toFloat();
         g.setColour(theme::display); g.fillRoundedRectangle(display, 6);
         g.setColour(theme::green); g.drawRoundedRectangle(display.reduced(.5f), 6, 1);
-        const bool expired = state.running && state.seconds() < 0;
+        const bool expired = state.expired();
         g.setColour(expired ? Colours::red.withAlpha((int)(StageState::now() * 2) % 2 ? .25f : 1.f) : theme::green);
         g.setFont(theme::semiboldFont(30));
         g.drawText(state.timeText(), display, Justification::centred);
     }
     void resized() override {
         const int width = getWidth() - 32;
+        progressive.setBounds(16, 16, width / 2, 28);
+        countdown.setBounds(16 + width / 2, 16, width - width / 2, 28);
         for (int i = 0; i < 3; ++i) {
             const int x = 16 + i * (width + 8) / 3;
-            fields[i].setBounds(x, 76, (width - 16) / 3, 60);
+            fields[i].setBounds(x, 112, (width - 16) / 3, 60);
         }
-        const int keyHeight = std::max(26, (getHeight() - 197 - 15) / 4);
+        const int keyHeight = std::max(26, (getHeight() - 233 - 15) / 4);
         for (int i = 0; i < 12; ++i) {
             const int x = 16 + (i % 3) * (width + 5) / 3;
-            keys[i].setBounds(x, 144 + (i / 3) * (keyHeight + 5), (width - 10) / 3, keyHeight);
+            keys[i].setBounds(x, 180 + (i / 3) * (keyHeight + 5), (width - 10) / 3, keyHeight);
         }
         const int y = getHeight() - 40;
         start.setBounds(16, y, 62, 24);
@@ -100,10 +105,11 @@ class StageTimerSettings final : public Component, private Timer {
     StageState &state;
     Field fields[3];
     QuietButton keys[12];
+    QuietButton progressive{localization::translate("Progressive")}, countdown{localization::translate("Countdown")};
     QuietButton start{localization::translate("Iniciar")}, automatic{"INIT AUTO"}, close{localization::translate("Fechar")};
     int field = 0, caret = 0;
     void edit(int key) {
-        if (state.running) return;
+        if (state.running || state.progressive) return;
         const int divisors[]{3600, 60, 1};
         int values[]{state.target / 3600, state.target / 60 % 60, state.target % 60};
         auto digits = String(values[field]).paddedLeft('0', 2);
@@ -121,14 +127,20 @@ class StageTimerSettings final : public Component, private Timer {
         refresh();
     }
     void refresh() {
+        progressive.setEnabled(!state.running); countdown.setEnabled(!state.running);
+        progressive.setColour(TextButton::buttonColourId, state.progressive ? theme::green : theme::display);
+        countdown.setColour(TextButton::buttonColourId, state.progressive ? theme::display : theme::green);
+        progressive.setColour(TextButton::textColourOffId, state.progressive ? Colours::black : Colours::white);
+        countdown.setColour(TextButton::textColourOffId, state.progressive ? Colours::white : Colours::black);
         const int values[]{state.target / 3600, state.target / 60 % 60, state.target % 60};
         for (int i = 0; i < 3; ++i) {
             fields[i].digits = String(values[i]).paddedLeft('0', 2);
             fields[i].selected = field == i;
+            fields[i].setVisible(!state.progressive);
             fields[i].setEnabled(!state.running);
             fields[i].repaint();
         }
-        for (auto &key : keys) key.setEnabled(!state.running);
+        for (auto &key : keys) { key.setVisible(!state.progressive); key.setEnabled(!state.running); }
         start.setButtonText(state.running ? localization::translate("Parar") : localization::translate("Iniciar"));
         start.setColour(TextButton::buttonColourId, state.running ? Colours::red : theme::green);
         start.setColour(TextButton::textColourOffId, state.running ? Colours::white : Colours::black);

@@ -68,13 +68,21 @@ for seconds in [0.0, 359999.0] {
 for seconds in [-1.0, 360000.0, 1.5, Double.infinity, Double.nan] {
     require(!DAWRemoteCommand(project: project, song: song, action: .timerStart, value: seconds).valid, "invalid timer duration rejected")
 }
+for mode in [0.0, 1.0] {
+    require(DAWRemoteCommand(project: project, action: .timerSetMode, value: mode).valid, "timer mode accepted")
+}
+for mode in [-1.0, 2.0, 0.5, Double.nan] {
+    require(!DAWRemoteCommand(project: project, action: .timerSetMode, value: mode).valid, "invalid mode rejected")
+}
+require(DAWRemoteCommand(project: project, action: .timerStartProgressive).valid, "progressive starts atomically")
+require(!DAWRemoteCommand(project: project, action: .timerStartProgressive, value: 1).valid, "progressive has no countdown target")
 var tpFixture = fixture
 tpFixture.teleprompters = [DAWRemoteTeleprompter(index: 2, text: "TP2 independent lyrics", chords: "C / G", song: "Current", queued: "Next",
     progress: 0.25, style: .init(), imageID: UUID())]
 tpFixture.notices = .init(templates: ["One", "Two", "Three"], imageSlots: [false, true, false], message: "Notice", active: true, pinned: false,
     remaining: 20, window1: true, window2: false, textColor: 0xffffff, backgroundColor: 0, flashColor: 0xffdc52,
     font: "Arial", scale: 100, emoji: "", cleanDisplay: true, sentAt: 12345, imageID: UUID())
-tpFixture.timer = .init(revision: UUID(), targetSeconds: 90, running: true, remainingSeconds: 83.5)
+tpFixture.timer = .init(revision: UUID(), targetSeconds: 90, running: true, remainingSeconds: 83.5, mode: "progressive")
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(tpFixture)) {
     require(decoded == tpFixture, "independent TP2, opaque images, notice destinations, timer revision state roundtrip")
 } else { fatalError("teleprompter state packet") }

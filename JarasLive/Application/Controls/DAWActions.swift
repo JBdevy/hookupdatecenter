@@ -10,7 +10,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case tunerDown, tunerUp, partsUp, partsDown, parts1, parts2, toggleParts, cancelSection
     case setlistUp, setlistDown, toggleAuto, splitItems, ignoreNext
     case projectStart, projectEnd, nextRegion, previousRegion, nextTimelinePoint, previousTimelinePoint
-    case toggleVideo, toggleTeleprompter, togglePreview, normalizeItems, reRenderItems, unifyAudioItems, createTempoMarker
+    case toggleVideo, toggleTeleprompter, togglePreview, normalizeItems, reRenderItems, unifyAudioItems, createRegionsFromItems, createTempoMarker
     case toggleTracks, toggleBarMixer, toggleSetlist, toggleMultiLoopBypass
 
     public var legacyTransportMapping: Bool { self == .play || self == .stop || self == .subPlay }
@@ -23,7 +23,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     }
     public var needsTrack: Bool { [.selectTrack, .muteTrack, .soloTrack, .volumeTrack, .panTrack].contains(self) }
     public var continuous: Bool { self == .volumeTrack || self == .panTrack || self == .volumeMaster }
-    public var supportsMIDI: Bool { ![.normalizeItems, .reRenderItems, .unifyAudioItems, .createTempoMarker, .toggleFullscreen].contains(self) }
+    public var supportsMIDI: Bool { ![.normalizeItems, .reRenderItems, .unifyAudioItems, .createRegionsFromItems, .createTempoMarker, .toggleFullscreen].contains(self) }
     public var fixedKeyboard: Bool { self == .setlistUp || self == .setlistDown }
     public var repeats: Bool { [.tempoDown, .tempoUp, .nextRegion, .previousRegion, .nextTimelinePoint, .previousTimelinePoint].contains(self) }
     public var title: String {
@@ -68,6 +68,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .normalizeItems: return "Normalize selected items"
         case .reRenderItems: return "Re-render selected items"
         case .unifyAudioItems: return "Unify selected audio items"
+        case .createRegionsFromItems: return "Create region from selected items"
         case .createTempoMarker: return "Create tempo marker"
         case .projectStart: return "Go to project start"
         case .projectEnd: return "Go to project end"
@@ -107,6 +108,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .ignoreNext: (key, modifiers, label) = (29, 0, "0")
         case .splitItems: (key, modifiers, label) = (1, 0, "S")
         case .normalizeItems: (key, modifiers, label) = (45, 0, "N")
+        case .createRegionsFromItems: (key, modifiers, label) = (15, shift, "⇧R")
         case .createTempoMarker: (key, modifiers, label) = (17, command | shift, "⌘⇧T")
         case .projectStart: (key, modifiers, label) = (12, 0, "Q")
         case .projectEnd: (key, modifiers, label) = (33, 0, "[")

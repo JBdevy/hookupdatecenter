@@ -406,7 +406,7 @@ private struct WorkspaceToolContent<Content: View>: View {
 /// The workspace owns these panels, just as it owns its detached mixer.
 /// Refocusing a tool keeps its hosting view, selection and unfinished text edits.
 @MainActor final class WorkspaceToolWindows: NSObject, ObservableObject, NSWindowDelegate {
-    private enum Tool: String { case advanced, settings, textItem, matrixPatch }
+    private enum Tool: String { case advanced, settings, textItem, fullLyrics, matrixPatch }
     @Published private(set) var settingsOpen = false
     @Published private(set) var matrixPatchOpen = false
     private var windows: [Tool: NSPanel] = [:]
@@ -435,10 +435,19 @@ private struct WorkspaceToolContent<Content: View>: View {
                            close: { [weak panel] in panel?.close() })
         }
     }
+    func openFullLyrics(show: ShowController, track: UUID) {
+        bind(show)
+        do {
+            let target = try FullLyricsTarget(show: show, track: track)
+            present(.fullLyrics, title: "Full lyrics", size: NSSize(width: 620, height: 460)) { panel in
+                FullLyricsEditor(show: show, target: target, close: { [weak panel] in panel?.close() })
+            }
+        } catch { show.message = error.localizedDescription }
+    }
     func openAdvanced(show: ShowController, documents: ProjectDocuments?) {
         bind(show)
         if windows[.advanced]?.isVisible != true { advancedPresentation.generation &+= 1 }
-        present(.advanced, title: "Advanced", size: NSSize(width: 760, height: 420)) { panel in
+        present(.advanced, title: "Advanced", size: AdvancedView.desktopSize) { panel in
             WorkspaceAdvancedContent(show: show, documents: documents,
                 close: { [weak panel] in panel?.close() }, presentation: advancedPresentation)
         }
@@ -516,7 +525,7 @@ private struct WorkspaceToolContent<Content: View>: View {
         panel.parent?.removeChildWindow(panel)
         if tool == .settings { settingsOpen = false; ControlMappings.shared.editing = nil }
         if tool == .matrixPatch { matrixPatchOpen = false }
-        if !discardingWindows && tool != .textItem {
+        if !discardingWindows && tool != .textItem && tool != .fullLyrics {
             // Keep the hosting tree and native window; hide it from layout,
             // hit testing and accessibility until the next presentation.
             panel.contentView?.isHidden = true
@@ -555,7 +564,7 @@ private struct WorkspaceEditorViewport<Content: View>: View {
         if scrolls {
             ScrollView([.horizontal, .vertical], showsIndicators: true) {
                 if let layoutSize {
-                    content.frame(width: layoutSize.width, height: layoutSize.height)
+                    content.frame(width: layoutSize.width, height: layoutSize.height, alignment: .topLeading)
                 } else {
                     content.fixedSize(horizontal: true, vertical: true)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -570,6 +579,7 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
     @Binding var presented: Bool
     let title: String
     var scrolls = true
+    var size: CGSize? = nil
     @ViewBuilder let content: () -> Content
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
@@ -580,7 +590,7 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
         if coordinator.panel != nil { return }
         guard !coordinator.opening else { return }
         coordinator.opening = true
-        let title = title, content = content, scrolls = scrolls
+        let title = title, content = content, scrolls = scrolls, size = size
         DispatchQueue.main.async { [weak coordinator] in
             guard let coordinator else { return }
             coordinator.opening = false
@@ -592,8 +602,12 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
             let editor = WorkspaceToolContent(content: content().environment(\.workspaceEditorDismiss, { [weak coordinator] in coordinator?.close(notify: true) }), updateTitle: { [weak panel] in
                 panel?.title = JarasLocalization.string(title)
             })
-            let initialSize = workspaceEditorContentSize(editor)
+            // Fixed-canvas editors already know their dimensions. Measuring a
+            // second hosting tree repeats construction and onAppear work before
+            // their real window can become visible.
+            let initialSize = size ?? workspaceEditorContentSize(editor)
             let host = NSHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: scrolls).interfaceScaled())
+            if #available(macOS 13, *) { host.sizingOptions = [] }
             if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
             panel.contentView = host
             let available = panel.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size ?? initialSize
@@ -647,9 +661,9 @@ extension EnvironmentValues {
 }
 
 extension View {
-    @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, scrolls: Bool = true, @ViewBuilder content: @escaping () -> Content) -> some View {
+    @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, scrolls: Bool = true, size: CGSize? = nil, @ViewBuilder content: @escaping () -> Content) -> some View {
         #if os(macOS)
-        background(WorkspaceEditorPresenter(presented: isPresented, title: title, scrolls: scrolls, content: content).frame(width: 0, height: 0))
+        background(WorkspaceEditorPresenter(presented: isPresented, title: title, scrolls: scrolls, size: size, content: content).frame(width: 0, height: 0))
         #else
         sheet(isPresented: isPresented, content: content)
         #endif

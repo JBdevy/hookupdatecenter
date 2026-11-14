@@ -104,7 +104,7 @@ timer.stopAndReset(); settle()
 let reopened = TeleprompterTimerController(defaults: defaults, now: { clock })
 precondition(reopened.mode == .countdown && reopened.targetSeconds == 120)
 window.close()
-let configurationWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 405), styleMask: [.titled], backing: .buffered, defer: false)
+let configurationWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 445), styleMask: [.titled], backing: .buffered, defer: false)
 configurationWindow.isReleasedWhenClosed = false
 let configuration = NSHostingView(rootView: TeleprompterTimerConfiguration(controller: timer, close: {}))
 configurationWindow.contentView = configuration; configurationWindow.makeKeyAndOrderFront(nil); settle()
@@ -145,3 +145,18 @@ precondition(displayedText(readout).isEmpty, "Stopping clears the central countd
 readoutWindow.close()
 print("TIMER_TOOLBAR_CENTERED_RUNNING_READOUT_AND_HIDDEN_STOPPED_OK")
 print("TIMER_TOOLBAR_CONFIGURATION_START_IMMEDIATE_STOP_CONFIRM_CANCEL_STALE_RUN_AND_RESET_OK")
+
+// Preferences and all readouts retain the new mode without losing the countdown target.
+timer.stopAndReset(); timer.setMode(.progressive)
+precondition(timer.mode == .progressive && timer.targetSeconds == 65 && timer.displayText() == "00:00:00")
+let progressiveReloaded = TeleprompterTimerController(defaults: defaults, now: { clock })
+precondition(progressiveReloaded.mode == .progressive && progressiveReloaded.targetSeconds == 65 && !progressiveReloaded.running)
+timer.start(); clock += 0.2
+precondition(timer.displayText() == "00:00:00" && !timer.expired())
+timer.setMode(.countdown)
+precondition(timer.mode == .progressive, "tabs cannot reset a running timer")
+clock += 65
+precondition(timer.displayText() == "00:01:05" && !timer.expired() && timer.displayOpacity() == 1)
+timer.stopAndReset(); timer.setMode(.countdown)
+precondition(timer.targetSeconds == 65 && timer.displayText() == "00:01:05")
+print("TIMER_PROGRESSIVE_COUNTDOWN_PERSISTENCE_ROUNDING_OK")

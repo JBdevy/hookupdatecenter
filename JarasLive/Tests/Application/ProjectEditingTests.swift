@@ -120,7 +120,8 @@ final class ProjectEditingTests: XCTestCase {
         project.songs[0].regionOwnershipInitialized = true
         project.songs[0].regionOwnershipVersion = 2
         let loosePreview = project.songs[0].previewMovingRegion(region.id, to: 14000)
-        XCTAssertEqual(loosePreview.tracks[0].clips[0].startTime, item.startTime, "initialized nil remains deliberately unattached")
+        XCTAssertEqual(loosePreview.tracks[0].clips[0].startTime, preview.tracks[0].clips[0].startTime,
+                       "region drag carries covered media even when stored ownership is nil")
         project.songs[0].tracks[0].clips[0].regionOwnerID = region.id
         let restored = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
         XCTAssertEqual(restored.songs[0].regionOwnershipVersion, 2, "encrypted document retains the one-time migration version")

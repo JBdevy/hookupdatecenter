@@ -15,6 +15,9 @@
 #include <mach/mach_time.h>
 #include "JarasMobileAudioIO.inc"
 #include "JarasPreparedClip.inc"
+#if TARGET_OS_OSX
+#include "JarasBufferedAudioIO.inc"
+#endif
 #include "JarasPadSource.inc"
 
 @implementation JarasAudioOutputConnection

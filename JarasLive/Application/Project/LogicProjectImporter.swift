@@ -55,7 +55,7 @@ public enum LogicProjectImporter {
         catch {
             let failure = error as NSError
             if failure.domain != NSCocoaErrorDomain || (failure.code != NSFileReadNoSuchFileError && failure.code != NSFileNoSuchFileError) {
-                warnings.append(localizeWarning("Logic project information ignored: ") + describe(error))
+                warnings.append("Resources/ProjectInformation.plist\n" + localizeWarning("Logic project information ignored: ") + describe(error))
             }
             information = [:]
         }
@@ -96,16 +96,16 @@ public enum LogicProjectImporter {
                 let url = candidate.appendingPathComponent("ProjectData")
                 let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 guard size >= 24, size <= 512 * 1024 * 1024 else { throw invalid("Invalid project data size.") }
-                decoded = try parse(Data(contentsOf: url, options: .mappedIfSafe), report: { warnings.append("Logic: " + describe($0)) })
+                decoded = try parse(Data(contentsOf: url, options: .mappedIfSafe), report: { warnings.append("Alternatives/" + candidate.lastPathComponent + "/ProjectData\n" + describe($0)) })
                 alternative = candidate
                 break
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append(localizeWarning("Logic alternative ") + candidate.lastPathComponent + localizeWarning(" ignored: ") + describe(error)) }
+            catch { warnings.append("Alternatives/" + candidate.lastPathComponent + "/ProjectData\n" + localizeWarning("Logic alternative ") + candidate.lastPathComponent + localizeWarning(" ignored: ") + describe(error)) }
         }
         guard let records = decoded else { throw invalid("No readable arrangement data was found.") }
         let metadata: [String: Any]
         do { metadata = try plist(alternative.appendingPathComponent("MetaData.plist")) }
-        catch { metadata = [:]; warnings.append(localizeWarning("Logic metadata ignored: ") + describe(error)) }
+        catch { metadata = [:]; warnings.append("Alternatives/" + alternative.lastPathComponent + "/MetaData.plist\n" + localizeWarning("Logic metadata ignored: ") + describe(error)) }
         func readEvents(_ body: Bytes) throws -> [Bytes] {
             try events(body, report: { warnings.append("Logic: " + describe($0)) })
         }
@@ -167,6 +167,7 @@ public enum LogicProjectImporter {
                 tempoBPM: point.bpm, tempoBeats: beats, tempoUnit: unit, tempoTimebase: .global, tempoReferenceBPM: point.bpm))
         }
         var files: [Int: FileReference] = [:]
+        var fileNames: [Int: String] = [:]
         var regions: [String: Bytes] = [:]
         var environments: [Int: String] = [:]
         var channelIdentifiers: [Int: Data] = [:]
@@ -177,10 +178,13 @@ public enum LogicProjectImporter {
         var importedNames = MediaFileNames(directory: nil)
         var importedPaths: [Int: String] = [:]
         for record in records {
+            var sourceDescription = "Alternatives/" + alternative.lastPathComponent + "/ProjectData [\(record.tag), \(record.owner), \(record.index)]"
             do {
             switch record.tag {
             case "lFuA":
                 let filename = try record.body.text(8, utf16: true)
+                fileNames[record.owner >> 16] = filename
+                sourceDescription = filename + "\n" + sourceDescription
                 guard !filename.isEmpty, filename != ".", filename != "..", !filename.contains("/"), !filename.contains("\\"), !filename.contains("\0") else {
                     throw invalid("Invalid audio filename.")
                 }
@@ -235,7 +239,7 @@ public enum LogicProjectImporter {
             }
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append(localizeWarning("Logic media or mixer setting ignored: ") + describe(error)) }
+            catch { warnings.append(sourceDescription + "\n" + localizeWarning("Logic media or mixer setting ignored: ") + describe(error)) }
 }
         // The arrangement is a sequence with an ordered row list. Automation,
         // trash and the media bin have other owners and must never be imported.
@@ -289,6 +293,20 @@ public enum LogicProjectImporter {
         })
         for record in records where record.tag == "qSvE" && record.kind == 23 && record.owner == root {
             for event in try readEvents(record.body) {
+            // Read whatever identity survived before interpreting the item.
+            // Never replace the original failure with a second decoding error.
+            var context: [String] = []
+            if let row = try? event.int(20), let index = trackIndices[row & 0xffffff] {
+                context.append(song.tracks[index].name)
+            }
+            if event.data.first == 0x24, let fileID = try? event.int(44) {
+                context.append(fileNames[fileID] ?? (localizeWarning("Audio file reference: ") + String(fileID)))
+                if let regionID = try? event.int(40), let region = regions["\(fileID):\(regionID)"],
+                   let name = try? region.text(74), !name.isEmpty { context.append(name) }
+            } else if event.data.first == 0x20, let owner = try? event.int(32), let name = sequences[owner << 16] {
+                context.append(name)
+            }
+            let sourceDescription = context.joined(separator: " / ") + "\nAlternatives/" + alternative.lastPathComponent + "/ProjectData [\(record.owner), \(record.index)]"
             do {
                 let type = event.data.first ?? 0
                 guard type == 0x24 || type == 0x20 else {
@@ -401,7 +419,7 @@ public enum LogicProjectImporter {
                 if event.count > 80 { extendedItems += 1 }
 
             } catch is CancellationError { throw CancellationError() }
-            catch { warnings.append(localizeWarning("Logic item ignored: ") + describe(error)) }
+            catch { warnings.append(sourceDescription + "\n" + localizeWarning("Logic item ignored: ") + describe(error)) }
 }
         }
         var markers: [(name: String, start: Double, end: Double)] = []

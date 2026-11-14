@@ -27,6 +27,7 @@
 #include "RemoteProjectCatalog.h"
 #include "TrackVisibility.h"
 #include "TrackMixerViewport.h"
+#include "TrackRowGeometry.h"
 namespace catlive {
 class AudioPreparationOverlay;
 namespace native { class TransportButtons; }
@@ -192,7 +193,7 @@ class Workspace final : public Component,
     void openTransportFadeout();
     void triggerTransportFadeout();
     std::unique_ptr<TransportFadeoutOverlay> fadeoutOverlay;
-    bool lastFadeoutActive = false;
+    bool lastFadeoutActive = false, lastLoopMixerActive = false;
     StageState stage;
     std::unique_ptr<remote::Presentation> remotePresentation;
     std::shared_ptr<remote::Host> remoteHost;
@@ -257,7 +258,8 @@ class Workspace final : public Component,
     void refreshMixerIndicator();
     void mixerMenu(Point<int>);
     ResourceUsage resourceUsage;
-    TextButton addTrack{"+"}, timelineLock, trackVisibilityButton, timelineSnap, timelineTimebase;
+    TextButton addTrack{"+"}, trackVisibilityButton, timelineSnap, timelineTimebase;
+    QuietButton timelineLock;
     bool freeTimelinePosition(ModifierKeys mods) const { return !(bool)appearance.value("jaras.timeline.snapEnabled", true) || mods.isShiftDown(); }
     std::unique_ptr<FileChooser> chooser;
     std::unique_ptr<FileLogger> logger;
@@ -285,7 +287,7 @@ class Workspace final : public Component,
     ID recordVisualSelection;
     std::optional<GridItemClipboard> itemClipboard;
     std::optional<DWORD> itemClipboardSequence;
-    struct CopiedTracks { var document; ID song; std::set<ID> targets; DWORD sequence; };
+    struct CopiedTracks { var document; ID song; std::set<ID> targets; DWORD sequence; std::map<ID, ID> previousCopies; ID lastSelected; };
     std::optional<CopiedTracks> trackClipboard;
     uint64 builtRevision = ~uint64(0);
     ID builtSong;
@@ -298,10 +300,17 @@ class Workspace final : public Component,
     juce::Rectangle<int> transportBounds, workspaceBounds, footerBounds;
     TextButton &button(String, const String &, std::function<void()>, Colour colour = {});
     void rebuild();
+    void selectAndRevealTrackCopies(const std::vector<ID> &copies);
     int rowHeight(int index) const;
     bool rowHidden(int index) const;
     void toggleGroup(const ID &);
     int rowBodyHeight(int index) const;
+    int measureRowBodyHeight(int index) const;
+    void prepareRowGeometry() const;
+    void invalidateRowGeometry() { rowGeometryRevision = ~uint64(0); }
+    mutable TrackRowGeometry rowGeometry;
+    mutable uint64 rowGeometryRevision = ~uint64(0);
+    mutable ID rowGeometrySong;
     const ItemLanes &itemLanes(int index) const;
     int itemLaneHeight(int index) const;
     ItemLanes::Geometry itemGeometry(int index, const ID &clip, const ItemLanes *preview = nullptr) const;
@@ -351,7 +360,7 @@ class Workspace final : public Component,
     void showTrackMenu(ID, Point<int>);
     void createTrack();
     void specialTrackAction(ID,const String &);
-    void editTrack(ID);
+    void editTrack(ID, std::set<ID> targets = {});
     void editTrackIcon(ID);
     void showClipMenu(ID, Point<int>);
     std::function<void(int)> clipMenuAction(ID, ID ownerID = {});

@@ -33,8 +33,21 @@ final class TestDragInfo: NSObject, NSDraggingInfo {
     func resetSpringLoading() {}
 }
 final class DropDocument: NSView { override var isFlipped: Bool { true } }
-let application = NSApplication.shared
-let window = NSWindow(contentRect: NSRect(x: 90, y: 90, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+// Model activation acknowledgements explicitly: a command-line test is not a
+// LaunchServices app and cannot reliably become the foreground app on newer macOS.
+final class DropTestApplication: NSApplication {
+    var simulatedActive = false
+    var activations = 0
+    override var isActive: Bool { simulatedActive }
+    override func activate(ignoringOtherApps flag: Bool) { activations += 1; simulatedActive = true }
+}
+final class DropTestWindow: NSWindow {
+    static weak var keyboardWindow: DropTestWindow?
+    override var isKeyWindow: Bool { Self.keyboardWindow === self }
+    override func makeKeyAndOrderFront(_ sender: Any?) { Self.keyboardWindow = self }
+}
+let application = DropTestApplication.shared as! DropTestApplication
+let window = DropTestWindow(contentRect: NSRect(x: 90, y: 90, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
 window.isReleasedWhenClosed = false
 let scroll = GridNativeScrollView(frame: NSRect(x: 0, y: 0, width: 700, height: 500))
 let document = DropDocument(frame: NSRect(x: 0, y: 0, width: 3000, height: 1800))
@@ -115,3 +128,31 @@ drag.draggingLocation = timeline.convert(timelinePosition, to: nil)
 precondition(inner.draggingEntered(drag) == .copy && nestedPreview == timelinePosition, "nested preview retains both live scroll origins")
 precondition(inner.performDragOperation(drag) && nestedDrop == timelinePosition && nestedPreview == nil, "nested final drop matches the preview, including the destination track's y coordinate")
 print("GRID_EXTERNAL_FILE_DROP_PREVIEW_COORDINATES_AND_LIFECYCLE_OK")
+
+// A native drop must return keyboard ownership from the Finder-like window,
+// including the drag framework's final callback after accepting the files.
+let finder = DropTestWindow(contentRect: window.frame, styleMask: [.titled], backing: .buffered, defer: false)
+finder.isReleasedWhenClosed = false
+let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+finder.contentView!.addSubview(field)
+application.simulatedActive = false
+window.makeKeyAndOrderFront(nil)
+finder.makeKeyAndOrderFront(nil); finder.makeFirstResponder(field)
+pasteboard.clearContents(); precondition(pasteboard.writeObjects(urls as [NSURL]))
+inner.fileDrop = { _, _ in true }
+precondition(inner.performDragOperation(drag))
+precondition(application.simulatedActive && window.isKeyWindow && window.firstResponder === window, "accepted external drop returns the document's keyboard ownership immediately")
+finder.makeKeyAndOrderFront(nil)
+inner.concludeDragOperation(drag)
+precondition(application.simulatedActive && window.isKeyWindow && window.firstResponder === window, "drag teardown must not leave the keyboard in the source window")
+finder.makeKeyAndOrderFront(nil)
+inner.fileDrop = { _, _ in false }
+precondition(!inner.performDragOperation(drag))
+inner.concludeDragOperation(drag)
+precondition(finder.isKeyWindow, "rejected drops must not activate the destination")
+NativeTimelineInputGate.shared.setBlocked(true, for: window)
+precondition(!NativeTimelineKeyboardFocus.activate(window: window, responder: inner) && finder.isKeyWindow,
+             "a modal or editor retains keyboard ownership")
+NativeTimelineInputGate.shared.setBlocked(false, for: window)
+finder.close()
+print("GRID_EXTERNAL_DROP_RESTORES_KEY_WINDOW_RESPONDER_AND_RESPECTS_REJECTION_MODAL_OK")

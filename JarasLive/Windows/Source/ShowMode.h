@@ -1,5 +1,6 @@
 #pragma once
 #include "Appearance.h"
+#include "ShowLidBrightness.h"
 #include <powrprof.h>
 #include <shellapi.h>
 #include <objbase.h>
@@ -28,7 +29,7 @@ class ShowMode final : public std::enable_shared_from_this<ShowMode> {
     bool enabled = false, busy = false, loaded = false;
     String error;
     void start() { managingPower = true; refresh(); }
-    void stop() { managingPower = false; SetThreadExecutionState(ES_CONTINUOUS); }
+    void stop() { managingPower = false; if(brightness){brightness->stop();brightness.reset();} SetThreadExecutionState(ES_CONTINUOUS); }
     void refresh() { update(std::nullopt); }
     void setEnabled(bool value) { update(value); }
     // Also exercised with an isolated preferences file and a fake power backend.
@@ -68,6 +69,7 @@ class ShowMode final : public std::enable_shared_from_this<ShowMode> {
     Appearance preferences;
     Backend backend;
     bool managingPower = false;
+    std::unique_ptr<ShowLidBrightness> brightness;
     void update(std::optional<bool> desired) {
         if (busy) return;
         busy = true; error.clear();
@@ -80,8 +82,11 @@ class ShowMode final : public std::enable_shared_from_this<ShowMode> {
                 self->busy = false; self->error = failure;
                 if (failure.isEmpty()) {
                     self->enabled = state.enabled; self->loaded = true;
-                    if (self->managingPower)
+                    if (self->managingPower) {
                         SetThreadExecutionState(ES_CONTINUOUS | (self->enabled ? ES_SYSTEM_REQUIRED : 0));
+                        if(!self->brightness)self->brightness=std::make_unique<ShowLidBrightness>(File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/show-mode-brightness.json"));
+                        self->brightness->setEnabled(self->enabled);
+                    }
                 }
             });
         }).detach();

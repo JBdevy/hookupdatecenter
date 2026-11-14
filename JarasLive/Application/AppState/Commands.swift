@@ -46,6 +46,7 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
     func setProjectTiming(bpm: Double, beats: Int, unit: Int, settings: ProjectTimeSettings) throws
     func deleteManualMarker(_ id: UUID) throws
     func applyProjectEdit(_ project: Project) throws
+    func applyTrackStructureEdit(_ project: Project, previous: Project) throws
     func load(_ project: Project) throws
     func snapshot() throws -> ShowSnapshot
     func playbackSnapshot() throws -> PlaybackSnapshot
@@ -77,6 +78,7 @@ public extension CommandExecutor {
     }
     func pasteItems(_ entries: [GridItemClipboard.Entry], song: UUID, moving: Bool) throws { throw BackendFailure.notConfigured }
     func applyProjectEdit(_ project: Project) throws { throw BackendFailure.notConfigured }
+    func applyTrackStructureEdit(_ project: Project, previous: Project) throws { try applyProjectEdit(project) }
     func setTimecode(_ track: UUID, settings: TimecodeSettings) throws { throw BackendFailure.notConfigured }
     func groupTracks(_ ids: [UUID]) throws { throw BackendFailure.notConfigured }
     func setMarker(_ marker: TimelineMarker) throws { throw BackendFailure.notConfigured }

@@ -11,7 +11,7 @@ grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
 wheel=Path('Apple/Shared/TimelineWheelInput.swift').read_text()
 scroll=Path('Apple/Shared/GridScrollView.swift').read_text()
 diagnostics=scroll[scroll.index('enum TimelineLayoutDiagnostics'):scroll.index('protocol SidebarResizeLayoutBoundary')]
-limits=grid[grid.index('enum TimelineZoomLimits'):grid.index('private let markerLaneHeight')]
+limits=grid[grid.index('enum TimelineZoomLimits'):grid.index('/// Persist navigation separately')]
 motion=wheel[wheel.index('/// Time-weighted velocity'):wheel.index('/// Only the six-point footer')]
 target=wheel[wheel.index('private final class TimelineDisplayLinkTarget'):wheel.index('/// Limited to the numbered ruler')]
 (out/'motion.swift').write_text('import SwiftUI\nimport AppKit\nimport QuartzCore\n'+diagnostics+'\n'+limits+motion.replace('private struct TimelineTrackHeightWheelTransition', 'struct TimelineTrackHeightWheelTransition')+target)

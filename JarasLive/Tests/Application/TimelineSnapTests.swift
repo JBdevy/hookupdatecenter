@@ -181,14 +181,16 @@ extension TimelineSnapTests {
             includeItemEdges: true, excludingItems: moving, maximumDistancePixels: 8), 995)
     }
 
-    func testItemDragUsesNearbyGridButDoesNotForceDistantMusicalDivision() {
+    func testItemDragFollowsVisibleGridWhileMagnetIsEnabled() {
         var song = Project.empty(name: "Magnetic divisions").songs[0]
         song.bpm = 120; song.parts = []; song.markers = []; song.duration = 100
         XCTAssertEqual(TimelineTempo.snap(1.12, song: song, pixelsPerSecond: 60,
             maximumDistancePixels: 8), 1, accuracy: 1e-9)
         XCTAssertEqual(TimelineTempo.snap(1.24, song: song, pixelsPerSecond: 60,
-            maximumDistancePixels: 8), 1.24, accuracy: 1e-9)
-        // Plain cursor placement retains its existing division quantization.
+            maximumDistancePixels: 8), 1, accuracy: 1e-9)
+        XCTAssertEqual(TimelineTempo.snap(1.24, song: song, pixelsPerSecond: 60,
+            enabled: false, maximumDistancePixels: 8), 1.24, accuracy: 1e-9)
+        // Item movement and cursor placement use the same visible divisions.
         XCTAssertEqual(TimelineTempo.snap(1.24, song: song, pixelsPerSecond: 60), 1, accuracy: 1e-9)
     }
 }

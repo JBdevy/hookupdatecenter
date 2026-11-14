@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <math.h>
 
+// Listener blocks and snapshots run on the main queue. Count notifications
+// without printing or querying properties from the device's realtime thread.
+static NSMutableDictionary<NSNumber *, NSNumber *> *overloadNotifications;
 static AudioObjectPropertyAddress address(AudioObjectPropertySelector selector) {
     return (AudioObjectPropertyAddress){selector, kAudioObjectPropertyScopeGlobal,
                                         kAudioObjectPropertyElementMain};
@@ -52,6 +55,7 @@ static void snapshot(NSString *event) {
             [devices addObject:@{@"id": number, @"name": deviceName(device),
                 @"buffer_frames": integerProperty(device, kAudioDevicePropertyBufferFrameSize),
                 @"sample_rate": rateProperty(device),
+                @"overload_notifications": overloadNotifications[number] ?: @0,
                 @"running": integerProperty(device, kAudioDevicePropertyDeviceIsRunningSomewhere)}];
         }
         NSDictionary *record = @{@"event": event,
@@ -73,12 +77,17 @@ int main(int argc, const char *argv[]) {
             return 2;
         }
         dispatch_queue_t queue = dispatch_get_main_queue();
+        overloadNotifications = [NSMutableDictionary dictionary];
         snapshot(@"start");
         for (NSNumber *number in deviceIDs()) {
-            for (NSNumber *selector in @[@(kAudioDevicePropertyBufferFrameSize), @(kAudioDevicePropertyNominalSampleRate)]) {
+            for (NSNumber *selector in @[@(kAudioDevicePropertyBufferFrameSize), @(kAudioDevicePropertyNominalSampleRate), @(kAudioDeviceProcessorOverload)]) {
                 AudioObjectPropertyAddress property = address(selector.unsignedIntValue);
                 OSStatus result = AudioObjectAddPropertyListenerBlock(number.unsignedIntValue, &property, queue,
                     ^(UInt32 count, const AudioObjectPropertyAddress *properties) {
+                        if (selector.unsignedIntValue == kAudioDeviceProcessorOverload) {
+                            overloadNotifications[number] = @(overloadNotifications[number].unsignedLongLongValue + 1);
+                            return;
+                        }
                         snapshot(selector.unsignedIntValue == kAudioDevicePropertyBufferFrameSize ? @"buffer_changed" : @"rate_changed");
                     });
                 if (result != noErr) fprintf(stderr, "Listener unavailable: device=%u selector=%u status=%d\n",

@@ -3,6 +3,17 @@ import XCTest
 @testable import JarasApplication
 
 final class LogicProjectImportTests: XCTestCase {
+    func testIgnoredAudioIdentifiesOriginalFileRegionTrackAndReason() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = try fixture(folder, invalidBounds: true)
+        let result = try LogicProjectImporter.read(source)
+        let notice = try XCTUnwrap(result.warnings.first { $0.contains("Logic item ignored") })
+        XCTAssertTrue(notice.contains("Guitar.wav") && notice.contains("Trimmed guitar") && notice.contains("Guitar"), notice)
+        XCTAssertTrue(notice.contains("Invalid audio item bounds") && notice.contains("Alternatives/000/ProjectData"), notice)
+        XCTAssertTrue(result.project.songs[0].tracks.flatMap(\.clips).isEmpty)
+        try result.project.validate()
+    }
     func testImportDiagnosticsFollowAppLanguageAndPreserveMediaNames() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -68,7 +79,7 @@ final class LogicProjectImportTests: XCTestCase {
         put(UInt64(utf16 ? value.utf16.count : bytes.count), in: &data, at: offset, width: 2)
         data.replaceSubrange((offset + 2)..<(offset + 2 + bytes.count), with: bytes)
     }
-    private func fixture(_ directory: URL, active: String = "000", corruptLink: Bool = false) throws -> URL {
+    private func fixture(_ directory: URL, active: String = "000", corruptLink: Bool = false, invalidBounds: Bool = false) throws -> URL {
         let bundle = directory.appendingPathComponent("Migration.logicx")
         let alternative = bundle.appendingPathComponent("Alternatives/" + active)
         try FileManager.default.createDirectory(at: alternative, withIntermediateDirectories: true)
@@ -91,7 +102,7 @@ final class LogicProjectImportTests: XCTestCase {
         records.append(record("lFuA", body: file, kind: 11))
         var region = Data(count: 160)
         put(48000, in: &region, at: 6, width: 8)
-        put(480000, in: &region, at: 22, width: 8)
+        put(invalidBounds ? 0 : 480000, in: &region, at: 22, width: 8)
         text("Trimmed guitar", in: &region, at: 74)
         records.append(record("gRuA", body: region, kind: 11))
         var event = Data(count: 80); event[0] = 0x24

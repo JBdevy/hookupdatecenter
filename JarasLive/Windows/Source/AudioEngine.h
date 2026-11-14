@@ -1,5 +1,6 @@
 #pragma once
 #include "../../Core/Transport/SongPluginTempo.hpp"
+#include "../../Core/Loop/MultiLoopMixer.hpp"
 #include "SystemAudioDefaults.h"
 #include "NativeAudioDeviceHost.h"
 #include "../../Core/Audio/RealtimeCommandQueue.hpp"
@@ -24,6 +25,7 @@
 #include "RealtimeMIDIInput.h"
 #include "MIDIDeviceCompatibility.h"
 #include "AudioCallbackMetrics.h"
+#include "ParallelAudioWork.h"
 namespace catlive {
 class ClipAudio;
 // Prepared readers, buffers and routing live outside the device callback.
@@ -124,6 +126,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     bool cacheSplitItems(const jaras::Song &, const std::map<ID, ID> &);
     void setItemControls(const jaras::AudioClip &);
     void setMixer(const jaras::Project &, const jaras::Song &);
+    void setLoopMixer(const std::optional<jaras::MultiLoopPlayback> &);
+    double loopDisplayVolume(const ID &, double) const;
+    bool loopDisplayMute(const ID &, bool) const;
+    bool loopDisplaySolo(const ID &, bool) const;
     bool refreshTrackRouting(const jaras::Song &);
     void setOffline(bool enabled);
     void extendOfflineDuration(double end) {
@@ -242,6 +248,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
                 transitionOpens += reader->transitionOpens.load();
             }
         auto result = object();
+        put(result,"tempoPreparedStarts",(int64)tempoPreparedStarts.load());
+        put(result,"clipWorkers",parallelClips?(int)parallelClips->helperCount():0);
+        put(result,"parallelClipBlocks",(int64)parallelClipBlocks.load());put(result,"parallelClipTasks",(int64)parallelClipTasks.load());
         put(result, "nativeDeviceHost", usesNativeAudioDeviceHost(devices));
         put(result, "cacheMisses", (int64)caches); put(result, "inactiveMisses", (int64)inactive);
         put(result, "fallbackDecoderOpens", (int64)fallbackOpens);
@@ -341,6 +350,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     struct Update {
         bool resetElapsed=false;
         uint64 transportSerial=0;
+        uint64 notBeforeFrame=0;
         enum Kind { transport, mixer, item, routing, promotion, preparedEdit } kind = transport;
         audio::PreparedAudioEdits::Ticket* edit = nullptr;
         bool inputMonitoring=true, subplayExclusive=false;
@@ -375,6 +385,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         AudioBuffer<float> processed[2];
         AudioBuffer<float> stemInput[2]{{2,4096},{2,4096}};
         std::unique_ptr<ClipAudio> clipAudio;
+        bool parallelEligible=false,parallelReady=false,parallelOK=false;
+        int parallelHead=0,parallelFrames=0;
+        double parallelLocal=0;
         NativeFX fx[2];
         var fxSettings;
         AutomationProgram automation;
@@ -401,6 +414,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         audio::RealtimeLatestValue<Update> mixerUpdates;
         float volume = 1, pan = 0;
         bool mute = false, solo = false, phase = false;
+        jaras::MultiLoopMixerRule loopRule;
         // Audio-thread scratch state lives with the bus; no fixed track-count arrays.
         bool renderAudible = false, renderRouteAudible = false;
         bool recordingItemsSuppressed = false;
@@ -526,7 +540,19 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     audio::RealtimeLatestValue<Update> masterUpdates;
     audio::PreparedAudioEdits preparedEdits;
     State current;
+    struct ParallelClipJob { Voice *voice=nullptr;AudioFormatReader *reader=nullptr;int head=0,frames=0;double local=0; };
+    std::vector<ParallelClipJob> parallelClipJobs;
+    std::unique_ptr<ParallelAudioWork> parallelClips;
+    std::atomic<uint64> parallelClipBlocks{0},parallelClipTasks{0};
+    int renderQuantum=512;
+    std::atomic<uint64> tempoPreparedStarts{0};
+    void prepareParallelClips();
     float masterVolume = 1, masterPan = 0;
+    jaras::MultiLoopMixerEnvelope loopMixer, loopMixerDisplay;
+    jaras::MultiLoopMixerRule masterLoopRule;
+    std::map<ID, jaras::MultiLoopMixerRule> loopDisplayRules;
+    std::optional<jaras::MultiLoopPlayback> lastLoopMixer;
+    bool loopMixerPublished = false;
     bool masterMute = false, masterMono = false, masterPhase = false, masterSolo = false;
     bool instrumentWasAllowed = false;
     double duration = 0;
@@ -560,15 +586,16 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void handleNoteOn(MidiKeyboardState *, int, int, float) override;
     void handleNoteOff(MidiKeyboardState *, int, int, float) override;
     void enqueue(const Update &);
-    template<class Work> audio::PreparedAudioEdits::Ticket* enqueuePreparedEdit(Work&& work) {
+    template<class Work> audio::PreparedAudioEdits::Ticket* enqueuePreparedEdit(Work&& work, uint64 notBeforeFrame=0) {
         auto* ticket = preparedEdits.prepare(std::forward<Work>(work));
         Update update; update.kind = Update::preparedEdit; update.edit = ticket;
+        update.notBeforeFrame=notBeforeFrame;
         try { enqueue(update); }
         catch (...) { preparedEdits.cancelUnpublished(ticket); throw; }
         return ticket;
     }
-    template<class Work> void commitPreparedEdit(Work&& work) {
-        waitPreparedEdit(enqueuePreparedEdit(std::forward<Work>(work)));
+    template<class Work> void commitPreparedEdit(Work&& work, uint64 notBeforeFrame=0) {
+        waitPreparedEdit(enqueuePreparedEdit(std::forward<Work>(work),notBeforeFrame));
     }
     // Control only. Waits for an audio boundary; never takes the device lock.
     // A device failure cancels a not-yet-started edit before its stack expires.

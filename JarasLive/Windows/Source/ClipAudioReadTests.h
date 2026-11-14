@@ -1,6 +1,8 @@
 #pragma once
 #include "AudioEngine.h"
 #include "ClipAudio.h"
+#include "ProjectCodec.h"
+#include "../../Core/Songs/ItemDuration.hpp"
 
 namespace catlive::clipAudioReadTests {
 inline void require(bool value,const String &message) {
@@ -78,6 +80,125 @@ inline float expected(const AudioBuffer<float> &source,double rate,const jaras::
     return sample(first)+float(frame-first)*(sample(first+1)-sample(first));
 }
 template <typename Test> void registerTests(const File &directory,Test &test) {
+
+    test("Item rate reset preserves project codec references and renders original PCM after tempo edits",[&] {
+        jaras::Project project;project.id=uuid();project.name="Rate reset";
+        jaras::Song song;song.id=uuid();song.duration=8;song.timeSettings=jaras::ProjectTimeSettings{};
+        song.timeSettings->timebase=jaras::ProjectTimebase::relative;
+        jaras::Track track;track.id=uuid();track.name="Audio";
+        jaras::AudioClip clip;clip.id=uuid();clip.name="Source";clip.duration=4;clip.audioFile=jaras::AudioFile{"source.wav",{}};
+        jaras::TimelineMarker first{uuid(),"Tempo",0,0},second{uuid(),"Tempo",2,0};
+        first.tempoBPM=150;first.tempoReferenceBPM=120;first.tempoPlaybackRate=1.25;
+        second.tempoBPM=180;second.tempoReferenceBPM=120;second.tempoPlaybackRate=1.5;
+        song.markers=std::vector<jaras::TimelineMarker>{first,second};
+        track.clips={jaras::resettingItemRate(song,clip)};song.tracks={track};project.songs={song};
+        const auto restored=ProjectCodec::decode(ProjectCodec::encode(project));const auto& saved=restored.songs[0];
+        const auto& item=saved.tracks[0].clips[0];
+        require(item.tempoRateReferences.size()==2,"Codec lost the item's tempo references");
+        require(saved.markers->front().tempoPlaybackRate==1.25,"Codec lost the frozen playback factor");
+        const ClipTempo timing(item,&saved);for(const auto& span:timing.spans)require(span.rate==1,"Reset did not remove every marker's prior factor");
+        auto pcm=samples(2,48000*5);Reader reader(pcm,48000);
+        ClipAudio processor(saved,saved.tracks[0],item,48000);
+        AudioBuffer<float> scratch(2,131080),output(2,512);
+        for(double at:{.2,1.99,2.1,3.5}) {
+            require(processor.render(reader,scratch,output,0,at,512),"Reset source read failed");
+            for(int ch=0;ch<2;++ch)for(int n=0;n<512;++n)
+                require(std::abs(output.getSample(ch,n)-expected(pcm,48000,clip,at+n/48000.,ch))<1e-5,"Reset did not play the original source at 1x");
+        }
+    });
+
+    test("Shared clip DSP preserves independent PCM across tempo edits, forks, loops and two heads",[&] {
+        for(double rate:{44100.,48000.}) {
+            auto pcm=samples(2,int(rate*8));Reader reader(pcm,rate);
+            auto source=std::make_shared<int>(1);
+            jaras::Song song;song.id=uuid();song.duration=8;
+            jaras::Track track;track.id=uuid();track.role.id="other";
+            std::array<jaras::AudioClip,4> clips;
+            std::array<std::unique_ptr<ClipAudio>,4> pooled,independent;
+            std::array<std::array<double,2>,4> clocks{};
+            for(size_t i=0;i<clips.size();++i) {
+                auto& c=clips[i];c.id=uuid();c.duration=7;c.playbackRate=1.1;
+                c.loopStart=.13;c.loopLength=.71;
+                pooled[i]=std::make_unique<ClipAudio>(song,track,c,rate,true,nullptr,source);
+                independent[i]=std::make_unique<ClipAudio>(song,track,c,rate);
+                clocks[i][1]=.37;
+            }
+            AudioBuffer<float> scratch(2,131080),a(2,4096),b(2,4096);
+            for(int block=0;block<100;++block) {
+                const int count=std::array<int,4>{64,512,1000,4096}[size_t(block)%4];
+                if(block==24 || block==42 || block==60 || block==78) {
+                    for(size_t i=0;i<clips.size();++i) {
+                        // One item diverges, then rejoins the same mapping. Its
+                        // prior history must remain independent after rejoining.
+                        auto& c=clips[i];c.playbackRate=block==24&&i==1?.93:block==60?1.:1.1;
+                        c.pitchSemitones=block==42&&i==2?3.:0.;
+                        double positions[2];for(int head=0;head<2;++head)positions[head]=independent[i]->sourcePosition(clocks[i][head]);
+                        ClipAudio first(song,track,c,rate,false),second(song,track,c,rate,false);
+                        pooled[i]->adoptTiming(first);independent[i]->adoptTiming(second);
+                        for(int head=0;head<2;++head)clocks[i][head]=positions[head]/c.playbackRate;
+                    }
+                }
+                if(block==50)for(auto& clock:clocks)clock={.2,.8};
+                if(block==70)for(size_t i=0;i<clips.size();++i) {
+                    pooled[i]->swapPlaybackHeads();independent[i]->swapPlaybackHeads();std::swap(clocks[i][0],clocks[i][1]);
+                }
+                for(int head=0;head<2;++head)for(size_t i=0;i<clips.size();++i) {
+                    const auto local=clocks[i][head];
+                    require(pooled[i]->render(reader,scratch,a,head,local,count),"Shared source read failed");
+                    require(independent[i]->render(reader,scratch,b,head,local,count),"Independent source read failed");
+                    for(int ch=0;ch<2;++ch)for(int n=0;n<count;++n)
+                        require(a.getSample(ch,n)==b.getSample(ch,n),"Shared DSP changed PCM at block "+String(block)+", voice "+String(int(i))+", head "+String(head));
+                    clocks[i][head]+=count/rate;
+                }
+            }
+        }
+    });
+
+    test("Two hundred tracks retain tempo audio within the render deadline",[&] {
+        // Opt-in performance fixture: actual engine and PCM, no audio hardware
+        // or changes to the user's project, routing or buffer preferences.
+        if(SystemStats::getEnvironmentVariable("CATLIVE_TEMPO_STRESS",{})!="1")return;
+        const double sampleRate=44100.;const int frames=512;
+        const auto folder=directory.getNonexistentChildFile("tempo-200","");folder.createDirectory();
+        auto pcm=samples(2,44100*8);
+        auto stream=folder.getChildFile("tone.wav").createOutputStream();WavAudioFormat format;
+        std::unique_ptr<AudioFormatWriter> writer(format.createWriterFor(stream.get(),sampleRate,2,24,{},0));
+        require(writer!=nullptr,"Cannot create tempo stress PCM");stream.release();
+        require(writer->writeFromAudioSampleBuffer(pcm,0,pcm.getNumSamples()),"Cannot write tempo stress PCM");writer.reset();
+        jaras::Project project;project.id=uuid();jaras::Song song;song.id=uuid();song.bpm=120;song.duration=8;
+        song.timeSettings=jaras::ProjectTimeSettings{};song.timeSettings->timebase=jaras::ProjectTimebase::relative;
+        for(int i=0;i<200;++i){jaras::Track track;track.id=uuid();track.role.id="other";track.volume=.001;
+            jaras::AudioClip clip;clip.id=uuid();clip.duration=8;clip.audioFile=jaras::AudioFile{"tone.wav",{}};
+            track.clips={clip};song.tracks.push_back(track);}
+        project.songs={song};
+        auto engine=std::make_unique<AudioEngine>(sampleRate,true);engine->prepareSong(song,folder,{},&project);
+        engine->setMixer(project,song);engine->setOffline(true);
+        AudioEngine::State state;state.playing=true;engine->transport(state);
+        auto current=song;AudioBuffer<float> output(2,frames);Array<var> phases;
+        for(double bpm:{120.,121.,122.,128.,119.,120.}) {
+            const auto editStart=Time::getMillisecondCounterHiRes();
+            if(current.bpm!=bpm){auto next=current;next.bpm=bpm;const double scale=current.bpm/bpm;
+                next.duration*=scale;for(auto& track:next.tracks)for(auto& clip:track.clips){clip.duration*=scale;clip.playbackRate/=scale;}
+                engine->refreshTempo(current,next);current=std::move(next);}
+            const auto editMs=Time::getMillisecondCounterHiRes()-editStart;
+            double total=0,maximum=0,first=0;int late=0;
+            for(int block=0;block<48;++block){const auto began=Time::getMillisecondCounterHiRes();
+                engine->render(output.getArrayOfWritePointers(),2,frames);
+                const double elapsed=Time::getMillisecondCounterHiRes()-began;
+                if(block==0)first=elapsed;total+=elapsed;maximum=std::max(maximum,elapsed);
+                if(elapsed>frames/sampleRate*1000)++late;
+                require(output.getRMSLevel(0,0,frames)>.0001,"Tempo stress produced a silent block");}
+            auto phase=object();put(phase,"bpm",bpm);put(phase,"editMs",editMs);put(phase,"meanMs",total/48);
+            put(phase,"firstMs",first);put(phase,"maxMs",maximum);put(phase,"overBudget",late);phases.add(phase);
+        }
+        auto report=object();put(report,"tracks",200);put(report,"sampleRate",sampleRate);put(report,"frames",frames);
+        put(report,"deadlineMs",frames/sampleRate*1000);put(report,"phases",phases);put(report,"underruns",(int64)engine->getUnderruns());
+        directory.getChildFile("tempo-stress.json").replaceWithText(JSON::toString(report,true));
+        require(engine->getUnderruns()==0,"Tempo stress exhausted the PCM reader");
+        if(SystemStats::getEnvironmentVariable("CATLIVE_TEMPO_STRESS_DEADLINE",{})=="1")
+            for(const auto& phase:phases)require(num(phase,"meanMs")<frames/sampleRate*1000,
+                "Tempo processing exceeds the audio deadline at BPM "+String(num(phase,"bpm")));
+    });
 
     test("Read-ahead cache misses retain the available PCM before the missing range",[&] {
         TimeSliceThread fill("Partial PCM fill test");

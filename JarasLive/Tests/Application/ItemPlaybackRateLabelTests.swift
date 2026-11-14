@@ -14,7 +14,7 @@ final class ItemPlaybackRateLabelTests: XCTestCase {
 
     private func label(_ clip: AudioClip, in song: Song) -> String {
         TimelineItemPlaybackRate.title(clip.name, rates: song.tempoAudioSegments(clip).map(\.audioRate),
-            referenceRate: clip.tempoBasePlaybackRate ?? clip.audioRate)
+            referenceRate: 1)
     }
 
     func testLabelFollowsActualTempoSpeedAndDisappearsWhenRestored() {
@@ -52,37 +52,38 @@ final class ItemPlaybackRateLabelTests: XCTestCase {
         XCTAssertEqual(label(clip, in: song), "[1.25–1.5] Tail.wav")
     }
 
-    func testManualAndPrintedRatesDoNotImplyBPMAdjustment() {
+    func testLabelsExposeActualManualRateWithoutReapplyingPrintedTempo() {
         var song = Project.empty(name: "Printed item").songs[0]
         song.bpm = 120; song.duration = 20
         song.markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 0, color: 0,
             tempoBPM: 180, tempoTimebase: .relative, tempoReferenceBPM: 120)]
         var clip = AudioClip(id: UUID(), name: "Printed.wav", startTime: 0, duration: 10,
             playbackRate: 1.1, renderedTiming: true)
-        XCTAssertEqual(label(clip, in: song), "Printed.wav")
+        XCTAssertEqual(label(clip, in: song), "[1.1] Printed.wav")
         clip.renderedTiming = nil; clip.frozenMIDI = true
-        XCTAssertEqual(label(clip, in: song), "Printed.wav")
+        XCTAssertEqual(label(clip, in: song), "[1.1] Printed.wav")
         clip.frozenMIDI = nil; song.markers![0].tempoTimebase = .free
-        XCTAssertEqual(label(clip, in: song), "Printed.wav")
-        clip.playbackRate = 1.0005
-        XCTAssertEqual(label(clip, in: song), "Printed.wav")
+        XCTAssertEqual(label(clip, in: song), "[1.1] Printed.wav")
+        clip.playbackRate = 1.0006
+        XCTAssertEqual(label(clip, in: song), "[1.001] Printed.wav")
         clip.playbackRate = 1
         clip.renderedTiming = true; song.markers![0].tempoTimebase = .relative
         XCTAssertEqual(label(clip, in: song), "Printed.wav", "The printed file must not display its already baked tempo")
         clip.renderedTiming = nil; clip.renderedTempo = true
         XCTAssertEqual(label(clip, in: song), "Printed.wav")
         clip.renderedTempo = nil; clip.playbackRate = 1.25; song.markers![0].tempoBPM = 120
-        XCTAssertEqual(label(clip, in: song), "Printed.wav", "An imported rate under an unchanged relative BPM stays unlabelled")
+        XCTAssertEqual(label(clip, in: song), "[1.25] Printed.wav", "Imported and manually configured rates must be visible")
         song.markers![0].tempoBPM = 144
         XCTAssertEqual(label(clip, in: song), "[1.5] Printed.wav", "A later BPM edit exposes the actual combined rate")
     }
 
-    func testLabelsUseAtMostTwoDecimalsAndCollapseIndistinguishableRanges() {
-        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [1.176657]), "[1.18] Stem")
-        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [0.876543]), "[0.88] Stem")
-        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [1.2501, 1.2549]), "[1.25] Stem")
-        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [0.87654, 1.176657]), "[0.88–1.18] Stem")
-        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [0.9999, 1.0005]), "Stem")
+    func testLabelsUseAtMostThreeDecimalsAndCollapseIndistinguishableRanges() {
+        XCTAssertEqual(TimelineItemPlaybackRate.title("Na mão", rates: [1.159]), "[1.159] Na mão")
+        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [1.176657]), "[1.177] Stem")
+        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [0.876543]), "[0.877] Stem")
+        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [1.2501, 1.2504]), "[1.25] Stem")
+        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [0.87654, 1.176657]), "[0.877–1.177] Stem")
+        XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [0.9999, 1.0004]), "Stem")
         XCTAssertEqual(TimelineItemPlaybackRate.title("Stem", rates: [.nan, .infinity, -1, 0]), "Stem")
     }
 
@@ -94,7 +95,7 @@ final class ItemPlaybackRateLabelTests: XCTestCase {
         song.tracks = [track]
         song.followTempo(140)
         XCTAssertEqual(song.tracks[0].clips[0].tempoBasePlaybackRate, 1)
-        XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "[1.17] Stem")
+        XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "[1.167] Stem")
         song.followTempo(120)
         XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "Stem")
     }
@@ -105,13 +106,13 @@ final class ItemPlaybackRateLabelTests: XCTestCase {
         var track = Track(id: UUID(), name: "Audio", role: .other)
         track.clips = [AudioClip(id: UUID(), name: "Imported", startTime: 0, duration: 10, playbackRate: 1.25)]
         song.tracks = [track]
-        XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "Imported")
+        XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "[1.25] Imported")
         song.followTempo(144)
         XCTAssertEqual(song.tracks[0].clips[0].tempoBasePlaybackRate, 1.25)
         XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "[1.5] Imported")
         song = try JSONDecoder().decode(Song.self, from: JSONEncoder().encode(song))
         XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "[1.5] Imported")
         song.followTempo(120)
-        XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "Imported")
+        XCTAssertEqual(label(song.tracks[0].clips[0], in: song), "[1.25] Imported")
     }
 }

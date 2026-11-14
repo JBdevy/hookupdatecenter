@@ -253,6 +253,9 @@ final class TrackDuplicationTests: XCTestCase {
         let rows = try XCTUnwrap(show.current).tracks
         XCTAssertEqual(rows.map(\.name), [first.name, first.name, middle.name, last.name, last.name])
         XCTAssertEqual(copied, Set([rows[1].id, rows[4].id]))
+        XCTAssertEqual(show.mixerTrackSelection, [rows[4].id])
+        XCTAssertEqual(show.selectedTrackForActions, rows[4].id)
+        XCTAssertEqual(show.trackSelectionRequest?.track, rows[4].id)
         XCTAssertEqual(rows[0].recordingPostFader, true); XCTAssertEqual(rows[1].recordingPostFader, first.recordingPostFader)
         XCTAssertEqual(rows[1].volume, first.volume)
         XCTAssertEqual(rows[1].fx?.externalPlugins?[0].componentState, "AP8AAQ==")
@@ -263,8 +266,70 @@ final class TrackDuplicationTests: XCTestCase {
         XCTAssertEqual(show.snapshot.transport, transport); XCTAssertEqual(captures, 2, "Paste uses the state at Copy")
         show.undo(); XCTAssertEqual(show.snapshot.project, before)
         show.redo(); XCTAssertEqual(show.current?.tracks, rows)
-        XCTAssertEqual(show.pasteTracks().count, 2, "Repeated paste creates fresh independent tracks")
+        let previousReveal = show.trackSelectionRequest?.id
+        let repeated = show.pasteTracks()
+        XCTAssertEqual(repeated.count, 2, "Repeated paste creates fresh independent tracks")
+        let newest = try XCTUnwrap(show.current?.tracks.last(where: { repeated.contains($0.id) }))
+        XCTAssertEqual(show.current?.tracks.last?.id, newest.id, "Repeated Paste must follow previous copies, not insert before them")
+        XCTAssertEqual(show.current?.tracks.map(\.id).prefix(2), rows.map(\.id).prefix(2))
+        XCTAssertEqual(show.mixerTrackSelection, [newest.id])
+        XCTAssertEqual(show.trackSelectionRequest?.track, newest.id)
+        XCTAssertNotEqual(show.trackSelectionRequest?.id, previousReveal)
         XCTAssertTrue(show.copyItems([rows[1].clips[0].id])); XCTAssertFalse(show.hasTrackClipboard)
+    }
+
+    @MainActor func testHeldPasteAppendsAndSelectsEachNewCopyWithoutRecapturingTheClipboard() throws {
+        var project = Project.empty(name: "Held paste")
+        let source = Track(id: UUID(), name: "Source", role: .other)
+        project.songs[0].tracks = [source]
+        let show = try ShowController(executor: TrackCopyExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.setMixerTrackSelection([source.id], anchor: source.id)
+        XCTAssertTrue(show.copyTracks([source.id]))
+        var previous = source.id
+        for _ in 0..<200 {
+            let ids = show.pasteTracks()
+            let tracks = try XCTUnwrap(show.current).tracks
+            let last = try XCTUnwrap(tracks.last).id
+            XCTAssertEqual(ids, [last]); XCTAssertNotEqual(last, previous)
+            XCTAssertEqual(tracks.dropLast().last?.id, previous)
+            XCTAssertEqual(show.mixerTrackSelection, [last])
+            XCTAssertEqual(show.selectedTrackForActions, last)
+            XCTAssertEqual(show.trackSelectionRequest?.track, last)
+            previous = last
+        }
+        show.undo()
+        let ids = show.pasteTracks()
+        XCTAssertEqual(ids.count, 1, "An undone insertion must not leave an unusable clipboard anchor")
+        XCTAssertEqual(show.mixerTrackSelection, ids)
+    }
+
+    @MainActor func testRepeatedChildAndGroupPasteKeepContiguousHierarchyAndGroupRouting() throws {
+        for copiesFolder in [false, true] {
+            var project = Project.empty(name: "Group paste")
+            let parent = Track(id: UUID(), name: "Group", role: .other)
+            var child = Track(id: UUID(), name: "Child", role: .other)
+            child.parentTrackID = parent.id
+            child.outputs = [OutputPatch(firstChannel: -2, channelCount: 2)]
+            project.songs[0].tracks = [parent, child]
+            let show = try ShowController(executor: TrackCopyExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+            let target = copiesFolder ? parent.id : child.id
+            show.setMixerTrackSelection([target], anchor: target)
+            XCTAssertTrue(show.copyTracks([target]))
+            var last = child.id
+            for _ in 0..<5 {
+                let added = show.pasteTracks()
+                try show.snapshot.project.validate()
+                let tracks = try XCTUnwrap(show.current).tracks
+                let newest = try XCTUnwrap(tracks.last)
+                XCTAssertTrue(added.contains(newest.id))
+                let previous = try XCTUnwrap(tracks.firstIndex { $0.id == last })
+                XCTAssertEqual(tracks[previous + 1].id, tracks[tracks.count - added.count].id)
+                XCTAssertEqual(newest.parentTrackID, copiesFolder ? tracks[tracks.count - 2].id : parent.id)
+                XCTAssertEqual(newest.outputs, child.outputs)
+                XCTAssertEqual(show.mixerTrackSelection, [newest.id])
+                last = newest.id
+            }
+        }
     }
 
     @MainActor func testPasteTracksRejectsDeletedSourceWithoutPartialCopies() throws {

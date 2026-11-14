@@ -69,8 +69,8 @@ int main() {
             require(!clip(engine, "future-loose").regionOwnerID && !marker(engine, "future-marker").regionOwnerID,
                     "versioned reload must not recapture material covered by a moved region");
             engine.moveRegion("region", 14000);
-            near(clip(engine, "future-loose").startTime, 13000, "loose onset remains stationary after region leaves");
-            near(marker(engine, "future-marker").position, 13010, "loose marker remains stationary after region leaves");
+            near(clip(engine, "future-loose").startTime, 13000 + 14000 - 13000.000000432, "covered audio follows the next region drag");
+            near(marker(engine, "future-marker").position, 13010 + 14000 - 13000.000000432, "covered markers follow the next region drag");
             engine.moveClip("future-loose", 13999.9999996);
             require(clip(engine, "future-loose").regionOwnerID == "region", "explicit placement at rounded edge attaches normally");
         }
@@ -79,7 +79,7 @@ int main() {
             Engine engine; engine.loadProject(project);
             require(!clip(engine, "rounded").regionOwnerID, "current documents preserve explicit nil even at a rounded boundary");
         }
-        std::cout << "REGION_ROUNDED_IMPORT_MIGRATION_MOVE_AND_NO_CAPTURE_OK\n";
+        std::cout << "REGION_ROUNDED_IMPORT_MIGRATION_AND_COVERED_CONTENT_MOVEMENT_OK\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;
     }

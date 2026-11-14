@@ -1,9 +1,11 @@
 #pragma once
 #include "Song.hpp"
+#include "TempoPlaybackRate.hpp"
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include "../Audio/PiecewiseTimeMap.hpp"
+#include "../Tracks/AutomationTiming.hpp"
 namespace jaras {
 // Keep in step with TimelineTempo.swift. Detection batches intentionally bypass
 // this edit map: inserting a measured tempo must not move the source material.
@@ -53,12 +55,9 @@ class TempoEditMap {
                 (!marker.regionOwnerID || marker.regionOwnerID==part->id || marker.regionOwnerID==part->parentRegionID))) &&
                 marker.position<=time && (!active || marker.position>active->position || (marker.position==active->position && marker.id>active->id))) active=&marker;
         if(!active) return 1;
-        const auto mode=active->tempoTimebase.value_or("global");
-        const bool relative=mode=="relative" || (mode=="global" && song.timeSettings.value_or(ProjectTimeSettings{}).timebase==ProjectTimebase::relative);
-        if(!relative || !std::isfinite(*active->tempoBPM) || *active->tempoBPM<=0) return 1;
-        return *active->tempoBPM / active->tempoReferenceBPM.value_or(song.bpm);
+        return tempoPlayback::rate(song,*active);
     }
-    struct RatePoint { double time, speed; };
+    struct RatePoint { double time, speed; ID markerID; };
     using Program = std::vector<RatePoint>;
     static Program program(const Song& song, const Part* part=nullptr) {
         const double limit=part?ownerLimit(song,*part):0;
@@ -69,11 +68,20 @@ class TempoEditMap {
         std::sort(markers.begin(),markers.end(),[](auto a,auto b){return a->position==b->position?a->id<b->id:a->position<b->position;});
         Program result;
         for(auto marker:markers) {
-            const auto mode=marker->tempoTimebase.value_or("global");
-            const bool relative=mode=="relative" || (mode=="global" && song.timeSettings.value_or(ProjectTimeSettings{}).timebase==ProjectTimebase::relative);
-            const double speed=relative && std::isfinite(*marker->tempoBPM) && *marker->tempoBPM>0 ? *marker->tempoBPM/marker->tempoReferenceBPM.value_or(song.bpm):1;
-            if(!result.empty() && result.back().time==marker->position) result.back().speed=speed;
-            else result.push_back({marker->position,speed});
+            const double speed=tempoPlayback::rate(song,*marker);
+            if(!result.empty() && result.back().time==marker->position) result.back()={marker->position,speed,marker->id};
+            else result.push_back({marker->position,speed,marker->id});
+        }
+        return result;
+    }
+    static double itemReference(const AudioClip& clip,const Program& program,double time) {
+        if(clip.tempoRateReferences.empty())return 1.;
+        // New markers inherit the preceding known reference. A reset remains
+        // valid when tempo sections are inserted or removed later.
+        double result=1.;
+        for(const auto& point:program) {
+            if(point.time>time)break;
+            for(const auto& reference:clip.tempoRateReferences)if(reference.markerID==point.markerID){result=reference.rate;break;}
         }
         return result;
     }
@@ -106,7 +114,8 @@ public:
         }
         double playbackRate(const AudioClip& clip,double time) {
             if(clip.frozenMIDI.value_or(false)||clip.renderedTiming.value_or(false)||clip.renderedTempo.value_or(false))return clip.playbackRate;
-            return clip.playbackRate*speedAt(points(clip),time);
+            const auto& program=points(clip);
+            return clip.playbackRate*speedAt(program,time)/itemReference(clip,program,time);
         }
     };
     static const Part* tempoOwner(const Song& song, const AudioClip& clip) { return owner(song, clip); }
@@ -118,7 +127,8 @@ public:
     static double playbackRate(const Song& song, const AudioClip& clip, double time) {
         if (clip.frozenMIDI.value_or(false) || clip.renderedTiming.value_or(false) ||
             clip.renderedTempo.value_or(false)) return clip.playbackRate;
-        return clip.playbackRate * rate(song, time, owner(song, clip));
+        const auto points=program(song,owner(song,clip));
+        return clip.playbackRate * speedAt(points,time)/itemReference(clip,points,time);
     }
     TempoEditMap(const Song& before,const Song& after) {
         // Match the Swift map: a unified region's restoring tempo follows its
@@ -131,8 +141,8 @@ public:
         }
         std::vector<std::pair<double,double>> occupied;
         for(const auto& part:before.parts) if(!folder(before,part)) occupied.emplace_back(part.startTime,part.endTime);
-        for(const auto& track:before.tracks) if(fixedTrackName(track.role).empty())
-            for(const auto& clip:track.clips) if((clip.audioFile || track.audioFile) && !owner(before,clip)) occupied.emplace_back(clip.startTime,clip.startTime+clip.duration);
+        for(const auto& track:before.tracks)
+            for(const auto& clip:track.clips) if((clip.midi || clip.audioFile || track.audioFile || track.role.id=="timecode" || track.role.id=="generatedClick") && !owner(before,clip)) occupied.emplace_back(clip.startTime,clip.startTime+clip.duration);
         std::sort(occupied.begin(),occupied.end());
         std::vector<std::pair<double,double>> merged;
         for(const auto& interval:occupied) if(interval.second>interval.first) {
@@ -183,7 +193,7 @@ public:
                 markerStarts[marker.id]=position(owner->startTime)+resizedDuration(owner->startTime,marker.position,*owner);
         }
         for(const auto& part:before.parts) if(!folder(before,part)) regionDurations[part.id]=resizedDuration(part.startTime,part.endTime,part);
-        for(const auto& track:before.tracks) if(fixedTrackName(track.role).empty()) for(const auto& clip:track.clips)
+        for(const auto& track:before.tracks) for(const auto& clip:track.clips)
             if(const auto* part=owner(before,clip)) {
                 clipStarts[clip.id]=position(part->startTime)+resizedDuration(part->startTime,clip.startTime,*part);
                 clipDurations[clip.id]=resizedDuration(clip.startTime,clip.startTime+clip.duration,*part);
@@ -207,6 +217,12 @@ public:
     }
     void apply(Song& song) const {
         if(!changesTime()) return;
+        for(auto& track:song.tracks) {
+            // Automation always follows timing changes, including projects
+            // saved with the old optional preference disabled.
+            automationTiming::map(track.automationJSON, [&](double time){return position(time);});
+            for(auto& marker:track.programChanges) marker.position=position(marker.position);
+        }
         for(auto& track:song.tracks) for(auto& clip:track.clips) {
             const double previousDuration=clip.duration;
             const double start=position(clip.startTime),end=position(clip.startTime+clip.duration);
@@ -231,6 +247,12 @@ public:
             for(const auto& child:song.parts) if(child.parentRegionID==part.id) end=std::max(end,child.endTime);
             part.endTime=end;
         }
+        for(auto& track:song.tracks)if(track.role.id=="timecode" && !track.importedTimecodeItems)for(auto& clip:track.clips)if(!clip.audioFile)
+            for(const auto& part:song.parts) {
+                auto id=part.id;
+                if(id.size()==36){const auto digit=std::stoi(id.substr(0,1),nullptr,16)^8;id[0]="0123456789ABCDEF"[digit];}else id+="-timecode";
+                if(id==clip.id){clip.timecodeStartOffset=clip.startTime-part.startTime;clip.timecodeEndOffset=clip.startTime+clip.duration-part.endTime;break;}
+            }
         if(song.markers) for(auto& marker:*song.markers) {
             const auto anchor=tempoEndRegions.find(marker.id);
             const auto region=anchor==tempoEndRegions.end()?song.parts.end():std::find_if(song.parts.begin(),song.parts.end(),[&](const auto& part){return part.id==anchor->second;});

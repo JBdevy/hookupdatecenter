@@ -78,7 +78,7 @@ public enum ProjectDocumentCodec {
 
     public static func encode(_ project: Project) throws -> Data {
         try project.validate()
-        let plaintext = try JSONEncoder().encode(project)
+        let plaintext = try ProjectDocumentJSON.encode(project)
         // CryptoKit generates a fresh random nonce on every save.
         let box = try AES.GCM.seal(plaintext, using: key, authenticating: header)
         guard let sealed = box.combined else { throw ProjectError.invalid("Unable to encrypt project") }
@@ -109,5 +109,165 @@ public enum ProjectDocumentCodec {
     }
     public static func write(_ project: Project, to url: URL, exclusive: Bool = false) throws {
         try writeEncoded(encode(project), to: url, exclusive: exclusive)
+    }
+}
+
+/// Keep schema/string/FX encoding in Foundation, while serializing repeated
+/// waveform arrays only once per save. The resulting plaintext is the same JSON
+/// schema; encryption, nonce generation and atomic writes stay in the codec.
+enum ProjectDocumentJSON {
+    static func encode(_ project: Project) throws -> Data {
+        var metadata = project
+        var clipCount = 0, channelFields = 0, sampleCount = 0
+        for song in metadata.songs.indices {
+            for track in metadata.songs[song].tracks.indices {
+                for clip in metadata.songs[song].tracks[track].clips.indices {
+                    let source = project.songs[song].tracks[track].clips[clip]
+                    clipCount += 1; sampleCount += source.waveform.count
+                    metadata.songs[song].tracks[track].clips[clip].waveform = []
+                    if let channels = source.waveformChannels {
+                        channelFields += 1; sampleCount += channels.reduce(0) { $0 + $1.count }
+                        metadata.songs[song].tracks[track].clips[clip].waveformChannels = []
+                    }
+                }
+            }
+        }
+        guard sampleCount > 0 else { return try JSONEncoder().encode(project) }
+        let encoded = try JSONEncoder().encode(metadata)
+        do { return try encoded.withUnsafeBytes { raw in
+            var writer = Writer(bytes: raw.bindMemory(to: UInt8.self), project: project)
+            writer.output.reserveCapacity(encoded.count + sampleCount * 20)
+            try writer.object(.project)
+            guard writer.waveformFields == clipCount, writer.channelFields == channelFields else { throw Failure.schema }
+            writer.output.append(contentsOf: writer.bytes[writer.copied..<writer.bytes.count])
+            return writer.output
+        } } catch {
+            // A future Codable schema must never silently lose a waveform if
+            // its container structure changes. Fall back to the complete encoder.
+            return try JSONEncoder().encode(project)
+        }
+    }
+    private enum Failure: Error { case schema }
+    private enum Context {
+        case project, song(Int), track(Int, Int), clip(Int, Int, Int)
+    }
+    private struct Key: Hashable { let hash: Int; let count: Int }
+    private struct Cached { let values: [Double]; let json: Data }
+    private struct Writer {
+        let bytes: UnsafeBufferPointer<UInt8>
+        let project: Project
+        var position = 0, copied = 0, waveformFields = 0, channelFields = 0
+        var output = Data()
+        var cache: [Key: [Cached]] = [:]
+        var cachedBytes = 0, cachedArrays = 0
+        static let maximumCachedBytes = 16 * 1_048_576
+        static let maximumCachedArrays = 1024
+        mutating func expect(_ byte: UInt8) throws {
+            guard position < bytes.count, bytes[position] == byte else { throw Failure.schema }
+            position += 1
+        }
+        mutating func object(_ context: Context) throws {
+            try expect(123)
+            if bytes[position] == 125 { position += 1; return }
+            while true {
+                let key = try string()
+                try expect(58)
+                switch (context, key) {
+                case (.project, "songs"): try array { .song($0) }
+                case (.song(let song), "tracks"): try array { .track(song, $0) }
+                case (.track(let song, let track), "clips"): try array { .clip(song, track, $0) }
+                case (.clip(let song, let track, let clip), "waveform"):
+                    guard project.songs.indices.contains(song), project.songs[song].tracks.indices.contains(track),
+                          project.songs[song].tracks[track].clips.indices.contains(clip) else { throw Failure.schema }
+                    let values = project.songs[song].tracks[track].clips[clip].waveform
+                    output.append(contentsOf: bytes[copied..<position]); try skipValue(); copied = position
+                    try append(values); waveformFields += 1
+                case (.clip(let song, let track, let clip), "waveformChannels"):
+                    guard project.songs.indices.contains(song), project.songs[song].tracks.indices.contains(track),
+                          project.songs[song].tracks[track].clips.indices.contains(clip),
+                          let channels = project.songs[song].tracks[track].clips[clip].waveformChannels else { throw Failure.schema }
+                    output.append(contentsOf: bytes[copied..<position]); try skipValue(); copied = position
+                    output.append(91)
+                    for (index, values) in channels.enumerated() {
+                        if index > 0 { output.append(44) }; try append(values)
+                    }
+                    output.append(93); channelFields += 1
+                default: try skipValue()
+                }
+                if bytes[position] == 125 { position += 1; return }
+                try expect(44)
+            }
+        }
+        mutating func array(_ context: (Int) -> Context) throws {
+            try expect(91)
+            if bytes[position] == 93 { position += 1; return }
+            var index = 0
+            while true {
+                try object(context(index)); index += 1
+                if bytes[position] == 93 { position += 1; return }
+                try expect(44)
+            }
+        }
+        mutating func string() throws -> String {
+            try expect(34)
+            let start = position
+            while position < bytes.count {
+                if bytes[position] == 34 {
+                    let value = String(decoding: bytes[start..<position], as: UTF8.self)
+                    position += 1; return value
+                }
+                if bytes[position] == 92 { position += 1 }
+                position += 1
+            }
+            throw Failure.schema
+        }
+        mutating func skipValue() throws {
+            var depth = 0
+            while position < bytes.count {
+                let value = bytes[position]
+                if value == 34 {
+                    position += 1
+                    while position < bytes.count {
+                        if bytes[position] == 34 { position += 1; break }
+                        if bytes[position] == 92 { position += 1 }
+                        position += 1
+                    }
+                    if depth == 0 { return }; continue
+                }
+                if value == 123 || value == 91 { depth += 1 }
+                else if value == 125 || value == 93 {
+                    if depth == 0 { return }
+                    depth -= 1; position += 1; if depth == 0 { return }; continue
+                } else if value == 44 && depth == 0 { return }
+                position += 1
+            }
+        }
+        mutating func append(_ values: [Double]) throws {
+            var hasher = Hasher(); values.withUnsafeBytes { hasher.combine(bytes: $0) }
+            let key = Key(hash: hasher.finalize(), count: values.count)
+            if let cached = cache[key]?.first(where: { cached in
+                cached.values.withUnsafeBytes { original in
+                    values.withUnsafeBytes { candidate in
+                        original.isEmpty || memcmp(original.baseAddress!, candidate.baseAddress!, original.count) == 0
+                    }
+                }
+            }) {
+                output.append(cached.json); return
+            }
+            var text = "["; text.reserveCapacity(values.count * 20 + 2)
+            for (index, value) in values.enumerated() {
+                guard value.isFinite else { throw Failure.schema }
+                if index > 0 { text.append(",") }; text.append(String(value))
+            }
+            text.append("]")
+            let data = Data(text.utf8)
+            // Cache memory stays bounded even in projects with unique previews.
+            // Compare exact bits on a hash collision, including signed zero.
+            if cachedArrays < Self.maximumCachedArrays, data.count <= Self.maximumCachedBytes - cachedBytes {
+                cache[key, default: []].append(Cached(values: values, json: data))
+                cachedArrays += 1; cachedBytes += data.count
+            }
+            output.append(data)
+        }
     }
 }

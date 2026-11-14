@@ -23,8 +23,11 @@ import AppKit
         let shiftClick = event.type == .leftMouseDown && event.modifierFlags.contains(.shift) && !event.modifierFlags.contains(.control) && !optionClick
         guard !interactionBlocked, event.type == .rightMouseDown || event.modifierFlags.contains(.control) || optionClick || shiftClick,
               let window = event.window, window.attachedSheet == nil else { return nil }
+        let pinned = window.contentView.flatMap {
+            NativeTimelineOverlayInputRegistration.pinnedRoot(in: $0, point: event.locationInWindow)
+        }
         return targets.allObjects.filter {
-            (!optionClick || $0.optionClick != nil) && (!shiftClick || $0.shiftClick != nil) && !$0.interactionBlocked && $0.window === window && !$0.isHiddenOrHasHiddenAncestor && $0.bounds.width > 0 && $0.bounds.height > 0 && $0.clickBounds.contains($0.convert(event.locationInWindow,from: nil)) && $0.visibleRect.contains($0.convert(event.locationInWindow,from: nil))
+            (pinned == nil || $0.isDescendant(of: pinned!)) && (!optionClick || $0.optionClick != nil) && (!shiftClick || $0.shiftClick != nil) && !$0.interactionBlocked && $0.window === window && !$0.isHiddenOrHasHiddenAncestor && $0.bounds.width > 0 && $0.bounds.height > 0 && $0.clickBounds.contains($0.convert(event.locationInWindow,from: nil)) && $0.visibleRect.contains($0.convert(event.locationInWindow,from: nil))
         }.sorted {
             $0.priority == $1.priority ? $0.clickPriorityArea < $1.clickPriorityArea : $0.priority > $1.priority
         }.first

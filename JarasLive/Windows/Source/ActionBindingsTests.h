@@ -17,6 +17,23 @@ void addActionBindingsTests(const File &directory, Register &&test) {
     const auto require = [](bool okay, const char *message) {
         if (!okay) throw std::runtime_error(message);
     };
+    test("Region creation exposes Shift R and respects remapping and held keys", [&, require] {
+        const auto file = directory.getNonexistentChildFile("region-action", ".json");
+        Appearance settings(file); AudioDeviceManager devices; ActionBindings bindings(settings, devices);
+        int calls = 0;
+        bindings.invoke = [&](const String &id, float, int) { require(id == "createRegionsFromItems", "Wrong region action"); ++calls; };
+        const auto key = KeyPress::createFromDescription("shift + R");
+        require(bindings.key(key) && calls == 1, "Shift R did not dispatch region creation");
+        bindings.key(key, true); require(calls == 1, "Held Shift R repeated region creation");
+        require(bindings.assign("createRegionsFromItems", "keyboard", "F8"), "Region creation cannot be remapped");
+        // Reassigned defaults stay consumed so Workspace's legacy shortcuts
+        // cannot execute them. Dispatch count, not key consumption, determines
+        // whether region creation ran again.
+        require(bindings.key(key) && calls == 1, "Old shortcut still created a region or escaped to legacy handling");
+        Appearance restored(file); ActionBindings reopened(restored, devices);
+        reopened.invoke = bindings.invoke;
+        require(reopened.key(KeyPress::createFromDescription("F8")) && calls == 2, "Region mapping was not saved");
+    });
     test("Preview supports saved keyboard and MIDI mappings without held repeats", [&, require] {
         auto file=directory.getNonexistentChildFile("preview-action", ".json");
         Appearance settings(file); AudioDeviceManager devices; ActionBindings bindings(settings,devices);

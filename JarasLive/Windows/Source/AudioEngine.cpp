@@ -2,6 +2,7 @@
 #include "ProjectionSelection.h"
 #include "MeterDisplay.h"
 #include "AudioEngine.h"
+#include "AudioItemGain.h"
 #include "AudioDeviceChannels.h"
 #include "ProjectCodec.h"
 #include "ClipAudio.h"
@@ -428,7 +429,7 @@ void AudioEngine::refreshItemTiming(const jaras::Song &song, const jaras::AudioC
     for (const auto &voice : voices) if (voice->clipID == clip.id) { target = voice.get(); break; }
     std::unique_ptr<ClipAudio> processor;
     if (target && ClipAudio::needed(song, *owner, clip))
-        processor = std::make_unique<ClipAudio>(song, *owner, clip, rate.load());
+        processor = std::make_unique<ClipAudio>(song, *owner, clip, rate.load(), true, nullptr, target->source);
     auto playbackStart = jaras::playbackItemStart(song, clip);
     const auto ownerIndex=jaras::playbackOwnerIndex(song,clip.regionOwnerID);
     std::optional<jaras::TimecodeProgram> timecode;
@@ -462,7 +463,7 @@ void AudioEngine::refreshItemPitch(const jaras::Song &song, const ID &id) {
             std::unique_ptr<ClipAudio> processor;
             if (voice->clipAudio || ClipAudio::needed(song, track, clip))
                 processor = std::make_unique<ClipAudio>(song, track, clip, rate.load(),
-                    !voice->clipAudio || !voice->clipAudio->hasPreparedPitch());
+                    !voice->clipAudio || !voice->clipAudio->hasPreparedPitch(), nullptr, voice->source);
             if (voice->clipAudio && processor && voice->clipAudio->sameMapping(*processor)) return;
             // Prepare FFT memory outside the callback, then retain the running
             // heads, decoders and FX. Pitch edits do not seek either transport.
@@ -503,7 +504,7 @@ void AudioEngine::refreshRegionPitch(const jaras::Song &song, const ID &region) 
                 // semitones, including returning to zero and changing again.
                 if (voice->clipAudio || ClipAudio::needed(song, track, clip, &compiled))
                     processor = std::make_unique<ClipAudio>(song, track, clip, rate.load(),
-                        !voice->clipAudio || !voice->clipAudio->hasPreparedPitch(), &compiled);
+                        !voice->clipAudio || !voice->clipAudio->hasPreparedPitch(), &compiled, voice->source);
                 if (voice->clipAudio && processor && voice->clipAudio->sameMapping(*processor)) continue;
                 replacements.emplace_back(voice, std::move(processor));
             }
@@ -602,12 +603,66 @@ void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &aft
                 edit.midi = MIDIPlayback::sequence(takePlaybackNotes(track, clip, after, true));
                 edit.shared = takePlaybackNotes(track, clip, after, false);
             } else if (voice->clipAudio || ClipAudio::needed(after, track, clip, &compiled)) {
-                edit.processor = std::make_unique<ClipAudio>(after, track, clip, rate.load(), !voice->clipAudio || !voice->clipAudio->hasPreparedPitch(), &compiled);
+                edit.processor = std::make_unique<ClipAudio>(after, track, clip, rate.load(), !voice->clipAudio || !voice->clipAudio->hasPreparedPitch(), &compiled, voice->source);
             }
             edits.push_back(std::move(edit));
         }
         if (hasMIDI) for (size_t i = 0; i < buses.size(); ++i) if (buses[i]->id == track.id)
             midiBuses.emplace_back(i, SharedMIDIUpdate(playbackNotes(track, &after, true, true)));
+    }
+    // A large bank can need more than one hardware block to initialise its
+    // first spectral histories. Prepare those histories against a future audio
+    // boundary while the existing mix keeps playing, then switch all tracks
+    // together. Later BPM changes retain their already-running histories.
+    uint64 tempoBoundary=0;
+    size_t cold=0;
+    for(const auto &edit:edits)if(edit.processor && edit.voice->parallelEligible &&
+        (!edit.voice->clipAudio || !edit.voice->clipAudio->hasPreparedPitch()))++cold;
+    if(cold>=8 && parallelClips && (attached || externalRenderDriven)) {
+        State captured;uint64 frame=0;int quantum=512;std::array<int,2> readers{};
+        commitPreparedEdit([&]() noexcept {captured=current;frame=renderClock;quantum=renderQuantum;readers={readerHeads[0].load(),readerHeads[1].load()};});
+        if(captured.playing || captured.subPlaying) {
+            ScopedNoDenormals noDenormals;
+            const double sr=rate.load();
+            const uint64 lead=uint64(std::ceil(sr*.2/std::max(1,quantum)))*uint64(std::max(1,quantum));
+            tempoBoundary=frame+lead;
+            struct Warm {ClipAudio *processor;StreamingReader *reader;int head;double local;AudioBuffer<float> output{2,1};bool okay=false;};
+            std::vector<std::unique_ptr<Warm>> jobs;
+            std::array<double,2> future{captured.position+lead/sr,captured.subPosition+lead/sr};
+            if(captured.loop && captured.loopEnd>captured.loopStart) {
+                // Match render's ceil-to-sample loop boundary, including a
+                // loop shorter than the preparation horizon and the exact wrap.
+                double at=captured.position;uint64 left=lead;
+                const double boundary=std::min(duration,captured.loopEnd);
+                while(left) {
+                    if(at>=boundary-1e-9)at=captured.loopStart;
+                    const uint64 frames=uint64(jlimit(1.,double(left),std::ceil((boundary-at)*sr-1e-7)));
+                    at+=frames/sr;left-=frames;
+                }
+                future[0]=at>=boundary-1e-9?captured.loopStart:at;
+            }
+            for(auto &edit:edits) {
+                if(!edit.processor || !edit.voice->parallelEligible || (edit.voice->clipAudio && edit.voice->clipAudio->hasPreparedPitch()))continue;
+                for(int head=0;head<2;++head) {
+                    if(!(head?captured.subPlaying:captured.playing))continue;
+                    const double at=future[size_t(head)];
+                    if(!head && !captured.loop && at>=std::min(duration,captured.end))continue;
+                    const double local=remap(at)-edit.clip->startTime;
+                    if(local<1/sr || local>=edit.clip->duration)continue;
+                    auto job=std::make_unique<Warm>();job->processor=edit.processor.get();job->reader=edit.voice->source->readers[readers[size_t(head)]].get();job->head=head;job->local=local-1/sr;
+                    jobs.push_back(std::move(job));
+                }
+            }
+            if(!jobs.empty()) {
+                ParallelAudioWork preparation(parallelClips->helperCount(),false);
+                preparation.run(jobs.size(),&jobs,[](void *context,size_t index,AudioBuffer<float> &scratch) noexcept {
+                    auto &job=*(*static_cast<std::vector<std::unique_ptr<Warm>> *>(context))[index];
+                    job.okay=job.processor->render(*job.reader,scratch,job.output,job.head,job.local,1);
+                });
+                for(auto &job:jobs)if(!job->okay)job->processor->prepare(sr);
+                tempoPreparedStarts.fetch_add(jobs.size(),std::memory_order_relaxed);
+            } else tempoBoundary=0;
+        }
     }
     // Keep file decoders, FX, FFT history and latency buffers. Only mappings
     // and clocks change, together at the same audio block boundary.
@@ -658,7 +713,7 @@ void AudioEngine::refreshTempo(const jaras::Song &before, const jaras::Song &aft
             if (found != clickSections.end()) bus->click->sections.swap(found->second);
         }
         if (mtc) std::swap(timecodeProgram, *mtc);
-    });
+    },tempoBoundary);
     if (mtc) timecodeMIDI.updateProgram(timecodeProgram, after.duration, mtcMuted);
 }
 void AudioEngine::closeDevice() {
@@ -1048,6 +1103,8 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     // particular metronome sounds are preferences retained across projects.
     applyUpdates();
     preparedEdits.collectRetired();
+    loopMixer = {}; masterLoopRule = {}; loopMixerPublished = false;
+    loopMixerDisplay = {}; loopDisplayRules.clear(); lastLoopMixer.reset();
     cancelTrackFadeout();
     stage("detachMilliseconds");
     // This engine is detached; no callback can access its preparation storage.
@@ -1339,10 +1396,10 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
                     const auto previous = previousProcessors.find(clip.id);
                     if (previous != previousProcessors.end()) {
                         voice->clipAudio = std::move(previous->second);
-                        voice->clipAudio->configure(song, track, clip, rate.load());
+                        voice->clipAudio->configure(song, track, clip, rate.load(), true, nullptr, voice->source);
                         ++reusedProcessors;
                     } else
-                        voice->clipAudio = std::make_unique<ClipAudio>(song, track, clip, rate.load());
+                        voice->clipAudio = std::make_unique<ClipAudio>(song, track, clip, rate.load(), true, nullptr, voice->source);
                 }
                 voice->fx[1].shareStems(voice->fx[0]);
                 voice->automation.prepare(
@@ -1373,6 +1430,8 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
     stage("reattachMilliseconds");
     previousSources.clear();
     previousProcessors.clear();
+    prepareParallelClips();
+    put(preparationDiagnostics, "clipWorkers",parallelClips?(int)parallelClips->helperCount():0);
     put(preparationDiagnostics, "totalMilliseconds", Time::getMillisecondCounterHiRes() - preparationStart);
 }
 void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback) {
@@ -1381,6 +1440,7 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
     if(&prepared==this||prepared.attached||prepared.recording.load())
         throw std::runtime_error("Invalid prepared audio graph.");
     prepared.applyUpdates();
+    loopMixerPublished = false;
     auto mtc=prepared.timecodeProgram;
     bool timecodeMuted=false;
     for(const auto &bus:prepared.buses)if(bus->timecode)timecodeMuted=bus->mute;
@@ -1495,9 +1555,11 @@ void AudioEngine::adoptPreparedSong(AudioEngine &prepared, bool preservePlayback
         if (oldPad == buses.end() || newPad == prepared.buses.end() || (*oldPad)->id != (*newPad)->id) {
             vinhetas.setOutputAvailable(false); vinhetas.discard();
         }
+        loopMixer = {}; masterLoopRule = {};
         voices.swap(prepared.voices);removedItemVoices.swap(prepared.removedItemVoices);preparedItemIDs.swap(prepared.preparedItemIDs);buses.swap(prepared.buses);trackMeters.swap(prepared.trackMeters);busOrder.swap(prepared.busOrder);
         vinhetas.setOutputAvailable(std::any_of(buses.begin(), buses.end(), [](const auto &bus) { return bus->vinhetasBus; }));
         readerContext.swap(prepared.readerContext);latencyPlan.swap(prepared.latencyPlan);
+        parallelClips.swap(prepared.parallelClips);parallelClipJobs.swap(prepared.parallelClipJobs);
         masterFX.swap(prepared.masterFX);masterMIDI.swap(prepared.masterMIDI);
         std::swap(masterAutomation,prepared.masterAutomation);
         std::swap(instrumentDirectory,prepared.instrumentDirectory);
@@ -1902,6 +1964,55 @@ bool AudioEngine::refreshTrackRouting(const jaras::Song &song) {
     });
     return true;
 }
+void AudioEngine::prepareParallelClips() {
+    std::map<const Source *,size_t> uses;
+    for(const auto &voice:voices)if(voice->source && !voice->midiItem)++uses[voice->source.get()];
+    size_t eligible=0;
+    for(auto &voice:voices) {
+        voice->parallelEligible=voice->source && !voice->midiItem && uses[voice->source.get()]==1;
+        voice->parallelReady=false;eligible+=voice->parallelEligible;
+    }
+    const auto configured=SystemStats::getEnvironmentVariable("CATLIVE_CLIP_WORKERS",{});
+    const unsigned helpers=(unsigned)jlimit(0,10,configured.isEmpty()?std::max(0,SystemStats::getNumCpus()-2):configured.getIntValue());
+    if(helpers && eligible>=8) {
+        if(!parallelClips || parallelClips->helperCount()!=helpers)parallelClips=std::make_unique<ParallelAudioWork>(helpers);
+        parallelClipJobs.resize(voices.size());
+    } else {parallelClips.reset();parallelClipJobs.clear();}
+}
+void AudioEngine::setLoopMixer(const std::optional<jaras::MultiLoopPlayback> &loop) {
+    if (loopMixerPublished && jaras::sameMultiLoopMixer(lastLoopMixer, loop)) return;
+    const auto envelope = jaras::multiLoopMixerEnvelope(loop);
+    std::map<ID, jaras::MultiLoopMixerRule> display;
+    if (loop) for (const auto &rule : loop->config.tracks)
+        display[rule.id == "00000000-0000-0000-0000-000000000000" ? ID{} : rule.id] =
+            {rule.gain, rule.autoFader, rule.mute, rule.solo};
+    const auto master = display.count({}) ? display.at({}) : jaras::MultiLoopMixerRule{};
+    std::vector<jaras::MultiLoopMixerRule> rules;
+    rules.reserve(buses.size());
+    for (const auto &bus : buses) {
+        const auto found = display.find(bus->id);
+        rules.push_back(found == display.end() ? jaras::MultiLoopMixerRule{} : found->second);
+    }
+    enqueuePreparedEdit([this, envelope, master, rules = std::move(rules)]() noexcept {
+        loopMixer = envelope; masterLoopRule = master;
+        for (size_t i = 0; i < buses.size(); ++i)
+            buses[i]->loopRule = i < rules.size() ? rules[i] : jaras::MultiLoopMixerRule{};
+    });
+    loopMixerDisplay = envelope; loopDisplayRules = std::move(display);
+    lastLoopMixer = loop; loopMixerPublished = true;
+}
+double AudioEngine::loopDisplayVolume(const ID &id, double base) const {
+    const auto found = loopDisplayRules.find(id);
+    return found == loopDisplayRules.end() ? base : found->second.volume(base, loopMixerDisplay.amount(presentationState().position));
+}
+bool AudioEngine::loopDisplayMute(const ID &id, bool base) const {
+    const auto found = loopDisplayRules.find(id);
+    return base || (found != loopDisplayRules.end() && found->second.mute && loopMixerDisplay.gates(presentationState().position));
+}
+bool AudioEngine::loopDisplaySolo(const ID &id, bool base) const {
+    const auto found = loopDisplayRules.find(id);
+    return base || (found != loopDisplayRules.end() && found->second.solo && loopMixerDisplay.gates(presentationState().position));
+}
 void AudioEngine::setMixer(const jaras::Project &project, const jaras::Song &song) {
     timecodeMIDI.programChanges(song);
     Update u;
@@ -2111,7 +2222,7 @@ void AudioEngine::applyUpdates(size_t budget, TrackCapture* capture, bool fromCa
     Update latest;
     if(masterUpdates.consume(latest))apply(latest);
     for(auto& bus:buses)if(bus->mixerUpdates.consume(latest))apply(latest);
-    updates.consume(budget, apply);
+    updates.consumeWhile(budget,[&](const Update &u) noexcept {return !fromCallback || u.notBeforeFrame<=renderClock;},apply);
 }
 void AudioEngine::mixMIDIVoice(Voice &v, int head, double at, float *const *out, int channels,
                               int dest, int count, bool running) {
@@ -2185,10 +2296,11 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
         return;
     auto &scratch = readScratch[head];
     if (v.clipAudio) {
-        if (!v.clipAudio->render(reader, scratch, v.processed[head], head,
-                                 at + begin / sr - v.start, end - begin)) {
-            underruns.fetch_add(1);
-        }
+        const double local=at+begin/sr-v.start;
+        const bool prepared=v.parallelReady && v.parallelHead==head && v.parallelFrames==end-begin && v.parallelLocal==local;
+        const bool okay=prepared?v.parallelOK:v.clipAudio->render(reader,scratch,v.processed[head],head,local,end-begin);
+        v.parallelReady=false;
+        if(!okay)underruns.fetch_add(1);
     } else {
         const double source =
             (v.offset + (at + begin / sr - v.start) * v.speed) * reader.sampleRate;
@@ -2217,7 +2329,11 @@ void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int
     }
     readProfile.finish();
     AudioCallbackMetrics::Detail gainProfile(callbackMetrics,1);
-    for (int i = begin; i < end; ++i) {
+    const bool startRamp=playbackStartRamp[head]>=0 && v.start<=playbackStartRamp[head]+1e-7 &&
+        double(renderClock+dest+begin-playbackStartFrame[head])<sr*.003;
+    if(v.automation.curves.empty() && v.fadeIn<=0 && v.fadeOut<=0 && !startRamp)
+        applyConstantItemGain(v.processed[head],end-begin,v.clipGain,v.clipPan,v.channelMode);
+    else for (int i = begin; i < end; ++i) {
         float a = v.processed[head].getSample(0, i - begin),
               b = v.processed[head].getSample(1, i - begin);
         if (v.channelMode == 1)
@@ -2290,6 +2406,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         return;
     }
     ScopedNoDenormals noDenormals;
+    renderQuantum=samples;
     AudioCallbackMetrics::RenderProfile renderProfile(callbackMetrics);
     for (int ch = 0; ch < channels; ++ch)
         if (out[ch])
@@ -2319,19 +2436,27 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     bool routedHardware = false;
     const double sr = rate.load(std::memory_order_relaxed);
     const bool renderingHead[2]{current.playing||tailFrames[0]>0,current.subPlaying||tailFrames[1]>0};
+    // An unused secondary head has no input or effect tails in a plain audio
+    // graph. Keep its buffers clear without remixing every silent track. A
+    // plug-in/effect on that head retains the existing processing path.
+    const bool silentSubHead=!renderingHead[1] && std::all_of(buses.begin(),buses.end(),
+        [](const auto &bus){return bus->fx[1].empty();});
     const bool active = renderingHead[0] || renderingHead[1];
     const auto blockClock=int64_t(renderClock);
     for(auto &voice:voices)if(!voice->midiItem&&voice->fx[0].hasActiveStem())for(auto &buffer:voice->stemInput)buffer.clear(0,samples);
     masterBuffer.clear(0, samples);
     if(latencyPlan)latencyPlan->metronomeBuffer.clear(0,samples);
+    const bool loopGates = loopMixer.gates(current.position);
+    const bool outputMasterSolo = masterSolo || (loopGates && masterLoopRule.solo);
     bool anySolo = false;
     for (auto &bus : buses) {
         bus->recordingItemsSuppressed = captureActive && capture->recordsTrack(bus->id);
-        anySolo |= bus->solo;
+        anySolo |= bus->solo || (loopGates && bus->loopRule.solo);
         bus->buffer.clear(0, samples);
-        bus->subBuffer.clear(0, samples);
-        for(auto &buffer:bus->frozen)buffer.clear(0,samples);
-        for(auto &buffer:bus->clips)buffer.clear(0,samples);
+        if(silentSubHead)bus->subBuffer.clear();else bus->subBuffer.clear(0,samples);
+        bus->frozen[0].clear(0,samples);bus->clips[0].clear(0,samples);
+        if(silentSubHead){bus->frozen[1].clear();bus->clips[1].clear();}
+        else {bus->frozen[1].clear(0,samples);bus->clips[1].clear(0,samples);}
         for(auto &messages:bus->externalMIDI)messages.clear();
         if (((bus->midi && !bus->midi->empty()) || bus->fx[0].hasExternal()) && bus->midiSlot > 0)
             routedHardware = true;
@@ -2341,13 +2466,16 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         int index = (int)i;
         while (index >= 0) {
             auto &bus = *buses[(size_t)index];
-            muted |= bus.mute && !bus.automation.controlsMute();
-            solo |= bus.solo;
+            muted |= (bus.mute && !bus.automation.controlsMute()) || (loopGates && bus.loopRule.mute);
+            solo |= bus.solo || (loopGates && bus.loopRule.solo);
             index = bus.parent;
         }
         buses[i]->renderAudible = !muted && (!anySolo || solo);
     }
-    if(latencyPlan)for(auto &channel:latencyPlan->buses)for(auto &buffer:channel.routed)buffer.clear(0,samples);
+    if(latencyPlan)for(auto &channel:latencyPlan->buses) {
+        channel.routed[0].clear(0,samples);
+        if(silentSubHead)channel.routed[1].clear();else channel.routed[1].clear(0,samples);
+    }
     const bool keepPipeline=latencyPlan&&latencyPlan->total>0;
     // Keep every source/voice processing while any track is soloed. The
     // solo gate still clears non-audible buses before routing, but keeping
@@ -2410,6 +2538,29 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 MIDIPlayback::appendExternal(bus.externalSequence,bus.externalMIDI[head],
                     bus.externalExpected[head],bus.externalScopes[head],cursor,count,sr,
                     trackScope(current,head,index),sourceAudible(index) && !bus.recordingItemsSuppressed,done);
+            }
+            if(parallelClips) {
+                size_t jobs=0;
+                for(auto &voice:voices) {
+                    voice->parallelReady=false;
+                    if(!voice->parallelEligible || !voice->clipAudio || voice->itemMuted ||
+                       buses[voice->bus]->recordingItemsSuppressed || !sourceAudible(voice->bus) ||
+                       !trackScope(current,head,voice->bus).allows(voice->playbackStart,voice->regionOwnerIndex))continue;
+                    const int begin=(int)jlimit(0.,double(count),std::ceil((voice->start-cursor)*sr-1e-7));
+                    const int end=(int)jlimit(0.,double(count),std::ceil((voice->start+voice->duration-cursor)*sr-1e-7));
+                    if(begin>=end || jobs>=parallelClipJobs.size())continue;
+                    parallelClipJobs[jobs++]={voice.get(),voice->source->readers[readerHeads[size_t(head)].load()].get(),head,end-begin,cursor+begin/sr-voice->start};
+                }
+                if(jobs>=8) {
+                    AudioCallbackMetrics::Detail readProfile(callbackMetrics,0);
+                    parallelClips->run(jobs,this,[](void *context,size_t index,AudioBuffer<float> &scratch) noexcept {
+                        auto &job=static_cast<AudioEngine *>(context)->parallelClipJobs[index];
+                        auto &voice=*job.voice;
+                        voice.parallelOK=voice.clipAudio->render(*job.reader,scratch,voice.processed[job.head],job.head,job.local,job.frames);
+                        voice.parallelHead=job.head;voice.parallelFrames=job.frames;voice.parallelLocal=job.local;voice.parallelReady=true;
+                    });
+                    parallelClipBlocks.fetch_add(1,std::memory_order_relaxed);parallelClipTasks.fetch_add(jobs,std::memory_order_relaxed);
+                }
             }
             {
             AudioCallbackMetrics::Detail traversalProfile(callbackMetrics,3);
@@ -2548,7 +2699,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 path.inputDelay[0].process(bus.buffer.getWritePointer(0),bus.buffer.getWritePointer(1),samples,blockClock,renderingHead[0]);
                 path.hardware[0].process(bus.buffer.getWritePointer(0),bus.buffer.getWritePointer(1),samples,blockClock,renderingHead[0]);
             }
-            if (!bus.mute && !masterSolo) for (const auto& patch : bus.outputs) routeHardware(bus.buffer, patch);
+            if (!bus.mute && !outputMasterSolo) for (const auto& patch : bus.outputs) routeHardware(bus.buffer, patch);
             continue;
         }
         bus.midiMessages.clear();
@@ -2591,8 +2742,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         const bool absoluteVolume=volumeEnvelope&&!bus.automation.trim&&!bus.automation.take;
         const int combinedHead=renderingHead[0]?0:renderingHead[1]?1:0;
         auto applyGain=[&](AudioBuffer<float> &buffer,int head,bool beforeEffect=false,bool frozen=false) {
-            if (bus.automation.curves.empty() && !fadeSelected) {
-                float left = beforeEffect ? 1.f : (bus.mute ? 0.f : bus.volume);
+            if (bus.automation.curves.empty() && !fadeSelected && !(loopMixer.active && bus.loopRule.autoFader)) {
+                float left = beforeEffect ? 1.f : ((bus.mute || (loopGates && bus.loopRule.mute)) ? 0.f : bus.volume);
                 float right = left;
                 const float pan = beforeEffect && !panEnvelope ? 0.f : bus.pan;
                 if (pan > 0) left *= 1 - pan; else right *= 1 + pan;
@@ -2604,7 +2755,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             const unsigned delay=compensation?(beforeEffect&&!frozen?compensation->input:compensation->output):0;
             for(int n=0;n<samples;n++) {
                 const auto values=bus.automation.evaluate(automationTime(head,n,delay),beforeEffect?1:bus.volume,beforeEffect&&!panEnvelope?0:bus.pan,beforeEffect?false:bus.mute);
-                float left=values.mute?0:(float)values.gain,right=left;
+                const double gain = beforeEffect ? values.gain : bus.loopRule.volume(values.gain, loopMixer.amount(automationTime(head,n,delay)));
+                float left=(values.mute || (!beforeEffect && loopGates && bus.loopRule.mute))?0:(float)gain,right=left;
                 if(values.pan>0)left*=1-(float)values.pan;else right*=1+(float)values.pan;
                 if(!beforeEffect){if(bus.phase)left=-left,right=-right;if(fadeSelected)left*=trackFadeoutGains[size_t(n)],right*=trackFadeoutGains[size_t(n)];}
                 buffer.setSample(0,n,buffer.getSample(0,n)*left);buffer.setSample(1,n,buffer.getSample(1,n)*right);
@@ -2628,6 +2780,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         // Prepare each head independently before a CatStem bus merges them.
         // A normal chain keeps its existing per-head processing behavior.
         for(int head=0;head<2;head++) {
+            if(head==1 && silentSubHead)continue;
             auto &buffer=bus.head(head);const auto clock=blockClock;
             const bool moving=renderingHead[head];
             if(compensation)compensation->direct[head].process(buffer.getWritePointer(0),buffer.getWritePointer(1),samples,clock,moving);
@@ -2648,6 +2801,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             bus.externalMIDI[combinedHead].addEvents(bus.externalMIDI[other],0,samples,0);
         }
         for(int head=0;head<2;head++) {
+            if(head==1 && silentSubHead)continue;
             if(combined&&head!=combinedHead)continue;
             auto &buffer=bus.head(head);const auto clock=blockClock;
             const bool moving=combined?active:renderingHead[head];
@@ -2666,6 +2820,13 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 if(!panEnvelope){if(ch==0&&bus.pan>0)gain*=1-bus.pan;else if(ch==1&&bus.pan<0)gain*=1+bus.pan;}
                 FloatVectorOperations::multiply(buffer.getWritePointer(ch),gain,samples);
                 if(fadeSelected)FloatVectorOperations::multiply(buffer.getWritePointer(ch),trackFadeoutGains.data(),samples);
+                if(loopMixer.active && bus.loopRule.autoFader) for(int n=0;n<samples;++n) {
+                    const double at=automationTime(head,n,compensation?compensation->output:0);
+                    const double automated=bus.automation.evaluate(at,1,0,false).gain;
+                    const double base=automated*(absoluteVolume?1:bus.volume);
+                    const float scale=base>0?(float)(bus.loopRule.volume(base,loopMixer.amount(at))/base):1.f;
+                    buffer.setSample(ch,n,buffer.getSample(ch,n)*scale);
+                }
             }
             const bool silent = !buses[(size_t)index]->renderRouteAudible;
             peak = std::max(peak, silent ? 0.f : buffer.getMagnitude(0, samples));
@@ -2693,7 +2854,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 } else if(patch.firstChannel>0) {
                     auto &scratch=latencyPlan->hardwareScratch;
                     if(!preparedHardware){for(int ch=0;ch<2;ch++)scratch.copyFrom(ch,0,buffer,ch,0,samples);compensation->hardware[head].process(scratch.getWritePointer(0),scratch.getWritePointer(1),samples,clock,moving);preparedHardware=true;}
-                    if(!masterSolo)routeHardware(scratch,patch);
+                    if(!outputMasterSolo)routeHardware(scratch,patch);
                 }
             }
         }
@@ -2749,8 +2910,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         FloatVectorOperations::multiply(left, .5f, samples);
         FloatVectorOperations::copy(masterBuffer.getWritePointer(1), left, samples);
     }
-    if (masterAutomation.curves.empty()) {
-        float left = masterMute ? 0.f : masterVolume * (masterPhase ? -1.f : 1.f);
+    if (masterAutomation.curves.empty() && !(loopMixer.active && masterLoopRule.autoFader)) {
+        float left = (masterMute || (loopGates && masterLoopRule.mute)) ? 0.f : masterVolume * (masterPhase ? -1.f : 1.f);
         float right = left;
         if (masterPan > 0) left *= 1 - masterPan;
         if (masterPan < 0) right *= 1 + masterPan;
@@ -2760,7 +2921,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         const unsigned delay = latencyPlan ? latencyPlan->masterInput + masterFX.latencyFrames() : 0;
         for (int i = 0; i < samples; ++i) {
             const auto values = masterAutomation.evaluate(automationTime(0, i, delay), masterVolume, masterPan, masterMute);
-            float left = values.mute ? 0.f : (float)values.gain * (masterPhase ? -1.f : 1.f);
+            float left = (values.mute || (loopGates && masterLoopRule.mute)) ? 0.f : (float)masterLoopRule.volume(values.gain, loopMixer.amount(automationTime(0,i,delay))) * (masterPhase ? -1.f : 1.f);
             float right = left;
             if (values.pan > 0) left *= 1 - (float)values.pan;
             if (values.pan < 0) right *= 1 + (float)values.pan;

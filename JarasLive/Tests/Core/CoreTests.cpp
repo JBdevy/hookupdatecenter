@@ -655,7 +655,7 @@ static void testQueuedSubplayCancellationAndRequeue() {
     }
 }
 
-int main() {
+int main() try {
     testQueuedSubplayCancellationAndRequeue();
     testRepeatBetweenSectionMarkersAndStop();
     testPlayFromEmptyTimelineTail();
@@ -1263,7 +1263,8 @@ int main() {
     for(const auto& track:repelled.tracks) expect(std::abs(track.clips[0].startTime-42.01)<1e-8,"repulsion preserves offsets of every media item");
     cargoEngine.loadProject(cargo); cargoEngine.moveRegion("cargo-root",39.999);
     expect(std::abs(cargoEngine.project().songs[0].parts[0].startTime-39.99)<1e-8,"repulsion can choose the left side without moving stationary marker");
-    // Passing over material never transfers membership, even after save/reload.
+    // Existing ownership breaks overlap ties; loose material in the source
+    // area follows the next drag under the maximum-overlap movement rule.
     Project attachment; attachment.id="attachment-project"; attachment.name="Attachments";
     Song attachmentSong; attachmentSong.id="attachment-song"; attachmentSong.name="Show"; attachmentSong.duration=100;
     attachmentSong.parts={{"attachment-a","A",10,20},{"attachment-b","B",40,60}};
@@ -1280,7 +1281,8 @@ int main() {
     expect(restoredAttachments.tracks[0].clips[0].startTime==12 && restoredAttachments.tracks[0].clips[1].startTime==45,"leaving another region never steals its audio");
     expect(restoredAttachments.markers->at(0).position==14 && restoredAttachments.markers->at(1).position==47,"leaving another region never steals its markers");
     attachments.moveRegion("attachment-a",70); attachments.moveRegion("attachment-a",10);
-    expect(attachments.project().songs[0].tracks[0].clips[2].startTime==75 && attachments.project().songs[0].markers->at(2).position==78,"passing over loose items and markers leaves them stationary");
+    expect(attachments.project().songs[0].tracks[0].clips[2].startTime==15 && attachments.project().songs[0].markers->at(2).position==18,"loose items and markers inside the region follow its next drag");
+    expect(attachments.project().songs[0].tracks[0].clips[2].regionOwnerID=="attachment-a" && attachments.project().songs[0].markers->at(2).regionOwnerID=="attachment-a","moving covered loose material records its owning region");
     attachments.moveClip("attachment-free",15,""); // An explicit item placement attaches it.
     attachments.setMarker("attachment-loose","Placed cue",18,0);
     attachments.moveRegion("attachment-a",70);
@@ -1756,15 +1758,15 @@ int main() {
         expect(marker(manual.id).regionOwnerID=="owner-a" && !marker(loose.id).regionOwnerID,"batch edits without serialized owners retain owned and intentionally loose memberships");
         engine.moveRegion("owner-a",40);
         expect(marker(manual.id).position==46 && marker(batch.id).position==48,"new and edited tempo markers travel with their region");
-        expect(marker(loose.id).position==14 && marker(outside.id).position==41 && marker(boundary.id).position==20,"moving a region preserves loose tempo and the adjacent region's boundary");
+        expect(marker(loose.id).position==44 && marker(loose.id).regionOwnerID=="owner-a" && marker(outside.id).position==41 && marker(boundary.id).position==20,"moving a region carries enclosed tempo markers and preserves outside markers and the adjacent boundary");
         outside.tempoBPM=130; engine.setMarkers({outside},{},true);
         expect(!marker(outside.id).regionOwnerID,"retime batch cannot capture a loose marker covered by a moved region");
         engine.loadProject(engine.project()); engine.moveRegion("owner-a",10);
-        expect(marker(outside.id).position==41 && marker(manual.id).position==16,"save/reload and leaving a loose marker preserve established memberships");
+        expect(marker(outside.id).position==11 && marker(outside.id).regionOwnerID=="owner-a" && marker(manual.id).position==16,"after save/reload all markers inside the source region follow its next movement");
         batch.position=22; manual.position=70; engine.setMarkers({batch,manual});
         expect(marker(batch.id).regionOwnerID=="owner-b" && !marker(manual.id).regionOwnerID,"explicit batch movement attaches to the destination region or detaches outside");
         engine.setMarkers({}, {batch.id,manual.id});
-        expect(engine.currentSong()->markers->size()==3 && marker(boundary.id).regionOwnerID=="owner-b" && !marker(loose.id).regionOwnerID,"batch deletion preserves neighboring boundary and loose markers");
+        expect(engine.currentSong()->markers->size()==3 && marker(boundary.id).regionOwnerID=="owner-b" && marker(loose.id).regionOwnerID=="owner-a","batch deletion preserves the neighboring boundary and ownership established by movement");
         engine.setMarkers({loose},{loose.id});
         expect(marker(loose.id).regionOwnerID=="owner-a","explicit deletion followed by reinsertion establishes new placement ownership");
     }
@@ -1787,7 +1789,7 @@ int main() {
         expect(markers[1].position==10 && markers[1].regionOwnerID=="retime-owner-a" && markers[2].position==17.5 && markers[2].regionOwnerID=="retime-owner-b","real tempo warp retains owned start and adjacent boundary memberships");
         expect(engine.currentSong()->parts[0].endTime==17.5 && engine.currentSong()->parts[1].startTime==17.5,"batch ownership preserves the established tempo mapping");
         engine.moveRegion("retime-owner-a",35);
-        expect(engine.currentSong()->markers->at(0).position==12.5 && engine.currentSong()->markers->at(1).position==35 && engine.currentSong()->markers->at(2).position==17.5,"after retiming only the region's owned tempo marker follows its movement");
+        expect(engine.currentSong()->markers->at(0).position==37.5 && engine.currentSong()->markers->at(0).regionOwnerID=="retime-owner-a" && engine.currentSong()->markers->at(1).position==35 && engine.currentSong()->markers->at(2).position==17.5,"after retiming every tempo marker inside the region follows movement while the adjacent boundary stays fixed");
     }
     {
         Project project;project.id="exclusive-project";project.name="Subplay items";
@@ -1821,4 +1823,7 @@ int main() {
         expect(!e.transport().subExclusivePlaybackRegionId && scope(false).allows(playbackItemStart(*e.currentSong(),old),owner(old)),"cancelling automatic Subplay restores outgoing items");
     }
     std::cout << "JARAS_CORE_OK\n";
+} catch (const std::exception& error) {
+    std::cerr << "JARAS_CORE_FAILED: " << error.what() << '\n';
+    return 1;
 }

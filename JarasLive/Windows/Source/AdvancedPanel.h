@@ -31,7 +31,6 @@ class AdvancedPanel final : public Component, private Timer {
     int selected = 0, contentHeight = 300;
     TextEditor *bpm = nullptr, *beats = nullptr, *unit = nullptr;
     ComboBox *timebase = nullptr;
-    ToggleButton *automation = nullptr;
     void select(int);
     void save(const String &, var);
     Label &label(const String &, int, int, int, int = 26, bool = false);

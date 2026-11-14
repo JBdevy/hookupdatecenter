@@ -9,6 +9,19 @@ import AppKit
     func event(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat = 1, flags: NSEvent.ModifierFlags = []) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y), modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     }
+    var selectionFlags: [NSEvent.ModifierFlags] = []
+    view.select = { selectionFlags.append($0) }
+    for flags: NSEvent.ModifierFlags in [.shift, .command, [.shift, .command]] {
+        view.mouseDown(with: event(.leftMouseDown, 110, flags: flags))
+        view.mouseDragged(with: event(.leftMouseDragged, 130, flags: flags))
+        view.mouseUp(with: event(.leftMouseUp, 130))
+    }
+    precondition(selectionFlags == [.shift, .command, [.shift, .command]],
+                 "Modified header clicks preserve their own flags and select without starting a region move")
+    view.mouseDown(with: event(.leftMouseDown, 110))
+    view.mouseUp(with: event(.leftMouseUp, 110, flags: .shift))
+    precondition(selectionFlags.last == [], "Selection uses the press modifiers even if Shift changes before release")
+    view.select = nil
     view.mouseEntered(with: event(.mouseMoved, 8))
     precondition(NSCursor.current == .resizeLeftRight, "region left edge advertises resizing")
     view.mouseMoved(with: event(.mouseMoved, 110))

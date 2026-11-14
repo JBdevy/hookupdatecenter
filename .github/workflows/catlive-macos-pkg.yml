@@ -6,7 +6,7 @@ on:
       version:
         description: 'Versão pública do CatLive (ex.: 1.25)'
         required: true
-        default: '1.35'
+        default: '1.36'
       audio_only:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
@@ -228,6 +228,14 @@ jobs:
           bash scripts/test-native-timeline-backdrop.sh
           bash scripts/test-timeline-base-projection.sh
           bash scripts/test-plugin-catalog.sh
+          bash scripts/test-windows-remote-tuning.sh
+          bash scripts/test-windows-stage-timer.sh
+          bash scripts/test-windows-track-colour.sh
+          bash scripts/test-footer-selection-versions.sh
+          bash scripts/test-region-arrangement-core.sh
+          bash scripts/test-smk37-feedback-budget.sh
+          bash scripts/test-sidebar-wheel-routing.sh
+          bash scripts/test-native-event-queue.sh
           bash scripts/test-daw-remote.sh
           bash scripts/test-show-mode.sh
           bash scripts/test-project-tabs.sh

@@ -13,6 +13,13 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reclaimFinishedBuffers;
 @end
 #if TARGET_OS_OSX || TARGET_OS_IOS
+/// Commits source rate/pitch edits together at the next graph render boundary.
+/// Control calls may be batched; the render callback never waits for an edit.
+@interface JarasPreparedClipTiming : NSObject
+- (instancetype)initWithEngine:(AVAudioEngine *)engine;
+- (void)beginUpdates;
+- (void)endUpdates;
+@end
 /// File-backed source with the same lookahead pitch processing as Windows.
 /// Preparation reads/decodes on the control thread; playback reads bounded PCM
 /// pages replenished by a worker, never opening a file in the render callback.
@@ -21,7 +28,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) double sourcePosition;
 @property(nonatomic, readonly) BOOL playing;
 @property(nonatomic, readonly) uint64_t underruns;
+@property(nonatomic, readonly) NSDictionary<NSString *, NSNumber *> *processingDiagnostics;
 - (instancetype)initWithFormat:(AVAudioFormat *)format;
+- (instancetype)initWithFormat:(AVAudioFormat *)format timing:(nullable JarasPreparedClipTiming *)timing;
 - (BOOL)prepareURL:(NSURL *)url sourceFrame:(double)frame endFrame:(double)end
              rate:(double)rate pitch:(double)semitones loopStart:(double)loopStart loopEnd:(double)loopEnd
             error:(NSError **)error;
@@ -38,6 +47,21 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)startPlayers:(NSArray<AVAudioPlayerNode *> *)players error:(NSError **)error NS_SWIFT_NAME(start(_:));
 + (nullable AVAudioFormat *)connectEngine:(AVAudioEngine *)engine error:(NSError **)error NS_SWIFT_NAME(connect(_:));
 @end
+#if TARGET_OS_OSX
+/// Mac hardware keeps its selected device while a separate graph prepares PCM.
+/// The callback consumes bounded memory only; graph rendering owns one worker.
+@interface JarasBufferedAudioOutput : NSObject
+- (instancetype)initWithEngine:(AVAudioEngine *)engine hardwareEngine:(AVAudioEngine *)hardware;
+@property(nonatomic, readonly) AVAudioEngine *hardwareEngine;
+@property(nonatomic, readonly, nullable) AVAudioTime *renderTime;
+- (nullable AVAudioFormat *)configureAndReturnError:(NSError **)error;
+- (BOOL)startAndReturnError:(NSError **)error;
+- (void)stop;
+- (void)discardPreparedOutput;
+- (void)setOutputEnabled:(BOOL)enabled;
+- (NSDictionary<NSString *, id> *)diagnostics;
+@end
+#endif
 /// Native iPad hardware is deliberately separate from the AVAudioEngine graph.
 /// The driver can be stopped/recreated after a USB format change without the
 /// engine's hardware-format listener holding the old RemoteIO lock.

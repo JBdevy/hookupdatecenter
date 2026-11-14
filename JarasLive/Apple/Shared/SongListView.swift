@@ -8,8 +8,8 @@ import Combine
     @Published private(set) var isDetached = false
     @Published private(set) var isVisible = false
     private func remember(detached: Bool, visible: Bool) {
-        UserDefaults.standard.set(detached, forKey: "jaras.layout.setlist.detached")
-        UserDefaults.standard.set(visible, forKey: "jaras.layout.setlist.visible")
+        WorkspaceLayoutPreferences.storage.set(detached, forKey: "jaras.layout.setlist.detached")
+        WorkspaceLayoutPreferences.storage.set(visible, forKey: "jaras.layout.setlist.visible")
     }
     private(set) var window: NSWindow?
     private var host: NSHostingView<AnyView>?
@@ -34,6 +34,7 @@ import Combine
         panel.delegate = self
         let view = NSHostingView(rootView: AnyView(content().interfaceScaled()))
         if #available(macOS 13, *) { view.sizingOptions = [] }
+        if #available(macOS 13.3, *) { view.safeAreaRegions = [] }
         panel.contentView = view
         InterfaceScaling.shared.register(panel)
         panel.setFrameAutosaveName("CatLiveDetachedSetlist")
@@ -350,7 +351,7 @@ struct SongListView: View {
 
                     RegionStopButton(active: setlist.stopsAtRegionEnd, width: max(0, (geometry.size.width - 6) / 3)) { show.toggleRegionStop() }
                 }
-            }.frame(height: 26).padding(.horizontal, 8).padding(.bottom, 6)
+            }.frame(height: 26).padding(.horizontal, 8).padding(.top, 6).padding(.bottom, 6)
             HStack(spacing: 3) {
                 Button { choosingPlaylist.toggle() } label: {
                     HStack(spacing: 3) {
@@ -468,6 +469,12 @@ struct SongListView: View {
                                         }
                                     }
                                     Button("Config Init") { configInitSelection = region.subplayInitSelection; configInitRegion = source }
+                                    if playlist == nil, song?.isOrdinaryRegion(source) == true {
+                                        Button("Set region end to longest item") { show.fitRegionEndsToItems(targets) }
+                                            .disabled(show.timelineRegionsLocked)
+                                        Button("Space regions by 30 s") { show.spaceRegionsAfter(targets) }
+                                            .disabled(show.timelineRegionsLocked)
+                                    }
                                     Button("Export Audio") {
                                         guard let current = show.current else { return }
                                         let selection = AudioExportPlan.contextRegions(clicked: sourceID, selected: Set(selectedEntries.map(show.playlistRegionSourceID)), in: current)
@@ -563,7 +570,7 @@ struct SongListView: View {
             guard !creatingPlaylist && !choosingPlaylist else { return }
             show.stepRegion(request.direction, entries: visible)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity).background(JarasTheme.background)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(JarasTheme.background)
         .alert(Text(verbatim: JarasLocalization.string(playlistCopySucceeded ? "Playlist copied successfully" : "Could not copy playlist")), isPresented: $showingPlaylistCopyResult) {
             Button("OK", role: .cancel) { }
         } message: {
