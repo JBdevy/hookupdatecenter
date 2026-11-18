@@ -138,7 +138,8 @@ final class NativeEffectsChain {
                 configureGate(node as! AVAudioUnitEffect, value: value, enabled: value.gateEnabled == true)
             case "Pitch":
                 let pitch = node as! AVAudioUnitTimePitch
-                pitch.pitch = value.pitchEnabled == true ? Float(value.semitones * 100) : 0; pitch.bypass = false
+                pitch.pitch = value.pitchEnabled == true ? Float(value.semitones * 100) : 0
+                pitch.bypass = reorderable && pitch.pitch == 0
             case "Delay":
                 let delay = node as! AVAudioUnitDelay
                 delay.bypass = !value.delayEnabled; delay.delayTime = value.delayTime
@@ -405,9 +406,12 @@ final class NativeEffectsChain {
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
         var includedNodes = Set<ObjectIdentifier>()
         let ordered: [AVAudioNode] = keys.compactMap { key in
-            // Once inserted, Pitch keeps the same processing path and latency
-            // at 0 st and in bypass. Removing/reconnecting it mid-play discards
-            // buffered samples and leaves this item behind the transport.
+            // Item Pitch keeps the same path and latency at 0 st and in
+            // bypass. Track and master chains retain their dry path at 0 st.
+            if reorderable, next.kind(of: key) == "Pitch" {
+                let value = next.settings(for: key)
+                guard next.effectKeys.contains(key), value.pitchEnabled == true, value.semitones != 0 else { return nil }
+            }
             if let node = instanceNodes[key] { return node }
             switch key {
             case "Instruments": return instrumentMix
@@ -514,7 +518,7 @@ final class NativeEffectsChain {
         }
         if let pitch {
             pitch.pitch = next.inserted.contains("Pitch") && next.pitchEnabled == true ? Float(next.semitones * 100) : 0
-            pitch.bypass = false
+            pitch.bypass = reorderable && pitch.pitch == 0
         }
         if next.inserted.contains("Limiter"), limiter == nil {
             let node = JarasDynamics.makeLimiter(); limiter = node; engine?.attach(node)

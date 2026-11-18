@@ -4167,6 +4167,9 @@ private func nativeFixedTrackHeight(_ track: DAWRemoteState.Track, scale: Double
 private struct RemoteNativeTimeline: View {
     @AppStorage("jaras.timeline.invertWaveformColors") private var invertWaveformColors = false
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.isEnabled) private var controlsEnabled
+    @State private var volumeItem: UUID?
+    @State private var volumePreview: Double?
     @ObservedObject private var trackVisibility = TrackVisibilityPreferences.shared
     let state: DAWRemoteState
     let tracks: [DAWRemoteState.Track]
@@ -4276,6 +4279,18 @@ private struct RemoteNativeTimeline: View {
         if itemHeadersHidden { itemHeadersHidden = false }
         localShow?.pauseTimelineFollow(resumingAfter: 5)
     }
+    private var volumeClip: DAWRemoteState.Clip? {
+        guard !local, controlsEnabled, let volumeItem else { return nil }
+        return tracks.lazy.flatMap(\.clips).first { $0.id == volumeItem }
+    }
+    private func closeVolume() { volumeItem = nil; volumePreview = nil }
+    private func trackWithVolumePreview(_ source: DAWRemoteState.Track) -> DAWRemoteState.Track {
+        guard !local, let volumeItem, let volumePreview,
+              let index = source.clips.firstIndex(where: { $0.id == volumeItem }) else { return source }
+        var track = source
+        track.clips[index].gain = volumePreview
+        return track
+    }
     var body: some View {
         GeometryReader { geometry in
             let gutter = local ? TimelineVerticalBar.width : 0
@@ -4330,6 +4345,31 @@ private struct RemoteNativeTimeline: View {
                 }
             }
         }.clipped().background(remoteColor(state.gridBackgroundColor ?? UInt32(TimelineAppearanceDefaults.background)))
+            // Keep the presenter outside the cached/lazy item rows. Receiving
+            // a new gain, mute or transport state must not recreate its owner.
+            .background {
+                if !local {
+                    RemoteItemEditorPresentation(clip: volumeClip,
+                        color: tracks.first(where: { $0.clips.contains(where: { $0.id == volumeItem }) })?.color ?? 0,
+                        setGain: { gain in
+                            guard let volumeItem else { return }
+                            volumePreview = gain
+                            control(.clipGain, volumeItem, gain)
+                        }, mute: {
+                            if let volumeItem { control(.clipMute, volumeItem, 0) }
+                        }, close: closeVolume).frame(width: 0, height: 0)
+                }
+            }
+            .onChange(of: volumeClip?.id) { if $0 == nil { closeVolume() } }
+            .onChange(of: volumeClip?.gain) { gain in
+                if gain == volumePreview { volumePreview = nil }
+            }
+            .onChange(of: controlsEnabled) { if !$0 { closeVolume() } }
+            .task(id: volumePreview) {
+                guard volumePreview != nil else { return }
+                do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+                volumePreview = nil
+            }
             .onAppear {
                 scrolling.pointerEditing = local
                 scrolling.manualGridScroll = local ? { pauseScrollFollowing() } : nil
@@ -4337,13 +4377,13 @@ private struct RemoteNativeTimeline: View {
             }
             .onDisappear { scrolling.manualGridScroll = nil; scrolling.pointerEditing = false; cancelPointer(); cancelItemMix() }
             .onChange(of: scrolling.pointerReset) { _ in cancelPointer(); cancelItemMix() }
-            .onChange(of: state.project) { _ in cancelPointer(); cancelItemMix() }
+            .onChange(of: state.project) { _ in cancelPointer(); cancelItemMix(); closeVolume() }
             .onChange(of: localShow?.timelineActiveLockOptions) { options in if options != 0 { cancelPointer() } }
             .onChange(of: timelineFocus) { request in
                 if local, let request { gestureControl.cancelMotion(); viewport.center(on: request.position); playbackControl.controller?.navigate(to: viewport) }
             }
             .onChange(of: state.song) { _ in
-                cancelPointer(); cancelItemMix(); scrolling.pointerReset = UUID()
+                cancelPointer(); cancelItemMix(); closeVolume(); scrolling.pointerReset = UUID()
                 if local { gestureControl.cancelMotion(); viewport.reset(duration: state.duration); viewport.center(on: timelineFocus?.position ?? zoomCursor); retainedWindow = IpadTimelineRenderWindow(viewport) }
             }
             .onChange(of: viewport) { next in
@@ -5035,7 +5075,7 @@ private struct RemoteNativeTimeline: View {
         }
     }
     private func timelineRow(_ track: DAWRemoteState.Track, width: CGFloat, nativeSong: Song?, fixedHeight: CGFloat? = nil) -> some View {
-        RemoteTimelineTrackRow(track: track, width: width, displayScale: displayScale,
+        RemoteTimelineTrackRow(track: trackWithVolumePreview(track), width: width, displayScale: displayScale,
             start: start, end: end, span: span, hasRegion: local || region != nil, heightScale: scrolling.heightScale, fixedHeight: fixedHeight,
             project: state.project, song: state.song,
             scrolling: scrolling, local: local, headersHidden: itemHeadersHidden, invertWaveformColors: local && invertWaveformColors, nativeTrack: nativeContent?.tracks[track.id], nativeSong: nativeSong, preparedTrack: nativeContent?.track(track.id),
@@ -5076,6 +5116,7 @@ private struct RemoteNativeTimeline: View {
                 }
                 callback(id)
             } },
+            openVolume: { id in volumePreview = nil; volumeItem = id },
             itemMix: updateNativeItemMix, itemPhase: { localShow?.toggleItemPhase($0) }, control: { action, id, value in
                 let ids = scrolling.itemSelection.items
                 if local, ids.contains(id), ids.count > 1, let show = localShow {
@@ -5166,6 +5207,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     @State private var fadePreview: (id: UUID, fadeIn: Bool, value: Double)?
     var openItemMenu: ((UUID) -> Void)? = nil
     var openItemFX: ((UUID) -> Void)? = nil
+    var openVolume: ((UUID) -> Void)? = nil
     var itemMix: ((UUID, IpadItemMixParameter, Double, Bool, Bool) -> Void)? = nil
     var itemPhase: ((UUID) -> Void)? = nil
     let control: (DAWRemoteCommand.Action, UUID, Double) -> Void
@@ -5287,7 +5329,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     sourceFraction: (left - clip.start) / max(0.001, clip.duration),
                     visibleFraction: (right - left) / max(0.001, clip.duration),
                     mute: { control(.clipMute, clip.id, 0) },
-                    setGain: { control(.clipGain, clip.id, $0) }, local: local, headersHidden: headersHidden, trackSilenced: track.silenced == true,
+                    openVolume: { openVolume?(clip.id) }, local: local, headersHidden: headersHidden, trackSilenced: track.silenced == true,
                     nativeClip: item, nativeKind: nativeTrack?.kind, itemMixLocked: itemMixLocked, fixedCopy: fixedHeight != nil,
                     invertedWaveformColors: local && invertWaveformColors && nativeTrack.map { track in
                         item.map { TimelineItemWaveformColors.hasWaveform($0, track: track) } ?? false
@@ -5459,7 +5501,7 @@ private struct RemoteNativeGridItem: View, Equatable {
     let sourceFraction: Double
     let visibleFraction: Double
     let mute: () -> Void
-    let setGain: (Double) -> Void
+    let openVolume: () -> Void
     var local = false
     var headersHidden = false
     var trackSilenced = false
@@ -5478,7 +5520,6 @@ private struct RemoteNativeGridItem: View, Equatable {
     var openMenu: (() -> Void)? = nil
     var openFX: (() -> Void)? = nil
     @Environment(\.isEnabled) private var controlsEnabled
-    @State private var editorOpen = false
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.clip == rhs.clip && lhs.width == rhs.width && lhs.height == rhs.height && lhs.color == rhs.color &&
             lhs.nameColor == rhs.nameColor && lhs.scrolling === rhs.scrolling &&
@@ -5555,8 +5596,7 @@ private struct RemoteNativeGridItem: View, Equatable {
                             amplitude = min(1, peaks[first..<last].max() ?? 0)
                         }
                     } else {
-                        let phase = fraction * 300 + Double(seed)
-                        amplitude = 0.12 + 0.78 * abs(sin(phase * 0.37) * cos(phase * 0.13))
+                        amplitude = DAWRemoteItemWaveform.amplitude(seed: seed, fraction: fraction, gain: clip.gain)
                     }
                     let height = size.height * amplitude
                     wave.addRect(CGRect(x: CGFloat(index) * 3, y: (size.height - height) / 2, width: 1.5, height: height))
@@ -5570,27 +5610,86 @@ private struct RemoteNativeGridItem: View, Equatable {
             }
             .clipShape(RemoteNativeLoopOutline(seams: loopSeams))
             .overlay(RemoteNativeLoopOutline(seams: loopSeams).stroke(itemColor.opacity(0.75), lineWidth: 0.6).allowsHitTesting(false))
-            .modifier(RemoteItemMenuGesture(local: local, item: clip.id, selection: scrolling.itemSelection.items,
-                openVolume: { editorOpen = true }))
+            .modifier(RemoteItemMenuGesture(local: local, item: clip.id, selection: scrolling.itemSelection.items))
             .background {
                 if local && !fixedCopy {
                     IpadItemMenuAnchor(id: clip.id).allowsHitTesting(false)
                     RemoteGridItemHoldProbe(controller: scrolling, tap: select, hold: { openMenu?() })
+                } else if !local {
+                    RemoteGridItemHoldProbe(controller: scrolling, tap: nil, hold: {
+                        if controlsEnabled { openVolume() }
+                    })
                 }
             }
-            .popover(isPresented: $editorOpen, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
-                RemoteNativeItemEditor(clip: clip, color: color, setGain: setGain, mute: mute, close: { editorOpen = false })
-                    .preferredColorScheme(.dark)
+            .accessibilityLabel(clip.name).accessibilityAction(named: "Editar item") {
+                if local { openMenu?() } else if controlsEnabled { openVolume() }
             }
-            .onChange(of: controlsEnabled) { if !$0 { editorOpen = false } }
-            .accessibilityLabel(clip.name).accessibilityAction(named: "Editar item") { if let openMenu { openMenu() } else { editorOpen = true } }
+    }
+}
+// Own the light scrim so phone and tablet do not add a system sheet backdrop.
+private struct RemoteItemEditorPresentation: UIViewControllerRepresentable {
+    let clip: DAWRemoteState.Clip?
+    let color: UInt32
+    let setGain: (Double) -> Void
+    let mute: () -> Void
+    let close: () -> Void
+
+    func makeUIViewController(context: Context) -> Presenter { Presenter() }
+    func updateUIViewController(_ controller: Presenter, context: Context) {
+        controller.presentation = self
+        DispatchQueue.main.async { [weak controller] in controller?.refresh() }
+    }
+    static func dismantleUIViewController(_ controller: Presenter, coordinator: ()) {
+        controller.presentation = nil
+        controller.editor?.dismiss(animated: false)
+        controller.editor = nil
+    }
+
+    final class Presenter: UIViewController {
+        var presentation: RemoteItemEditorPresentation?
+        var editor: UIHostingController<RemoteItemEditorOverlay>?
+        override func viewDidLoad() { super.viewDidLoad(); view.backgroundColor = .clear }
+        override func viewDidAppear(_ animated: Bool) { super.viewDidAppear(animated); refresh() }
+        func refresh() {
+            guard let presentation else { return }
+            guard let clip = presentation.clip else {
+                editor?.dismiss(animated: false)
+                editor = nil
+                return
+            }
+            let content = RemoteItemEditorOverlay(clip: clip, color: presentation.color,
+                setGain: presentation.setGain, mute: presentation.mute,
+                close: presentation.close)
+            if let editor { editor.rootView = content; return }
+            guard viewIfLoaded?.window != nil, presentedViewController == nil else { return }
+            let controller = UIHostingController(rootView: content)
+            controller.modalPresentationStyle = .overFullScreen
+            controller.view.backgroundColor = .clear
+            controller.view.isOpaque = false
+            controller.view.accessibilityViewIsModal = true
+            editor = controller
+            present(controller, animated: false)
+        }
+    }
+}
+private struct RemoteItemEditorOverlay: View {
+    let clip: DAWRemoteState.Clip
+    let color: UInt32
+    let setGain: (Double) -> Void
+    let mute: () -> Void
+    let close: () -> Void
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.18).ignoresSafeArea().contentShape(Rectangle()).onTapGesture(perform: close)
+                .accessibilityHidden(true)
+            RemoteNativeItemEditor(clip: clip, color: color, setGain: setGain, mute: mute, close: close).id(clip.id)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).preferredColorScheme(.dark)
     }
 }
 private struct RemoteItemMenuGesture: ViewModifier {
     let local: Bool
     let item: UUID
     let selection: Set<UUID>
-    let openVolume: () -> Void
     @ViewBuilder func body(content: Content) -> some View {
         if local {
             content.overlay {
@@ -5604,7 +5703,6 @@ private struct RemoteItemMenuGesture: ViewModifier {
             }
         } else {
             content.contentShape(Rectangle())
-                .onLongPressGesture(minimumDuration: 0.4, maximumDistance: 8, perform: openVolume)
         }
     }
 }
@@ -5634,7 +5732,7 @@ private struct RemoteNativeItemEditor: View {
                 }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(JarasTheme.secondary).accessibilityLabel("Close")
             }
             HStack(spacing: 10) {
-                Text(verbatim: (clip.gain == 0 ? "−∞" : String(format: "%+.1f", decibels)) + " dB")
+                Text(verbatim: (decibels <= -60 ? "−∞" : String(format: "%+.1f", decibels)) + " dB")
                     .font(.jarasSystem(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(JarasTheme.green).frame(width: 67, height: 34)
                     .background(RemoteSurface.display).cornerRadius(5)

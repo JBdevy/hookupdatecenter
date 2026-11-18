@@ -1139,3 +1139,11 @@ struct DAWRemoteFadeoutState: Codable, Equatable {
     var active: Bool { runID != nil }
     var valid: Bool { duration.isFinite && (1...5).contains(duration) && remaining.isFinite && (0...duration).contains(remaining) && (active || remaining == 0) }
 }
+
+enum DAWRemoteItemWaveform {
+    static func amplitude(seed: Int, fraction: Double, gain: Double?) -> Double {
+        let phase = fraction * 300 + Double(seed)
+        let scale = gain.flatMap { $0.isFinite ? max(0, $0) : nil } ?? 1
+        return min(1, (0.12 + 0.78 * abs(sin(phase * 0.37) * cos(phase * 0.13))) * scale)
+    }
+}
