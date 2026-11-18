@@ -65,6 +65,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
     test("Project browser keeps progress inline, locks navigation and recovers after an open error", [&] {
         using floatingControlTests::require;
         ProjectBrowser browser;
+        browser.openMultiple = [](std::vector<File>) {};
         browser.setSize(560, 424);
         auto *recents = static_cast<ListBox *>(nullptr);
         for (auto *child : browser.getChildren())

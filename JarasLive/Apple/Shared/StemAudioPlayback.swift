@@ -84,7 +84,10 @@ struct AudioPresentationClock {
         }
     }
 
-    func position(at hostTime: Double) -> Double {
+    func position(at hostTime: Double, pendingJump: Anchor? = nil) -> Double {
+        if let pendingJump, hostTime >= pendingJump.hostTime {
+            return max(0, pendingJump.position + (hostTime - pendingJump.hostTime))
+        }
         let anchor = anchors.last(where: { $0.hostTime <= hostTime }) ?? anchors[0]
         // First Play/seek can be waiting for its output deadline. Hold the
         // requested position instead of drawing source time before it starts.
@@ -1199,7 +1202,12 @@ struct TimecodePlaybackSpan {
     /// The transport is ahead while players fill their processing latency.
     func presentationPosition(head: Int, sampledAt: Double) -> Double? {
         guard realtime, let clock = headPresentationClocks[head] else { return nil }
-        return clock.position(at: presentationHostTime(sampledAt: sampledAt))
+        // The prepared head can reach the output before the next transport
+        // update promotes it. A canceled jump disappears with preparedJump.
+        let pendingJump = head == 0 ? preparedJump.map {
+            AudioPresentationClock.Anchor(position: $0.destination, hostTime: AVAudioTime.seconds(forHostTime: $0.host))
+        } : nil
+        return clock.position(at: presentationHostTime(sampledAt: sampledAt), pendingJump: pendingJump)
     }
     private func presentationHostTime(sampledAt: Double) -> Double {
         AVAudioTime.seconds(forHostTime: mach_absolute_time()) - (ProcessInfo.processInfo.systemUptime - sampledAt)

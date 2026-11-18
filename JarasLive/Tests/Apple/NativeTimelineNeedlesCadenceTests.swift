@@ -180,12 +180,12 @@ MainActor.assumeIsolated {
     show.publish(main: 19.98)
     show.snapshot.transport.loop = LoopState(enabled: true, start: 10, end: 20)
     var output = AudioPresentationClock(position: 19.98, hostTime: 100)
-    output.transition(position: 10, hostTime: 100.02, sampledAt: 100)
+    var pendingJump: AudioPresentationClock.Anchor? = .init(position: 10, hostTime: 100.02)
     var frameTime = 100.01
     var queries: [(Int, Double)] = []
     show.audioPresentationPosition = { head, now in
         queries.append((head, now))
-        return head == 0 ? output.position(at: frameTime) : 70.025
+        return head == 0 ? output.position(at: frameTime, pendingJump: pendingJump) : 70.025
     }
     needles.configure(show: show, size: CGSize(width: 10000, height: 240), rulerHeight: 48,
         verticalOffset: 0, extent: 1000, seek: { _, _ in }, marker: { _ in })
@@ -202,6 +202,8 @@ MainActor.assumeIsolated {
     needles.fireFrameForTest()
     precondition(abs(position(1) - 10.005) < 1e-9 && show.generation == generation,
         "the first frame beyond an audible loop deadline wraps without another transport publication")
+    pendingJump = nil
+    output.transition(position: 10, hostTime: 100.02, sampledAt: 100.025)
     output.transition(position: 50, hostTime: 100.03, sampledAt: 100.025)
     frameTime = 100.035
     needles.fireFrameForTest()

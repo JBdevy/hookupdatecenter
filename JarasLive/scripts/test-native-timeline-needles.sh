@@ -14,7 +14,8 @@ import sys
 scroll = Path('Apple/Shared/GridScrollView.swift').read_text()
 diagnostics = scroll[scroll.index('enum TimelineLayoutDiagnostics'):scroll.index('protocol SidebarResizeLayoutBoundary')]
 start = scroll.index('final class GridNativeScrollView: NSScrollView')
-native = scroll[start:scroll.index('\n#endif', start)]
+reveal = scroll.index('struct GridRowReveal:')
+native = scroll[reveal:scroll.index('\n}', scroll.index('enum TimelineVerticalBar', reveal)) + 2] + '\n' + scroll[start:scroll.index('\n#endif', start)]
 start = scroll.index('private final class TimelineClipView: NSClipView')
 clip = scroll[start:scroll.index('\n#endif', start)]
 start = scroll.index('final class NativeTimelinePinnedView: NSView')
@@ -31,7 +32,8 @@ multi = multi[start:multi.index('\n}', start) + 2]
 # the presentation helper, needle view and native follow remain real code.
 presentation = Path('Application/Transport/TimelinePlaybackPresentation.swift').read_text().split('/// Song names and explicit tempo metadata')[0]
 audio = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
-clock = audio[audio.index('struct AudioPresentationClock {'):audio.index('@MainActor final class MetronomeSettings')]
+clock_start = audio.index('struct AudioPresentationClock {')
+clock = audio[clock_start:audio.index('\n}', clock_start) + 2]
 Path(sys.argv[1]).with_name('Presentation.swift').write_text(presentation + '\n' + clock)
 stub_track = 'public struct MultiLoopTrack: Codable, Equatable, Sendable {}\n'
 stub_track += 'final class GridDocumentView: NSView { var followsViewportWidth = false; func synchronizeHostedViewport() {} }\n'

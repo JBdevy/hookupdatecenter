@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 source = Path('Apple/Shared/StemAudioPlayback.swift').read_text()
 start = source.index('struct AudioPresentationClock {')
-end = source.index('@MainActor final class MetronomeSettings', start)
+end = source.index('\n}', start) + 2
 Path(sys.argv[1], 'clock.swift').write_text(source[start:end])
 Path(sys.argv[1], 'main.swift').write_text(Path('Tests/Apple/AudioPresentationClockTests.swift').read_text())
 PY

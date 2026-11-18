@@ -5,6 +5,11 @@ func equal(_ actual: Double, _ expected: Double, _ message: String) {
 }
 
 var clock = AudioPresentationClock(position: 10, hostTime: 100)
+let preparedLoop = AudioPresentationClock.Anchor(position: 10, hostTime: 105)
+equal(clock.position(at: 104.99, pendingJump: preparedLoop), 14.99, "A prepared loop finishes the outgoing audio")
+equal(clock.position(at: 105, pendingJump: preparedLoop), 10, "The needle wraps at the output deadline before transport promotion")
+equal(clock.position(at: 105.02, pendingJump: preparedLoop), 10.02, "The destination advances on the already scheduled audio clock")
+equal(clock.position(at: 105.02), 15.02, "Canceling the prepared loop leaves the outgoing clock intact")
 clock.transition(position: 10, hostTime: 105, sampledAt: 104.9)
 equal(clock.position(at: 104.99), 14.99, "An early transport wrap must finish the outgoing region")
 equal(clock.position(at: 105), 10, "The output deadline must show the exact first marker")

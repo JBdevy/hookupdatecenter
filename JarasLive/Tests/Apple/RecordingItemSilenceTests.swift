@@ -31,7 +31,12 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         try audio.update(state, revision: 1)
         let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
         func expect(_ expected: Float, _ label: String) throws {
-            for _ in 0..<32 {
+            let start = ProcessInfo.processInfo.systemUptime
+            for block in 0..<32 {
+                if realtime {
+                    let wait = start + Double(block * 512) / rate - ProcessInfo.processInfo.systemUptime
+                    if wait > 0 { RunLoop.main.run(until: Date(timeIntervalSinceNow: wait)) }
+                }
                 let status = try engine.renderOffline(512, to: output)
                 precondition(status == .success)
                 state.transport.position = Double(engine.manualRenderingSampleTime) / rate

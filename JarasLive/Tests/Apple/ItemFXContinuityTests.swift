@@ -90,10 +90,19 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         defer { audio.prepareForClosing() }
         try audio.update(state, revision: 1)
         let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
-        var lastSample: Float = 0
-        for _ in 0..<32 {
+        // Let the bounded PCM producer refill at the same cadence as the device.
+        let start = ProcessInfo.processInfo.systemUptime
+        var renderedBlocks = 0
+        func renderLiveBlock() throws {
+            let wait = start + Double(renderedBlocks * 512) / rate - ProcessInfo.processInfo.systemUptime
+            if wait > 0 { RunLoop.main.run(until: Date(timeIntervalSinceNow: wait)) }
             let status = try engine.renderOffline(512, to: output)
             precondition(status == .success)
+            renderedBlocks += 1
+        }
+        var lastSample: Float = 0
+        for _ in 0..<32 {
+            try renderLiveBlock()
             lastSample = output.floatChannelData![0][511]
         }
         precondition(lastSample > 0, "The fixture must already be sounding before changing FX")
@@ -101,8 +110,7 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         func verifyPCM(_ label: String) throws {
             for block in 0..<8 {
                 let expectedIndex = Int((lastSample * 65536).rounded()) % period
-                let status = try engine.renderOffline(512, to: output)
-                precondition(status == .success)
+                try renderLiveBlock()
                 for channel in 0..<2 { for frame in 0..<512 {
                     let expected = Float((expectedIndex + frame) % period + 1) / 65536
                     precondition(abs(output.floatChannelData![channel][frame] - expected) < 0.00001,
