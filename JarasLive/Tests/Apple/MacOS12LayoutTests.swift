@@ -94,7 +94,7 @@ MainActor.assumeIsolated {
                 precondition(widths.indices.map { ObjectIdentifier(PlacementProbe.views[100 + $0]!) } == identities,
                     "compact/expanded mode and fader visibility preserve every native button")
                 let expanded = height >= 64
-                let order = standard ? [0, 1, 7, 2, 3, 5, 4, 6] : Array(widths.indices)
+                let order = standard ? [0, 1, 7, 2, 3, 4, 5, 6] : Array(widths.indices)
                 let visible = order.filter { !standard || ($0 == 7 ? !expanded : expanded || $0 >= 2) }
                 let groupWidth = visible.reduce(CGFloat(0)) { $0 + widths[$1] } + CGFloat(visible.count - 1) * 3
                 let group = TrackMixerHeightGeometry.frames(width: 260, height: height, meterWidth: 12,
