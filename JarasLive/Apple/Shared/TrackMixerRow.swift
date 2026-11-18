@@ -1755,12 +1755,12 @@ struct MasterStrip: View {
                         .accessibilityLabel("Master Patch")
                     #endif
                     Spacer(minLength: 2)
+                    TrackPanKnob(show: show, track: nil, pan: show.snapshot.project.masterPan ?? 0).frame(width: 22, height: 24)
                     TrackFXButton(show: show, track: nil, settings: show.snapshot.project.masterFX ?? NativeFXSettings()).jarasHelp("Insert effect")
                         #if os(macOS)
                         .buttonStyle(CompactTrackButtonStyle(width: 26))
                         .fixedSize(horizontal: true, vertical: false)
                         #endif
-                    TrackPanKnob(show: show, track: nil, pan: show.snapshot.project.masterPan ?? 0).frame(width: 22, height: 24)
                     Button("M") { show.send(.mute) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterMute == true ? .red : nil)).jarasHelp("Mute")
                     Button("S") { show.send(.solo) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterSolo == true ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                 }.font(.jarasSystem(size: 10, weight: .semibold)).buttonStyle(.bordered).controlSize(.small).frame(height: 24)

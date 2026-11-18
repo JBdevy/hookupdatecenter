@@ -219,6 +219,8 @@ struct WorkspaceLayoutTests {
         for(int width:{800,1000,1440,1920}) for(int tabInset:{0,24}) {
             host.setSize(width,850); w.workspaceFullscreen=false;
             w.setBounds(0,tabInset,tabs.getWidth(),tabs.getHeight()-tabInset); w.resized();
+            require(w.masterPan.getRight() <= w.controls["masterFX"]->getX(),
+                    "Master Pan must sit to the left of FX");
             const auto normalPanel=w.transportBounds, normalGrid=w.workspaceBounds;
             std::vector<juce::Rectangle<int>> normal;
             for(auto *c:transport) normal.push_back(c->getBounds());

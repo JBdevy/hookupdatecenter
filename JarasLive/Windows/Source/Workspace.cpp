@@ -5651,8 +5651,8 @@ void Workspace::resized() {
     if(masterPeakReadout)masterPeakReadout->setBounds(31,41,43,12);
     controls["masterMono"]->setBounds(26, 14, 49, 20);
     controls["masterPatch"]->setBounds(79, 14, 45, 20);
-    controls["masterFX"]->setBounds(178, 14, 26, 20);
-    masterPan.setBounds(206, 13, 22, 22);
+    masterPan.setBounds(178, 13, 22, 22);
+    controls["masterFX"]->setBounds(202, 14, 26, 20);
     controls["masterMute"]->setBounds(229, 14, 22, 20);
     controls["masterSolo"]->setBounds(253, 14, 22, 20);
     const bool multipleProjects = canNavigateProjectTab && (canNavigateProjectTab(-1) || canNavigateProjectTab(1));
