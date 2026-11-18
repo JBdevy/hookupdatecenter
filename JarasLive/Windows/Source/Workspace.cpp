@@ -1588,7 +1588,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     void resized() override {
         auto area = getLocalBounds();
         horizontal.setBounds({});
-        area.removeFromRight(14);
+        area.removeFromRight(timelineGrid::verticalScrollbarWidth);
         canvas.setBounds(area);
         heads.setBounds(area);
         w.zoom.setRange(minimumZoom(), timelineGrid::maximumZoom);
@@ -5625,7 +5625,9 @@ void Workspace::resized() {
     const bool detachedSetlist = setlistPlacement == SetlistPlacement::detached;
     const int mixerGap=mixerVisible?6:0;
     const int setlistGap=setlistVisible&&!detachedSetlist?6:0;
-    const int columnsBudget=std::max(0,availableWidth-100-mixerGap-setlistGap);
+    const int iconColumnWidth = mixerVisible && showsTrackIcons ? 40 : 0;
+    const int columnsBudget = std::max(0, availableWidth - 100 - timelineGrid::verticalScrollbarWidth
+                                           - iconColumnWidth - mixerGap - setlistGap);
     const int mixerMinimum=mixerVisible?std::min(180,columnsBudget):0;
     const int setlistMinimum=setlistVisible&&!detachedSetlist?std::min(minimumSetlistWidth,std::max(0,columnsBudget-mixerMinimum)):0;
     const bool rightPartsDocked=partsRightVisible&&setlistVisible&&!detachedSetlist;
@@ -5642,7 +5644,7 @@ void Workspace::resized() {
     // mixerWidth remains the user's control-area width. Append the icon column
     // rather than squeezing Patch/faders/M/S into a narrower track body.
     const int mixerBodyWidth=mixerVisible?std::min(mixerWidth,std::max(mixerMinimum,columnsBudget-right-sectionsWidth-leftPartsWidth)):0;
-    const int left=mixerBodyWidth+(mixerVisible&&showsTrackIcons?40:0);
+    const int left = mixerBodyWidth + iconColumnWidth;
     const int leadingSetlist = setlistPlacement == SetlistPlacement::left ? right+setlistGap : 0;
     const int partsX = rail + leadingSetlist;
     const int mixerX = partsX + leftPartsWidth;

@@ -436,7 +436,7 @@ struct WorkspaceLayoutTests {
             require(num(state,"x")==w.tracksViewport.getRight()+(mixer?6:0),"Mixer divider lost its narrow resize area");
             require(w.mixerDivider.getWidth()==(mixer?6:0)&&w.setlistDivider.getWidth()==(setlist?6:0),"Hidden divider retained a margin or visible resize area collapsed");
             require(w.tracksViewport.getWidth()==(mixer?350:0),"Divider margin reduced mixer controls");
-            if(setlist&&!leading)require(num(state,"x")+num(state,"width")==w.setlistDivider.getX(),"Setlist rail overlaps the grid");
+            if(setlist&&!leading)require(num(state,"x")+num(state,"width")+timelineGrid::verticalScrollbarWidth==w.setlistDivider.getX(),"Setlist rail overlaps the grid");
             if(setlist&&leading)require(w.setlistDivider.getRight()==w.tracksViewport.getX(),"Leading setlist gap was not reserved");
         }
     }

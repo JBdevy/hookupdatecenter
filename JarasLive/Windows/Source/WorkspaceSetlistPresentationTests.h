@@ -66,7 +66,7 @@ struct WorkspaceSetlistPresentationTests {
                         !workspace.partsLeftVisible,
                         "Left Setlist is not before the track mixer or did not close left Parts");
             } else {
-                require(workspace.tracksViewport.getX()==0 && grid.getRight()==workspace.setlistDivider.getX() &&
+                require(workspace.tracksViewport.getX()==0 && grid.getRight()+timelineGrid::verticalScrollbarWidth==workspace.setlistDivider.getX() &&
                         workspace.setlistDivider.getWidth()==6 && list->getX()==workspace.setlistDivider.getRight(),
                         "Right Setlist changed the mixer origin or lost its 6 px resize area");
             }

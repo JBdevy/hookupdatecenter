@@ -224,7 +224,10 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
             session.setTempo(index%2?120:121);
             require(flag(presentation.snapshot(0),"tempoNeedsRender")==!(index%2),
                 ("Unified tempo indicator mismatch at step "+std::to_string(index)+", BPM "+std::to_string(session.tempoBPM())).c_str());
-            require(session.song()->markers->size()==3,"Unified tempo restoration generated extra boundary markers");
+            const auto& markers = *session.song()->markers;
+            require(markers.size() == 2 && std::any_of(markers.begin(), markers.end(), [&](const auto& m) { return m.id == a.id; }) &&
+                    std::any_of(markers.begin(), markers.end(), [&](const auto& m) { return m.id == b.id; }),
+                    "Unified tempo restoration must retain the original markers without adding an endpoint");
         }
     });
     test("Remote tempo indicator follows effective rates, region selection and completed renders", [&] {

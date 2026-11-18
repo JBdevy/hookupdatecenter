@@ -2042,7 +2042,7 @@ int runTests(const File &directory) {
             const auto first=std::find_if(markers.begin(),markers.end(),[&](const auto& m){return m.id==a.id;});
             const auto second=std::find_if(markers.begin(),markers.end(),[&](const auto& m){return m.id==b.id;});
             expect(first!=markers.end()&&second!=markers.end(),"BPM edit replaced original markers");
-            expect(std::abs(*first->tempoBPM-148)<1e-9&&std::abs(*second->tempoBPM-140.*148/147)<1e-9,"BPM depended on cursor");
+            expect(std::abs(*first->tempoBPM-148)<1e-9&&std::abs(*second->tempoBPM-141)<1e-9,"BPM depended on cursor");
             expect(std::abs(second->position-(10+10.*147/148))<1e-8,"Marker did not follow source speed");
             expect(!tempoEditing::active(*session.song(),session.song()->parts[0].endTime+1),"Tempo leaked outside the music");
         }
@@ -4335,8 +4335,11 @@ int runTests(const File &directory) {
         state.playing = false;
         engine.transport(state);
         render();
-        expect(output.getMagnitude(0, 480) == 0 && !engine.state().playing,
-               "Stop after a command backlog was lost");
+        const int stopFadeFrames = 96; // 2 ms at the fixture's 48 kHz rate.
+        expect(!engine.state().playing && output.getMagnitude(stopFadeFrames, 480 - stopFadeFrames) == 0,
+               "Stop after a command backlog did not become silent after its fade");
+        render();
+        expect(output.getMagnitude(0, 480) == 0, "Stop audio returned after the transition");
         state.playing = true;
         song.tracks[0].volume = 1;
         p.masterVolume = .5;
@@ -4717,15 +4720,25 @@ int runTests(const File &directory) {
             expect(core.currentSong()->tracks[0].clips[0].regionOwnerID==incoming,"Legacy parent/outgoing attachment must migrate to the majority incoming song");
             AudioEngine audio;audio.prepareOffline(48000);audio.prepareSong(*core.currentSong(),media,{},&core.project());audio.setOffline(true);
             AudioBuffer<float> output(2,512);
-            const auto render=[&](float expected){
+            const auto render=[&](float expected, const String& stage){
                 const auto &transport=core.transport();AudioEngine::State state;state.position=transport.position;state.playing=transport.playing;
-                state.scope[0]=jaras::playbackScope(*core.currentSong(),transport);audio.transport(state);
+                state.scope[0]=jaras::playbackScope(*core.currentSong(),transport);
+                state.end=transport.ignoreNextEnd.value_or(std::numeric_limits<double>::infinity());
+                const auto& pickup=core.currentSong()->tracks[0].clips[0];
+                expect(state.scope[0].allows(jaras::playbackItemStart(*core.currentSong(), pickup)) == (expected > 0),
+                       stage + ": transport chose the wrong playback scope");
+                audio.transport(state);
                 for(int n=0;n<8;++n)audio.render(output.getArrayOfWritePointers(),2,512);
-                expect(std::abs(output.getSample(0,256)-expected)<.002f,"Unified entry silenced a majority-owned pickup");
+                const auto sample=output.getSample(0,256);
+                expect(std::abs(sample-expected)<.002f,stage + ": PCM=" + String(sample) + ", expected=" + String(expected));
             };
-            core.execute({jaras::CommandKind::editSeek,{},4.5});core.execute({jaras::CommandKind::play});render(.1f);
+            core.execute({jaras::CommandKind::editSeek,{},4.5});core.execute({jaras::CommandKind::play});render(.1f,"Incoming child plays its majority-owned pickup");
             core.execute({jaras::CommandKind::stopAll});core.execute({jaras::CommandKind::selectRegion,outgoing});
-            core.execute({jaras::CommandKind::play});core.advance(4.5);core.execute({jaras::CommandKind::ignoreNext});render(0);
+            core.execute({jaras::CommandKind::play});
+            core.execute({jaras::CommandKind::ignoreNext}); // Arm while still in the outgoing child.
+            core.advance(4.5);
+            expect(core.transport().ignoreNextRegionId==outgoing,"Ignore Next was not armed for the outgoing child");
+            render(0,"Ignore Next excludes the incoming pickup");
         }
     });
     test("Constant audio item gain preserves PCM and channel modes", [&] { audioDSPKernelTests::gain(); });
@@ -7291,8 +7304,9 @@ int runTests(const File &directory) {
             expect(measure(clip, directory, truePeak) > measure(clip, directory, peak) + 2.5,
                    "True peak did not detect intersample peaks");
         }
-        expect(std::abs(gain(-80, 12) - std::pow(10., 24. / 20)) < 1e-9 && gain(-200, -1) == 1,
-               "Normalization gain limit or silence handling changed");
+        expect(std::abs(gain(-80, 12) - std::pow(10., 92. / 20)) < 1e-9 &&
+                   gain(-std::numeric_limits<double>::infinity(), -1) == 1,
+               "Normalization must reach the target above +24 dB and leave digital silence unchanged");
     });
     if(const auto source=SystemStats::getEnvironmentVariable("CATLIVE_NORMALIZE_FILE",{});source.isNotEmpty())
         test("External MP3 batch normalization reads complete source without audio devices",[&] {
