@@ -171,6 +171,8 @@ typealias AudioDeviceSettings = AudioOutputBindingHarness
     var bufferedOutput: BufferedOutputHarness?
     var outputAllowed = true
     var licenseAllowed = true
+    var preparationGraphGeneration: UUID?
+    var renderEnabled = false
     /* OUTPUT_STARTUP_METHODS */
 }
 

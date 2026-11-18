@@ -21,6 +21,12 @@
 	<array>
 		<string>_jaras-live._tcp</string>
 	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -28,8 +34,29 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.cockos.reaper.project</string>
+			<key>UTTypeDescription</key><string>REAPER Project</string>
+			<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+			<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>rpp</string></array></dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.apple.logicx.project</string>
+			<key>UTTypeDescription</key><string>Logic Project</string>
+			<key>UTTypeConformsTo</key><array><string>com.apple.package</string></array>
+			<key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>logicx</string></array></dict>
+		</dict>
+	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.jllyrics</string>
+            <key>UTTypeDescription</key><string>CatLive Lyrics</string>
+            <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+            <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>jllyrics</string></array></dict>
+        </dict>
 <dict>
 <key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.zipfx</string>
 <key>UTTypeDescription</key><string>CatLive Pads Presets</string>

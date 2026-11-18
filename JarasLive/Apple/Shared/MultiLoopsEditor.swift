@@ -14,6 +14,7 @@ struct MultiLoopsEditor: View {
     @State private var draft: MultiLoop?
     @State private var pairWarning = false
     @State private var markerWarning = false
+    @State private var capacityNotice = false
     @State private var trackSelection = MultiLoopTrackSelection()
     @State private var gainDrag: MultiLoopGainDrag?
     @FocusState private var nameFocused: Bool
@@ -32,6 +33,11 @@ struct MultiLoopsEditor: View {
             else if stage == 1 { nameForm }
             else if stage == 2 { markerForm }
             else if let draft { trackForm(draft) }
+            if capacityNotice {
+                Text(LocalizedStringKey(PlaybackCapacity.notice))
+                    .foregroundStyle(JarasTheme.yellow).font(.jarasCallout)
+                    .accessibilityLabel("Information")
+            }
             Divider()
             HStack {
                 Button(stage == 0 ? "Close" : "Cancel") {
@@ -67,7 +73,9 @@ struct MultiLoopsEditor: View {
                     .jarasHelp("Create multiloop")
                     .opacity(hasEnoughMarkers ? 1 : 0.4)
                     .disabled(bypassed && hasEnoughMarkers)
-                Button { show.setTotalLoop(!totalLoop, region: regionID) } label: {
+                Button {
+                    capacityNotice = !show.setTotalLoop(!totalLoop, region: regionID) && !show.capacityWarning.isEmpty
+                } label: {
                     Text("Total Loop").font(.jarasCallout.bold()).padding(.horizontal, 10).padding(.vertical, 6)
                         .background(totalLoop ? JarasTheme.green : Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
                         .foregroundStyle(totalLoop ? Color.black : Color.white)
@@ -142,7 +150,6 @@ struct MultiLoopsEditor: View {
                                 Image(systemName: selection.wrappedValue == marker.id ? "largecircle.fill.circle" : "circle")
                                 Text(marker.name).lineLimit(1)
                                 Spacer()
-                                Text(String(format: "%.2fs", marker.position)).monospacedDigit()
                             }.padding(7).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
@@ -174,7 +181,8 @@ struct MultiLoopsEditor: View {
     private func commit(_ loop: MultiLoop) {
         var next = loops
         if let index = next.firstIndex(where: { $0.id == loop.id }) { next[index] = loop } else { next.append(loop) }
-        if show.setMultiLoops(next, region: regionID) { stage = 0; draft = nil }
+        if show.setMultiLoops(next, region: regionID) { capacityNotice = false; stage = 0; draft = nil }
+        else { capacityNotice = !show.capacityWarning.isEmpty }
     }
     private func trackForm(_ loop: MultiLoop) -> some View {
         let tracks = availableTracks

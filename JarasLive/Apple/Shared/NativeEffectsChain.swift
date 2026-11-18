@@ -138,7 +138,7 @@ final class NativeEffectsChain {
                 configureGate(node as! AVAudioUnitEffect, value: value, enabled: value.gateEnabled == true)
             case "Pitch":
                 let pitch = node as! AVAudioUnitTimePitch
-                pitch.pitch = Float(value.semitones * 100); pitch.bypass = value.pitchEnabled != true || value.semitones == 0
+                pitch.pitch = value.pitchEnabled == true ? Float(value.semitones * 100) : 0; pitch.bypass = false
             case "Delay":
                 let delay = node as! AVAudioUnitDelay
                 delay.bypass = !value.delayEnabled; delay.delayTime = value.delayTime
@@ -153,6 +153,7 @@ final class NativeEffectsChain {
     private var input: AVAudioNode?
     private var format: AVAudioFormat?
     private var connected: [AVAudioNode] = []
+    private var connectionsInstalled = false
     // Keep processors ready for live edits, but do not render unused ones.
     // Once activated they retain their graph position through bypass ramps.
     private var preparedEffects: Set<String> = ["EQ"]
@@ -345,13 +346,22 @@ final class NativeEffectsChain {
             engine.attach(mix); engine.connect(input, to: mix, format: format)
             itemInputMix = mix; self.input = mix
         }
-        settings = nil; sampleRate = 0
+        settings = nil; sampleRate = 0; connectionsInstalled = false
         // Prepared PCM sources retain their own sample clock through an FX
         // edit. They need the combined source/EQ stage, but hundreds of dry
         // items must not render unused Delay and Reverb processors. An effect
         // joins the stable prefix when first inserted and remains warm after.
-        preparedEffects = reorderable || !preparesInactiveEffects ? ["EQ"] : Set(NativeFXSettings.order.dropFirst())
-        for node in nodes { engine.attach(node) }
+        if reorderable {
+            preparedEffects = ["EQ"]
+        } else {
+            preparedEffects = !preparesInactiveEffects ? ["EQ"] : Set(NativeFXSettings.order.dropFirst())
+        }
+        // Keep the track EQ connected for its editor's graph-free RTA.
+        // Other unused track processors stay outside the engine until needed.
+        // Item chains retain their source gain, channel mode and fade stage.
+        if !reorderable || preparesInactiveEffects {
+            for node in nodes { engine.attach(node) }
+        }
         // Prepared items already have a source-rate converter at the input.
         // Reuse it for the stable fanout instead of inserting another mixer.
         // Keep the output anchor: reconnecting even a prepared source's
@@ -395,12 +405,9 @@ final class NativeEffectsChain {
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
         var includedNodes = Set<ObjectIdentifier>()
         let ordered: [AVAudioNode] = keys.compactMap { key in
-            // TimePitch's bypass still buffers audio; a disabled/zero shift
-            // must take the dry path without adding transform latency.
-            if next.kind(of: key) == "Pitch" {
-                let value = next.settings(for: key)
-                if !next.effectKeys.contains(key) || value.pitchEnabled != true || value.semitones == 0 { return nil }
-            }
+            // Once inserted, Pitch keeps the same processing path and latency
+            // at 0 st and in bypass. Removing/reconnecting it mid-play discards
+            // buffered samples and leaves this item behind the transport.
             if let node = instanceNodes[key] { return node }
             switch key {
             case "Instruments": return instrumentMix
@@ -422,7 +429,8 @@ final class NativeEffectsChain {
                 #endif
             }
         }.filter { includedNodes.insert(ObjectIdentifier($0)).inserted }
-        guard ordered.map(ObjectIdentifier.init) != connected.map(ObjectIdentifier.init) else { return }
+        guard !connectionsInstalled || ordered.map(ObjectIdentifier.init) != connected.map(ObjectIdentifier.init) else { return }
+        for node in ordered where node.engine == nil { engine.attach(node) }
         detachDelayAnalysis()
         // Preserve every unchanged leading connection. In an item chain the
         // combined EQ/compressor is always first: rewiring its player input
@@ -445,7 +453,7 @@ final class NativeEffectsChain {
             destination = node
         }
         engine.connect(bridge, to: destination, fromBus: 0, toBus: 0, format: format)
-        connected = ordered
+        connected = ordered; connectionsInstalled = true
         observe(observedEffects)
     }
     func resetTails() {
@@ -458,12 +466,12 @@ final class NativeEffectsChain {
         if let node = stemSeparatorNode { JarasStemSeparator.stop(node) }
         detachDelayAnalysis()
         for node in instanceNodes.values { engine.detach(node) }; instanceNodes.removeAll()
-        for node in nodes { engine.detach(node) }
+        for node in nodes where node.engine === engine { engine.detach(node) }
         if let instrumentMix { engine.detach(instrumentMix) }
         if let itemInputMix { engine.detach(itemInputMix) }; itemInputMix = nil
         if let trackEntryMix { engine.detach(trackEntryMix) }; trackEntryMix = nil
         if outputDestination == nil { engine.detach(outputMix) }
-        outputDestination = nil; connected.removeAll(); self.engine = nil; input = nil
+        outputDestination = nil; connected.removeAll(); connectionsInstalled = false; self.engine = nil; input = nil
         preparedEffects = ["EQ"]
         instrumentMix = nil
         #if os(macOS)
@@ -505,8 +513,8 @@ final class NativeEffectsChain {
             pitch = node; engine?.attach(node)
         }
         if let pitch {
-            pitch.pitch = Float(next.semitones * 100)
-            pitch.bypass = !next.inserted.contains("Pitch") || next.pitchEnabled != true || next.semitones == 0
+            pitch.pitch = next.inserted.contains("Pitch") && next.pitchEnabled == true ? Float(next.semitones * 100) : 0
+            pitch.bypass = false
         }
         if next.inserted.contains("Limiter"), limiter == nil {
             let node = JarasDynamics.makeLimiter(); limiter = node; engine?.attach(node)

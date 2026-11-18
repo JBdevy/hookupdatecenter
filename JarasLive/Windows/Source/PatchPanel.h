@@ -8,7 +8,8 @@ class PatchPanel final : public Component, private Timer {
   public:
     PatchPanel(Session &s, ID target, std::function<void(String)> report, std::set<ID> selection = {})
         : session(s), id(std::move(target)), error(std::move(report)), targets(std::move(selection)) {
-        if (const auto *t = track(); t && (t->role.id == "vinhetas" || t->role.id == "programChange" || t->role.id == "generatedClick")) targets = {id};
+        if (const auto *t = track(); t && (t->role.id == "vinhetas" || t->role.id == "programChange" ||
+            t->role.id == "generatedClick" || jaras::isTeleprompterRole(t->role))) targets = {id};
         addAndMakeVisible(viewport);
         viewport.setViewedComponent(&content, false);
         viewport.setScrollBarsShown(true, false); viewport.setScrollBarThickness(4);
@@ -23,11 +24,15 @@ class PatchPanel final : public Component, private Timer {
         watchedRouting = routingStamp(); watchedRevision = session.revision;
         startTimerHz(5);
     }
+    String windowTitle() const {
+        if(targets.size()>1)return localization::translate("Patch");
+        return localization::translate("Patch")+" · "+(track()?text(track()->name):String("Master"));
+    }
     void paint(Graphics &g) override {
         g.setColour(Colour(0xff1f1f1f)); g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(.5f),18);
         g.setColour(Colour(0xff484848)); g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.5f),18,1);
         g.setColour(Colours::white); g.setFont(theme::semiboldFont(14));
-        g.drawText("Patch",28,20,getWidth()-56,24,Justification::centredLeft);
+        g.drawText(windowTitle(),28,20,getWidth()-56,24,Justification::centredLeft);
     }
     void mouseDown(const MouseEvent &event) override {
         if (event.y < 46)
@@ -88,7 +93,7 @@ class PatchPanel final : public Component, private Timer {
     TextButton close{localization::translate("Fechar")};
     int height = 0;
     std::set<ID> targets;
-    int batchCategory = 0, batchChoice = 1;
+    int batchCategory = 0, batchChoice = 1, batchMIDIChannel = 0;
     const jaras::Track *track() const {
         if (auto *song = session.song())
             for (const auto &t : song->tracks)
@@ -107,10 +112,25 @@ class PatchPanel final : public Component, private Timer {
     void edit(std::function<void(jaras::Track &)> action, bool routing = true) {
         try {
             session.editTrackSettings([&](jaras::Project &p) {
-                for (auto &s : p.songs)
-                    for (auto &t : s.tracks)
-                        if (t.id == id)
-                            action(t);
+                for (auto &s : p.songs) {
+                    const auto before=s.tracks;
+                    for (auto &t : s.tracks) if (t.id == id) action(t);
+                    const auto old=std::find_if(before.begin(),before.end(),[&](const auto &t){return t.id==id;});
+                    const auto now=std::find_if(s.tracks.begin(),s.tracks.end(),[&](const auto &t){return t.id==id;});
+                    if(old==before.end()||now==s.tracks.end())continue;
+                    const auto previous=old->routing.value_or(jaras::TrackRouting{}),next=now->routing.value_or(jaras::TrackRouting{});
+                    for(bool receive:{true,false}){
+                        const auto &a=receive?previous.receives:previous.transmitters,&b=receive?next.receives:next.transmitters;
+                        std::set<ID> was,is;for(const auto &v:a)if(v)was.insert(*v);for(const auto &v:b)if(v)is.insert(*v);
+                        auto all=was;all.insert(is.begin(),is.end());
+                        for(auto &other:s.tracks)if(other.id!=id&&all.count(other.id)){
+                            auto mirror=other.routing.value_or(jaras::TrackRouting{});auto &slots=receive?mirror.transmitters:mirror.receives;
+                            if(is.count(other.id)){if(std::find(slots.begin(),slots.end(),std::optional<ID>{id})==slots.end()){auto empty=std::find(slots.begin(),slots.end(),std::nullopt);if(empty==slots.end())slots.push_back(id);else *empty=id;}}
+                            else for(auto &slot:slots)if(slot==id)slot.reset();
+                            other.routing=std::move(mirror);
+                        }
+                    }
+                }
             }, routing);
         } catch (const std::exception &e) {
             if (error)
@@ -284,11 +304,12 @@ class PatchPanel final : public Component, private Timer {
             for(int i=1;i<count;i+=2){names.add(String(batchCategory==0?"In ":"Out ")+String(i)+" / "+String(i+1));patches.push_back({i,2});}
         }
         choice(0,120,300,names,batchChoice,[this](int n){batchChoice=n;});
-        button("Apply to selected tracks",0,164,300,[this,patches]{
+        if(batchCategory==1){StringArray channels{localization::translate("All")};for(int ch=1;ch<=16;++ch)channels.add(String(ch));label("Canal MIDI",0,156,94);choice(100,156,200,channels,batchMIDIChannel+1,[this](int value){batchMIDIChannel=value-1;});}
+        button("Apply to selected tracks",0,batchCategory==1?198:164,300,[this,patches]{
             if(batchCategory!=2 && session.audio.isRecording())return;
             try{session.editTrackSettings([&](jaras::Project &p){for(auto &song:p.songs)for(auto &t:song.tracks)if(targets.count(t.id)){
                 if(batchCategory!=2&&t.role.id=="vinhetas")continue;
-                if(batchCategory==1){if(batchChoice==1)t.midiInput.reset();else t.midiInput=batchChoice-1;}
+                if(batchCategory==1){if(batchChoice==1)t.midiInput.reset();else t.midiInput=batchChoice-1;if(batchMIDIChannel==0)t.midiChannel.reset();else t.midiChannel=batchMIDIChannel;}
                 else {const auto patch=patches[(size_t)jlimit(0,(int)patches.size()-1,batchChoice-1)];
                     if(batchCategory==0){if(!t.stereoLinkPartner || t.stereoLinkLeft || !targets.count(*t.stereoLinkPartner))assignInput(song,t,patch);}
                     else{t.outputs=std::vector<jaras::OutputPatch>{patch};t.patch.reset();t.secondaryPatch.reset();}
@@ -296,7 +317,7 @@ class PatchPanel final : public Component, private Timer {
             }}, batchCategory!=1);}catch(const std::exception &e){if(error)error(String::fromUTF8(e.what()));}
         });
         fields.getLast()->setEnabled(batchCategory==2 || (allStandard && !session.audio.isRecording()));
-        height=216;resized();
+        height=batchCategory==1?250:216;resized();
     }
     void build() {
         fields.clear(); content.dividers.clear();
@@ -325,7 +346,7 @@ class PatchPanel final : public Component, private Timer {
         if (t->role.id == "timecode") { buildTimecode(*t); return; }
         auto *device = session.audio.devices.getCurrentAudioDevice();
         label(device ? device->getName() : String::fromUTF8("Áudio não iniciado"), 0, 8, 300);
-        const bool outputOnly=t->role.id=="vinhetas" || t->role.id=="generatedClick";
+        const bool outputOnly=t->role.id=="vinhetas" || t->role.id=="generatedClick" || jaras::isTeleprompterRole(t->role);
         if(!outputOnly) {
         StringArray inputs{localization::translate("None")};
         std::vector<jaras::OutputPatch> inputPatches{{-1, 2}};

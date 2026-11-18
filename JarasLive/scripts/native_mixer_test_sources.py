@@ -11,6 +11,9 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
     theme=Path('Apple/Shared/Theme.swift').read_text()
     parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n', Path('Application/Transport/TransportFadeout.swift').read_text().split('extension ShowController {')[0], ('// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1])]
     parts.append(theme[theme.index('extension Color {'):theme.index('struct StageButtonStyle:')])
+    selection = Path('Apple/Shared/GridSelectionInput.swift').read_text()
+    appearance = selection.index('enum TrackMixerButtonAppearance {')
+    parts.append(selection[appearance:selection.index('\n}', appearance) + 2])
     # Exercise the real row equality gate, including the height-mode inputs supplied
     # by TimelineGridView. Omitting them from the fixture concealed boundary rebuilds.
     a=s.index('        #if os(macOS)', s.index('    static func ==', s.index('struct TrackMixerRow:')))
@@ -18,7 +21,7 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
     parts.append('private struct FixtureHeightMode { let compactHeight: Bool; let minimalHeight: Bool }\n'
                  'private func productionHeightModesEqual(_ lhs: FixtureHeightMode, _ rhs: FixtureHeightMode) -> Bool {\n'
                  +s[a:b]+'return sameHeightMode\n}')
-    for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('private struct CompactTrackButtonStyle:','private struct TrackPanFader:'),('private struct DirectVolumeSlider:','\n#endif'),('private struct TrackDragTitle:','\n#endif')]:
+    for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('private struct CompactTrackButtonStyle:','private struct TrackPanKnob:'),('private struct DirectVolumeSlider:','\n#endif'),('private struct TrackDragTitle:','\n#endif')]:
      a=s.index(begin);parts.append(s[a:s.index(end,a)])
     if control_marker:
      a=s.index('struct TrackControlSelectionExclusion:');parts.append(s[a:s.index('@MainActor final class TrackSelectionRouter',a)])

@@ -63,6 +63,7 @@ private final class TestScrolling {
 private final class WorkspaceProbe {
     var smkNavigation = TestSMKNavigation()
     var local = true
+    var editingTracks = true
     var allRegionsOrder = 0
     var nativeKeyboardBrowsing = false
     var remoteNavigationTask: Task<Void, Never>?
@@ -205,7 +206,7 @@ private final class WorkspaceProbe {
             expect(view.draggingSetlistEntries == [other] && view.selectedSetlistEntries == [other], "Dragging one block must move only that entry, never the songs below it")
             expect(view.setlistSelectionAnchor == other && show.selectedBlock == other, "A new single-block drag updates the keyboard selection anchor")
         }
-        for invalidContext in 0..<6 {
+        for invalidContext in 0..<7 {
             let view = WorkspaceProbe(), show = view.localShow!
             let block = show.listedBlocks[0].id
             view.draggingSetlistEntries = [block]
@@ -215,7 +216,8 @@ private final class WorkspaceProbe {
             case 2: show.snapshot.project.id = UUID()
             case 3: show.current = .init(id: UUID(), tracks: [])
             case 4: show.selectedRegionPlaylist = .init(id: UUID())
-            default: show.listedBlocks.removeAll()
+            case 5: show.listedBlocks.removeAll()
+            default: view.editingTracks = false
             }
             expect(!view.prepareNativeSetlistDrag(block), "A Remote, All regions, switched project/song/playlist or stale row cannot start a native reorder")
             expect(view.draggingSetlistEntries.isEmpty, "A rejected drag must not leave an old batch available to the next drop")

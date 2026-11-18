@@ -5,6 +5,7 @@
 #include "ProjectionSelection.h"
 #include "ItemRender.h"
 #include "AudioSeparation.h"
+#include "MultitrackExport.h"
 #include "ItemLayout.h"
 #include "Appearance.h"
 #include "TrackTree.h"
@@ -1071,6 +1072,13 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
         kind != jaras::CommandKind::phase && kind != jaras::CommandKind::masterMono)
         throw std::runtime_error("Conclua a gravação antes de mudar a posição ou a música.");
     syncClock();
+    const bool armingPart = kind == jaras::CommandKind::queueSection && transport().playing &&
+                            transport().queuedSectionMarkerId != std::optional<ID>(target);
+    if (kind == jaras::CommandKind::toggleLoop && !transport().loop.enabled && rejectOverCapacity({}, true)) return;
+    if (armingPart && rejectOverCapacity()) return;
+    if (armingPart && song() && song()->markers)
+        for (const auto &marker : *song()->markers)
+            if (marker.id == target && marker.section.value_or(false) && rejectOverCapacity(marker.position)) return;
     const bool start = kind == jaras::CommandKind::play || kind == jaras::CommandKind::subPlay;
     if (start) {
         const auto unavailable=audio.outputAvailabilityError();
@@ -1259,13 +1267,15 @@ void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set
     const bool desired = !state(*source);
     const double sourceVolume=source->volume,sourcePan=source->pan;
     std::vector<ID> order{id};
-    for (const auto &t : tracks) if (selection.count(id) && selection.count(t.id) && t.id != id) order.push_back(t.id);
+    if (!jaras::isTeleprompterRole(source->role))
+        for (const auto &t : tracks) if (selection.count(id) && selection.count(t.id) && t.id != id) order.push_back(t.id);
     std::set<ID> applied;
     for (const auto &target : order) {
         if (applied.count(target) || (volume && trackFaderLocked(target))) continue;
         const auto at = std::find_if(tracks.begin(), tracks.end(), [&](const auto &t) { return t.id == target; });
         if (at == tracks.end()) continue;
-        if (jaras::fixedTrackName(at->role).size() && at->role.id != "generatedClick" && at->role.id != "timecode") continue;
+        const bool teleprompterVolume = volume && target == id && jaras::isTeleprompterRole(at->role);
+        if (jaras::fixedTrackName(at->role).size() && at->role.id != "generatedClick" && at->role.id != "timecode" && !teleprompterVolume) continue;
         if (volume || pan) {
             const double next = volume ? jlimit(0., std::pow(10., 12./20), sourceVolume <= 0 || value <= 0 ? value : at->volume * value / sourceVolume)
                                        : jlimit(-1., 1., at->pan + value - sourcePan);
@@ -1709,6 +1719,17 @@ void Session::resizeSharedItemBoundary(const ID &left,const ID &right,double pos
         throw std::runtime_error("Os itens não existem mais na mesma pista.");
     },false);
 }
+void Session::resizeTeleprompterBoundary(const std::set<ID> &selected,const ID &left,const ID &right,double position) {
+    edit([&](jaras::Project &project) {
+        for(auto &song:project.songs)for(auto &track:song.tracks) {
+            if(auto result=jaras::teleprompterBoundary(track,selected,left,right,position)) {
+                for(auto &clip:track.clips)for(const auto &changed:*result)if(clip.id==changed.id){clip=changed;break;}
+                return;
+            }
+        }
+        throw std::runtime_error("Selecione textos adjacentes na mesma pista de teleprompter.");
+    },false);
+}
 Session::ItemTimingHistory Session::itemTimingHistory(const ID &id) const {
     for (const auto &song : project().songs) for (const auto &track : song.tracks)
         for (const auto &clip : track.clips) if (clip.id == id) return {song.id, clip, song.duration};
@@ -1804,6 +1825,13 @@ void Session::editTrackSettings(const std::function<void(jaras::Project &)> &cha
     if (routing && audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de alterar o roteamento.");
     auto updated = project(); change(updated);
     applyTimelineHistory({std::move(updated), false, false, true, routing}, true);
+}
+void Session::refreshProjectionAudio() {
+    if (song() && std::any_of(song()->tracks.begin(), song()->tracks.end(), [](const auto &track) {
+            return jaras::isTeleprompterRole(track.role) &&
+                   std::any_of(track.clips.begin(), track.clips.end(), projectionMedia);
+        }))
+        prepareLiveGraph();
 }
 void Session::editItemControls(const std::function<void(jaras::Project &)> &change) {
     if (busy || jaras::projectSync::readOnly()) return;
@@ -2126,7 +2154,7 @@ void Session::setRegionPitch(const ID &id, int semitones, std::vector<ID> tracks
     applyPitchHistory({id, semitones, std::move(tracks), std::move(groups)}, true);
 }
 double Session::tempoBPM() const {
-    return song() ? tempoEditing::bpm(*song(), tempoEditing::position(*song(), transport())) : 120;
+    return song() ? tempoEditing::bpm(*song(), tempoEditing::referencePosition(*song(), transport())) : 120;
 }
 void Session::setMeter(int beats, int unit) {
     if (busy || !song() || (song()->beatsPerBar == beats && song()->beatUnit == unit)) return;
@@ -2138,10 +2166,32 @@ void Session::setMeter(int beats, int unit) {
     if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
     redoHistory.clear(); dirty = true; message.clear(); notify();
 }
+bool Session::rejectOverCapacity(std::optional<double> position, bool assumingPlayback) {
+    bool exceeded = false;
+    if (song()) {
+        auto candidate = transport();
+        if (assumingPlayback && !candidate.playing) { candidate.playing = true; candidate.position = candidate.editPosition; }
+        if (position) {
+            candidate.position = *position;
+            candidate.playbackStartRegionId = jaras::playbackEntryRegion(*song(), *position);
+            candidate.exclusivePlaybackRegionId.reset();
+        }
+        exceeded = jaras::playbackCapacity::exceeded(*song(), candidate,
+            project().regionSetlist && project().regionSetlist->subplayExclusiveTrackIDs ?
+                *project().regionSetlist->subplayExclusiveTrackIDs : std::vector<ID>{});
+    }
+    if (!exceeded) return false;
+    capacityWarning = localization::translate(String::fromUTF8(jaras::playbackCapacity::notice));
+    capacityWarningUntil = Time::getMillisecondCounterHiRes() + 2000;
+    notify();
+    return true;
+}
 void Session::setTempo(double value) {
     if (jaras::projectSync::readOnly()) return;
     if (busy || !song() || !std::isfinite(value)) return;
     if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de alterar o andamento.");
+    syncClock();
+    if (!tempoInputAllowed() && rejectOverCapacity()) return;
     const auto now = tempoEditClock();
     const auto requested = jlimit(60., 300., value);
     if (std::abs(requested - tempoBPM()) < 1e-9) return;
@@ -2149,7 +2199,6 @@ void Session::setTempo(double value) {
     const auto profile=SystemStats::getEnvironmentVariable("CATLIVE_PROFILE_TEMPO",{});
     auto measurements=object();auto stage=Time::getMillisecondCounterHiRes();
     const auto mark=[&](const char* name){if(profile.isNotEmpty()){const auto now=Time::getMillisecondCounterHiRes();put(measurements,name,now-stage);stage=now;}};
-    syncClock();mark("clock");
     value = jlimit(60., 300., value);
     if (std::abs(value - tempoBPM()) < .0000001) return;
     TimelineHistory before{core.timingSnapshot(), true};
@@ -2157,7 +2206,7 @@ void Session::setTempo(double value) {
     const auto &oldSong = *std::find_if(before.project.songs.begin(), before.project.songs.end(),
                                      [&](const auto &candidate) { return candidate.id == song()->id; });mark("historyAndSongCopy");
     if (const auto *part = tempoEditing::region(oldSong, transport())) {
-        const auto targets = tempoEditing::regionChange(oldSong, *part, value - tempoBPM(), tempoBPM());
+        const auto targets = tempoEditing::regionChange(oldSong, *part, value - tempoBPM());
         if (targets.empty()) return;
         core.setMarkers(targets, {}, true);
     } else if (const auto *active = tempoEditing::active(oldSong, tempoEditing::position(oldSong, transport()))) {
@@ -2400,7 +2449,7 @@ void Session::renderItems(std::set<ID> ids,bool glue,int midiChannels,std::funct
         });
     });
 }
-void Session::separateAudioItem(ID id,std::function<void(std::set<ID>)> completed) {
+void Session::separateAudioItem(ID id,std::function<void(std::set<ID>)> completed,std::set<int> instruments) {
     if(busy||!song())return;
     if(audio.isRecording())throw std::runtime_error("Conclua a gravação antes de separar áudio.");
     if(canPlay&&!canPlay())throw std::runtime_error("Valide sua licença para separar áudio.");
@@ -2410,12 +2459,12 @@ void Session::separateAudioItem(ID id,std::function<void(std::set<ID>)> complete
         if(!audioSeparation::eligible(track,clip))throw std::runtime_error("Selecione apenas um item de áudio.");
         exportCancelled=false;busy=true;importProgress=0;message=String::fromUTF8("Preparando a separação de áudio…");notify();
         auto weak=std::weak_ptr<int>(alive);
-        worker.addJob([this,weak,source,sourceSong,directory,track,clip,completed] {
+        worker.addJob([this,weak,source,sourceSong,directory,track,clip,completed,instruments] {
             audioSeparation::Result result;String error;
             try {
                 result=audioSeparation::render(source,sourceSong,track,clip,directory,exportCancelled,[this,weak](double value,String text) {
                     MessageManager::callAsync([this,weak,value,text]{if(!weak.expired()){importProgress=value;message=text;if(changed)changed();}});
-                });
+                },instruments);
                 AudioFormatManager formats;registerAudioFormats(formats);
                 for(size_t row=0;row<result.tracks.size();++row) {
                     std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(result.files[row]));
@@ -2436,6 +2485,37 @@ void Session::separateAudioItem(ID id,std::function<void(std::set<ID>)> complete
         });return;
     }
     throw std::runtime_error("O item de áudio não está mais disponível.");
+}
+void Session::exportMultitrack(std::vector<MultitrackExportProject> projects, std::function<void()> onCompleted) {
+    if (busy || !song()) return;
+    if (audio.isRecording()) throw std::runtime_error("Conclua a gravação antes de exportar.");
+    if (canPlay && !canPlay()) throw std::runtime_error("Valide sua licença para exportar áudio.");
+    exportCancelled = false;
+    exportFailed = false;
+    busy = true;
+    importProgress = 0;
+    message = String::fromUTF8("Preparando exportação…");
+    notify();
+    auto weak = std::weak_ptr<int>(alive);
+    worker.addJob([this, weak, projects = std::move(projects), onCompleted = std::move(onCompleted)] {
+        String error;
+        try {
+            multitrackExport::run(projects, exportCancelled, [this, weak](double fraction, String detail) {
+                MessageManager::callAsync([this, weak, fraction, detail] {
+                    if (!weak.expired()) { importProgress = fraction; message = detail; }
+                });
+            });
+        } catch (const std::exception &failure) { error = String::fromUTF8(failure.what()); }
+        MessageManager::callAsync([this, weak, error, onCompleted] {
+            if (weak.expired()) return;
+            busy = false;
+            exportFailed = error.isNotEmpty();
+            if (!exportFailed) importProgress = 1;
+            message = exportFailed ? error : localization::translate("Multitrack export completed.");
+            notify();
+            if (error.isEmpty() && onCompleted) onCompleted();
+        });
+    });
 }
 void Session::exportAudio(ExportRequest request) {
     if (busy || !song())

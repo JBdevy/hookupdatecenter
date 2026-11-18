@@ -237,14 +237,20 @@ import Combine
         return true
     }
 }
+/// Let the table handle selection and native row drag tracking.
+private final class FXChainEffectNameView: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
 @MainActor private final class FXChainTableView: NSTableView {
     var bypassRow: ((Int) -> Void)?
     var removeRow: ((Int) -> Void)?
+    override func canDragRows(with rowIndexes: IndexSet, at mouseDownPoint: NSPoint) -> Bool {
+        !rowIndexes.isEmpty && column(at: mouseDownPoint) > 0
+    }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.option) {
-            bypassRow?(row(at: convert(event.locationInWindow, from: nil))); return
-        }
-        super.mouseDown(with: event)
+            bypassRow?(row(at: convert(event.locationInWindow, from: nil)))
+        } else { super.mouseDown(with: event) }
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         let index = row(at: convert(event.locationInWindow, from: nil))
@@ -492,7 +498,8 @@ import Combine
             button.setAccessibilityLabel(JarasLocalization.string("Bypass") + " · " + value.name)
             return button
         }
-        let text = NSTextField(labelWithString: value.name); text.lineBreakMode = .byTruncatingTail
+        let text = FXChainEffectNameView(labelWithString: value.name); text.lineBreakMode = .byTruncatingTail
+        text.isSelectable = false; text.isEditable = false; text.refusesFirstResponder = true
         text.font = NSFont.jarasSystemFont(ofSize: 12); text.textColor = value.enabled ? .labelColor : .secondaryLabelColor
         return text
     }
@@ -521,7 +528,7 @@ import Combine
         let insert = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 500),
                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
         insert.title = JarasLocalization.string("Insert effect")
-        insert.isFloatingPanel = true
+        insert.isFloatingPanel = false
         insert.hidesOnDeactivate = false
         insert.contentView = NSHostingView(rootView:
             FXInsertEditor(show: show, track: track, targets: insertionTargets, clip: clip, inserted: { [weak self] effect in
@@ -546,7 +553,7 @@ import Combine
         if let owner {
             insert.setFrameOrigin(CGPoint(x: owner.frame.midX - insert.frame.width / 2,
                                           y: owner.frame.midY - insert.frame.height / 2))
-            owner.addChildWindow(insert, ordered: .above)
+            ProjectionWindow.followWorkspaceWindow(insert)
         } else { insert.center() }
         insertionPanel = insert
         insert.makeKeyAndOrderFront(nil)
@@ -568,8 +575,13 @@ import Combine
         tableView.setDropRow(row, dropOperation: .above); return .move
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-        guard targetIsCurrent, info.draggingSource as? NSTableView === list, (0...rows.count).contains(row),
-              let effect = info.draggingPasteboard.string(forType: Self.dragType), rows.contains(where: { $0.effect == effect }) else { return false }
+        guard info.draggingSource as? NSTableView === list,
+              let effect = info.draggingPasteboard.string(forType: Self.dragType) else { return false }
+        return moveEffect(effect, to: row)
+    }
+    @discardableResult private func moveEffect(_ effect: String, to row: Int) -> Bool {
+        guard targetIsCurrent, (0...rows.count).contains(row),
+              rows.contains(where: { $0.effect == effect }) else { return false }
         let target = rows.indices.contains(row) ? rows[row].effect : nil
         if let clip {
             guard let moved = show.reorderClipFX(clip, effect: effect, before: target) else { return false }

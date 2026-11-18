@@ -25,8 +25,8 @@ if 'private func resetSetlistBrowsing(' in source:
     fixture = fixture.replace('nativeKeyboardBrowsing', 'setlistBrowsing')
 fixture = fixture.replace('// PRODUCTION_NATIVE_SETLIST_ACTIONS', '\n'.join(declaration('private func ' + name + '(') for name in methods))
 block_row = declaration('private func setlistBlockRow(')
-assert '.onDrag' in block_row and 'prepareNativeSetlistDrag(block.id)' in block_row, 'Block rows must start the same native drag as songs'
-assert '.onDrop' in block_row and 'target: block.id' in block_row, 'Block rows must also accept before/after drops'
+assert 'NativeSetlistDragHandle(enabled: editingTracks' in block_row and 'prepareNativeSetlistDrag(block.id)' in block_row, 'Block rows must start the same native drag as songs'
+assert 'IpadSetlistDropTarget' in block_row and 'target: block.id' in block_row and '.onDrop' in Path('Apple/Shared/IpadStandaloneWorkspace.swift').read_text().split('struct IpadSetlistDropTarget:')[1].split('struct IpadSetlistDrop:')[0], 'Block rows must also accept before/after drops'
 Path(sys.argv[1]).write_text(fixture)
 PY
 swiftc -swift-version 5 -parse-as-library \

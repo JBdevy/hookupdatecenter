@@ -81,6 +81,6 @@ struct EffectSpectrogram: View {
             }.font(.jarasSystem(size: 8,weight: .medium,design: .monospaced)).foregroundStyle(.white.opacity(0.55)).padding(8)
         }.frame(minHeight: 120,idealHeight: 155,maxHeight: .infinity).clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(JarasTheme.line))
-            .onReceive(clock) { _ in display.update(StemAudioPlayback.shared.spectrumFrame(track,effect: effect),rate: AudioDeviceSettings.shared.sampleRate) }
+            .onReceive(clock) { _ in display.update(StemAudioPlayback.shared.spectrumFrame(track,effect: effect),rate: StemAudioPlayback.shared.processingSampleRate) }
     }
 }

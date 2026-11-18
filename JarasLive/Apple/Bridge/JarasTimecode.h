@@ -13,10 +13,14 @@ NS_ASSUME_NONNULL_BEGIN
 NS_ASSUME_NONNULL_END
 
 NS_ASSUME_NONNULL_BEGIN
+@interface JarasPreparedMetronomeProgram : NSObject
+@end
 @interface JarasMetronomeGenerator : NSObject
 @property(nonatomic,readonly) AVAudioSourceNode *node;
 - (instancetype)initWithFormat:(AVAudioFormat *)format;
 - (void)setSections:(NSArray<NSDictionary *> *)sections soundA:(NSData *)soundA soundB:(NSData *)soundB mode:(NSInteger)mode;
++ (JarasPreparedMetronomeProgram *)prepareSections:(NSArray<NSDictionary *> *)sections soundA:(NSData *)soundA soundB:(NSData *)soundB mode:(NSInteger)mode;
+- (void)applyPreparedSections:(JarasPreparedMetronomeProgram *)program;
 - (void)setClickSections:(NSArray<NSDictionary*>*)sections sound:(NSData*)sound;
 - (void)setGainA:(float)a gainB:(float)b;
 - (void)setEnabled:(BOOL)enabled;

@@ -44,11 +44,14 @@ enum NativeProjectFolderStorage {
         }
         return root
     }
+    static func projectsDirectory(in root: URL) -> URL {
+        root.lastPathComponent == "CatLive" ? root.appendingPathComponent("Projects", isDirectory: true)
+            : root.appendingPathComponent("CatLive/Projects", isDirectory: true)
+    }
     static func prepare(root: URL, legacy: URL, container: URL) throws -> Prepared {
         let fm = FileManager.default
         let root = try externalRoot(root, container: container)
-        let directory = root.lastPathComponent == "CatLive" ? root.appendingPathComponent("Projects", isDirectory: true)
-            : root.appendingPathComponent("CatLive/Projects", isDirectory: true)
+        let directory = projectsDirectory(in: root)
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         var moved: [URL: URL] = [:]
         if fm.fileExists(atPath: legacy.path) {

@@ -77,9 +77,15 @@ final class PlaybackEditClockTests: XCTestCase {
         let (show, _, now, delay) = try fixture()
         let track = show.current!.tracks[0].id, clip = show.current!.tracks[0].clips[0].id
         let count = observe(show, now: now)
-        show.audioMute = { _, _ in delay() }; show.audioClipMute = { _, _ in delay() }
+        let transport = show.snapshot.transport, sampleTime = show.timelinePlaybackSampleTime
+        var scalarUpdates = 0
+        show.audioMute = { id, _ in XCTAssertEqual(id, track); scalarUpdates += 1; delay() }
+        show.audioClipMute = { id, _ in XCTAssertEqual(id, clip); scalarUpdates += 1; delay() }
         for _ in 0..<4 { show.send(.mute, target: track); show.send(.clipMute, target: clip) }
-        XCTAssertEqual(count(), 8)
+        XCTAssertEqual(scalarUpdates, 8)
+        XCTAssertEqual(count(), 0, "Mute changes must not rebuild the audio project on the UI thread")
+        XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(show.timelinePlaybackSampleTime, sampleTime)
         show.tick()
         XCTAssertEqual(show.snapshot.transport.position, 5 + now() - 100, accuracy: 0.000001)
         XCTAssertFalse(show.current!.tracks[0].mute)

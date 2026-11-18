@@ -119,7 +119,7 @@ enum ItemReRender {
         let folder = directory.appendingPathComponent("Stems")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         var names = MediaFileNames(directory: folder)
-        let name = names.allocate((ordered[0].name as NSString).deletingPathExtension + ".wav", forceSuffix: true)
+        let name = names.allocateUnification((ordered[0].name as NSString).deletingPathExtension + ".wav")
         let url = folder.appendingPathComponent(name)
         let id = UUID()
         let job = AudioExportJob(id: id.uuidString, fileName: name, start: start, end: end, track: track.id, clip: nil)

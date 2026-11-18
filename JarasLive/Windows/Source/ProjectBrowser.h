@@ -48,6 +48,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     std::function<void()> createEmpty, createTemporary, createEmptyInNewTab, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
         browse, resume;
     std::function<void(File)> open, openInNewTab, deleteProject;
+    std::function<void(std::vector<File>)> openMultiple;
     void setProjectOpen(bool);
     void setPlaybackRunning(bool value) { playbackRunning = value; updateEnabled(); }
     void beginLoading(const File &);
@@ -61,7 +62,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
   private:
     class Action final : public Button {
       public:
-        enum Icon { document, plusDocument, folder, plusFolder, waveform, archive, back, piano, recording };
+        enum Icon { document, plusDocument, folder, plusFolder, waveform, archive, back, piano, recording, clock };
         Action(String title, Icon symbol) : Button(title), icon(symbol) {}
         void paintButton(Graphics &, bool, bool) override;
         std::function<void(const MouseEvent &)> contextMenu;
@@ -80,7 +81,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     Action add{"Adicionar ao projeto", Action::plusFolder};
     Action recent{"Projetos Recentes", Action::folder};
     Action empty{"Vazio", Action::document};
-    Action temporary{"Temporary", Action::document};
+    Action temporary{"Temporary", Action::clock};
     Action stems{"Adicionar stems", Action::waveform};
     Action reaper{"REAPER", Action::waveform};
     Action logic{"Logic", Action::piano};
@@ -88,6 +89,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     Action package{"Add .ziplive", Action::archive};
     Action back{"Voltar ao projeto", Action::back};
     TextButton browseButton{localization::translate(String::fromUTF8("Procurar…"))};
+    TextButton multipleButton{localization::translate("Open multiple projects")};
     TextButton cancelLoading{localization::translate("Cancelar")};
     std::function<void()> cancelLoadingAction;
     TextEditor search;

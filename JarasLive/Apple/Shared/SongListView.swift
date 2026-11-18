@@ -22,7 +22,7 @@ import Combine
         if let window {
             update(content: content)
             if window.isMiniaturized { window.deminiaturize(nil) }
-            window.makeKeyAndOrderFront(nil); isVisible = true
+            ProjectionWindow.presentWorkspaceWindow(window); isVisible = true
             return
         }
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 700),
@@ -42,7 +42,7 @@ import Combine
         host = view; window = panel
         setPartsVisible(partsVisible)
         isDetached = true; isVisible = true
-        panel.makeKeyAndOrderFront(nil)
+        ProjectionWindow.presentWorkspaceWindow(panel)
     }
 
     func update<Content: View>(@ViewBuilder content: () -> Content) {
@@ -121,6 +121,8 @@ private func setlistQueuedRegionID(_ region: UUID?, occurrence: UUID?, parent: U
     }
 }
 struct SongListView: View {
+    @AppStorage("jaras.language") private var language = "en"
+    @Environment(\.multitrackAction) private var multitrackAction
     var mediaDirectory: URL?
     var partsOpen: Bool = false
     var toggleParts: () -> Void = {}
@@ -194,8 +196,7 @@ struct SongListView: View {
         return show.allRegions.filter { !existing.contains($0.id) }
     }
     @State private var showingAutoOptions = false
-    @State private var choosingSubplayTracks = false
-    @State private var subplayTrackDraft = Set<UUID>()
+    @State private var subplayTrackSelection: SubplayTrackSelectionRequest?
     @State private var configInitRegion: Part?
     @State private var configInitSelection = 1
     @State private var searching = false
@@ -302,8 +303,9 @@ struct SongListView: View {
                         Text("AUTO").font(.jarasSystem(size: 9, weight: .bold))
                             .foregroundStyle(setlist.autoAdvance ? .black : JarasTheme.secondary)
                             .frame(width: max(0, (geometry.size.width - 6) / 3), height: 26)
-                            .background(setlist.autoAdvance ? JarasTheme.green : JarasTheme.panel)
+                            .background(setlist.autoAdvance ? JarasTheme.yellow : JarasTheme.panel)
                             .clipShape(RoundedRectangle(cornerRadius: 4)).contentShape(Rectangle())
+                            .modifier(JarasBlink(active: setlist.autoAdvance))
                     }.buttonStyle(.plain).jarasHelp("Queue the next song automatically")
                         .immediateRightClick { showingAutoOptions = true }
                         .popover(isPresented: $showingAutoOptions) {
@@ -328,10 +330,12 @@ struct SongListView: View {
                                         }
                                         Text(verbatim: "Next").tag(11)
                                     }.disabled(show.regionSetlist.automaticSubplay != true)
-                                    Button("Choose tracks") {
-                                        subplayTrackDraft = Set(show.regionSetlist.subplayExclusiveTrackIDs ?? [])
+                                    Button(JarasLocalization.string("Choose tracks")) {
+                                        let request = SubplayTrackSelectionRequest(
+                                            tracks: show.current?.tracks ?? [],
+                                            selected: Set(show.regionSetlist.subplayExclusiveTrackIDs ?? []))
                                         showingAutoOptions = false
-                                        DispatchQueue.main.async { choosingSubplayTracks = true }
+                                        DispatchQueue.main.async { subplayTrackSelection = request }
                                     }
 
                                 }
@@ -364,7 +368,7 @@ struct SongListView: View {
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).jarasHelp("Choose playlist")
                     .contextMenu {
-                        Button("Copy to share") { copyPlaylist(playlist?.id) }
+                        Button(JarasLocalization.string("Copy to share")) { copyPlaylist(playlist?.id) }
                             .disabled(song == nil)
                     }
                     #if os(macOS)
@@ -401,16 +405,16 @@ struct SongListView: View {
                                     .overlay(RoundedRectangle(cornerRadius: 4).stroke(selectedEntries.contains(block.id) ? JarasTheme.green : .clear, lineWidth: 1))
                                     .onTapGesture { selectEntry(block.id, visible: visible) }
                                     .contextMenu {
-                                        Button("Edit block") {
+                                        Button(JarasLocalization.string("Edit block")) {
                                             editingEntry = EntryEdit(id: block.id, name: block.name, color: block.color, block: true)
                                         }
-                                        Button("Learn MIDI") {
+                                        Button(JarasLocalization.string("Learn MIDI")) {
                                             if let number = show.setlistBlockNumber(block.id) {
                                                 ControlMappings.shared.beginSetlistBlock(number)
                                             }
                                         }
                                         Divider()
-                                        Button("Delete block", role: .destructive) {
+                                        Button(JarasLocalization.string("Delete block"), role: .destructive) {
                                             let blocks = Set(show.listedBlocks.map(\.id))
                                             let targets: Set<UUID> = selectedEntries.contains(block.id)
                                                 ? selectedEntries.intersection(blocks) : [block.id]
@@ -456,26 +460,31 @@ struct SongListView: View {
                                     let targets = selectedEntries.contains(region.id) ? selectedEntries : [region.id]
                                     let sourceID = show.playlistRegionSourceID(region.id)
                                     let source = song?.parts.first { $0.id == sourceID } ?? region
-                                    Button("Edit song") { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: sourceID, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: Set(targets.map(show.playlistRegionSourceID))) }
-                                    Button("Detect BPM…") { show.detectBPMRegions = visible.compactMap { entry in
+                                    Button(JarasLocalization.string("Edit song")) { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: sourceID, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: Set(targets.map(show.playlistRegionSourceID))) }
+                                    Button(JarasLocalization.string("Detect BPM…")) { show.detectBPMRegions = visible.compactMap { entry in
                                         if case .region(let part, _) = entry, targets.contains(part.id) { return show.playlistRegionSourceID(part.id) }; return nil
                                     } }
-                                    if targets.count == 1 && !content.unifiedRegionIDs.contains(sourceID) { Button("Multiloops") { multiLoopRegion = source } }
+                                    if targets.count == 1 && !content.unifiedRegionIDs.contains(sourceID) { Button(JarasLocalization.string("Multiloops")) { multiLoopRegion = source } }
                                     if playlist != nil && targets.count == 1 && region.parentRegionID == nil {
-                                        Button("Duplicate region") {
+                                        Button(JarasLocalization.string("Duplicate region")) {
                                             if let duplicate = show.duplicatePlaylistRegion(region.id) {
                                                 selectedEntries = [duplicate]; entrySelectionAnchor = duplicate
                                             }
                                         }
                                     }
-                                    Button("Config Init") { configInitSelection = region.subplayInitSelection; configInitRegion = source }
+                                    Button(JarasLocalization.string("Config Init")) { configInitSelection = region.subplayInitSelection; configInitRegion = source }
                                     if playlist == nil, song?.isOrdinaryRegion(source) == true {
-                                        Button("Set region end to longest item") { show.fitRegionEndsToItems(targets) }
+                                        Button(JarasLocalization.string("Set region end to longest item")) { show.fitRegionEndsToItems(targets) }
                                             .disabled(show.timelineRegionsLocked)
-                                        Button("Space regions by 30 s") { show.spaceRegionsAfter(targets) }
+                                        Button(JarasLocalization.string("Space regions by 30 s")) { show.spaceRegionsAfter(targets) }
                                             .disabled(show.timelineRegionsLocked)
                                     }
-                                    Button("Export Audio") {
+                                    if let multitrackAction, source.parentRegionID == nil {
+                                        Button(JarasLocalization.string("Export Multitrack")) {
+                                            multitrackAction(sourceID, Set(selectedEntries.map(show.playlistRegionSourceID)))
+                                        }
+                                    }
+                                    Button(JarasLocalization.string("Export Audio")) {
                                         guard let current = show.current else { return }
                                         let selection = AudioExportPlan.contextRegions(clicked: sourceID, selected: Set(selectedEntries.map(show.playlistRegionSourceID)), in: current)
                                         guard !selection.isEmpty else { return }
@@ -483,7 +492,7 @@ struct SongListView: View {
                                             regions: selection, mediaDirectory: mediaDirectory)
                                     }
                                     if region.parentRegionID == nil {
-                                    Button(playlist == nil ? "Delete region" : "Remove from playlist", role: .destructive) {
+                                    Button(JarasLocalization.string(playlist == nil ? "Delete region" : "Remove from playlist"), role: .destructive) {
                                         requestRemoval([region.id], keyboard: false)
                                     }
                                     }
@@ -572,7 +581,7 @@ struct SongListView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(JarasTheme.background)
         .alert(Text(verbatim: JarasLocalization.string(playlistCopySucceeded ? "Playlist copied successfully" : "Could not copy playlist")), isPresented: $showingPlaylistCopyResult) {
-            Button("OK", role: .cancel) { }
+            Button(JarasLocalization.string("OK"), role: .cancel) { }
         } message: {
             if playlistCopySucceeded {
                 Text("Paste the list wherever you want to share it.")
@@ -581,8 +590,8 @@ struct SongListView: View {
             }
         }
         .alert(Text(verbatim: confirmingRemoval ? JarasLocalization.string(removal?.blocksOnly == true ? "Delete selected blocks?" : removal?.playlist == nil ? "Delete selected regions from the project?" : "Remove selected items from this playlist?") : ""), isPresented: $confirmingRemoval) {
-            Button("Cancel", role: .cancel) { removal = nil }
-            Button(removal?.blocksOnly == true || removal?.playlist == nil ? "Delete" : "Remove from playlist", role: .destructive) {
+            Button(JarasLocalization.string("Cancel"), role: .cancel) { removal = nil }
+            Button(JarasLocalization.string(removal?.blocksOnly == true || removal?.playlist == nil ? "Delete" : "Remove from playlist"), role: .destructive) {
                 if let removal, removal.project == show.snapshot.project.id, removal.song == show.current?.id,
                    removal.playlist == show.selectedRegionPlaylist?.id, show.deleteSetlistEntries(removal.ids) {
                     selectedEntries.subtract(removal.ids)
@@ -598,27 +607,11 @@ struct SongListView: View {
                 Text("Only the selected regions will be removed. Timeline items and their audio will be kept.")
             }
         }
-        .sheet(isPresented: $choosingSubplayTracks) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Choose tracks").font(.jarasHeadline)
-                Text("On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.")
-                    .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(show.current?.tracks.filter { $0.kind == .standard || $0.kind == .click } ?? []) { track in
-                            Toggle(isOn: Binding(get: { subplayTrackDraft.contains(track.id) }, set: { enabled in
-                                if enabled { subplayTrackDraft.insert(track.id) } else { subplayTrackDraft.remove(track.id) }
-                            })) { Text(verbatim: track.name) }
-                        }
-                    }.padding(8)
-                }
-                HStack {
-                    Button("Cancel") { choosingSubplayTracks = false }
-                    Spacer()
-                    Button("Apply") { show.setSubplayExclusiveTracks(subplayTrackDraft); choosingSubplayTracks = false }
-                        .keyboardShortcut(.defaultAction)
-                }
-            }.padding(22).frame(width: 460, height: 440).background(JarasTheme.background)
+        .sheet(item: $subplayTrackSelection) { request in
+            SubplayTrackSelectionEditor(request: request, cancel: { subplayTrackSelection = nil }) { selected in
+                show.setSubplayExclusiveTracks(selected)
+                subplayTrackSelection = nil
+            }.id(request.id)
         }
         .sheet(item: $regionExport) { request in
             AudioExportView(project: request.project, song: request.song, mediaDirectory: request.mediaDirectory,
@@ -636,9 +629,9 @@ struct SongListView: View {
                     }
                 }
                 HStack {
-                    Button("Cancelar") { configInitRegion = nil }.keyboardShortcut(.cancelAction)
+                    Button(JarasLocalization.string("Cancelar")) { configInitRegion = nil }.keyboardShortcut(.cancelAction)
                     Spacer()
-                    Button("Salvar") { show.setRegionInit(region.id, selection: configInitSelection); configInitRegion = nil }.keyboardShortcut(.defaultAction)
+                    Button(JarasLocalization.string("Salvar")) { show.setRegionInit(region.id, selection: configInitSelection); configInitRegion = nil }.keyboardShortcut(.defaultAction)
                 }
             }.padding(20).frame(width: 320).background(JarasTheme.panel)
         }
@@ -649,12 +642,13 @@ struct SongListView: View {
                 Text("Blocks").font(.jarasHeadline)
                 Toggle("SIMBOL", isOn: $blockSymbolDraft)
                 HStack {
-                    Button("Cancelar") { showingBlockDefaults = false }.keyboardShortcut(.cancelAction)
+                    Button(JarasLocalization.string("Cancelar")) { showingBlockDefaults = false }.keyboardShortcut(.cancelAction)
                     Spacer()
-                    Button("Salvar") { defaultBlockSymbol = blockSymbolDraft; showingBlockDefaults = false }.keyboardShortcut(.defaultAction)
+                    Button(JarasLocalization.string("Salvar")) { defaultBlockSymbol = blockSymbolDraft; showingBlockDefaults = false }.keyboardShortcut(.defaultAction)
                 }
             }.padding(18).frame(width: 280).background(JarasTheme.panel)
         }
+        .environment(\.locale, Locale(identifier: language))
     }
     private struct EntryEditorHost: View {
         @ObservedObject var show: ShowController
@@ -785,12 +779,12 @@ struct SongListView: View {
                     if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missingPlaylistName = false }
                 }
             HStack(spacing: 6) {
-                Button("All") {
+                Button(JarasLocalization.string("All")) {
                     let visible = filteredPlaylistCandidates.map(\.id)
                     selection += visible.filter { !selection.contains($0) }
                     selectionAnchor = visible.first
                 }
-                Button("Clear") { selection.removeAll(); selectionAnchor = nil }
+                Button(JarasLocalization.string("Clear")) { selection.removeAll(); selectionAnchor = nil }
                 Spacer(minLength: 0)
             }.buttonStyle(StageButtonStyle()).controlSize(.small)
             HStack(spacing: 6) {
@@ -827,7 +821,7 @@ struct SongListView: View {
             HStack {
                 Text("\(selection.count)").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 Spacer()
-                Button(addingToPlaylist == nil ? "Create" : "Add regions", action: createPlaylist)
+                Button(JarasLocalization.string(addingToPlaylist == nil ? "Create" : "Add regions"), action: createPlaylist)
                     .buttonStyle(StageButtonStyle(color: JarasTheme.green))
                     .keyboardShortcut(.defaultAction)
                     .disabled(selection.isEmpty && !playlistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -914,8 +908,8 @@ struct SetlistFooterControls: View {
             .frame(height: visible ? 28 : 16)
             .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.12)).frame(height: 1).allowsHitTesting(false) }
             .alert("Turn off Live?", isPresented: $confirmingLiveOff) {
-                Button("Cancel", role: .cancel) { liveOffProject = nil }
-                Button("Turn off Live", role: .destructive) {
+                Button(JarasLocalization.string("Cancel"), role: .cancel) { liveOffProject = nil }
+                Button(JarasLocalization.string("Turn off Live"), role: .destructive) {
                     guard liveEnabled, liveOffProject == projectID else { return }
                     liveOffProject = nil
                     toggleLive()
@@ -978,9 +972,9 @@ private struct PlaylistNameEditor: View {
                 .onChange(of: name) { _ in invalid = false }
             if invalid { Text("Choose a name").font(.jarasCaption).foregroundStyle(.red) }
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(JarasLocalization.string("Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Save", action: confirm).keyboardShortcut(.defaultAction)
+                Button(JarasLocalization.string("Save"), action: confirm).keyboardShortcut(.defaultAction)
             }
         }.padding(20).frame(width: 320).onAppear { focused = true }
     }
@@ -1040,11 +1034,11 @@ private struct PlaylistSelectionPanel: View {
                 }
             }
             .alert("Delete playlist?", isPresented: $confirmingPlaylistDelete) {
-                Button("Delete playlist", role: .destructive) {
+                Button(JarasLocalization.string("Delete playlist"), role: .destructive) {
                     if let id = deletingPlaylist { show.deleteRegionPlaylist(id) }
                     deletingPlaylist = nil
                 }
-                Button("Cancel", role: .cancel) { deletingPlaylist = nil }
+                Button(JarasLocalization.string("Cancel"), role: .cancel) { deletingPlaylist = nil }
             }
     }
     private func playlistChoice(_ name: String, id: UUID?) -> some View {
@@ -1059,14 +1053,14 @@ private struct PlaylistSelectionPanel: View {
                 .background(JarasTheme.background).contentShape(Rectangle())
         }.buttonStyle(.plain)
             .contextMenu {
-                Button("Copy to share") { copyPlaylist(id) }
+                Button(JarasLocalization.string("Copy to share")) { copyPlaylist(id) }
                     .disabled(show.current == nil)
                 if let id {
                     Divider()
-                    Button("Add regions") { addRegions(id) }
-                    Button("Edit") { editingPlaylist = show.regionSetlist.playlists.first { $0.id == id } }
-                    Button("Clone playlist") { show.cloneRegionPlaylist(id) }
-                    Button("Delete playlist", role: .destructive) { deletingPlaylist = id; confirmingPlaylistDelete = true }
+                    Button(JarasLocalization.string("Add regions")) { addRegions(id) }
+                    Button(JarasLocalization.string("Edit")) { editingPlaylist = show.regionSetlist.playlists.first { $0.id == id } }
+                    Button(JarasLocalization.string("Clone playlist")) { show.cloneRegionPlaylist(id) }
+                    Button(JarasLocalization.string("Delete playlist"), role: .destructive) { deletingPlaylist = id; confirmingPlaylistDelete = true }
                 }
             }
     }
@@ -2098,3 +2092,57 @@ private final class PlaylistSelectionNotice {
     }
 }
 #endif
+
+/// Carry the saved selection with the presentation. A Boolean sheet plus a
+/// separate parent draft can capture the previous draft on its first opening.
+private struct SubplayTrackSelectionRequest: Identifiable {
+    let id = UUID()
+    let tracks: [Track]
+    let selected: Set<UUID>
+    init(tracks: [Track], selected: Set<UUID>) {
+        self.tracks = tracks.filter { $0.kind == .standard || $0.kind == .click }
+        self.selected = selected
+    }
+}
+private struct SubplayTrackSelectionEditor: View {
+    let request: SubplayTrackSelectionRequest
+    let cancel: () -> Void
+    let apply: (Set<UUID>) -> Void
+    @State private var selected: Set<UUID>
+    init(request: SubplayTrackSelectionRequest, cancel: @escaping () -> Void, apply: @escaping (Set<UUID>) -> Void) {
+        self.request = request; self.cancel = cancel; self.apply = apply
+        _selected = State(initialValue: request.selected)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Choose tracks").font(.jarasHeadline)
+            Text("On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items.")
+                .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(request.tracks) { track in
+                        Toggle(isOn: Binding(get: { selected.contains(track.id) }, set: { enabled in
+                            if enabled { selected.insert(track.id) } else { selected.remove(track.id) }
+                        })) { Text(verbatim: track.name) }
+                    }
+                }.padding(8)
+            }
+            HStack {
+                Button(JarasLocalization.string("Cancel"), action: cancel)
+                Spacer()
+                Button(JarasLocalization.string("Apply")) { apply(selected) }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }.padding(22).frame(width: 460, height: 440).background(JarasTheme.background)
+    }
+}
+
+private struct MultitrackActionKey: EnvironmentKey {
+    static let defaultValue: ((UUID, Set<UUID>) -> Void)? = nil
+}
+extension EnvironmentValues {
+    var multitrackAction: ((UUID, Set<UUID>) -> Void)? {
+        get { self[MultitrackActionKey.self] }
+        set { self[MultitrackActionKey.self] = newValue }
+    }
+}

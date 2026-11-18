@@ -1,6 +1,11 @@
 import Foundation
+
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
+#endif
+import CoreFoundation
 
 /// Read-only migration of Logic's arrangement. Audio references remain real
 /// references when offline, so the normal CatLive recovery UI can reconnect them.
@@ -584,4 +589,3 @@ public enum LogicProjectImporter {
         return result
     }
 }
-#endif

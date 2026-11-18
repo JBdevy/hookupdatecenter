@@ -8,6 +8,7 @@ import AppKit
 typealias ProjectionImage = NSImage
 #else
 import UIKit
+import Metal
 typealias ProjectionImage = UIImage
 #endif
 
@@ -31,11 +32,14 @@ typealias ProjectionImage = UIImage
     private var preparedID: UUID?
     private var preparedURL: URL?
     private var preparation: Task<Void, Never>?
+    private var colorPreparation: Task<Void, Never>?
     #if os(macOS)
     private var window: NSWindow?
     #endif
     private var directory: URL?
     private var snapshot: ShowSnapshot?
+    private var snapshotRevision: UInt64?
+    private var mediaProjection: (project: UUID, song: UUID, revision: UInt64, media: Song)?
     private var clipID: UUID?
     private let trackKind: TrackKind
     private var stretchKey: String { trackKind == .teleprompt ? "jaras.teleprompter.video.stretch" : trackKind == .teleprompt2 ? "jaras.teleprompter2.video.stretch" : "jaras.video.stretch" }
@@ -86,17 +90,17 @@ typealias ProjectionImage = UIImage
         guard projectionEnabled != enabled else { return }
         projectionEnabled = enabled
         if !active { reset() }
-        else if let snapshot { update(snapshot) }
+        else if let snapshot { update(snapshot, revision: snapshotRevision) }
     }
     func open(directory: URL) {
-        reset(); self.directory = directory; snapshot = nil
+        reset(); self.directory = directory; snapshot = nil; mediaProjection = nil
     }
     func closeProject() {
         #if os(macOS)
         window?.close()
         #endif
         visible = false; projectionEnabled = false
-        reset(); directory = nil; snapshot = nil; message = ""
+        reset(); directory = nil; snapshot = nil; mediaProjection = nil; message = ""
     }
     #if os(macOS)
     func toggle() {
@@ -109,9 +113,9 @@ typealias ProjectionImage = UIImage
         let host = NSHostingView(rootView: VideoSurface(controller: self))
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host
-        window.restorePlacement(key: "jaras.videoWindow"); window.makeKeyAndOrderFront(nil)
+        window.restorePlacement(key: "jaras.videoWindow"); ProjectionWindow.presentWorkspaceWindow(window)
         self.window = window; visible = true
-        if let snapshot { update(snapshot) }
+        if let snapshot { update(snapshot, revision: snapshotRevision) }
     }
     func windowWillClose(_ notification: Notification) {
         visible = false
@@ -121,9 +125,15 @@ typealias ProjectionImage = UIImage
     #else
     func toggle() { setVisible(!visible) }
     func setVisible(_ value: Bool) {
+        guard visible != value else { return }
         visible = value
         if !active { reset() }
-        else if let snapshot { update(snapshot) }
+        else {
+            Task { @MainActor [weak self] in
+                guard let self, self.visible, let snapshot = self.snapshot else { return }
+                self.update(snapshot, revision: self.snapshotRevision)
+            }
+        }
     }
     #endif
     private func clearPreparation() {
@@ -158,7 +168,13 @@ typealias ProjectionImage = UIImage
                 try? await Task.sleep(nanoseconds: 20_000_000)
             }
             guard !Task.isCancelled, item.status == .readyToPlay else { return }
-            self?.applyVideoColor(to: item)
+            if self?.trackKind == .video {
+                let settings = VideoMediaSettings.shared
+                let composition = try? await Self.makeVideoComposition(asset: item.asset,
+                    limit: settings.size, grayscale: settings.blackAndWhite)
+                guard !Task.isCancelled else { return }
+                item.videoComposition = composition
+            }
             let sought = await candidate.seek(to: CMTime(seconds: max(0, source), preferredTimescale: 60000), toleranceBefore: .zero, toleranceAfter: .zero)
             guard sought, !Task.isCancelled else { return }
             let ready = await candidate.preroll(atRate: Float(next.audioRate))
@@ -168,6 +184,7 @@ typealias ProjectionImage = UIImage
     }
     private func reset(preserveDisplayedFrame: Bool = false) {
         clearPreparation()
+        colorPreparation?.cancel(); colorPreparation = nil
         activeURL = nil
         generation = UUID(); pendingSeek = nil; seeking = false
         player.pause()
@@ -177,16 +194,35 @@ typealias ProjectionImage = UIImage
         if !message.isEmpty { message = "" }
         if image != nil { image = nil }
     }
-    func update(_ snapshot: ShowSnapshot) {
+    func update(_ snapshot: ShowSnapshot, revision: UInt64? = nil) {
         self.snapshot = snapshot
+        snapshotRevision = revision
         guard active, let directory else { return }
         guard let originalSong = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }) else { reset(); return }
-        let song = snapshot.transport.multiLoop?.projectionSong(originalSong) ?? originalSong
+        let media: Song
+        if let revision, let cached = mediaProjection, cached.project == snapshot.project.id,
+           cached.song == originalSong.id, cached.revision == revision {
+            media = cached.media
+        } else {
+            var projection = originalSong
+            projection.tracks = originalSong.tracks.compactMap { source in
+                guard trackKind == .video ? !source.kind.isTeleprompter : trackKind == source.kind else { return nil }
+                let clips = source.clips.filter(\.isProjectionMedia)
+                guard !clips.isEmpty else { return nil }
+                var track = source
+                track.clips = clips
+                return track
+            }
+            media = projection
+            mediaProjection = revision.map { (snapshot.project.id, originalSong.id, $0, projection) }
+        }
+        let song = snapshot.transport.multiLoop?.projectionSong(media) ?? media
         let transport = snapshot.transport
         let position = transport.playing || transport.paused == true ? transport.position : transport.editPosition ?? transport.position
         guard let clip = song.firstProjectionItem(at: position, trackKind: trackKind == .video ? nil : trackKind), let file = clip.audioFile else {
             if clipID != nil { reset() }
-            message = ""; return
+            if !message.isEmpty { message = "" }
+            return
         }
         let fade = clip.fadeGain(at: position)
         if opacity != fade { opacity = fade }
@@ -268,30 +304,43 @@ typealias ProjectionImage = UIImage
         lastSectionJumpSerial = transport.sectionJumpSerial
         prepareNextVideo(song: song, clip: clip, position: position, playing: transport.playing, directory: directory)
     }
-    private func applyVideoColor(to preparedItem: AVPlayerItem? = nil) {
-        guard trackKind == .video, let item = preparedItem ?? player.currentItem else { return }
+    private func applyVideoColor() {
+        guard trackKind == .video, let item = player.currentItem else { return }
+        colorPreparation?.cancel()
         let settings = VideoMediaSettings.shared
-        let source = item.asset.tracks(withMediaType: .video).first
-        let natural = source?.naturalSize ?? .zero
-        let transform = source?.preferredTransform ?? .identity
-        let rotated = natural.applying(transform)
+        let limit = settings.size, grayscale = settings.blackAndWhite
+        colorPreparation = Task { [weak self, weak item] in
+            guard let item else { return }
+            do {
+                let composition = try await Self.makeVideoComposition(asset: item.asset, limit: limit, grayscale: grayscale)
+                guard !Task.isCancelled, self?.player.currentItem === item else { return }
+                item.videoComposition = composition
+            } catch { }
+        }
+    }
+    nonisolated private static func makeVideoComposition(asset: AVAsset, limit: CGSize, grayscale: Bool) async throws -> AVVideoComposition? {
+        guard let source = try await asset.loadTracks(withMediaType: .video).first else { return nil }
+        async let natural = source.load(.naturalSize)
+        async let transform = source.load(.preferredTransform)
+        let rotated = try await natural.applying(transform)
         let width = max(1, abs(rotated.width)), height = max(1, abs(rotated.height))
-        let limit = settings.size
         let renderScale = min(1, limit.width / width, limit.height / height)
-        guard settings.blackAndWhite || renderScale < 0.999 else { item.videoComposition = nil; return }
-        let grayscale = settings.blackAndWhite
-        let composition = AVVideoComposition(asset: item.asset, applyingCIFiltersWithHandler: { request in
-            if grayscale {
-                let filter = CIFilter(name: "CIColorControls")!
+        guard grayscale || renderScale < 0.999 else { return nil }
+        try Task.checkCancellation()
+        let composition = AVVideoComposition(asset: asset, applyingCIFiltersWithHandler: { request in
+            if grayscale, let filter = CIFilter(name: "CIColorControls") {
                 filter.setValue(request.sourceImage.clampedToExtent(), forKey: kCIInputImageKey)
                 filter.setValue(0, forKey: kCIInputSaturationKey)
-                request.finish(with: filter.outputImage!.cropped(to: request.sourceImage.extent), context: nil)
-            } else { request.finish(with: request.sourceImage, context: nil) }
+                if let output = filter.outputImage {
+                    request.finish(with: output.cropped(to: request.sourceImage.extent), context: nil)
+                    return
+                }
+            }
+            request.finish(with: request.sourceImage, context: nil)
         })
-        if let scaled = composition.mutableCopy() as? AVMutableVideoComposition {
-            scaled.renderScale = Float(renderScale)
-            item.videoComposition = scaled
-        } else { item.videoComposition = composition }
+        guard let scaled = composition.mutableCopy() as? AVMutableVideoComposition else { return composition }
+        scaled.renderScale = Float(renderScale)
+        return scaled
     }
     private func seek(_ seconds: Double, rate: Float) {
         if seeking { pendingSeek = (seconds,rate); return }
@@ -372,46 +421,69 @@ typealias ProjectionPlatformView = UIView
 #endif
 #if os(iOS)
 struct IpadNativeVideoButton: View {
-    @ObservedObject private var video = VideoPlayback.shared
+    private let video = VideoPlayback.shared
+    @State private var visible = false
+    @State private var stretch = false
     var body: some View {
         Button { video.toggle() } label: {
             HStack(spacing: 3) {
                 Image(systemName: "video")
-                Text("Video")
-            }.font(.system(size: 10, weight: .semibold)).lineLimit(1)
+                Text("Video").textCase(.uppercase).font(.jarasSystem(size: 10, weight: .heavy))
+            }.lineLimit(1)
                 .frame(width: 62, height: 32).foregroundStyle(Color.black)
-                .background(video.visible ? JarasTheme.green : JarasTheme.liveOffRed, in: RoundedRectangle(cornerRadius: 5))
+                .background(visible ? JarasTheme.green : JarasTheme.liveOffRed, in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Video")
-            .accessibilityValue(video.visible ? "On" : "Off")
-            .contextMenu { Toggle("Stretch", isOn: Binding(get: { video.stretch }, set: { video.setStretch($0) })) }
+            .accessibilityValue(visible ? "On" : "Off")
+            .contextMenu { Toggle("Stretch", isOn: Binding(get: { stretch }, set: { video.setStretch($0) })) }
+            .onReceive(video.$visible.removeDuplicates()) { visible = $0 }
+            .onReceive(video.$stretch.removeDuplicates()) { stretch = $0 }
     }
 }
 
-/// A floating surface leaves the timeline and transport available while watching.
+@MainActor private enum IpadVideoWindowCapability {
+    static let supportsExtendedDisplay: Bool = {
+        #if targetEnvironment(simulator)
+        false
+        #else
+        // The iPad Air and Pro models with an Apple M-series GPU support a
+        // separate extended desktop. Lightning and A-series models are docked.
+        MTLCreateSystemDefaultDevice()?.name.hasPrefix("Apple M") == true
+        #endif
+    }()
+}
+
 struct IpadNativeVideoPanel: View {
-    @ObservedObject private var video = VideoPlayback.shared
+    let leading: CGFloat
+    let trailing: CGFloat
+    private let video = VideoPlayback.shared
+    @State private var visible = false
     @State private var origin: CGPoint?
     @State private var fullscreen = false
     @GestureState private var drag = CGSize.zero
     var body: some View {
         GeometryReader { geometry in
-            if video.visible {
-                let width = fullscreen ? geometry.size.width : min(480, max(240, geometry.size.width * 0.55), geometry.size.width)
-                let height = fullscreen ? geometry.size.height : min(geometry.size.height, width * 9 / 16 + 36)
+            if visible {
+                let floating = IpadVideoWindowCapability.supportsExtendedDisplay && !fullscreen
+                let insetLeading = min(leading, geometry.size.width * 0.40)
+                let insetTrailing = min(trailing, geometry.size.width * 0.40)
+                let width = fullscreen ? geometry.size.width : floating
+                    ? min(480, max(240, geometry.size.width * 0.55), geometry.size.width)
+                    : max(0, geometry.size.width - insetLeading - insetTrailing)
+                let height = floating ? min(geometry.size.height, width * 9 / 16 + 36) : geometry.size.height
                 let initial = origin ?? CGPoint(x: geometry.size.width - width - 12, y: geometry.size.height - height - 12)
-                let x = fullscreen ? 0 : min(max(0, initial.x + drag.width), max(0, geometry.size.width - width))
-                let y = fullscreen ? 0 : min(max(0, initial.y + drag.height), max(0, geometry.size.height - height))
+                let x = floating ? min(max(0, initial.x + drag.width), max(0, geometry.size.width - width)) : fullscreen ? 0 : insetLeading
+                let y = floating ? min(max(0, initial.y + drag.height), max(0, geometry.size.height - height)) : 0
                 VStack(spacing: 0) {
                     HStack(spacing: 8) {
                         HStack { Image(systemName: "video"); Text("Video"); Spacer(minLength: 0) }
                             .contentShape(Rectangle())
                             .gesture(DragGesture().updating($drag) { value, current, _ in
-                                if !fullscreen { current = value.translation }
+                                if floating { current = value.translation }
                             }.onEnded { value in
-                                if !fullscreen { origin = CGPoint(x: min(max(0, initial.x + value.translation.width), max(0, geometry.size.width - width)),
+                                if floating { origin = CGPoint(x: min(max(0, initial.x + value.translation.width), max(0, geometry.size.width - width)),
                                     y: min(max(0, initial.y + value.translation.height), max(0, geometry.size.height - height))) }
-                            })
+                            }, including: floating ? .gesture : .none)
                         Button { fullscreen.toggle() } label: {
                             Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 36, height: 36)
                         }.accessibilityLabel(fullscreen ? "Sair da tela cheia" : "Tela cheia")
@@ -422,11 +494,14 @@ struct IpadNativeVideoPanel: View {
                     VideoSurface(controller: video).clipped().contentShape(Rectangle())
                         .onTapGesture(count: 2) { fullscreen.toggle() }
                 }.frame(width: width, height: height).background(Color.black)
-                    .clipShape(RoundedRectangle(cornerRadius: fullscreen ? 0 : 8))
-                    .overlay(RoundedRectangle(cornerRadius: fullscreen ? 0 : 8).stroke(Color.white.opacity(0.2), lineWidth: 1))
-                    .shadow(radius: fullscreen ? 0 : 10).offset(x: x, y: y)
+                    .clipShape(RoundedRectangle(cornerRadius: floating ? 8 : 0))
+                    .shadow(radius: floating ? 10 : 0).offset(x: x, y: y)
             }
-        }.onChange(of: video.visible) { visible in if !visible { fullscreen = false } }
+        }.clipped().allowsHitTesting(visible)
+            .onReceive(video.$visible.removeDuplicates()) { value in
+                visible = value
+                if !value { fullscreen = false }
+            }
     }
 }
 #endif

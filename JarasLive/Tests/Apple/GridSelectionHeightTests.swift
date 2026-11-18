@@ -122,6 +122,17 @@ MainActor.assumeIsolated {
     precondition(retainedContent == nil && replacement.items.map(\.id) == [replacementID],
                  "Replacing content retires both old hit targets and the retained snapshot")
     print("GRID_SELECTION_SAME_REVISION_CONTENT_REPLACEMENT_RETAINS_IDENTITY_UNTIL_RETIREMENT_OK")
+    let contrastSnapshot = NSObject()
+    let light = cache.layout(key: TimelineRenderKey(revision: 3), content: contrastSnapshot, rowHeight: 64,
+        rulerHeight: 71, rowOffsets: [0], laneHeights: [64]) {
+        var item = replacement.items[0]
+        item.blackTitle = true
+        return [item]
+    }
+    let dark = cache.layout(key: TimelineRenderKey(revision: 3), content: contrastSnapshot, rowHeight: 64,
+        rulerHeight: 71, rowOffsets: [0], laneHeights: [64], inverted: true) { replacement.items }
+    precondition(light.items[0].blackTitle && !dark.items[0].blackTitle)
+    print("GRID_SELECTION_INVERTED_BACKGROUND_REFRESHES_ITEM_CONTRAST_OK")
     // Lane-zero items in different time components can share Y but have
     // different heights. The spatial index must retain both boundaries when
     // track height changes, without rebuilding the immutable clip metadata.

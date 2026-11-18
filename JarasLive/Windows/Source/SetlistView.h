@@ -302,7 +302,7 @@ class Workspace::Setlist final : public Component,
                 selected = (int)i + 2;
         }
         playlistMenu.setSelectedId(selected, dontSendNotification);
-        automatic.setToggleState(state.autoAdvance, dontSendNotification);
+        automatic.setActive(state.autoAdvance);
         stop.setActive(state.stopAtRegionEnd.value_or(false));
         live.setToggleState(state.liveEnabled.value_or(false), dontSendNotification);
         const auto *playlist = selectedPlaylist();
@@ -480,6 +480,26 @@ class Workspace::Setlist final : public Component,
     }
 
   private:
+    class AutoButton final : public QuietButton, private Timer {
+      public:
+        AutoButton() : QuietButton("AUTO") {}
+        void setActive(bool active) {
+            if (getToggleState() == active) return;
+            setToggleState(active, dontSendNotification);
+            setAlpha(1.f); bright = true;
+            if (active) startTimer(500); else stopTimer();
+        }
+        void paintButton(Graphics &g, bool, bool) override {
+            g.setColour(getToggleState() ? theme::yellow : theme::panel);
+            g.fillRoundedRectangle(getLocalBounds().toFloat(), 4.f);
+            g.setColour(getToggleState() ? Colours::black : theme::secondary);
+            g.setFont(theme::font(9).boldened());
+            g.drawText("AUTO", getLocalBounds(), Justification::centred);
+        }
+      private:
+        bool bright = true;
+        void timerCallback() override { bright = !bright; setAlpha(bright ? 1.f : .4f); }
+    };
     class RegionStopButton final : public QuietButton, private Timer {
       public:
         RegionStopButton() : QuietButton("STOP") {}
@@ -693,7 +713,7 @@ class Workspace::Setlist final : public Component,
     RegionStopButton stop;
     QuietButton blocks{localization::translate("Blocos").toUpperCase()};
     BypassButton bypass;
-    QuietButton automatic{"AUTO"};
+    AutoButton automatic;
     struct SearchEditor final : TextEditor {
         std::function<void()> onTab;
         std::function<void(int)> onMove;
@@ -1235,7 +1255,7 @@ class Workspace::Setlist final : public Component,
                 rows.addAndMakeVisible(*row);ids.push_back(track.id);checks.push_back(std::move(row));
             }
             viewport.setViewedComponent(&rows,false);addAndMakeVisible(viewport);
-            explanation.setText(localization::translate("On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items."),dontSendNotification);
+            explanation.setText(localization::translate("On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items."),dontSendNotification);
             explanation.setFont(theme::font(12));explanation.setColour(Label::textColourId,theme::secondary);
             addAndMakeVisible(explanation);
             cancel.setButtonText(localization::translate("Cancel"));apply.setButtonText(localization::translate("Apply"));
@@ -1407,6 +1427,7 @@ class Workspace::Setlist final : public Component,
             menu.addItem(9,localization::translate("Space regions by 30 s"));
         }
         menu.addItem(3, localization::translate(String::fromUTF8("Exportar áudio")));
+        if (!entry.child) menu.addItem(10, localization::translate("Export Multitrack"));
         if (!entry.child) menu.addItem(5, selectedPlaylist() ? localization::translate("Remover da playlist") : localization::translate(String::fromUTF8("Excluir região")));
         std::set<ID> sources;
         for (const auto &id : targets) sources.insert(selectedPlaylist() ? selectedPlaylist()->resolvedRegionId(id) : id);
@@ -1439,6 +1460,7 @@ class Workspace::Setlist final : public Component,
                 if(action==1)self->w.editMultiLoops(entry.sourceId);
                 if(action==2)self->w.detectRegions(sources);
                 if(action==3)self->w.exportRegions(sources);
+                if(action==10)self->w.exportMultitrack(sources);
                 if(action==4)self->editEntry(entry,sources);
                 if(action==6)self->configInit(entry);
                 if(action==7 && targets.size()==1 && !entry.child) {

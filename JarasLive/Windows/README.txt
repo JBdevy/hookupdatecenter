@@ -54,6 +54,15 @@ Dependencies and builds default to LocalAppData/CatLiveBuild to avoid long paths
 The pinned JUCE source is downloaded on the first build if not cached.
 The script runs CTest and creates a portable x64 ZIP after successful tests.
 Use -Installer with Inno Setup 6 installed to also create Catlive-[version].exe.
+For a local build without Git or dependency downloads, extract the CatLive
+offline dependencies archive, then run from PowerShell:
+  .\Windows\build.ps1 -Version 1.37 -OfflineDependencies C:\CatLiveDependencies
+The extraction root contains JUCE, QuickJS, FFmpegHeaders, FFmpegRuntime, ImGui
+and WebView2. Visual Studio desktop C++ tools, CMake and the Windows SDK must
+already be installed. The offline archive does not include the compiler.
+To package the offline executable with audio separation, supply a prebuilt
+Windows x64 StemSeparationRuntime folder with -OfflineStemRuntime.
+
 For a paired desktop release, run build catlive.bat at the repository root.
 It sends CatLive changes to GitHub Actions, builds Windows and macOS, tests actual
 encrypted document exchange and publishes both installers together after success.

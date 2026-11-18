@@ -24,83 +24,58 @@ final class ProjectionWindow: NSWindow {
     private var saved: SavedState?
     private var placementKey: String?
     private var placementObservers: [NSObjectProtocol] = []
-    private static weak var lastFocusedTool: NSWindow?
-    private static var orderingObserver: NSObjectProtocol?
-    private static var orderingMonitor: Any?
-    private static var consumedPointerObserver: NSObjectProtocol?
-    private static var orderingPending = false
     private static let workspaceTools = NSHashTable<NSWindow>.weakObjects()
-    private static let toolLevels = NSMapTable<NSWindow, NSNumber>.weakToStrongObjects()
+    private static let workspaceConfirmations = NSHashTable<NSWindow>.weakObjects()
     private static var activationObservers: [NSObjectProtocol] = []
     static let workspaceToolLevel = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue + 1)
-    private static func updateToolLevels(active: Bool) {
-        for window in workspaceTools.allObjects {
-            let desired = toolLevels.object(forKey: window)?.intValue ?? workspaceToolLevel.rawValue
-            window.level = active ? NSWindow.Level(rawValue: desired) : .normal
-        }
-    }
+    private static let workspaceConfirmationLevel = NSWindow.Level(rawValue: workspaceToolLevel.rawValue + 1)
 
-    private static func clicked(_ window: NSWindow) {
-        guard let main = NSApp.windows.first(where: { !($0 is ProjectionWindow) && $0.isVisible && $0.title == "CatLive" }) else { return }
-        guard window === main else {
-            lastFocusedTool = window
-            return
-        }
-        guard !orderingPending else { return }
-        orderingPending = true
-        DispatchQueue.main.async {
-            orderingPending = false
-            guard main.isVisible else { return }
-            // Keep auxiliary windows above the workspace without parenting them:
-            // child windows move with their parent and inherit its display/Space.
-            let tools = NSApp.orderedWindows.filter {
-                $0 !== main && $0.isVisible && $0.level == .normal &&
-                    ($0.parent == nil || $0.parent === main)
-            }
-            var anchor = main.windowNumber
-            for tool in tools.reversed() {
-                tool.order(.above, relativeTo: anchor)
-                anchor = tool.windowNumber
-            }
-            if let tool = lastFocusedTool, tool.isVisible, tool !== main {
-                tool.orderFront(nil)
-            }
-        }
-    }
-    func followApplicationWindowOrder() {
-        level = .normal
-        hidesOnDeactivate = false
-        Self.followWorkspaceWindow(self)
-    }
+    func followApplicationWindowOrder() { Self.followWorkspaceWindow(self) }
     static func followWorkspaceWindow(_ window: NSWindow) {
-        // Workspace tools respond immediately to their transport buttons.
-        // The system's open/close animation adds a visible pause even when
-        // the retained editor is already laid out and ready to display.
         window.animationBehavior = .none
         window.parent?.removeChildWindow(window)
+        window.hidesOnDeactivate = false
+        if let panel = window as? NSPanel { panel.isFloatingPanel = false }
         workspaceTools.add(window)
-        if toolLevels.object(forKey: window) == nil {
-            toolLevels.setObject(NSNumber(value: max(window.level.rawValue, workspaceToolLevel.rawValue)), forKey: window)
-        }
-        window.level = NSWindow.Level(rawValue: toolLevels.object(forKey: window)!.intValue)
-        guard orderingObserver == nil else { return }
-        // Mouse-up can raise the main window after event monitors run.
-        // A dedicated in-app level makes tool ordering independent of that race.
+        window.level = workspaceToolLevel
+        observeWorkspaceActivation()
+    }
+    static func presentWorkspaceConfirmation(_ window: NSWindow) {
+        workspaceConfirmations.add(window)
+        observeWorkspaceActivation()
+        window.level = NSApp.isActive ? workspaceConfirmationLevel : .normal
+        window.makeKeyAndOrderFront(nil)
+    }
+    static func dismissWorkspaceConfirmation(_ window: NSWindow) {
+        workspaceConfirmations.remove(window)
+        window.level = .normal
+    }
+    private static func observeWorkspaceActivation() {
+        guard activationObservers.isEmpty else { return }
         activationObservers = [
-            NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in updateToolLevels(active: true) },
-            NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in updateToolLevels(active: false) }
+            NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                Self.setWorkspaceToolsActive(true)
+            },
+            NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+                Self.setWorkspaceToolsActive(false)
+            }
         ]
-        orderingObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { notice in
-            if let window = notice.object as? NSWindow { Self.clicked(window) }
+    }
+    private static func setWorkspaceToolsActive(_ active: Bool) {
+        // Leave existing sibling order intact. AppKit handles key-window
+        // changes within the tool tier, so pointer events need no reordering.
+        let level = active ? workspaceToolLevel : .normal
+        for window in NSApp.orderedWindows.reversed() where workspaceTools.contains(window) && window.level != level {
+            window.level = level
         }
-        // Native grid input can consume the event before local monitors see it.
-        consumedPointerObserver = NotificationCenter.default.addObserver(forName: Notification.Name("catlive.workspacePointerDown"), object: nil, queue: .main) { notice in
-            if let window = notice.object as? NSWindow { Self.clicked(window) }
+        for window in workspaceConfirmations.allObjects {
+            window.level = active ? workspaceConfirmationLevel : .normal
         }
-        orderingMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
-            if let window = event.window { Self.clicked(window) }
-            return event
-        }
+    }
+    static func presentWorkspaceWindow(_ window: NSWindow) {
+        if !workspaceTools.contains(window) { followWorkspaceWindow(window) }
+        window.level = workspaceToolLevel
+        window.makeKeyAndOrderFront(nil)
     }
     private static var savedPresentationOptions: NSApplication.PresentationOptions?
     private static func updatePresentationOptions() {

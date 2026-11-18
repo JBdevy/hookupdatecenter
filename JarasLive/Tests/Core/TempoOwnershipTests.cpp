@@ -47,6 +47,30 @@ static void edit(Engine& engine,const ID& id,double bpm,bool batch=false) {
 int main() {
     try {
         {
+            Project p;p.id="scoped-tempo";p.name="Scoped tempo";
+            Song song{"music","Music",80,120,{},{}};
+            song.regionOwnershipInitialized=true;song.regionOwnershipVersion=3;
+            song.timeSettings=ProjectTimeSettings{};song.timeSettings->timebase=ProjectTimebase::relative;
+            song.parts={{"first","First",10,40},{"next","Next",50,70}};
+            auto a=tempo("147",10,"first",147),b=tempo("140",20,"first",140);
+            a.tempoReferenceBPM=147;b.tempoReferenceBPM=140;song.markers=std::vector<TimelineMarker>{a,b};
+            Track track;track.id="audio";track.name="Audio";track.role={"other"};
+            AudioClip item;item.id="first-item";item.name="First";item.startTime=10;item.duration=30;item.audioFile=AudioFile{"first.wav"};item.regionOwnerID="first";
+            auto next=item;next.id="next-item";next.startTime=50;next.duration=20;next.regionOwnerID="next";
+            track.clips={item,next};song.tracks={track};p.songs={song};
+            Engine engine;engine.loadProject(p);
+            a.tempoBPM=148;b.tempoBPM=140.*148/147;engine.setMarkers({a,b},{},true);
+            const auto& result=*engine.currentSong();
+            expect(result.markers->size()==2,"Tempo edit created an end/reset marker");
+            near(result.markers->at(1).position,10+10.*147/148,"Tempo marker did not move with the audio");
+            near(result.tracks[0].clips[0].duration,30.*147/148,"Item duration did not follow the reference speed");
+            near(result.tracks[0].clips[1].duration,20,"Tempo edit changed the next song duration");
+            near(TempoEditMap::playbackRate(result,result.tracks[0].clips[0],result.tracks[0].clips[0].startTime+1),148./147,"Wrong source speed");
+            near(TempoEditMap::playbackRate(result,result.tracks[0].clips[1],result.tracks[0].clips[1].startTime+1),1,"Tempo edit leaked to following audio");
+            expect(!tempoPlayback::active(result,result.parts[0].endTime+1),"Tempo edit leaked outside its region");
+            std::cout<<"TEMPO_REGION_SCOPED_WITHOUT_END_MARKER_AND_SOURCE_ALIGNMENT_OK\n";
+        }
+        {
             auto song=fixture().songs[0];song.parts[0].endTime=12;
             auto first=song.tracks[0].clips[0],last=song.tracks[0].clips.back();
             first.startTime=0;first.duration=12;first.playbackRate=1;

@@ -49,7 +49,7 @@ int main(){try {
     near(itemWithRate(song,faster,1).duration,10,"Resetting rate must restore the source span");
     auto movie=clip;movie.audioFile=AudioFile{"Videos/source.mp4",{}};
     near(itemWithRate(song,movie,2).duration,5,"Video playback must preserve its constant-rate source span");
-    near(restoringItemDuration(song,movie,20).duration,20,"Video source duration cannot apply audio tempo markers");
+    near(restoringItemDuration(song,movie,20).duration,movie.duration,"Reset duration expanded a trimmed video");
     auto midi=clip;midi.audioFile.reset();midi.midi=MIDIItem{};
     near(itemWithRate(song,midi,2).duration,6.25,"MIDI rate must preserve its source notes and span");
     Track clickTrack;clickTrack.role.id="generatedClick";

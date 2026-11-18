@@ -3,21 +3,25 @@ import SwiftUI
 import UIKit
 
 @MainActor final class JarasMobileApplicationDelegate: NSObject, UIApplicationDelegate {
-    private static var iPadOrientations: UIInterfaceOrientationMask = .landscape
+    private static var landscapeOnly = false
 
-    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        UIDevice.current.userInterfaceIdiom == .pad ? Self.iPadOrientations : .portrait
+    private static var orientations: UIInterfaceOrientationMask {
+        if landscapeOnly { return .landscape }
+        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown
     }
 
-    static func setRemoteOrientation(_ remote: Bool) {
-        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
-        iPadOrientations = remote ? .all : .landscape
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        Self.orientations
+    }
+
+    static func setLandscapeOnly(_ locked: Bool) {
+        guard landscapeOnly != locked else { return }
+        landscapeOnly = locked
         updateOrientations()
     }
 
     static func updateOrientations() {
-        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
-        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes
             where scene.activationState == .foregroundActive {
             for window in scene.windows {
                 var controller = window.rootViewController
@@ -26,8 +30,8 @@ import UIKit
                     controller = current.presentedViewController
                 }
             }
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: iPadOrientations)) { error in
-                NSLog("CatLive: unable to update iPad orientation: %@", error.localizedDescription)
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: orientations)) { error in
+                NSLog("CatLive: unable to update orientation: %@", error.localizedDescription)
             }
         }
     }
@@ -182,6 +186,7 @@ struct RootView: View {
                           showsCloseButton: false)
             }
         }
+        .overlay { MultipleProjectOpeningOverlay() }
         #if os(macOS)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(InterfaceScaleAnchor(preserveFrame: true))
@@ -320,7 +325,7 @@ struct RootView: View {
     final class Deck: NSView {
         override func layout() {
             super.layout()
-            for view in subviews where !view.isHidden { view.frame = bounds }
+            for view in subviews where !view.isHidden && view.frame != bounds { view.frame = bounds }
         }
         override var isFlipped: Bool { true }
     }
@@ -330,7 +335,7 @@ struct RootView: View {
         // Observe that completion here: the container reference itself never
         // changes, so SwiftUI can otherwise retain the previous tab's host.
         guard documents.ready else {
-            for view in deck.subviews { view.isHidden = true }
+            for view in deck.subviews where !view.isHidden { view.isHidden = true }
             return
         }
         let host: NSHostingView<AnyView>
@@ -357,10 +362,9 @@ struct RootView: View {
         let live = DesktopProjectTabs.shared.projects.compactMap { $0.desktopWorkspaceHost }
         for view in deck.subviews {
             if !live.contains(where: { $0 === view }) && view !== host { view.removeFromSuperview() }
-            else { view.isHidden = view !== host }
+            else if view.isHidden != (view !== host) { view.isHidden = view !== host }
         }
-        host.frame = deck.bounds
-        deck.needsLayout = true
+        if host.frame != deck.bounds { host.frame = deck.bounds }
     }
     @available(macOS 13, *)
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: Deck, context: Context) -> CGSize? {
@@ -696,10 +700,13 @@ private struct ClosingLogoView: View {
     }
     func beginSheetModal(for parent: NSWindow, completionHandler: @escaping (NSApplication.ModalResponse) -> Void) {
         prepare()
+        parent.makeKeyAndOrderFront(nil)
         parent.beginSheet(panel) { [self] response in
             panel.orderOut(nil)
+            ProjectionWindow.dismissWorkspaceConfirmation(panel)
             completionHandler(response)
         }
+        ProjectionWindow.presentWorkspaceConfirmation(panel)
     }
     func runModal() -> NSApplication.ModalResponse {
         prepare(); panel.center()
@@ -807,8 +814,7 @@ private struct ClosingLogoView: View {
                 // Cancelling a later save dialog must not interrupt the music.
                 DispatchQueue.main.async { self.request(confirmPlayback: false, completion: completion) }
             }
-            if let window { window.makeKeyAndOrderFront(nil); alert.beginSheetModal(for: window, completionHandler: answer) }
-            else { answer(alert.runModal()) }
+            presentCloseAlert(alert, completion: answer)
             return
         }
         if !needsConfirmation {
@@ -832,8 +838,22 @@ private struct ClosingLogoView: View {
                 self.pending = false; completion(false)
             }
         }
-        if let window { window.makeKeyAndOrderFront(nil); alert.beginSheetModal(for: window, completionHandler: answer) }
+        if let window { alert.beginSheetModal(for: window, completionHandler: answer) }
         else { answer(alert.runModal()) }
+    }
+    private func presentCloseAlert(_ alert: NSAlert, completion: ((NSApplication.ModalResponse) -> Void)? = nil) {
+        guard let window else {
+            let response = alert.runModal()
+            completion?(response)
+            return
+        }
+        window.makeKeyAndOrderFront(nil)
+        let sheet = alert.window
+        alert.beginSheetModal(for: window) { response in
+            ProjectionWindow.dismissWorkspaceConfirmation(sheet)
+            completion?(response)
+        }
+        ProjectionWindow.presentWorkspaceConfirmation(sheet)
     }
     private func finishClosing(documents: ProjectDocuments, save: Bool, completion: @escaping (Bool) -> Void) {
         Task { @MainActor in
@@ -853,7 +873,7 @@ private struct ClosingLogoView: View {
                 closingLogo.advance(0.25)
                 FXWindows.shared.closeAll()
                 capture.closeProject()
-                DesktopProjectTabs.shared.stopAll()
+                DesktopProjectTabs.shared.stopAll(forApplicationTermination: true)
                 // The ownership inventory supports optional media cleanup; it
                 // must not block closing a project whose save already succeeded.
                 // Keep explicit cleanup strict when the inventory is unreadable.
@@ -876,8 +896,7 @@ private struct ClosingLogoView: View {
                 failure.messageText = localized("Could not close the project.")
                 failure.informativeText = localized(error.localizedDescription)
                 failure.addButton(withTitle: "OK")
-                if let window { window.makeKeyAndOrderFront(nil); failure.beginSheetModal(for: window, completionHandler: nil) }
-                else { failure.runModal() }
+                presentCloseAlert(failure)
             }
         }
     }

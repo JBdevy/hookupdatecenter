@@ -2,6 +2,7 @@
 #include "ProjectionSelection.h"
 #include "MeterDisplay.h"
 #include "AudioEngine.h"
+#include "Appearance.h"
 #include "AudioItemGain.h"
 #include "AudioDeviceChannels.h"
 #include "ProjectCodec.h"
@@ -38,6 +39,8 @@ AudioEngine::AudioEngine(double preparationRate, bool preparingOffline, std::sha
     metronome.b = ClickProgram::tone("Digital", false);
 }
 AudioEngine::~AudioEngine() {
+    stopTimer();
+    metronomePreparation.reset();
     keyboardState.removeListener(this);
     cancelTransportPreparation();
     if(transportWorker)transportWorker->removeAllJobs(true,-1);
@@ -725,21 +728,11 @@ void AudioEngine::closeDevice() {
     attached = false;
     if (deviceHost.use_count() == 1) devices.closeAudioDevice();
 }
-void AudioEngine::configureMetronome(const var &settings) {
+void AudioEngine::configureMetronome(const var &settings, std::function<void(String)> completed) {
     const auto preset = str(settings, "preset", "Digital");
-    ClickProgram::Sample a, b;
-    if (preset == "User") {
-        const auto first = str(settings, "pathA"), second = str(settings, "pathB");
-        if (first.isNotEmpty())
-            a = ClickProgram::decode(
-                std::unique_ptr<AudioFormatReader>(formats.createReaderFor(File(first))));
-        if (second.isNotEmpty())
-            b = ClickProgram::decode(
-                std::unique_ptr<AudioFormatReader>(formats.createReaderFor(File(second))));
-    } else {
-        a = ClickProgram::tone(preset, true);
-        b = ClickProgram::tone(preset, false);
-    }
+    const auto firstPath=str(settings,"pathA"), secondPath=str(settings,"pathB");
+    const bool soundChanged=metronomeSettings.isVoid() || preset!=str(metronomeSettings,"preset","Digital") ||
+        firstPath!=str(metronomeSettings,"pathA") || secondPath!=str(metronomeSettings,"pathB");
     auto saved = settings.clone();
     const auto mode = jlimit(0, 2, (int)num(settings, "mode"));
     const auto gainA = Decibels::decibelsToGain((float)num(settings, "gainA", -1));
@@ -747,8 +740,7 @@ void AudioEngine::configureMetronome(const var &settings) {
     const auto output = get(settings, "output");
     const auto first = jlimit(1, 128, (int)num(output, "firstChannel", 1));
     const auto channels = jlimit(1, 2, (int)num(output, "channelCount", 2));
-    enqueuePreparedEdit([this, a=std::move(a), b=std::move(b), mode, gainA, gainB, first, channels]() mutable noexcept {
-        std::swap(metronome.a, a); std::swap(metronome.b, b);
+    enqueuePreparedEdit([this, mode, gainA, gainB, first, channels]() noexcept {
         metronomeMode=mode; metronomeGainA=gainA; metronomeGainB=gainB;
         metronomeOutput=first; metronomeChannels=channels;
     });
@@ -756,6 +748,31 @@ void AudioEngine::configureMetronome(const var &settings) {
     // Do not replay an old enabled flag over a newer direct toggle on audio.
     std::swap(metronomeSettings, saved);
     metronomeEnabled = flag(settings, "enabled");
+    if(!soundChanged){if(completed)completed({});return;}
+    auto task=std::make_shared<MetronomePreparation>();task->completed=std::move(completed);metronomePreparation=task;
+    const auto prepare=[task,preset,firstPath,secondPath] {
+        try {
+            if(preset=="User") {
+                AudioFormatManager formats;registerAudioFormats(formats);
+                if(firstPath.isNotEmpty())task->a=ClickProgram::decode(std::unique_ptr<AudioFormatReader>(formats.createReaderFor(File(firstPath))));
+                if(secondPath.isNotEmpty())task->b=ClickProgram::decode(std::unique_ptr<AudioFormatReader>(formats.createReaderFor(File(secondPath))));
+            } else {task->a=ClickProgram::tone(preset,true);task->b=ClickProgram::tone(preset,false);}
+        } catch(const std::exception &error){task->error=String::fromUTF8(error.what());}
+        task->done.store(true,std::memory_order_release);
+    };
+    auto *messages=MessageManager::getInstanceWithoutCreating();
+    if(messages&&messages->isThisTheMessageThread()) {
+        static ThreadPool workers(1);workers.addJob(prepare);startTimer(20);
+    } else {prepare();publishPreparedMetronome();}
+}
+void AudioEngine::publishPreparedMetronome() {
+    const auto task=metronomePreparation;
+    if(!task||!task->done.load(std::memory_order_acquire))return;
+    metronomePreparation.reset();
+    if(task->error.isEmpty())enqueuePreparedEdit([this,task]() noexcept {
+        std::swap(metronome.a,task->a);std::swap(metronome.b,task->b);
+    });
+    if(task->completed)task->completed(task->error);
 }
 std::unique_ptr<AudioEngine::LatencyPlan> AudioEngine::makeLatencyPlan(const ID *replacement,const NativeFX *prepared,
                                                                     std::optional<bool> midiTakeActive,bool admitReady,
@@ -1281,17 +1298,19 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
         std::reverse(busOrder.begin(), busOrder.end());
         stage("busesMilliseconds");
         std::map<std::string, std::shared_ptr<Source>> sources;
+        const bool videoAudio = !(bool)Appearance().value("jaras.video.noAudio", true);
         int reusedSources = 0, reusedProcessors = 0, cachedMetadataSources = 0, lightweightMetadataSources = 0;
         double metadataMilliseconds = 0;
         for (const auto &track : song.tracks) {
             checkpoint();
-            if (track.role.id == "video" || jaras::isTeleprompterRole(track.role) ||
-                track.role.id == "chords") {
+            const bool teleprompter = jaras::isTeleprompterRole(track.role);
+            if (track.role.id == "video" || track.role.id == "chords" || (teleprompter && !videoAudio)) {
                 ++workDone;progress();
                 continue;
             }
             for (const auto &clip : track.clips) {
                 checkpoint();
+                if (teleprompter && !projectionMedia(clip)) continue;
                 const auto &sourceFile = clip.audioFile ? clip.audioFile : track.audioFile;
                 const bool midiItem = clip.midi && !clip.frozenMIDI.value_or(false);
                 if ((!sourceFile && !midiItem) || clip.duration <= 0)
@@ -1632,7 +1651,7 @@ void AudioEngine::waitPreparedEdit(audio::PreparedAudioEdits::Ticket* ticket) {
 }
 
 void AudioEngine::cancelTransportPreparation(bool all) {
-    stopTimer();
+    if(!metronomePreparation)stopTimer();
     if(transportPreparation) {
         transportPreparation->cancelled=true;
         for(const auto &read:transportPreparation->reads)if(read.loop)read.reader().clearLoopReserve();
@@ -1821,9 +1840,10 @@ void AudioEngine::prewarmTransportDestination(const std::optional<State> &state)
     runTransportPreparation(task);startTimer(20);
 }
 void AudioEngine::timerCallback() {
+    publishPreparedMetronome();
     if(queuedPreparation)for(const auto &read:queuedPreparation->reads)read.reader().keepTransitionWarm(read.loop);
     const auto task=transportPreparation;
-    if(!task || task->cancelled){if(!queuedPreparation)stopTimer();return;}
+    if(!task || task->cancelled){if(!queuedPreparation&&!metronomePreparation)stopTimer();return;}
     // No disk reads or locks on this path. Retain only the selected destination
     // when stopped; a playing reader chooses its own forward read position.
     if(task->done && !task->state.playing&&!task->state.subPlaying)
@@ -1835,7 +1855,7 @@ void AudioEngine::timerCallback() {
         commitPreparedTransport(task->state,task->routingOnly);
         task->sendTransport=false;
     }
-    if(!queuedPreparation && (task->state.playing||task->state.subPlaying))stopTimer();
+    if(!queuedPreparation && !metronomePreparation && (task->state.playing||task->state.subPlaying))stopTimer();
 }
 void AudioEngine::transport(const State &state) {
     if(publishPromotion(state))return;
@@ -2162,6 +2182,11 @@ void AudioEngine::applyUpdates(size_t budget, TrackCapture* capture, bool fromCa
                 incoming.position = current.position;
             }
             incoming.followMainClock = false;
+            if(!offlineMode&&!offlineRendering) {
+                if((current.playing||current.subPlaying)&&!incoming.playing&&!incoming.subPlaying&&!incoming.preserveLatency)
+                    stopTransition.begin(rate.load());
+                else if(incoming.playing||incoming.subPlaying)stopTransition.cancel();
+            }
             if(u.resetElapsed)elapsedSamples=0;
             const bool startingFromStop=!offlineMode&&!offlineRendering&&!current.playing&&!current.subPlaying&&(incoming.playing||incoming.subPlaying);
             bool changed[2]{};
@@ -2956,6 +2981,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
     // unselected monitor routes must not leak their tails into a stopped fade.
     // During playback only the selected buses are affected by the fade ramp.
     renderProfile.mark();
+    if(!offlineMode&&!offlineRendering&&!exportCapture)
+        stopTransition.process(out,unsigned(channels),unsigned(samples));
     if (fadeout.active && fadeout.remaining == 0 && !current.playing && !current.subPlaying) {
         masterBuffer.clear(0, samples);
         for (int ch = 0; ch < channels; ++ch)

@@ -1,5 +1,6 @@
 #pragma once
 #include "RemoteCipher.h"
+#include "../../Core/Tracks/Track.hpp"
 namespace catlive::remote {
 inline bool validID(const var &value) {
     if (!value.isString())
@@ -30,6 +31,7 @@ struct Command {
     double value = 0;
     int pad = -1, preset = -1;
     std::optional<bool> enabled, receipt;
+    std::vector<jaras::OutputPatch> outputRoutes;
     static Command decode(const var &v) {
         require(v.isObject() && validID(v["id"]) && validID(v["project"]) &&
                 v["action"].isString());
@@ -51,6 +53,18 @@ struct Command {
         c.value = (double)value;
         require(std::isfinite(c.value));
         const auto a = c.action;
+        const auto routes = get(v, "outputRoutes");
+        if (a == "setOutputRoutes") {
+            require(routes.isArray() && routes.getArray()->size() <= 64);
+            for (const auto& route : *routes.getArray()) {
+                const auto first = get(route, "firstChannel"), count = get(route, "channelCount");
+                require(route.isObject() && (first.isInt() || first.isInt64()) && (count.isInt() || count.isInt64()));
+                const auto channel = static_cast<int64>(first), width = static_cast<int64>(count);
+                require(channel >= (c.target.empty() ? -1 : -2) && channel <= 1024 && width >= 1 && width <= 2 &&
+                    (channel > 0 || width == 2) && (channel != 0 || !c.target.empty()));
+                c.outputRoutes.push_back({static_cast<int>(channel), static_cast<int>(width)});
+            }
+        } else require(routes.isVoid() || routes.isUndefined());
         const bool padAction = a == "vinhetasDown" || a == "vinhetasVolume" || a == "vinhetasGate";
         for (auto entry : {std::pair<const char *, int *>{"pad", &c.pad}, {"preset", &c.preset}}) {
             auto field = get(v, Identifier(entry.first));
@@ -87,7 +101,8 @@ struct Command {
             return c.value >= low && c.value <= high;
         };
         bool valid = false;
-        if (a == "vinhetasDown" || a == "vinhetasUp")
+        if (a == "setOutputRoutes") valid = zero;
+        else if (a == "vinhetasDown" || a == "vinhetasUp")
             valid = target && zero && !c.enabled.has_value();
         else if (a == "vinhetasVolume")
             valid = !target && range(0, 2) && !c.enabled.has_value();

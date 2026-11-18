@@ -32,7 +32,7 @@ class AutomaticSectionPanel final : public Component {
         :session(s),source(std::move(id)),project(s.project().id),error(std::move(fail)),leftModel(*this,false),rightModel(*this,true),left("songs",&leftModel),right("sections",&rightModel) {
         if(const auto* song=session.song()) {
             const jaras::TimelineMarker* original=nullptr;
-            if(song->markers)for(const auto& m:*song->markers)if(m.id==source){original=&m;target=m.automaticSectionTargetID==source?std::nullopt:m.automaticSectionTargetID;}
+            if(song->markers)for(const auto& m:*song->markers)if(m.id==source){original=&m;target=m.automaticSectionTargetID==source?std::nullopt:m.automaticSectionTargetID;repeatCount=m.automaticSectionRepeatCount;}
             for(const auto& p:song->parts){
                 if(std::any_of(song->parts.begin(),song->parts.end(),[&](const auto& child){return child.parentRegionID==p.id;}))continue;
                 regions.push_back(p.id);
@@ -41,11 +41,19 @@ class AutomaticSectionPanel final : public Component {
         }
         for(auto* list:{&left,&right}){addAndMakeVisible(list);list->setRowHeight(38);list->setColour(ListBox::backgroundColourId,theme::display);}
         addAndMakeVisible(cancel);addAndMakeVisible(apply);
+        addAndMakeVisible(repeats);addAndMakeVisible(custom);
+        repeats.addItem("Infinite",1);
+        for(int count=1;count<=5;++count)repeats.addItem(String(count)+"x",count+1);
+        repeats.addItem(localization::translate("Personalizado"),22);
+        repeats.setSelectedId(repeatCount ? (*repeatCount<=5 ? *repeatCount+1 : 22) : 1,dontSendNotification);
+        custom.setInputRestrictions(2,"0123456789");custom.setText(String(repeatCount.value_or(1)));
+        repeats.onChange=[this]{updateRepeatControls();};custom.onTextChange=[this]{updateRepeatControls();};
+        updateRepeatControls();
         cancel.onClick=[this]{ModalSheet::dismiss(*this);};
         apply.onClick=[this]{
             if(session.project().id!=project){ModalSheet::dismiss(*this);return;}
             try {
-                session.edit([&](jaras::Project& p){for(auto& song:p.songs)if(song.markers)for(auto& m:*song.markers)if(m.id==source)m.automaticSectionTargetID=target;});
+                session.edit([&](jaras::Project& p){for(auto& song:p.songs)if(song.markers)for(auto& m:*song.markers)if(m.id==source){m.automaticSectionTargetID=target;m.automaticSectionRepeatCount=repeatCount;}});
                 ModalSheet::dismiss(*this);
             }catch(const std::exception& e){error(String::fromUTF8(e.what()));}
         };
@@ -53,12 +61,20 @@ class AutomaticSectionPanel final : public Component {
     }
     void resized() override {
         auto area=getLocalBounds().reduced(16);area.removeFromTop(38);
+        auto repeatRow=area.removeFromTop(38);repeats.setBounds(repeatRow.removeFromLeft(220));repeatRow.removeFromLeft(10);custom.setBounds(repeatRow.removeFromLeft(64));area.removeFromTop(10);
         auto buttons=area.removeFromBottom(38);cancel.setBounds(buttons.removeFromLeft(110));apply.setBounds(buttons.removeFromRight(110));area.removeFromBottom(14);
         left.setBounds(area.removeFromLeft((area.getWidth()-12)/2));area.removeFromLeft(12);right.setBounds(area);
         if(!revealed && region){const auto row=std::find(regions.begin(),regions.end(),*region);if(row!=regions.end()){left.scrollToEnsureRowIsOnscreen((int)std::distance(regions.begin(),row));revealed=true;}}
     }
     void paint(Graphics& g) override {g.fillAll(theme::panel);g.setColour(theme::secondary);g.setFont(theme::font(12));g.drawFittedText(String::fromUTF8("Escolha o destino. O aviso começa 5 segundos antes do marcador."),16,8,getWidth()-32,36,Justification::centredLeft,2);}
   private:
+    void updateRepeatControls(){
+        const int selected=repeats.getSelectedId();
+        custom.setVisible(selected==22);
+        const int count=selected==22 ? custom.getText().getIntValue() : selected-1;
+        repeatCount=selected==1 ? std::nullopt : std::optional<int>(count);
+        apply.setEnabled(selected==1 || (count>=1 && count<=20));
+    }
     void refreshMarkers(){
         markers.clear();if(const auto* song=session.song();song && song->markers && region){
             const auto p=std::find_if(song->parts.begin(),song->parts.end(),[&](const auto& p){return p.id==*region;});
@@ -69,6 +85,8 @@ class AutomaticSectionPanel final : public Component {
     bool revealed=false;
     Session& session;ID source,project;std::function<void(String)> error;
     std::optional<ID> region,target;std::vector<ID> regions,markers;
+    std::optional<int> repeatCount;
+    ComboBox repeats;TextEditor custom;
     Column leftModel,rightModel;ListBox left,right;TextButton cancel{localization::translate("Cancelar")},apply{localization::translate("Aplicar")};
 };
 }

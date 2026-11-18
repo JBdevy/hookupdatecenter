@@ -241,7 +241,7 @@ struct FXEditor: View {
                     }
                     EQRTAOverlay(target: audioTarget, effect: effectKey)
                     EQResponsePlot(bands: settings.bands, enabled: settings.eqEnabled,
-                                   sampleRate: AudioDeviceSettings.shared.sampleRate).equatable()
+                                   sampleRate: StemAudioPlayback.shared.processingSampleRate).equatable()
                     #if os(macOS)
                     EQAddBandInput { x, y in
                         if abs(y - geometry.size.height / 2) < 18 { addBand(frequency: 20 * pow(1000.0, Double(min(1,max(0,x / geometry.size.width))))) }
@@ -394,13 +394,22 @@ struct ClipFXChainEditor: View {
                                             .cornerRadius(3).contentShape(Rectangle())
                                     }.buttonStyle(.plain).accessibilityLabel(Text("Bypass") + Text(" · " + title(effect)))
                                     Button { selected = effect } label: {
-                                        Text(verbatim: title(effect)).font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
-                                            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading).contentShape(Rectangle())
+                                        HStack(spacing: 4) {
+                                            Text(verbatim: title(effect)).font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
+                                            Spacer(minLength: 0)
+                                            Image(systemName: "line.3.horizontal").font(.jarasSystem(size: 11)).foregroundStyle(JarasTheme.secondary)
+                                        }.frame(maxWidth: .infinity, minHeight: 34, alignment: .leading).contentShape(Rectangle())
                                     }.buttonStyle(.plain)
+                                        .onDrag { ClipFXReorderPayload(project: show.snapshot.project.id, clip: clip, effect: effect).provider() }
                                 }.padding(.horizontal, 4)
                                     .background(selected == effect ? JarasTheme.green.opacity(0.3) : Color.clear)
                                     .cornerRadius(4)
+                                    .onDrop(of: [ClipFXReorderPayload.type], delegate: ClipFXReorderDrop(show: show, project: show.snapshot.project.id,
+                                        clip: clip, target: effect, next: effects.drop(while: { $0 != effect }).dropFirst().first, selected: $selected))
                             }
+                            Color.clear.frame(height: 24).contentShape(Rectangle())
+                                .onDrop(of: [ClipFXReorderPayload.type], delegate: ClipFXReorderDrop(show: show, project: show.snapshot.project.id,
+                                    clip: clip, target: nil, next: nil, selected: $selected))
                         }
                     }
                     HStack {
@@ -429,6 +438,51 @@ struct ClipFXChainEditor: View {
             }
     }
 }
+struct ClipFXReorderPayload: Codable {
+    static let type = "com.catlive.item-fx-order"
+    let project: UUID
+    let clip: UUID
+    let effect: String
+    func provider() -> NSItemProvider {
+        let data = (try? JSONEncoder().encode(self)) ?? Data()
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: Self.type, visibility: .all) { completion in
+            completion(data, nil); return nil
+        }
+        return provider
+    }
+    static func effect(from data: Data, project: UUID, clip: UUID) -> String? {
+        guard let value = try? JSONDecoder().decode(Self.self, from: data), value.project == project, value.clip == clip else { return nil }
+        return value.effect
+    }
+}
+struct ClipFXReorderDrop: DropDelegate {
+    let show: ShowController
+    let project: UUID
+    let clip: UUID?
+    let target: String?
+    let next: String?
+    var rowHeight: CGFloat = 34
+    @Binding var selected: String?
+    func validateDrop(info: DropInfo) -> Bool {
+        clip != nil && show.snapshot.project.id == project && info.hasItemsConforming(to: [ClipFXReorderPayload.type])
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool {
+        guard let clip, validateDrop(info: info), let provider = info.itemProviders(for: [ClipFXReorderPayload.type]).first else { return false }
+        let before = target != nil && info.location.y > rowHeight / 2 ? next : target
+        provider.loadDataRepresentation(forTypeIdentifier: ClipFXReorderPayload.type) { data, _ in
+            guard let data, let effect = ClipFXReorderPayload.effect(from: data, project: project, clip: clip) else { return }
+            Task { @MainActor in
+                guard show.snapshot.project.id == project,
+                      let moved = show.reorderClipFX(clip, effect: effect, before: before) else { return }
+                selected = moved
+            }
+        }
+        return true
+    }
+}
+
 #endif
 
 #if os(macOS)

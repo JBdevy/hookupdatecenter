@@ -4,6 +4,7 @@ import Foundation
     func executeAutomation(_ command: ShowCommand, target: UUID?, value: Double) throws { try core.executeAutomation(command: command.rawValue, target: target?.uuidString, value: value) }
     func projectSyncFrame() throws -> Data { try core.projectSyncFrame() }
     func applyProjectSync(_ data: Data, elapsed: Double, first: Bool) throws -> PlaybackSnapshot { try JSONDecoder().decode(PlaybackSnapshot.self, from: core.applyProjectSync(data, elapsed: elapsed, first: first)) }
+    var subplayPreparationPosition: Double? { core.subplayPreparationPosition() }
     private let core: JarasCoreBridge
     private struct ClipWaveform {
         struct Storage: Hashable {

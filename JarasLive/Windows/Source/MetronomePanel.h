@@ -51,19 +51,30 @@ class MetronomePanel final:public Component {
     TextButton close{localization::translate("Fechar")},fileA{"Importar A"},fileB{"Importar B"};Label status;std::vector<jaras::OutputPatch>patches;std::unique_ptr<FileChooser>chooser;
     void change(String key,var value){
         auto next=settings.clone();put(next,Identifier(key),value);
-        try{engine.configureMetronome(next);auto result=preferences.set("jaras.metronome."+key,value);if(result.failed())throw std::runtime_error(utf8(result.getErrorMessage()));settings=next;status.setText({},dontSendNotification);}
+        try{engine.configureMetronome(next,[safe=SafePointer<MetronomePanel>(this)](String error){if(safe)safe->status.setText(error,dontSendNotification);});preferences.setMetronome("jaras.metronome."+key,value,[safe=SafePointer<MetronomePanel>(this)](String error){if(safe&&error.isNotEmpty())safe->status.setText(error,dontSendNotification);});settings=next;status.setText({},dontSendNotification);}
         catch(const std::exception &e){status.setText(String::fromUTF8(e.what()),dontSendNotification);}
     }
     void import(bool first){
         chooser=std::make_unique<FileChooser>("Som de click",File(),"*.wav;*.aif;*.aiff;*.mp3;*.flac",true);
         chooser->launchAsync(FileBrowserComponent::openMode|FileBrowserComponent::canSelectFiles,[safe=SafePointer<MetronomePanel>(this),first](const FileChooser &fc){
             if(!safe||!fc.getResult().existsAsFile())return;
-            try{
-                ClickProgram::decode(std::unique_ptr<AudioFormatReader>(safe->engine.formats.createReaderFor(fc.getResult())));
-                auto folder=File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/Metronome");folder.createDirectory();
-                auto target=folder.getChildFile(text(uuid())+"-"+fc.getResult().getFileName());if(!fc.getResult().copyFileTo(target))throw std::runtime_error("Não foi possível copiar o som.");
-                safe->change(first?"pathA":"pathB",target.getFullPathName());
-            }catch(const std::exception &e){safe->status.setText(String::fromUTF8(e.what()),dontSendNotification);}
+            const auto source=fc.getResult();
+            static ThreadPool imports(1);
+            imports.addJob([safe,first,source] {
+                File target;String error;
+                try {
+                    AudioFormatManager formats;registerAudioFormats(formats);
+                    ClickProgram::decode(std::unique_ptr<AudioFormatReader>(formats.createReaderFor(source)));
+                    auto folder=File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/Metronome");folder.createDirectory();
+                    target=folder.getChildFile(text(uuid())+"-"+source.getFileName());
+                    if(!source.copyFileTo(target))throw std::runtime_error("Não foi possível copiar o som.");
+                } catch(const std::exception &failure){error=String::fromUTF8(failure.what());}
+                MessageManager::callAsync([safe,first,target,error] {
+                    if(!safe)return;
+                    if(error.isNotEmpty())safe->status.setText(error,dontSendNotification);
+                    else safe->change(first?"pathA":"pathB",target.getFullPathName());
+                });
+            });
         });
     }
 };

@@ -116,7 +116,7 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                          jlimit(0, 127,
                                 note.pitch + (int)std::round(clip.pitchSemitones.value_or(0)) +
                                     (song && !clip.renderedTiming.value_or(false)
-                                         ? regionPitch::value(*song, track, start)
+                                         ? regionPitch::value(*song, track, clip)
                                          : 0)),
                          jlimit(0, 127,
                                 (int)std::round(note.velocity *

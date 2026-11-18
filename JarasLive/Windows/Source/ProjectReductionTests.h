@@ -82,6 +82,13 @@ template<class Test,class Fixture> void run(const File &directory,Test &&test,Fi
         jaras::AudioClip c;c.id=uuid();c.name="source";c.duration=4.000000000002;c.audioFile=jaras::AudioFile{utf8(name),{}};t.clips={c};song.tracks.push_back(t);
     }
     for(int i=0;i<2;++i){jaras::Part r;r.id=uuid();r.name="Music"+std::to_string(i+1);r.startTime=i*2;r.endTime=(i+1)*2;song.parts.push_back(r);}
+    jaras::TimelineMarker cue{uuid(),"Cue",1,0};
+    jaras::TimelineMarker tempo{uuid(),"TEMPO",2,0};tempo.tempoBPM=120;
+    song.markers=std::vector<jaras::TimelineMarker>{cue,tempo};
+    auto muted=p;muted.songs[0].tracks[1].clips[0].muted=true;
+    recordingCaptureTests::require(projectReduction::hasMutedItems(muted),"Muted item confirmation did not see an item");
+    projectReduction::unmuteItems(muted);
+    recordingCaptureTests::require(!projectReduction::hasMutedItems(muted),"Confirmed snapshot remained muted");
     projectReduction::Group g;g.name="Mix";g.sources={song.tracks[0].id,song.tracks[1].id};std::atomic<bool> cancel{false};
     const auto target=root.getChildFile("Reduced/Reduced.jl");std::vector<projectReduction::Progress> events;
     projectReduction::write(p,{g},root,target,cancel,[&](const projectReduction::Progress &event){events.push_back(event);});
@@ -93,6 +100,9 @@ template<class Test,class Fixture> void run(const File &directory,Test &&test,Fi
     recordingCaptureTests::require(reduced.songs[0].tracks.size()==1,"Unselected track survived");
     const auto &clips=reduced.songs[0].tracks[0].clips;
     recordingCaptureTests::require(clips.size()==2&&clips[0].startTime==0&&clips[1].startTime==2&&clips[0].duration==2,"Regions were joined horizontally");
+    recordingCaptureTests::require(clips[0].audioFile->path=="Stems/Mix - Music1.wav"&&clips[1].audioFile->path=="Stems/Mix - Music2.wav","Generated stems do not follow their track and region names");
+    const auto &markers=reduced.songs[0].markers;
+    recordingCaptureTests::require(markers&&markers->size()==1&&markers->front().id==cue.id&&song.markers->size()==2,"Reduction must preserve ordinary markers and remove tempo markers only from the copy");
     recordingCaptureTests::require(reduced.masterVolume==p.masterVolume&&reduced.projectSyncID!=p.projectSyncID,"Master or new project identity changed incorrectly");
     AudioFormatManager formats;formats.registerBasicFormats();
     for(const auto &c:clips){std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(target.getParentDirectory().getChildFile(text(c.audioFile->path))));

@@ -24,6 +24,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// Preparation reads/decodes on the control thread; playback reads bounded PCM
 /// pages replenished by a worker, never opening a file in the render callback.
 @interface JarasPreparedClip : NSObject
++ (NSDictionary<NSString *, NSNumber *> *)memoryDiagnostics;
+/// Release idle PCM/history leases while retaining the graph and DSP storage.
+/// Prepare again before scheduling this source; never call on an audible voice.
+- (void)suspendStreaming;
 @property(nonatomic, readonly) AVAudioSourceNode *node;
 @property(nonatomic, readonly) double sourcePosition;
 @property(nonatomic, readonly) BOOL playing;
@@ -53,12 +57,19 @@ NS_ASSUME_NONNULL_BEGIN
 @interface JarasBufferedAudioOutput : NSObject
 - (instancetype)initWithEngine:(AVAudioEngine *)engine hardwareEngine:(AVAudioEngine *)hardware;
 @property(nonatomic, readonly) AVAudioEngine *hardwareEngine;
+@property(nonatomic, readonly) double configuredHardwareSampleRate;
+@property(nonatomic, readonly) AVAudioChannelCount configuredHardwareChannels;
+/// Set while stopped, before configuring a new project's graph. Zero follows hardware.
+@property(nonatomic) double preferredProcessingSampleRate;
 @property(nonatomic, readonly, nullable) AVAudioTime *renderTime;
 - (nullable AVAudioFormat *)configureAndReturnError:(NSError **)error;
 - (BOOL)startAndReturnError:(NSError **)error;
 - (void)stop;
 - (void)discardPreparedOutput;
+- (void)beginStop;
+- (void)endStop;
 - (void)setOutputEnabled:(BOOL)enabled;
+- (void)setPlaybackSourceCount:(NSUInteger)count;
 - (NSDictionary<NSString *, id> *)diagnostics;
 @end
 #endif
@@ -141,6 +152,8 @@ NS_ASSUME_NONNULL_END
 
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasChannelRouter : NSObject
++ (void)beginStop:(AVAudioUnitEffect *)node;
++ (void)endStop:(AVAudioUnitEffect *)node;
 + (AVAudioUnitEffect *)makeNode;
 + (void)setRenderEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (void)beginStopFade:(AVAudioUnitEffect *)node;

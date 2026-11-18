@@ -3,6 +3,187 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testScanSilentlySkipsUnreadableAndUnsupportedFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Song", file: "Valid.wav")
+        try Data("broken audio".utf8).write(to: folder.appendingPathComponent("Broken.mp3"))
+        try Data("notes".utf8).write(to: folder.appendingPathComponent("Notes.txt"))
+        let scan = try StemProjectImporter.scan([folder])
+        XCTAssertTrue(scan.warnings.isEmpty)
+        XCTAssertEqual(scan.folders.count, 1)
+        XCTAssertEqual(scan.folders[0].files.map(\.name), ["Valid.wav"])
+    }
+
+    func testAddStemsImportsPortableLyricsAsMediaWithoutCreatingAnAudioTrack() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Song")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let columns = ItemTextColors.encodeColumns(["Verso", "Refrão"])
+        let item = AudioClip(id: UUID(), name: "Lyrics", startTime: 2, duration: 9, text: columns)
+        try JSONEncoder().encode(JLLyricsDocument(teleprompter: 2, clips: [item], origin: 0))
+            .write(to: source.appendingPathComponent("LyricsPrompter2 - Song.jllyrics"))
+        let project = try StemProjectImporter.build(scan: StemProjectImporter.scan([source]), remove: "",
+            base: .empty(name: "Import"), destination: root.appendingPathComponent("Project/Show.jl"))
+        let song = project.songs[0]
+        XCTAssertEqual(song.parts.count, 1)
+        let region = try XCTUnwrap(song.parts.first)
+        XCTAssertEqual(region.endTime - region.startTime, 11)
+        XCTAssertTrue(song.tracks.allSatisfy { $0.kind != .standard })
+        let clip = try XCTUnwrap(song.tracks.first(where: { $0.kind == .teleprompt2 })?.clips.first)
+        XCTAssertEqual(clip.text, columns)
+        XCTAssertEqual(clip.startTime, region.startTime + 2)
+        XCTAssertEqual(clip.regionOwnerID, region.id)
+        try project.validate()
+    }
+
+    func testMultitrackManifestRestoresMediaAndLyricsRelativeToEachNewRegion() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let exports = root.appendingPathComponent("Exports")
+        let images = Data([1, 2, 3])
+        let exporter = Project.empty(name: "Source")
+        let videoID = UUID()
+        let lyricID = UUID()
+        let formatted = ItemTextColors.encodeColumns(["Coro", "Verso"])
+        var source = exporter.songs[0]
+        let first = Part(id: UUID(), name: "Primeira canção", startTime: 82, endTime: 106, color: 0xabcdef,
+                         uppercaseName: false, pitchSemitones: 2, pitchTrackIDs: [videoID])
+        let second = Part(id: UUID(), name: "Segunda canção", startTime: 132, endTime: 156, color: 0x321abc)
+        source.parts = [first, second]
+        source.markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 82, color: 0, tempoBPM: 147),
+                          TimelineMarker(id: UUID(), name: "TEMPO", position: 94, color: 0, tempoBPM: 140)]
+        for part in source.parts {
+            let folder = exports.appendingPathComponent(part.name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try images.write(to: folder.appendingPathComponent("cena.png"))
+            var video = Track(id: videoID, name: "Cenas", role: .other, volume: 0.5, color: 0x908611)
+            video.outputs = [OutputPatch(firstChannel: 2, channelCount: 1)]
+            video.clips = [AudioClip(id: UUID(), name: "Cena", startTime: part.startTime - 2, duration: 9,
+                sourceOffset: 1.5, audioFile: AudioFile(path: "Videos/cena.png"), gain: 0.72, pan: -0.3, playbackRate: 0.92)]
+            var lyrics = Track(id: lyricID, name: "Teleprompter 2", role: TrackRole(rawValue: TrackKind.teleprompt2.rawValue))
+            lyrics.clips = [AudioClip(id: UUID(), name: "Letra", startTime: part.startTime + 6, duration: 7, text: formatted)]
+            let data = try MultitrackRegionData.snapshot(song: source, region: part, tracks: [video, lyrics], renderedStems: [], lyricsFiles: [])
+            XCTAssertEqual(data.region.startTime, 2)
+            try JSONEncoder().encode(data).write(to: folder.appendingPathComponent(".jldata-" + part.name))
+        }
+        var destination = Project.empty(name: "Target")
+        destination.songs[0].parts = [Part(id: UUID(), name: "Existing", startTime: 0, endTime: 12)]
+        let scan = try StemProjectImporter.scan([exports])
+        XCTAssertEqual(scan.folders.count, 2)
+        let result = try StemProjectImporter.build(scan: scan, remove: "canção", base: destination,
+            destination: root.appendingPathComponent("Project/Show.jl"))
+        let song = result.songs[0]
+        XCTAssertEqual(song.parts.map(\.name), ["Existing", first.name, second.name])
+        XCTAssertEqual(song.parts[1].color, first.color)
+        XCTAssertEqual(song.parts[1].pitchSemitones, 2)
+        XCTAssertEqual(song.parts[1].endTime - song.parts[1].startTime, 24, accuracy: 1e-9)
+        XCTAssertGreaterThanOrEqual(song.parts[1].startTime - 2, 12)
+        XCTAssertGreaterThanOrEqual(song.parts[2].startTime - 2, song.parts[1].endTime)
+        let scenes = try XCTUnwrap(song.tracks.first { $0.id == videoID })
+        XCTAssertEqual(scenes.outputPatches, [OutputPatch(firstChannel: 2, channelCount: 1)])
+        XCTAssertEqual(scenes.volume, 0.5)
+        XCTAssertEqual(scenes.clips.count, 2)
+        for (clip, region) in zip(scenes.clips, song.parts.dropFirst()) {
+            XCTAssertEqual(clip.startTime, region.startTime - 2, accuracy: 1e-9)
+            XCTAssertEqual(clip.duration, 9)
+            XCTAssertEqual(clip.sourceOffset, 1.5)
+            XCTAssertEqual(clip.audioRate, 0.92)
+            XCTAssertEqual(clip.gain, 0.72)
+            XCTAssertEqual(clip.pan, -0.3)
+            XCTAssertEqual(clip.regionOwnerID, region.id)
+        }
+        let lyrics = try XCTUnwrap(song.tracks.first { $0.kind == .teleprompt2 })
+        for (clip, region) in zip(lyrics.clips, song.parts.dropFirst()) {
+            XCTAssertEqual(clip.startTime, region.startTime + 6)
+            XCTAssertEqual(clip.text, formatted)
+        }
+        let tempos = try XCTUnwrap(song.markers).filter { $0.regionOwnerID == song.parts[1].id }
+        XCTAssertEqual(tempos.map(\.tempoBPM), [147, 140])
+        XCTAssertEqual(tempos.last!.position, song.parts[1].startTime + 12, accuracy: 1e-9)
+        try result.validate()
+    }
+
+    func testMultitrackDrawerRecreatesSongsAndKeepsIndividualAudioPositionsAndTuner() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let drawerFolder = root.appendingPathComponent("Seleção")
+        let parent = Part(id: UUID(), name: "Seleção", startTime: 30, endTime: 50, color: 0x661199, pitchSemitones: 2)
+        let first = Part(id: UUID(), name: "A", startTime: 30, endTime: 40, parentRegionID: parent.id, pitchSemitones: -3)
+        let next = Part(id: UUID(), name: "B", startTime: 40, endTime: 50, parentRegionID: parent.id)
+        let sourceGroup = Track(id: UUID(), name: "Grupo original", role: .other)
+        let sourceTrack = Track(id: UUID(), name: "Pandeirola", role: .drums, parentTrackID: sourceGroup.id)
+        var programTrack = Track(id: UUID(), name: "Program Change", role: TrackRole(rawValue: TrackKind.programChange.rawValue))
+        programTrack.programChanges = [ProgramChangeMarker(id: UUID(), position: 35, program: 12, channel: 2)]
+        var source = Project.empty(name: "Origem").songs[0]
+        source.parts = [parent, first, next]
+        let nextSection = TimelineMarker(id: UUID(), name: "Entrada", position: 43, color: 3, section: true)
+        var section = TimelineMarker(id: UUID(), name: "Refrão", position: 34, color: 1, section: true)
+        section.automaticSectionTargetID = nextSection.id
+        section.automaticSectionRepeatCount = 2
+        source.markers = [section, TimelineMarker(id: UUID(), name: "Sinal", position: 36, color: 2), nextSection]
+        let items = [
+            MultitrackRegionData.RenderedStem.Item(offset: -1, duration: 3, rate: 1.1, pitchSemitones: -2),
+            MultitrackRegionData.RenderedStem.Item(offset: 7, duration: 4, rate: 1, pitchSemitones: 4),
+            MultitrackRegionData.RenderedStem.Item(offset: 1, duration: 2, rate: 1.25, pitchSemitones: 1)
+        ]
+        var entries: [MultitrackDrawerData.Entry] = []
+        for (index, part) in [first, next].enumerated() {
+            let stems = try (index == 0 ? [0, 1] : [2]).enumerated().map { ordinal, itemIndex in
+                let name = "Pandeirola – " + part.name + String(format: " %03d.wav", ordinal + 1)
+                _ = try fixture(drawerFolder, folder: part.name, file: name, seconds: items[itemIndex].duration)
+                return MultitrackRegionData.RenderedStem(file: name, track: sourceTrack.id, items: [items[itemIndex]])
+            }
+            let data = try MultitrackRegionData.snapshot(song: source, region: part, tracks: [sourceGroup, sourceTrack, programTrack],
+                renderedStems: stems, lyricsFiles: [], fullItems: true, tunerUnbaked: true)
+            entries.append(.init(folder: part.name, offset: part.startTime - parent.startTime,
+                                 cue: index == 0 ? 0 : 10.5, data: data, cueID: UUID(), cueName: "Bandeira " + part.name, cueColor: 0x123456))
+        }
+        let manifest = MultitrackDrawerData(version: 2, name: parent.name, duration: 20,
+            color: parent.color, uppercaseName: false, entries: entries, pitchSemitones: parent.pitchSemitones)
+        try JSONEncoder().encode(manifest).write(to: drawerFolder.appendingPathComponent(".jldata-Seleção"))
+        let project = try StemProjectImporter.build(scan: StemProjectImporter.scan([drawerFolder]), remove: "",
+            base: .empty(name: "Import"), destination: root.appendingPathComponent("Project/Show.jl"))
+        let song = project.songs[0]
+        let drawer = try XCTUnwrap(song.parts.first { $0.parentRegionID == nil })
+        XCTAssertEqual(drawer.name, parent.name)
+        XCTAssertEqual(drawer.color, parent.color)
+        XCTAssertEqual(drawer.pitchSemitones, 2)
+        XCTAssertEqual(drawer.endTime - drawer.startTime, 20)
+        let children = song.parts.filter { $0.parentRegionID == drawer.id }.sorted { $0.startTime < $1.startTime }
+        XCTAssertEqual(children.map(\.name), [first.name, next.name])
+        XCTAssertEqual(children.map { $0.startTime - drawer.startTime }, [0, 10])
+        XCTAssertEqual(children[0].pitchSemitones, -3)
+        XCTAssertNil(children[0].pitchTrackIDs)
+        XCTAssertNil(children[0].pitchGroupIDs)
+        let marker = try XCTUnwrap(song.markers?.first { $0.sourceRegionID == children[1].id })
+        XCTAssertEqual(marker.position - drawer.startTime, 10.5)
+        XCTAssertEqual(marker.name, "Bandeira B")
+        XCTAssertEqual(marker.color, 0x123456)
+        let sourceMarker = try XCTUnwrap(song.markers?.first { $0.name == "Refrão" })
+        let targetMarker = try XCTUnwrap(song.markers?.first { $0.name == "Entrada" })
+        XCTAssertEqual(sourceMarker.position, drawer.startTime + 4)
+        XCTAssertEqual(sourceMarker.automaticSectionTargetID, targetMarker.id)
+        XCTAssertEqual(sourceMarker.automaticSectionRepeatCount, 2)
+        XCTAssertNotEqual(targetMarker.id, nextSection.id)
+        XCTAssertEqual(song.markers?.first { $0.name == "Sinal" }?.position, drawer.startTime + 6)
+        let track = try XCTUnwrap(song.tracks.first { $0.clips.count == 3 })
+        XCTAssertNotNil(track.parentTrackID)
+        XCTAssertFalse(song.tracks.contains { $0.id == sourceGroup.id || $0.id == sourceTrack.id })
+        let program = song.tracks.first(where: { $0.kind == .programChange })?.programChanges?.first
+        XCTAssertEqual(program?.position, drawer.startTime + 5)
+        XCTAssertEqual(program?.program, 12)
+        let clips = track.clips.sorted { $0.startTime < $1.startTime }
+        XCTAssertEqual(clips.map { $0.startTime - drawer.startTime }, [-1, 7, 11])
+        XCTAssertEqual(clips.map(\.duration), [3, 4, 2])
+        XCTAssertEqual(clips.compactMap(\.pitchSemitones), [-2, 4, 1])
+        XCTAssertEqual(clips.map(\.audioRate), [1, 1, 1])
+        XCTAssertEqual(clips.map(\.regionOwnerID), [children[0].id, children[0].id, children[1].id])
+        XCTAssertTrue(clips[1].name.hasSuffix("002.wav"))
+        try project.validate()
+    }
+
     func testAppendMatchesCustomNamesBeforeTaxonomyAndPreservesTracks() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

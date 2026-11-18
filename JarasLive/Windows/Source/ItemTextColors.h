@@ -45,6 +45,50 @@ struct ItemTextColors {
         }
         return colored?prefix()+JSON::toString(var(values),true):plain;
     }
+    static std::vector<Range<int>> stanzaRanges(const String &plain) {
+        std::vector<Range<int>> result;
+        int lineStart = 0, first = -1, end = 0, blank = 0;
+        const int size = plain.length();
+        for (int i = 0; i <= size; ++i) {
+            if (i < size && plain[i] != '\n' && plain[i] != '\r') continue;
+            if (plain.substring(lineStart, i).trim().isEmpty()) ++blank;
+            else {
+                if (blank >= 2 && first >= 0) { result.emplace_back(first, end); first = -1; }
+                if (first < 0) first = lineStart;
+                end = i;
+                blank = 0;
+            }
+            if (i + 1 < size && plain[i] == '\r' && plain[i + 1] == '\n') ++i;
+            lineStart = i + 1;
+        }
+        if (first >= 0) result.emplace_back(first, end);
+        return result;
+    }
+    static std::vector<String> stanzas(const String &value) {
+        const auto formatted = runs(value);
+        String plain;
+        for (const auto &run : formatted) plain += run.text;
+        const auto ranges = stanzaRanges(plain);
+        std::vector<std::vector<Run>> slices(ranges.size());
+        int offset = 0;
+        size_t next = 0;
+        for (const auto &run : formatted) {
+            const int end = offset + run.text.length();
+            while (next < ranges.size() && ranges[next].getStart() < end) {
+                const auto slice = ranges[next].getIntersectionWith({offset, end});
+                if (!slice.isEmpty()) {
+                    auto piece = run.text.substring(slice.getStart() - offset, slice.getEnd() - offset);
+                    slices[next].push_back({piece.replace("\r\n", "\n").replace("\r", "\n"), run.color});
+                }
+                if (ranges[next].getEnd() > end) break;
+                ++next;
+            }
+            offset = end;
+        }
+        std::vector<String> result;
+        for (const auto &slice : slices) result.push_back(encode(slice));
+        return result;
+    }
     static constexpr std::array<uint32,8> palette{0xffffff,0xff4040,0xff9638,0xffe740,0x54ef86,0x40dfff,0x5894ff,0xd477ff};
     static AttributedString attributed(const String &value,const Font &font,Colour fallback,
         const std::function<String(String)> &display={}) {

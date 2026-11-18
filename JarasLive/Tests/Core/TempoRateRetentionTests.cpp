@@ -32,7 +32,7 @@ int main(){try {
     auto untouched=original;untouched.id="other";s.tracks[0].clips.push_back(untouched);
     engine.applyProjectEdit(next);
     near(rate(.1),1,"Reset left the first tempo factor active");near(rate(reset.duration-.01),1,"Reset left the second tempo factor active");
-    near(engine.currentSong()->tracks[0].clips[0].duration,original.duration,"Reset changed geometry");
+    near(engine.currentSong()->tracks[0].clips[0].duration,sourceSpanForItem(s,original),"Reset did not restore the source span");
     engine.setMarker("first","Tempo",0,0,217.8,4,4,"global");near(rate(.1),1.1,"Reset disabled future tempo following");
     const auto& current=*engine.currentSong();near(TempoEditMap::playbackRate(current,current.tracks[0].clips[1],.1),1.815,"Reset altered another item");
     engine.setMarker("inserted","Tempo",1,0,217.8,4,4,"global");near(rate(1.1),1.1,"New marker lost the item's rate reference");

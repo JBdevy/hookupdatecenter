@@ -1821,6 +1821,39 @@ int main() try {
         expect(!e.transport().exclusivePlaybackRegionId && !e.transport().subExclusivePlaybackRegionId,"fresh Play restores ordinary item playback");
         e.execute({CommandKind::queueRegion,"incoming"});e.advance(9);e.execute({CommandKind::subStop});
         expect(!e.transport().subExclusivePlaybackRegionId && scope(false).allows(playbackItemStart(*e.currentSong(),old),owner(old)),"cancelling automatic Subplay restores outgoing items");
+        // Load the selection exactly as persisted: no chooser/apply/toggle call
+        // is allowed before either kind of Subplay starts.
+        e.execute({CommandKind::stopAll});e.loadProject(project);
+        e.execute({CommandKind::selectRegion,"outgoing"});e.execute({CommandKind::play});
+        e.execute({CommandKind::queueRegion,"incoming"});e.execute({CommandKind::subPlay});
+        expect(e.transport().subExclusivePlaybackRegionId=="incoming","first manual Subplay uses the saved exclusive selection");
+        e.execute({CommandKind::pause});e.configureRegionSetlist(*e.project().regionSetlist);
+        expect(e.transport().subExclusivePlaybackRegionId=="incoming","editing setlist settings while paused preserves the secondary entry");
+        e.execute({CommandKind::play});
+        expect(e.transport().subPlay.playing && e.transport().subExclusivePlaybackRegionId=="incoming","resuming the two heads retains the saved selection");
+        expect(!scope(false).allows(playbackItemStart(*e.currentSong(),old),owner(old)) &&
+               scope(true).allows(playbackItemStart(*e.currentSong(),incoming),owner(incoming)),"manual Subplay isolates selected tracks like automatic Subplay");
+        e.execute({CommandKind::subSeek,"",2});
+        expect(e.transport().subExclusivePlaybackRegionId=="outgoing","manual secondary seek resolves its new song instead of the queue");
+        e.execute({CommandKind::subSeek,"",21});
+        expect(e.transport().subExclusivePlaybackRegionId=="incoming","manual secondary seek retains isolation for the incoming song");
+        auto selection=*e.project().regionSetlist;
+        selection.subplayExclusiveTrackIDs=std::vector<ID>{};e.configureRegionSetlist(selection);
+        expect(!e.transport().subExclusivePlaybackRegionId,"clearing the selection releases a running secondary head");
+        selection.subplayExclusiveTrackIDs=project.regionSetlist->subplayExclusiveTrackIDs;e.configureRegionSetlist(selection);
+        expect(e.transport().subExclusivePlaybackRegionId=="incoming","applying the selection takes effect during Subplay");
+        e.execute({CommandKind::stop});
+        expect(e.transport().exclusivePlaybackRegionId=="incoming","manual promotion keeps the selected track isolated");
+        e.execute({CommandKind::stopAll});e.loadProject(project);
+        e.execute({CommandKind::selectRegion,"outgoing"});e.execute({CommandKind::play});
+        e.execute({CommandKind::queueRegion,"incoming"});e.advance(9);
+        expect(e.transport().subExclusivePlaybackRegionId=="incoming","first automatic Subplay after reload uses the saved selection without reapplying it");
+        e.execute({CommandKind::stopAll});
+        project.regionSetlist->subplayExclusiveTrackIDs=std::vector<ID>{};e.loadProject(project);
+        e.execute({CommandKind::selectRegion,"outgoing"});e.execute({CommandKind::play});
+        e.execute({CommandKind::subSeek,"",20});e.execute({CommandKind::subPlay});
+        expect(!e.transport().subExclusivePlaybackRegionId,"a project with no selected tracks preserves ordinary manual Subplay");
+
     }
     std::cout << "JARAS_CORE_OK\n";
 } catch (const std::exception& error) {

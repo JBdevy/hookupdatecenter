@@ -29,7 +29,7 @@ inline String fingerprint(const jaras::AudioClip &clip) {
 }
 inline void commit(jaras::Project &project,const ID &songID,const ID &trackID,
                    const jaras::AudioClip &original,const std::vector<jaras::Track> &stems) {
-    if(stems.size()!=5)throw std::runtime_error("A separação não retornou os cinco instrumentos.");
+    if(stems.empty() || stems.size()>5)throw std::runtime_error("A separação não retornou os instrumentos selecionados.");
     auto next=project;
     for(auto &song:next.songs)if(song.id==songID) {
         for(size_t row=0;row<song.tracks.size();++row)if(song.tracks[row].id==trackID) {
@@ -51,10 +51,14 @@ inline void commit(jaras::Project &project,const ID &songID,const ID &trackID,
     }
     throw std::runtime_error("O projeto ou o item original não está mais disponível.");
 }
+inline const StringArray &instruments() {
+    static const StringArray names{"Vocal","Drum","Bass","Guitar","Other"};
+    return names;
+}
 struct Result { std::vector<jaras::Track> tracks;std::vector<File> files; };
 inline Result render(const jaras::Project &project,const jaras::Song &song,const jaras::Track &track,
                      const jaras::AudioClip &clip,const File &directory,std::atomic<bool> &cancel,
-                     const std::function<void(double,String)> &progress) {
+                     const std::function<void(double,String)> &progress, const std::set<int> &selected = {}) {
     if(!eligible(track,clip))throw std::runtime_error("Selecione apenas um item de áudio.");
     const auto runtime=File::getSpecialLocation(File::currentExecutableFile).getSiblingFile("StemSeparationRuntime");
     const auto python=runtime.getChildFile("python/python.exe"),worker=runtime.getChildFile("separate.py"),model=runtime.getChildFile("5c90dfd2-34c22ccb.th");
@@ -90,9 +94,10 @@ inline Result render(const jaras::Project &project,const jaras::Song &song,const
             throw std::runtime_error(utf8(detail.isEmpty()?String::fromUTF8("Falha ao separar o áudio."):detail));
         }
         const auto stems=directory.getChildFile("Stems");if(stems.createDirectory().failed())throw std::runtime_error("Não foi possível criar a pasta Stems.");
-        const StringArray names{"Vocal","Drum","Bass","Guitar","Other"};const char *roles[]={"backingVocal","drums","bass","guitar","other"};const unsigned colors[]={0xb68af4,0x69ed91,0x8e70ca,0x45ba91,0xaaa0c7};
+        const auto &names=instruments();const char *roles[]={"backingVocal","drums","bass","guitar","other"};const unsigned colors[]={0xb68af4,0x69ed91,0x8e70ca,0x45ba91,0xaaa0c7};
         AudioFormatManager formats;registerAudioFormats(formats);
-        for(int index=0;index<5;++index) {
+        for(int index=0;index<names.size();++index) {
+            if(!selected.empty() && !selected.count(index))continue;
             if(cancel.load())throw std::runtime_error("Separação cancelada.");
             const auto generated=temporary.getChildFile(names[index]+".wav");std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(generated));
             if(!reader||reader->sampleRate!=44100||reader->numChannels!=2||std::abs(double(reader->lengthInSamples)/44100-clip.duration)>.01)throw std::runtime_error("O áudio separado tem duração ou formato incorreto.");

@@ -399,7 +399,12 @@ struct EQKernel {
     std::unique_ptr<EffectAnalysis> inputStorage, outputStorage;
     std::atomic<EffectAnalysis*> inputAnalysis{nullptr}, outputAnalysis{nullptr};
     std::array<std::array<std::atomic<double>,5>,kSections> pending;
-    double coefficients[kSections][5] = {}, z1[2][kSections] = {}, z2[2][kSections] = {};
+    double coefficients[kSections][5] = {};
+    // Direct-form histories retain their meaning when coefficients change.
+    // Transposed-II accumulator histories depend on the previous coefficients
+    // and turn a parameter edit into an impulse even for a constant input.
+    double x1[2][kSections] = {}, x2[2][kSections] = {}, y1[2][kSections] = {}, y2[2][kSections] = {};
+    double coefficientSmoothing = -std::expm1(-1.0/(48000.0*0.005));
     std::atomic<unsigned> count{0}, generation{0};
     double desired[kSections][5] = {};
     unsigned activeSections=0;
@@ -440,7 +445,7 @@ struct EQKernel {
             if (padRelease.finished()) padReleaseComplete.store(true, std::memory_order_release);
         }
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
-            for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<kSections; ++n) z1[ch][n]=z2[ch][n]=0;
+            for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<kSections; ++n) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
             inputGainInitialized=false;
             inputRampRemaining=0;
         }
@@ -518,12 +523,12 @@ struct EQKernel {
                         desired[n][j]=target[n][j];
                         if(fresh) coefficients[n][j]=target[n][j];
                     }
-                    if(fresh) for(unsigned ch=0;ch<2;ch++) z1[ch][n]=z2[ch][n]=0;
+                    if(fresh) for(unsigned ch=0;ch<2;ch++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
                 }
             }
         }
         const auto sections=activeSections;
-        if(on && mix==0) for(unsigned ch=0;ch<2;ch++) for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
+        if(on && mix==0) for(unsigned ch=0;ch<2;ch++) for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
         for(unsigned frame=0;frame<frames;frame++) {
             const double targetMix=on?1.0:0.0;
             if(mix!=targetMix) { mix += (targetMix-mix)*0.02; if(std::abs(targetMix-mix)<(on?1e-14:1e-6)) mix=targetMix; }
@@ -531,7 +536,7 @@ struct EQKernel {
                 coefficientsSettled=true;
                 for(unsigned n=0;n<sections;n++) for(unsigned j=0;j<5;j++) {
                     auto& value=coefficients[n][j]; const auto target=desired[n][j];
-                    value+=(target-value)*0.02;
+                    value+=(target-value)*coefficientSmoothing;
                     if(std::abs(target-value)<1e-14*std::max(1.0,std::abs(target))) value=target;
                     else coefficientsSettled=false;
                 }
@@ -542,27 +547,27 @@ struct EQKernel {
                 if(!std::isfinite(dry)) {
                     // An invalid upstream sample must not poison the recursive
                     // history, or survive recovery through the dry/wet blend.
-                    for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
+                    for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
                     data[frame]=0;
                     continue;
                 }
                 double value=dry;
                 for(unsigned n=0;n<sections;n++) {
                     auto k=coefficients[n];
-                    double out=k[0]*value+z1[ch][n];
-                    z1[ch][n]=k[1]*value-k[3]*out+z2[ch][n];
-                    z2[ch][n]=k[2]*value-k[4]*out;
+                    const double out=k[0]*value+k[1]*x1[ch][n]+k[2]*x2[ch][n]-k[3]*y1[ch][n]-k[4]*y2[ch][n];
+                    x2[ch][n]=x1[ch][n]; x1[ch][n]=value;
+                    y2[ch][n]=y1[ch][n]; y1[ch][n]=out;
                     value=out;
                 }
                 if(!std::isfinite(value)) {
-                    for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
+                    for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
                     value=0;
                 }
                 const float rendered=float(dry+(value-dry)*mix);
                 if(!std::isfinite(rendered)) {
                     // The double cascade can still overflow when narrowed to
                     // Float32. Contain this sample and recover on the next one.
-                    for(unsigned n=0;n<sections;n++) z1[ch][n]=z2[ch][n]=0;
+                    for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
                     data[frame]=0;
                 } else data[frame]=rendered;
             }
@@ -589,6 +594,7 @@ struct EQKernel {
     if(![super allocateRenderResourcesAndReturnError:error]) return NO;
     kernel.fade.rate=_output.format.sampleRate;
     kernel.sampleRate=_output.format.sampleRate;
+    kernel.coefficientSmoothing=-std::expm1(-1.0/(kernel.sampleRate*0.005));
     kernel.inputRampFrames=std::max(1u,(unsigned)std::lround(kernel.sampleRate*0.005));
     return YES;
 }
@@ -780,7 +786,8 @@ struct CatDynamicsKernel {
     }
 };
 struct DynamicsKernel {
-    EffectAnalysis inputAnalysis, outputAnalysis;
+    std::unique_ptr<EffectAnalysis> inputStorage, outputStorage;
+    std::atomic<EffectAnalysis*> inputAnalysis{nullptr}, outputAnalysis{nullptr};
     bool reverb = false, limiter = false;
     std::unique_ptr<CatDynamicsKernel> catDynamics;
     double rate = 48000, envelope = 0, gain = 1, mix = 0;
@@ -968,7 +975,10 @@ struct DynamicsKernel {
         ScopedAudioDenormals denormals;
         if(!pull) return kAudioUnitErr_NoConnection;
         auto status=pull(flags,time,frames,0,output);
-        if(status==noErr) { state->inputAnalysis.capture(output,frames); state->process(output,frames); state->outputAnalysis.capture(output,frames);
+        if(status==noErr) {
+            if(auto analysis=state->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
+            state->process(output,frames);
+            if(auto analysis=state->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             updateEffectSilenceFlag(flags,output,frames); }
         return status;
     };
@@ -1000,10 +1010,10 @@ struct DynamicsKernel {
             if(auto analysis=eq->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             eq->process(output,frames);
             if(auto analysis=eq->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
-            compressor->inputAnalysis.capture(output,frames);
+            if(auto analysis=compressor->inputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             compressor->process(output,frames);
             updateEffectSilenceFlag(flags,output,frames);
-            compressor->outputAnalysis.capture(output,frames);
+            if(auto analysis=compressor->outputAnalysis.load(std::memory_order_acquire)) analysis->capture(output,frames);
             eq->outputPeaks.capture(output,frames);
         }
         return status;
@@ -1112,23 +1122,32 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 }
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node input:(BOOL)input enabled:(BOOL)enabled {
     auto &k=dynamicsKernel(node);
-    auto &analysis=input?k.inputAnalysis:k.outputAnalysis;
-    if(analysis.enabled.exchange(enabled)==enabled) return;
-    analysis.consumed=analysis.head.load();
-    analysis.enabledAt=analysis.consumed;
-    analysis.left.store(0); analysis.right.store(0);
+    auto &storage=input?k.inputStorage:k.outputStorage;
+    auto &published=input?k.inputAnalysis:k.outputAnalysis;
+    if(enabled) {
+        if(!storage) storage=std::make_unique<EffectAnalysis>();
+        if(storage->enabled.exchange(true,std::memory_order_relaxed)) return;
+        storage->consumed=storage->head.load(std::memory_order_acquire);
+        storage->enabledAt=storage->consumed;
+        storage->left.store(0); storage->right.store(0);
+        published.store(storage.get(),std::memory_order_release);
+    } else {
+        published.store(nullptr,std::memory_order_release);
+        if(storage) storage->enabled.store(false,std::memory_order_relaxed);
+    }
 }
 + (void)setCompressorMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     dynamicsKernel(node).meteringEnabled.store(enabled, std::memory_order_relaxed);
 }
 + (NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input {
     auto &k=dynamicsKernel(node);
-    return (input?k.inputAnalysis:k.outputAnalysis).snapshot();
+    auto analysis=(input?k.inputAnalysis:k.outputAnalysis).load(std::memory_order_acquire);
+    return analysis?analysis->snapshot():nil;
 }
 + (NSArray<NSNumber *> *)analysisPeaks:(AVAudioUnitEffect *)node input:(BOOL)input {
     auto &k=dynamicsKernel(node);
-    auto &analysis=input?k.inputAnalysis:k.outputAnalysis;
-    return @[@(analysis.left.exchange(0)),@(analysis.right.exchange(0))];
+    auto analysis=(input?k.inputAnalysis:k.outputAnalysis).load(std::memory_order_acquire);
+    return analysis?@[@(analysis->left.exchange(0)),@(analysis->right.exchange(0))]:@[@0,@0];
 }
 + (NSArray<NSNumber *> *)takeCompressorPeaks:(AVAudioUnitEffect *)node {
     auto &k=dynamicsKernel(node);
@@ -1144,7 +1163,9 @@ struct ChannelRouteKernel {
     std::atomic<bool> renderEnabled{true};
     std::atomic<bool> hasDestinations{false};
     std::atomic<bool> stopFadeRequested{false};
-    std::vector<float> input, output, leftGain, rightGain, lastOutput, fadeOrigin;
+    std::atomic<bool> stopHeld{false};
+    std::vector<float> input, output, leftGain, rightGain, lastOutput, fadeOrigin, stopHistory;
+    unsigned stopHistoryWrite=0, stopHistoryCount=0, stopHistoryOrigin=0;
     unsigned capacity=0, channels=0, stopFadeFrames=0, stopFadePosition=0;
     bool wasRendering=false;
     bool routingSilent=true;
@@ -1153,10 +1174,15 @@ struct ChannelRouteKernel {
         input.assign(frames*2,0); output.assign(frames*count,0);
         leftGain.assign(count,0); rightGain.assign(count,0);
         lastOutput.assign(count,0); fadeOrigin.assign(count,0);
-        stopFadeFrames=std::max(64u,static_cast<unsigned>(rate*0.005)); stopFadePosition=stopFadeFrames;
+        // Retain a short waveform tail instead of holding a nonzero sample.
+        // Reversing the recent samples keeps continuity without a DC pulse.
+        stopFadeFrames=std::max(32u,static_cast<unsigned>(rate*0.002)); stopFadePosition=stopFadeFrames;
+        stopHistory.assign(count*stopFadeFrames,0);
+        stopHistoryWrite=stopHistoryCount=stopHistoryOrigin=0;
         wasRendering=false;
         routingSilent=true;
         stopFadeRequested.store(false,std::memory_order_relaxed);
+        stopHeld.store(false,std::memory_order_relaxed);
     }
 };
 @interface JarasChannelRouteUnit : AUAudioUnit {
@@ -1192,10 +1218,11 @@ struct ChannelRouteKernel {
         if (frames>state->capacity) return kAudioUnitErr_TooManyFramesToProcess;
         const bool enabled=state->renderEnabled.load(std::memory_order_relaxed);
         const bool stopRequested=state->stopFadeRequested.exchange(false,std::memory_order_relaxed);
-        if (!enabled || stopRequested || state->stopFadePosition<state->stopFadeFrames) {
+        if (!enabled || state->stopHeld.load(std::memory_order_acquire) || stopRequested || state->stopFadePosition<state->stopFadeFrames) {
             if (stopRequested || (!enabled && state->wasRendering)) {
                 std::copy(state->lastOutput.begin(),state->lastOutput.end(),state->fadeOrigin.begin());
                 state->stopFadePosition=0;
+                state->stopHistoryOrigin=state->stopHistoryWrite;
                 state->wasRendering=false;
             }
             const unsigned fadePosition=state->stopFadePosition;
@@ -1205,11 +1232,21 @@ struct ChannelRouteKernel {
                 if(!buffer.mData) buffer.mData=state->output.data()+ch*state->capacity;
                 buffer.mDataByteSize=frames*sizeof(float);
                 auto *out=static_cast<float*>(buffer.mData);
-                if (!fading || state->fadeOrigin[ch]==0) { memset(out,0,buffer.mDataByteSize); continue; }
+                if (!fading || state->fadeOrigin[ch]==0) {
+                    memset(out,0,buffer.mDataByteSize);
+                    state->lastOutput[ch]=0;
+                    continue;
+                }
                 for(unsigned frame=0;frame<frames;frame++) {
                     const unsigned position=std::min(state->stopFadeFrames,fadePosition+frame+1);
-                    out[frame]=state->fadeOrigin[ch]*(1-float(position)/float(state->stopFadeFrames));
+                    const float remaining=1-float(position)/float(state->stopFadeFrames);
+                    const unsigned age=fadePosition+frame;
+                    const float tail=age<state->stopHistoryCount
+                        ? state->stopHistory[ch*state->stopFadeFrames+(state->stopHistoryOrigin+state->stopFadeFrames-1-age)%state->stopFadeFrames]
+                        : 0;
+                    out[frame]=tail*remaining*remaining;
                 }
+                state->lastOutput[ch]=frames ? out[frames-1] : state->lastOutput[ch];
             }
             state->stopFadePosition=std::min(state->stopFadeFrames,fadePosition+frames);
             if (flags) {
@@ -1256,7 +1293,10 @@ struct ChannelRouteKernel {
             if(l==0 && r==0 && std::abs(gl)<1e-6f && std::abs(gr)<1e-6f) {
                 state->leftGain[ch]=0; state->rightGain[ch]=0;
                 state->lastOutput[ch]=0;
-                memset(out,0,frames*sizeof(float)); continue;
+                memset(out,0,frames*sizeof(float));
+                for(unsigned n=frames-std::min(frames,state->stopFadeFrames);n<frames;++n)
+                    state->stopHistory[ch*state->stopFadeFrames+(state->stopHistoryWrite+n)%state->stopFadeFrames]=0;
+                continue;
             }
             // Keep the exact float fixed point reached by the ramp. Snapping
             // to its target would change PCM; a settled block only needs mixing.
@@ -1271,13 +1311,25 @@ struct ChannelRouteKernel {
             state->leftGain[ch]=gl; state->rightGain[ch]=gr;
             if(l!=0 || r!=0 || std::abs(gl)>=1e-6f || std::abs(gr)>=1e-6f) silentRouting=false;
             state->lastOutput[ch]=frames ? out[frames-1] : 0;
+            for(unsigned n=frames-std::min(frames,state->stopFadeFrames);n<frames;++n)
+                state->stopHistory[ch*state->stopFadeFrames+(state->stopHistoryWrite+n)%state->stopFadeFrames]=out[n];
         }
+        state->stopHistoryWrite=(state->stopHistoryWrite+frames)%state->stopFadeFrames;
+        state->stopHistoryCount=std::min(state->stopFadeFrames,state->stopHistoryCount+frames);
         state->routingSilent=silentRouting;
         return noErr;
     };
 }
 @end
 @implementation JarasChannelRouter
++ (void)beginStop:(AVAudioUnitEffect *)node {
+    auto &state=((JarasChannelRouteUnit *)node.AUAudioUnit)->route;
+    state.stopFadeRequested.store(true,std::memory_order_relaxed);
+    state.stopHeld.store(true,std::memory_order_release);
+}
++ (void)endStop:(AVAudioUnitEffect *)node {
+    ((JarasChannelRouteUnit *)node.AUAudioUnit)->route.stopHeld.store(false,std::memory_order_release);
+}
 + (void)setInputMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled {
     auto &peaks=((JarasChannelRouteUnit *)node.AUAudioUnit)->route.inputPeaks;
     peaks.enabled.store(enabled,std::memory_order_relaxed);

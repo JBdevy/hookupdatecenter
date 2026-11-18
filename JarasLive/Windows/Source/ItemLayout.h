@@ -3,6 +3,19 @@
 #include "ClipTempo.h"
 #include "../../Core/Tracks/ItemFade.hpp"
 namespace catlive {
+inline void drawMixerKnob(Graphics &g, juce::Point<float> center, float radius, double position, bool pan) {
+    auto circle = juce::Rectangle<float>(2 * radius, 2 * radius).withCentre(center);
+    const Colour ink(pan ? 0xffbf80ff : 0xff33ff8c);
+    g.setColour(Colours::black);
+    g.fillEllipse(circle);
+    g.setColour(ink);
+    g.drawEllipse(circle, radius * 0.30f);
+    const auto angle = (135 + jlimit(0., 1., position) * 270) * MathConstants<double>::pi / 180;
+    const float needle = radius * 0.78f;
+    g.drawLine(center.x, center.y, center.x + (float)std::cos(angle) * needle,
+               center.y + (float)std::sin(angle) * needle, radius * 0.40f);
+}
+
 struct ProgramChangeLanes {
     std::map<ID,int> lanes;int count=1;
     explicit ProgramChangeLanes(const jaras::Track &track) {
@@ -228,30 +241,30 @@ struct ItemHeader {
     }
     void draw(Graphics &g, const jaras::AudioClip &clip, std::optional<double> gainOverride = {}, std::optional<double> panOverride = {}) const {
         g.saveState(); g.reduceClipRegion(visible.getSmallestIntegerContainer());
-        auto button = [&](juce::Rectangle<float> r, String caption, bool active, bool bypass = false) {
+        auto button = [&](juce::Rectangle<float> r, String caption, Colour fill, Colour ink) {
             if (r.isEmpty()) return;
             r=r.withSizeKeepingCentre(r.getWidth(),std::min(11.f,r.getHeight()));
-            g.setColour(bypass ? Colour(0xffff453a) : Colours::white.withAlpha(.10f)); g.fillRect(r);
-            g.setColour(active ? Colour(0xff33ff8c) : Colours::white); g.setFont(theme::semiboldFont(5.5f)); g.drawText(caption,r,Justification::centred);
+            g.setColour(fill);
+            g.fillRoundedRectangle(r, theme::trackButtonRadius);
+            g.setColour(ink);
+            g.setFont(theme::semiboldFont(5.5f)); g.drawText(caption,r,Justification::centred);
         };
-        button(muteRect,"M",false,clip.muted);
+        button(muteRect,"M",clip.muted ? theme::trackMute : theme::trackButton,Colours::white);
         const bool hasFX = clip.fxJSON && !list(get(JSON::parse(text(*clip.fxJSON)),"inserted")).isEmpty();
-        button(fxRect,"FX",hasFX && !clip.fxBypassed.value_or(false),clip.fxBypassed.value_or(false));
+        const auto fxInk = !hasFX ? Colours::white : clip.fxBypassed.value_or(false) ? theme::trackMute : theme::green;
+        button(fxRect,"FX",theme::trackButton,fxInk);
         if (!phaseRect.isEmpty()) {
             g.setColour(clip.phaseInverted.value_or(false) ? Colours::yellow : Colours::black.withAlpha(.28f)); g.fillRect(phaseRect);
             g.setColour(clip.phaseInverted.value_or(false) ? Colours::black : Colours::white);
             auto centre=phaseRect.getCentre(); g.drawEllipse(centre.x-3.85f,centre.y-3.85f,9.1f,9.1f,1.2f);
             g.drawLine(centre.x-4.95f,centre.y+4.95f,centre.x+4.95f,centre.y-4.95f,1.2f);
         }
-        auto knob = [&](juce::Rectangle<float> r, double position) {
-            if (r.isEmpty()) return;
-            const auto c=r.getCentre(); g.setColour(Colours::black); g.fillEllipse(c.x-4.95f,c.y-4.95f,9.9f,9.9f);
-            g.setColour(Colours::white); g.drawEllipse(c.x-4.95f,c.y-4.95f,9.9f,9.9f,1.5f);
-            const float angle=(float)((135+jlimit(0.,1.,position)*270)*MathConstants<double>::pi/180);
-            g.setColour(Colour(0xff33ff8c)); g.drawLine(c.x,c.y,c.x+std::cos(angle)*3.85f,c.y+std::sin(angle)*3.85f,2);
-        };
-        knob(panRect,(panOverride.value_or(clip.pan.value_or(0))+1)/2);
-        knob(gainRect,(20*std::log10(std::max(.000001,gainOverride.value_or(clip.gain.value_or(1))))+60)/84);
+        if (!panRect.isEmpty())
+            drawMixerKnob(g, panRect.getCentre(), 4.95f, (panOverride.value_or(clip.pan.value_or(0)) + 1) / 2, true);
+        if (!gainRect.isEmpty()) {
+            const auto gain = gainOverride.value_or(clip.gain.value_or(1));
+            drawMixerKnob(g, gainRect.getCentre(), 4.95f, (20 * std::log10(std::max(.000001, gain)) + 60) / 84, false);
+        }
         g.restoreState();
     }
     void drawFades(Graphics &g, const jaras::AudioClip &clip) const {

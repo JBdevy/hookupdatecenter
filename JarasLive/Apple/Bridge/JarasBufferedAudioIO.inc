@@ -31,20 +31,45 @@ struct BufferedAudioState {
 #define CATLIVE_BUFFERED_AHEAD_BLOCKS 2
 #endif
     static constexpr int64_t capacity=32768, block=CATLIVE_BUFFERED_BLOCK_FRAMES,
-        target=block*CATLIVE_BUFFERED_AHEAD_BLOCKS, stampFrames=64;
+        maximumBlock=4096, target=block*CATLIVE_BUFFERED_AHEAD_BLOCKS, stampFrames=64;
     static_assert(block>0 && block<=4096 && block%stampFrames==0);
     static_assert(target>=block && target+block<=capacity);
+    static_assert(maximumBlock*(CATLIVE_BUFFERED_AHEAD_BLOCKS+1)<=capacity);
     const unsigned channels;
     const double rate, ticksPerSecond;
     std::vector<float> pcm, lastOutput, transitionOrigin;
     std::array<uint64_t, capacity/stampFrames> stamps{};
     std::atomic<int64_t> readFrame{0}, writeFrame{0};
     std::atomic<uint64_t> generation{1};
+    std::atomic<bool> stopping{false};
+    std::atomic<bool> discardPostStopRender{false};
+    void beginStop() {
+        stopping.store(true,std::memory_order_release);
+        generation.fetch_add(1,std::memory_order_acq_rel);
+    }
+    void endStop() {
+        // If cleanup was shorter than a producer interval, routers can still
+        // own a pending fade of pre-Stop samples. Drain it behind the gate.
+        discardPostStopRender.store(true,std::memory_order_release);
+        stopping.store(false,std::memory_order_release);
+    }
     uint64_t audibleGeneration=1;
+    uint64_t transitionGeneration=1;
     unsigned transitionFrame=0, transitionLength;
     std::atomic<bool> enabled{false};
     std::atomic<uint64_t> callbacks{0}, underruns{0}, failures{0}, renders{0}, renderTicks{0}, maxRenderTicks{0};
     std::atomic<unsigned> callbackFrames{0};
+    std::atomic<unsigned> renderFrames{block};
+    std::atomic<unsigned> readAheadFrames{target};
+    // A larger producer quantum amortizes the source graph's per-pull cost.
+    // This is a buffering hint, never a voice/BPM limit or a hardware setting.
+    void setPlaybackSourceCount(size_t count) {
+        renderFrames.store(count>=256 ? maximumBlock : block,std::memory_order_release);
+        readAheadFrames.store(count>=256 ? maximumBlock*3 : target,std::memory_order_release);
+    }
+    int64_t targetFrames() const {
+        return readAheadFrames.load(std::memory_order_acquire);
+    }
     BufferedRenderClock hardwareClock, graphClock;
     uint64_t fallbackHost=0;
     // Owned by the graph producer. AVAudioEngine's sample-time getter takes
@@ -83,6 +108,7 @@ struct BufferedAudioState {
         if(available<frames) ++underruns;
         const auto currentGeneration=generation.load(std::memory_order_acquire);
         if(currentGeneration!=audibleGeneration) {
+            transitionGeneration=audibleGeneration;
             audibleGeneration=currentGeneration;
             std::copy(lastOutput.begin(),lastOutput.end(),transitionOrigin.begin()); transitionFrame=0;
         }
@@ -94,7 +120,11 @@ struct BufferedAudioState {
                 float value=n<available && stamps[index/stampFrames]==currentGeneration ? pcm[ch*capacity+index] : 0;
                 if(transitionFrame+n<transitionLength) {
                     const float amount=float(transitionFrame+n+1)/transitionLength;
-                    value=transitionOrigin[ch]+(value-transitionOrigin[ch])*amount;
+                    // Fade the actual queued waveform, not a held last sample.
+                    // Holding one sample through Stop creates a DC pulse.
+                    const bool hasTail=n<available && stamps[index/stampFrames]==transitionGeneration;
+                    const float tail=hasTail ? pcm[ch*capacity+index] : transitionOrigin[ch]*(1-amount);
+                    value=value*amount+tail*(1-amount);
                 }
                 data[n]=value;
             }
@@ -109,8 +139,10 @@ struct BufferedAudioState {
         return noErr;
     }
     void produce(AVAudioEngine *engine, AVAudioEngineManualRenderingBlock render, AVAudioPCMBuffer *buffer) {
+        const auto frames=renderFrames.load(std::memory_order_acquire);
         const auto first=writeFrame.load(std::memory_order_relaxed);
         const auto stamp=generation.load(std::memory_order_acquire);
+        const bool stoppingBefore=stopping.load(std::memory_order_acquire);
         const auto host=hostAt(first);
         const auto sample=graphSample;
         observedGraphTime=false;
@@ -118,33 +150,39 @@ struct BufferedAudioState {
         jaras::realtimeClock={host,double(sample),rate,ticksPerSecond};
         const auto began=mach_absolute_time();
         OSStatus error=noErr;
-        const auto result=render(block,buffer.mutableAudioBufferList,&error);
+        buffer.frameLength=frames;
+        const auto result=render(frames,buffer.mutableAudioBufferList,&error);
         const auto duration=mach_absolute_time()-began;
         jaras::realtimeClock=previous;
         ++renders; renderTicks.fetch_add(duration,std::memory_order_relaxed);
         maxRenderTicks.store(std::max(maxRenderTicks.load(std::memory_order_relaxed),duration),std::memory_order_relaxed);
         if(result!=AVAudioEngineManualRenderingStatusSuccess || error!=noErr) ++failures;
         const auto offset=first%capacity;
-        const auto initial=std::min<int64_t>(block,capacity-offset);
+        const auto initial=std::min<int64_t>(frames,capacity-offset);
+        // A reset may start/end while render holds a block. Never publish that
+        // mixed epoch as fresh PCM, even if cleanup finished before this check.
+        const bool clean=!stoppingBefore && !stopping.load(std::memory_order_acquire) &&
+            stamp==generation.load(std::memory_order_acquire) &&
+            !discardPostStopRender.exchange(false,std::memory_order_acq_rel);
         for(unsigned ch=0;ch<channels;++ch) {
             auto *destination=pcm.data()+ch*capacity;
             const auto *source=buffer.floatChannelData[ch];
-            if(result==AVAudioEngineManualRenderingStatusSuccess && error==noErr) {
+            if(clean && result==AVAudioEngineManualRenderingStatusSuccess && error==noErr) {
                 std::copy_n(source,initial,destination+offset);
-                if(initial<block) std::copy_n(source+initial,block-initial,destination);
+                if(initial<frames) std::copy_n(source+initial,frames-initial,destination);
             } else {
                 std::fill_n(destination+offset,initial,0.f);
-                if(initial<block) std::fill_n(destination,block-initial,0.f);
+                if(initial<frames) std::fill_n(destination,frames-initial,0.f);
             }
         }
-        for(int64_t n=0;n<block;n+=stampFrames) stamps[((first+n)%capacity)/stampFrames]=stamp;
+        for(int64_t n=0;n<frames;n+=stampFrames) stamps[((first+n)%capacity)/stampFrames]=stamp;
         if (result==AVAudioEngineManualRenderingStatusSuccess ||
             result==AVAudioEngineManualRenderingStatusInsufficientDataFromInputNode) {
             const auto rendered=buffer.mutableAudioBufferList->mBuffers[0].mDataByteSize/sizeof(float);
             graphSample=(observedGraphTime ? graphSample : sample)+rendered;
         }
-        graphClock.publish(host+uint64_t(block/rate*ticksPerSecond),graphSample);
-        writeFrame.store(first+block,std::memory_order_release);
+        graphClock.publish(host+uint64_t(frames/rate*ticksPerSecond),graphSample);
+        writeFrame.store(first+frames,std::memory_order_release);
     }
 };
 }
@@ -159,20 +197,32 @@ struct BufferedAudioState {
     std::thread _worker;
     BOOL _running;
     BOOL _outputEnabled;
+    NSUInteger _playbackSourceCount;
+    double _hardwareRate;
+    AVAudioChannelCount _hardwareChannels;
+    double _preferredProcessingSampleRate;
 }
 - (instancetype)initWithEngine:(AVAudioEngine *)engine hardwareEngine:(AVAudioEngine *)hardware {
     if((self=[super init])) { _engine=engine; _hardware=hardware; }
     return self;
 }
 - (AVAudioEngine *)hardwareEngine { return _hardware; }
+- (double)configuredHardwareSampleRate { return _hardwareRate; }
+- (AVAudioChannelCount)configuredHardwareChannels { return _hardwareChannels; }
+- (double)preferredProcessingSampleRate { return _preferredProcessingSampleRate; }
+- (void)setPreferredProcessingSampleRate:(double)rate { _preferredProcessingSampleRate=rate; }
 - (AVAudioFormat *)configureAndReturnError:(NSError **)error {
     const auto hardware=[_hardware.outputNode outputFormatForBus:0];
-    const auto rate=hardware.sampleRate; const auto channels=hardware.channelCount;
+    const char *testRate=getenv("CATLIVE_GRAPH_SAMPLE_RATE");
+    const auto requested=testRate ? atof(testRate) : (_preferredProcessingSampleRate>0 ? _preferredProcessingSampleRate : hardware.sampleRate);
+    const auto rate=std::isfinite(requested) && requested>=8000 && requested<=192000 ? requested : hardware.sampleRate;
+    const auto channels=hardware.channelCount;
     if(!std::isfinite(rate) || rate<=0 || !channels || channels>1024) {
         if(error) *error=[NSError errorWithDomain:@"CatLive.BufferedAudio" code:-50 userInfo:@{NSLocalizedDescriptionKey:@"Audio output is unavailable"}];
         return nil;
     }
-    if(_state && _state->rate==rate && _state->channels==channels) return _engine.manualRenderingFormat;
+    if(_state && _state->rate==rate && _state->channels==channels &&
+       _hardwareRate==hardware.sampleRate && _hardwareChannels==channels) return _engine.manualRenderingFormat;
     [self stop];
     if(_clockUnit) { [_clockUnit removeRenderObserver:_clockObserver]; _clockUnit=nil; }
     if(_source) [_hardware detachNode:_source];
@@ -181,10 +231,13 @@ struct BufferedAudioState {
     const auto layout=[[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_DiscreteInOrder | channels];
     const auto format=channels>2 ? [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channelLayout:layout]
         : [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:channels];
+    const auto sinkFormat=channels>2 ? [[AVAudioFormat alloc] initStandardFormatWithSampleRate:hardware.sampleRate channelLayout:layout]
+        : [[AVAudioFormat alloc] initStandardFormatWithSampleRate:hardware.sampleRate channels:channels];
     if(![_engine enableManualRenderingMode:AVAudioEngineManualRenderingModeRealtime format:format maximumFrameCount:4096 error:error]) return nil;
     _render=_engine.manualRenderingBlock;
     _state=std::make_shared<BufferedAudioState>(channels,rate);
-    _buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:BufferedAudioState::block];
+    _state->setPlaybackSourceCount(_playbackSourceCount);
+    _buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:BufferedAudioState::maximumBlock];
     auto state=_state;
     _clockUnit=_engine.mainMixerNode.AUAudioUnit;
     _clockObserver=[_clockUnit tokenByAddingRenderObserver:^(AudioUnitRenderActionFlags flags,
@@ -195,7 +248,8 @@ struct BufferedAudioState {
         *silent=NO; return state->consume(time,frames,output);
     }];
     [_hardware attachNode:_source]; [_hardware connect:_source to:_hardware.mainMixerNode format:format];
-    [_hardware connect:_hardware.mainMixerNode to:_hardware.outputNode format:format];
+    [_hardware connect:_hardware.mainMixerNode to:_hardware.outputNode format:sinkFormat];
+    _hardwareRate=hardware.sampleRate; _hardwareChannels=channels;
     return format;
 }
 - (BOOL)startAndReturnError:(NSError **)error {
@@ -212,15 +266,17 @@ struct BufferedAudioState {
     state->fallbackHost=mach_absolute_time();
     state->lastOutput.assign(state->channels,0); state->transitionOrigin.assign(state->channels,0);
     state->transitionFrame=state->transitionLength;
-    _buffer.frameLength=BufferedAudioState::block;
-    while(state->writeFrame.load()<BufferedAudioState::target) state->produce(_engine,_render,_buffer);
+    while(state->writeFrame.load()<state->targetFrames()) {
+        @autoreleasepool { state->produce(_engine,_render,_buffer); }
+    }
     state->enabled.store(true,std::memory_order_release);
     auto render=_render; auto buffer=_buffer; auto engine=_engine;
     _worker=std::thread([state,render,buffer,engine] {
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE,0);
         while(state->enabled.load(std::memory_order_acquire)) {
-            if(state->writeFrame.load(std::memory_order_relaxed)-state->readFrame.load(std::memory_order_acquire)<BufferedAudioState::target)
-                state->produce(engine,render,buffer);
+            if(state->writeFrame.load(std::memory_order_relaxed)-state->readFrame.load(std::memory_order_acquire)<state->targetFrames()) {
+                @autoreleasepool { state->produce(engine,render,buffer); }
+            }
             else { mach_timespec_t timeout{0,5'000'000}; semaphore_timedwait(state->wake,timeout); }
         }
     });
@@ -232,9 +288,15 @@ struct BufferedAudioState {
     return YES;
 }
 - (void)discardPreparedOutput { if(_state) _state->generation.fetch_add(1,std::memory_order_acq_rel); }
+- (void)beginStop { if(_state) _state->beginStop(); }
+- (void)endStop { if(_state) _state->endStop(); }
 - (void)setOutputEnabled:(BOOL)enabled {
     _outputEnabled=enabled;
     _hardware.mainMixerNode.outputVolume=enabled ? 1 : 0;
+}
+- (void)setPlaybackSourceCount:(NSUInteger)count {
+    _playbackSourceCount=count;
+    if(_state) _state->setPlaybackSourceCount(count);
 }
 - (void)stop {
     [_hardware stop];
@@ -252,7 +314,8 @@ struct BufferedAudioState {
     if(!_state) return @{};
     auto &s=*_state; const auto count=s.renders.load();
     return @{@"callbacks":@(s.callbacks.load()),@"callbackFrames":@(s.callbackFrames.load()),@"underruns":@(s.underruns.load()),
-        @"renderFailures":@(s.failures.load()),@"renders":@(count),@"renderFrames":@(BufferedAudioState::block),
+        @"renderFailures":@(s.failures.load()),@"renders":@(count),@"renderFrames":@(s.renderFrames.load()),
+        @"targetFrames":@(s.targetFrames()),@"sampleRate":@(s.rate),@"hardwareSampleRate":@(_hardwareRate),@"channels":@(s.channels),
         @"meanRenderMs":@(count ? s.renderTicks.load()/s.ticksPerSecond*1000/count : 0),
         @"maxRenderMs":@(s.maxRenderTicks.load()/s.ticksPerSecond*1000),
         @"bufferedFrames":@(s.writeFrame.load()-s.readFrame.load())};

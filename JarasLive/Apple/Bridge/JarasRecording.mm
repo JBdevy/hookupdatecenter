@@ -108,15 +108,21 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
 + (BOOL)encodeWav:(NSURL *)source to:(NSURL *)destination error:(NSError **)error {
     AVAudioFile *file=[[AVAudioFile alloc] initForReading:source error:error]; if(!file) return NO;
     const int channels=(int)file.processingFormat.channelCount;
+    if(channels<1 || channels>2 || file.length<=0) {
+        if(error) *error=[NSError errorWithDomain:@"JarasRecording" code:1 userInfo:@{NSLocalizedDescriptionKey:@"MP3 conversion requires a nonempty mono or stereo audio file."}];
+        return NO;
+    }
+    const int inputRate=(int)std::lround(file.processingFormat.sampleRate);
+    const int outputRate=inputRate==32000 || inputRate==44100 ? inputRate : 48000;
     lame_t encoder=lame_init(); if(!encoder) return NO;
-    lame_set_in_samplerate(encoder,(int)file.processingFormat.sampleRate);
-    lame_set_out_samplerate(encoder,(int)file.processingFormat.sampleRate);
-    lame_set_num_channels(encoder,channels); lame_set_brate(encoder,320); lame_set_quality(encoder,0);
+    lame_set_in_samplerate(encoder,inputRate);
+    lame_set_out_samplerate(encoder,outputRate);
+    lame_set_num_channels(encoder,channels); lame_set_VBR(encoder,vbr_off); lame_set_brate(encoder,320); lame_set_quality(encoder,0);
     lame_set_mode(encoder,channels==1 ? MONO : JOINT_STEREO);
     lame_set_bWriteVbrTag(encoder,1);
     lame_set_write_id3tag_automatic(encoder,0);
     FILE *output=nullptr;
-    BOOL ok=lame_init_params(encoder)>=0;
+    BOOL ok=lame_init_params(encoder)>=0 && lame_get_brate(encoder)==320 && lame_get_out_samplerate(encoder)==outputRate;
     if(ok) { output=fopen(destination.fileSystemRepresentation,"wb"); ok=output!=nullptr; }
     AVAudioPCMBuffer *buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat frameCapacity:4096];
     unsigned char encoded[16384];
@@ -130,7 +136,7 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
     if(ok) ok=JarasWriteMP3GaplessTag(encoder,output,encoded,sizeof(encoded));
     if(output && fclose(output)!=0) ok=NO;
     lame_close(encoder);
-    if(!ok && error && !*error) *error=[NSError errorWithDomain:@"JarasRecording" code:1 userInfo:@{NSLocalizedDescriptionKey:@"MP3 export failed. The 24-bit WAV recording has been preserved."}];
+    if(!ok && error && !*error) *error=[NSError errorWithDomain:@"JarasRecording" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Could not encode this source at 320 kbps."}];
     return ok;
 }
 @end

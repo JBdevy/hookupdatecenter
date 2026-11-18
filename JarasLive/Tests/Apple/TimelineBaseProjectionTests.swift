@@ -4,6 +4,7 @@ private let markerLaneHeight: CGFloat = 16
 private let tempoLaneHeight: CGFloat = 16
 private struct ProjectionFixtureRows: Equatable {
     var offsets: [CGFloat] = [0, 44, 88]
+    var heights: [CGFloat] = [44, 44, 44]
     var totalHeight: CGFloat = 132
     var baseHeight: CGFloat = 44
 }

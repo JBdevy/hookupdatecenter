@@ -105,8 +105,10 @@ extension TimelineAudioWaveform {
 out.joinpath('TimelineAudioWaveform.swift').write_text(cache)
 selection = Path('Apple/Shared/GridSelectionInput.swift').read_text()
 start = selection.index('struct GridSelectionItem {')
-metrics = '\nimport AppKit\nimport CoreText\n'+selection[selection.index('enum GridSelectionHeaderText {'):selection.index('private enum GridSelectionHeaderControls {')]
-out.joinpath('GridSelectionGeometry.swift').write_text('import SwiftUI\n' + selection[start:selection.index('#if os(macOS)\nimport AppKit', start)]+metrics)
+metrics = '\nimport AppKit\nimport CoreText\n'+selection[selection.index('enum GridSelectionHeaderText {'):selection.index('enum GridSelectionHeaderControls {')]
+appearance = selection.index('enum TrackMixerButtonAppearance {')
+appearance = selection[appearance:selection.index('\n}', appearance) + 2]
+out.joinpath('GridSelectionGeometry.swift').write_text('import SwiftUI\n' + appearance + '\n' + selection[start:selection.index('#if os(macOS)\nimport AppKit', start)] + metrics)
 PY
 swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Apple/Shared/TimelineRenderDiagnostics.swift Apple/Shared/TimelineVisibleClipIndex.swift \

@@ -7,11 +7,19 @@ namespace catlive {
 
 class PartsPanel final : public Component, private Timer {
   public:
+    static constexpr int defaultHorizontalHeight = 192;
+    static constexpr int maximumHorizontalHeight = defaultHorizontalHeight * 3 / 2;
+    std::function<void(int, bool)> horizontalHeightChanged;
+
     PartsPanel(Session &owner, std::function<void(String)> failure)
         : session(owner), error(std::move(failure)), current(*this, false),
           queued(*this, true) {
         addAndMakeVisible(current);
         addAndMakeVisible(queued);
+        addChildComponent(resizeHandle);
+        resizeHandle.setComponentID("horizontalPartsResize");
+        resizeHandle.setTitle("Hoz-Parts height");
+        resizeHandle.setMouseCursor(MouseCursor::UpDownResizeCursor);
         for (auto *button : std::initializer_list<Button *>{&cancel, &currentTab, &queuedTab}) {
             addChildComponent(button);
             button->setWantsKeyboardFocus(false);
@@ -30,22 +38,32 @@ class PartsPanel final : public Component, private Timer {
         queuedTab.onClick = [this] { selectTab(true); };
         startTimerHz(60);
     }
+    void setHorizontal(bool enabled) {
+        if (horizontal == enabled) return;
+        horizontal = enabled;
+        resized();
+    }
     void selectTab(bool secondary) { secondaryTab = secondary; resized(); }
     std::optional<jaras::TimelineMarker> navigate(bool secondary,int direction) {
-        selectTab(secondary); return (secondary?queued:current).navigate(direction);
+        selectTab(secondary);
+        auto &left = secondary ? queued : current;
+        auto result = left.navigate(direction);
+        return result;
     }
     std::pair<std::vector<String>,int> smkList(bool secondary) const { return (secondary?queued:current).smkList(); }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         g.setColour(theme::secondary.withAlpha(.35f));
         g.drawVerticalLine(0, 0.f, (float)getHeight());
+        if (horizontal) g.drawVerticalLine(getWidth()/2, float(57 + resizeHandleHeight), float(getHeight()));
         for (int i = 0; i < 2; ++i) {
             auto r = (i ? queuedTab : currentTab).getBounds();
             const bool selected = secondaryTab == (i != 0);
-            g.setColour(selected ? (i ? Colours::orange : theme::green).withAlpha(.55f)
-                                 : theme::display);
-            g.fillRoundedRectangle(r.toFloat(), 5);
-            g.setColour(selected ? Colours::white : theme::secondary);
+            if (!horizontal) {
+                g.setColour(selected ? (i ? Colours::orange : theme::green).withAlpha(.55f) : theme::display);
+                g.fillRoundedRectangle(r.toFloat(), 5);
+            }
+            g.setColour(!horizontal && selected ? Colours::white : theme::secondary);
             g.setFont(theme::semiboldFont(13));
             g.drawText(localization::translate(i ? "Queued" : session.presentationTransport().playing ? "Now playing" : "Selected song"),
                        r.reduced(3,0), Justification::centred, true);
@@ -53,15 +71,21 @@ class PartsPanel final : public Component, private Timer {
     }
     void resized() override {
         const int half = getWidth() / 2;
-        for (auto *button : std::initializer_list<Button *>{&cancel, &currentTab, &queuedTab})
-            button->setVisible(true);
-        cancel.setBounds(4, 4, getWidth() - 8, 26);
-        currentTab.setBounds(4, 38, half - 6, 42);
-        queuedTab.setBounds(half + 2, 38, getWidth() - half - 6, 42);
-        current.setBounds(5, 85, getWidth() - 10, std::max(1, getHeight() - 90));
-        queued.setBounds(current.getBounds());
-        current.setVisible(!secondaryTab);
-        queued.setVisible(secondaryTab);
+        const int offset = horizontal ? resizeHandleHeight : 0;
+        resizeHandle.setVisible(horizontal && bool(horizontalHeightChanged));
+        resizeHandle.setBounds(0, 0, getWidth(), offset);
+        cancel.setVisible(true);
+        currentTab.setVisible(!horizontal);
+        queuedTab.setVisible(!horizontal);
+        cancel.setBounds(4, 4 + offset, getWidth() - 8, 26);
+        currentTab.setBounds(4, 35 + offset, half - 6, horizontal ? 17 : 42);
+        queuedTab.setBounds(half + 2, 35 + offset, getWidth() - half - 6, horizontal ? 17 : 42);
+        const int bankWidth = horizontal ? half - 8 : getWidth() - 10;
+        const int top = horizontal ? 57 + offset : 85;
+        current.setBounds(5, top, bankWidth, std::max(1, getHeight() - top - 5));
+        queued.setBounds(current.getBounds().withX(horizontal ? half + 3 : 5));
+        current.setVisible(horizontal || !secondaryTab);
+        queued.setVisible(horizontal || secondaryTab);
         refresh();
         repaint();
     }
@@ -84,6 +108,30 @@ class PartsPanel final : public Component, private Timer {
     }
 
   private:
+    static constexpr int resizeHandleHeight = 14;
+    class ResizeHandle final : public Component {
+      public:
+        explicit ResizeHandle(PartsPanel &panel) : owner(panel) {}
+        void paint(Graphics &g) override {
+            g.setColour(theme::secondary);
+            g.fillRoundedRectangle(getLocalBounds().toFloat().withSizeKeepingCentre(40.f, 3.f), 1.5f);
+        }
+        void mouseDown(const MouseEvent &event) override {
+            startY = event.getScreenPosition().y;
+            startHeight = owner.getHeight();
+        }
+        void mouseDrag(const MouseEvent &event) override { move(event, false); }
+        void mouseUp(const MouseEvent &event) override { move(event, true); }
+      private:
+        PartsPanel &owner;
+        int startY = 0, startHeight = defaultHorizontalHeight;
+        void move(const MouseEvent &event, bool commit) {
+            if (owner.horizontalHeightChanged)
+                owner.horizontalHeightChanged(
+                    jlimit(defaultHorizontalHeight, maximumHorizontalHeight,
+                           startHeight + startY - event.getScreenPosition().y), commit);
+        }
+    } resizeHandle{*this};
     class Bank final : public Component {
       public:
         Bank(PartsPanel &owner, bool second) : panel(owner), secondary(second) {
@@ -133,7 +181,14 @@ class PartsPanel final : public Component, private Timer {
                 for(size_t i=0;i<markers.size();++i)if(markers[i].id==*panel.session.smkPart)index=jlimit(0,(int)markers.size()-1,(int)i+direction);
             const auto marker=markers[(size_t)index];
             panel.session.smkPart=marker.id;panel.session.smkPartPanel=panel.getComponentID();panel.session.smkQueuedParts=secondary;
-            refresh();view.setViewPosition(0,std::max(0,buttons[index]->getY()-view.getHeight()/3));return marker;
+            reveal(marker.id);
+            return marker;
+        }
+        void reveal(const ID &id) {
+            refresh();
+            for (int index = 0; index < buttons.size(); ++index)
+                if (markers[(size_t)index].id == id && buttons[index]->isVisible())
+                    view.setViewPosition(0, std::max(0, buttons[index]->getY() - view.getHeight()/3));
         }
         void refresh() {
             const auto *song = panel.session.song();
@@ -201,7 +256,7 @@ class PartsPanel final : public Component, private Timer {
                 if (changed) {
                     buttons.clear();
                     for (const auto &marker : markers) {
-                        auto *button = buttons.add(new Pad(panel, marker.id));
+                        auto *button = buttons.add(new Pad(panel, marker.id, secondary));
                         content.addAndMakeVisible(button);
                     }
                     layout();
@@ -234,6 +289,7 @@ class PartsPanel final : public Component, private Timer {
                 const bool previousStart = button.start, previousActive = button.active,
                     previousQueued = button.queued, previousSelected = button.selected;
                 const double previousProgress = button.progress;
+                const bool previousProgressVisible = button.progressVisible;
                 button.label = i == 0 ? localization::translate("Section start") : unicodeCase(text(markers[(size_t)i].name));
                 button.colour = Colour(0xff000000 | markers[(size_t)i].color);
                 button.loop = markers[(size_t)i].loopSection.value_or(false);
@@ -249,6 +305,7 @@ class PartsPanel final : public Component, private Timer {
                         end = std::min(end, marker.position);
                         break;
                     }
+                button.progressVisible = (button.queued && trigger && state.playing) || (running && button.active && !button.queued);
                 if (button.queued && trigger && state.playing)
                     button.progress = jlimit(0., 1., (*trigger - state.position) /
                         std::max(.001, *trigger - state.sectionQueueStartedAt));
@@ -259,7 +316,7 @@ class PartsPanel final : public Component, private Timer {
                 if (button.label != previousLabel || button.colour != previousColour || button.loop != previousLoop ||
                     button.start != previousStart ||
                     button.active != previousActive || button.queued != previousQueued ||
-                    button.selected != previousSelected || button.progress != previousProgress) {
+                    button.selected != previousSelected || button.progress != previousProgress || button.progressVisible != previousProgressVisible) {
                     ++visualUpdates;
                     button.repaint();
                 }
@@ -269,12 +326,12 @@ class PartsPanel final : public Component, private Timer {
       private:
         class Pad final : public Button {
           public:
-            Pad(PartsPanel &owner, ID target)
+            Pad(PartsPanel &owner, ID target, bool queuedBank)
                 : Button("part"), panel(owner), id(std::move(target)) {
                 setWantsKeyboardFocus(false);
-                onClick = [this] {
+                onClick = [this, queuedBank] {
                     try {
-                        panel.session.smkPart=id;panel.session.smkPartPanel=panel.getComponentID();panel.session.smkQueuedParts=panel.secondaryTab;
+                        panel.session.smkPart=id;panel.session.smkPartPanel=panel.getComponentID();panel.session.smkQueuedParts=queuedBank;
                         panel.session.command(jaras::CommandKind::queueSection, id);
                     } catch (const std::exception &e) {
                         panel.error(String::fromUTF8(e.what()));
@@ -294,6 +351,7 @@ class PartsPanel final : public Component, private Timer {
             Colour colour;
             bool start = false, active = false, queued = false, selected = false, loop = false, blue=false;
             double progress = 0;
+            bool progressVisible = false;
             void paintButton(Graphics &g, bool over, bool down) override {
                 auto bounds = getLocalBounds().toFloat().reduced(.8f);
                 g.setColour(colour);
@@ -302,23 +360,22 @@ class PartsPanel final : public Component, private Timer {
                     g.setColour(Colours::white.withAlpha(down ? .12f : .06f));
                     g.fillRoundedRectangle(bounds, 5);
                 }
-                if (progress > 0) {
+                if (progressVisible) {
                     Graphics::ScopedSaveState saved(g);
                     Path clip; clip.addRoundedRectangle(bounds, 5);
                     g.reduceClipRegion(clip);
+                    g.setColour(Colours::black);
+                    g.fillRect(0.f, (float)getHeight() - 5, (float)getWidth(), 5.f);
                     g.setColour(queued ? theme::yellow : theme::green);
                     g.fillRect(0.f, (float)getHeight() - 5, (float)(getWidth() * progress), 5.f);
                 }
                 if (loop) {
-                    ColourGradient border(Colour(0xffff5050), bounds.getTopLeft(),
-                                          Colour(0xff409cff), bounds.getBottomRight(), false);
-                    border.addColour(.5, Colour(0xff51ef93));
-                    g.setGradientFill(border);
-                    g.drawRoundedRectangle(bounds, 5, 2);
-                    if (selected) {
-                        g.setColour(theme::green);
-                        g.drawRoundedRectangle(bounds.reduced(3), 3, 1.5f);
-                    }
+                    const auto badge = Rectangle<float>(getWidth()-31.f, 3.f, 27.f, 12.f);
+                    g.setColour(theme::yellow); g.fillRoundedRectangle(badge, 3.f);
+                    g.setColour(Colours::black); g.setFont(theme::font(7).boldened());
+                    g.drawText("LOOP", badge, Justification::centred);
+                    g.setColour(selected ? theme::green : theme::line);
+                    g.drawRoundedRectangle(bounds, 5, selected ? 1.5f : .5f);
                 } else {
                     g.setColour(selected ? theme::green : theme::line);
                     g.drawRoundedRectangle(bounds, 5, selected ? 1.5f : .5f);
@@ -357,14 +414,22 @@ class PartsPanel final : public Component, private Timer {
         String name;
         void layout() {
             const int width = std::max(1, view.getWidth() - 8);
-            content.setSize(width, std::max(view.getHeight(), buttons.size() * 38));
-            for (int i = 0; i < buttons.size(); ++i)
-                buttons[i]->setBounds(0, i * 38, width, 34);
+            const int columns = panel.horizontal ? 4 : 1;
+            const int rowHeight = panel.horizontal ? 51 : 38;
+            int visible = 0;
+            for (int index = 0; index < buttons.size(); ++index) {
+                auto &button = *buttons[index];
+                button.setVisible(true);
+                const int x = (visible % columns) * width / columns;
+                button.setBounds(x, (visible / columns) * rowHeight, std::max(1,width/columns - 4), rowHeight - 4);
+                ++visible;
+            }
+            content.setSize(width, std::max(view.getHeight(), ((visible + columns - 1) / columns) * rowHeight));
         }
     };
     Session &session;
     std::function<void(String)> error;
-    bool secondaryTab = false;
+    bool secondaryTab = false, horizontal = false;
     std::optional<bool> lastPlaying;
     bool lastEnglish = false;
     // Tab faces are painted by the panel so their two font sizes match the Mac.

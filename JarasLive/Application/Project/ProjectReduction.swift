@@ -43,9 +43,38 @@ public enum ProjectReduction {
         let moved = groups.remove(at: from); groups.insert(moved, at: to)
     }
     public struct Span: Equatable, Sendable { public var start: Double; public var end: Double }
+    static func hasMutedItems(_ project: Project) -> Bool {
+        project.songs.contains { song in song.tracks.contains { $0.clips.contains { $0.muted == true } } }
+    }
+    static func unmuteItems(in project: inout Project, excluding retained: Set<UUID> = []) {
+        for song in project.songs.indices {
+            for track in project.songs[song].tracks.indices where !retained.contains(project.songs[song].tracks[track].id) {
+                for clip in project.songs[song].tracks[track].clips.indices
+                    where project.songs[song].tracks[track].clips[clip].muted == true {
+                    project.songs[song].tracks[track].clips[clip].muted = nil
+                }
+            }
+        }
+    }
+    static func regionName(for span: Span, in song: Song) -> String? {
+        var match: Part?
+        var bestOverlap = 0.0
+        for part in song.parts {
+            let overlap = min(span.end, part.endTime) - max(span.start, part.startTime)
+            guard overlap > 0 else { continue }
+            if overlap > bestOverlap || (overlap == bestOverlap && match.map { part.endTime - part.startTime < $0.endTime - $0.startTime } == true) {
+                match = part
+                bestOverlap = overlap
+            }
+        }
+        return match?.name
+    }
     public static func sourceTracks(in project: Project) -> [Track] {
         let parents = Set(project.songs.flatMap(\.tracks).compactMap(\.parentTrackID))
-        return project.songs.flatMap(\.tracks).filter { !parents.contains($0.id) }
+        return project.songs.flatMap(\.tracks).filter { $0.kind == .standard && !parents.contains($0.id) }
+    }
+    static func specialTracks(in project: Project) -> [Track] {
+        project.songs.flatMap(\.tracks).filter { $0.kind != .standard }
     }
     public static func isAudio(_ clip: AudioClip, track: Track) -> Bool {
         guard clip.timecode == nil, clip.text == nil, !clip.isProjectionMedia else { return false }
@@ -160,10 +189,11 @@ public enum ProjectReduction {
     }
     public static func validate(_ groups: [ProjectReductionTrack], project: Project) throws {
         guard !groups.isEmpty else { throw ProjectError.invalid("Create at least one destination track.") }
-        let eligible = Set(sourceTracks(in: project).map(\.id)); var used = Set<UUID>()
+        let eligible = Set(sourceTracks(in: project).map(\.id))
+        let special = Set(specialTracks(in: project).map(\.id)); var used = Set<UUID>()
         for group in groups {
             guard !group.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !group.sources.isEmpty,
-                  group.sources.isSubset(of: eligible), used.isDisjoint(with: group.sources) else {
+                  (group.sources.isSubset(of: eligible) || (group.sources.count == 1 && group.sources.isSubset(of: special))), used.isDisjoint(with: group.sources) else {
                 throw ProjectError.invalid("Choose a name and source tracks. Each source can belong to only one destination.")
             }
             guard project.songs.filter({ !group.sources.isDisjoint(with: $0.tracks.map(\.id)) }).count == 1 else {

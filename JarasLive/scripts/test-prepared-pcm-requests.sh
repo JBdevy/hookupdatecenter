@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 root = Path.cwd()
 source = (root/'Apple/Bridge/JarasPreparedClip.inc').read_text()
-source = source[source.index('namespace {'):source.index('struct PreparedClipKernel {')]
+source = source[source.index('namespace {'):source.index('#include "JarasSharedStretch.inc"')]
 source = source.replace('if (readyRequest && *readyRequest == request)', 'if (!FixtureStats::disableHits && readyRequest && *readyRequest == request)')
 source = source.replace('if (pages.retiredCount() != 0) pages.collectRetired();', 'FixtureStats::hit();\n            if (pages.retiredCount() != 0) pages.collectRetired();')
 source = source.replace('const PreparedPCMPage* producerPageAt(int64_t first) const {', 'const PreparedPCMPage* producerPageAt(int64_t first) const {\n        FixtureStats::lookup();')

@@ -17,13 +17,17 @@ int main() {
     a.audioFile = AudioFile{"a.wav"}; a.regionOwnerID = "a";
     auto b = a; b.id = "b-clip"; b.name = "B rounded"; b.startTime = 20 - 0.0000004; b.duration = 25; b.regionOwnerID = "b";
     auto lateA = a; lateA.id = "a-late"; lateA.startTime = 22; lateA.duration = 10;
-    track.clips = {a, b, lateA}; song.tracks = {track};
+    auto crossing = a; crossing.id = "crossing-into-b"; crossing.startTime = 18; crossing.duration = 12;
+    track.clips = {a, b, lateA, crossing}; song.tracks = {track};
     Engine engine; engine.loadProject(project);
+    const auto& incomingMajority = engine.currentSong()->tracks[0].clips[3];
+    check(incomingMajority.regionOwnerID == "b" && incomingMajority.startTime == 18,
+          "a clip starting before B's flag belongs to B when most of its duration is after the flag");
     const auto scope = [&] { return playbackScope(*engine.currentSong(), engine.transport()); };
     const auto allows = [&](const AudioClip& clip) { return scope().allows(playbackItemStart(*engine.currentSong(), clip)); };
     engine.execute({CommandKind::editSeek, "", 24}); engine.execute({CommandKind::play});
     check(engine.transport().regionId == "group" && engine.transport().playbackStartRegionId == "b", "grid entry resolves B without changing UI root");
-    check(!allows(a) && !allows(lateA) && allows(b), "direct grid start excludes A tails and retains B despite rounded onset");
+    check(!allows(a) && !allows(lateA) && allows(b) && allows(incomingMajority), "direct grid start includes the majority-owned pickup before B's flag");
     engine.execute({CommandKind::pause}); engine.execute({CommandKind::play});
     check(!allows(a) && allows(b), "pause/resume keeps entry");
     engine.execute({CommandKind::ignoreNext});
@@ -33,7 +37,7 @@ int main() {
     check(allows(a) && allows(b) && allows(lateA), "continuous A-to-B retains original tails");
     engine.execute({CommandKind::ignoreNext});
     check(engine.transport().ignoreNextRegionId == "a" && engine.transport().ignoreNextEnd == 32, "late Ignore Next follows owned tails including moved onset");
-    check(allows(a) && allows(lateA) && !allows(b), "Ignore Next excludes B including onset just before rounded marker");
+    check(allows(a) && allows(lateA) && !allows(b) && !allows(incomingMajority), "Ignore Next excludes B even when its clip starts before the flag");
     engine.execute({CommandKind::ignoreNext});
     engine.execute({CommandKind::seek, "", 24});
     check(!allows(a) && allows(b), "live manual seek replaces continuous entry");
@@ -88,7 +92,7 @@ int main() {
         engine.execute({CommandKind::stopAll}); engine.loadProject(saved);
         engine.execute({CommandKind::selectRegion, "b"}); engine.execute({CommandKind::play});
         const auto& migrated = *engine.currentSong();
-        check(migrated.regionOwnershipVersion == 3, "overlap migration is versioned");
+        check(migrated.regionOwnershipVersion == 4, "overlap migration is versioned");
         const auto& clips = migrated.tracks[0].clips;
         check(!allows(clips[0]), "Abertura tail stays silent on direct Escudo start");
         for (int i = 1; i <= 3; ++i)

@@ -23,6 +23,7 @@ struct TestProject { var id = UUID(); var name = "Unsaved"; var songs: [TestSong
 struct TestSnapshot { var project = TestProject() }
 @MainActor final class ShowController {
     var snapshot = TestSnapshot()
+    var projectRevision: UInt64 = 0
     var isPlaying = false, hasUnsavedChanges = false, saving = false
     var saves = 0, stops = 0, pendingRevocation = false, failSave = false
     var navigateProjectTab: (Int) -> Void = { _ in }
@@ -45,6 +46,7 @@ struct TestSnapshot { var project = TestProject() }
     func setArmedInstrumentTracks(_ ids: Set<UUID>) {}
     func setLicenseAllowed(_ value: Bool) { allowed = value }
     func prepareForClosing() { closed = true }
+    func prepareForApplicationTermination() { closed = true }
     func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8) { midi.append((status, number, value)) }
 }
 @MainActor final class TrackRecording {
@@ -70,6 +72,7 @@ struct TestSnapshot { var project = TestProject() }
     var additionalProtectedMediaURLs: () -> Set<URL> = { [] }
     var activateExistingProjectTab: ((URL) -> Bool)?
     var openInNewProjectTab: ((URL) -> Void)?
+    var openProjectTabAndWait: ((URL) async throws -> Void)?
     var openRemoteInNewProjectTab: ((URL, UUID) -> Void)?
     var canChangeProject: () -> Bool = { true }
     static var remoteResults: [(UUID, String)] = []
@@ -82,6 +85,10 @@ struct TestSnapshot { var project = TestProject() }
         else { currentURL = url; ready = true }
         busy = false
         if let remoteCommandID { Self.finishRemoteProjectOpening(remoteCommandID, state: ready ? "completed" : "failed") }
+    }
+    func waitUntilOpened(at url: URL) async throws {
+        while busy { try await Task.sleep(nanoseconds: 1_000_000) }
+        guard ready, currentURL == url else { throw ProjectError.invalid("open failed") }
     }
     func rememberProjectMedia() async throws {}
 }
@@ -106,7 +113,7 @@ struct TestSnapshot { var project = TestProject() }
 @MainActor final class VideoPlayback {
     static let shared = VideoPlayback(), teleprompter = VideoPlayback(), teleprompter2 = VideoPlayback()
     func open(directory: URL) {}
-    func update(_ snapshot: TestSnapshot) {}
+    func update(_ snapshot: TestSnapshot, revision: UInt64 = 0) {}
 }
 @MainActor enum TeleprompterRemote { static func setProjectDirectory(_ url: URL?) {} }
 enum DAWRemoteState { struct ProjectTab { var id: UUID; var name: String; var selected: Bool } }

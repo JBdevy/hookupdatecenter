@@ -29,6 +29,55 @@ struct PartsListIcon: View {
     }
 }
 
+struct HorizontalPartsDock<Content: View>: View {
+    @Binding var heightScale: Double
+    var defaultHeight: CGFloat = 192
+    @ViewBuilder let content: () -> Content
+    @State private var dragStart: CGFloat?
+    @GestureState private var dragging = false
+    @State private var liveHeight: CGFloat?
+
+    private var height: CGFloat {
+        liveHeight ?? defaultHeight * min(1.5, max(1, heightScale))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule().fill(JarasTheme.secondary)
+                .frame(width: 40, height: 3)
+                .frame(maxWidth: .infinity)
+                .frame(height: 14)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .updating($dragging) { _, state, _ in state = true }
+                    .onChanged { value in
+                        if dragStart == nil { dragStart = height }
+                        if let dragStart {
+                            liveHeight = min(defaultHeight * 1.5, max(defaultHeight, dragStart - value.translation.height))
+                        }
+                    }
+                    .onEnded { _ in
+                        if let liveHeight, defaultHeight > 0 { heightScale = liveHeight / defaultHeight }
+                        dragStart = nil
+                        liveHeight = nil
+                    })
+                .onChange(of: dragging) { active in
+                    if !active { dragStart = nil; liveHeight = nil }
+                }
+                .accessibilityLabel("Hoz-Parts height")
+                .accessibilityValue(Text("\(Int((heightScale * 100).rounded()))%"))
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: heightScale = min(1.5, heightScale + 0.1)
+                    case .decrement: heightScale = max(1, heightScale - 0.1)
+                    @unknown default: break
+                    }
+                }
+            content().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.frame(height: height).background(JarasTheme.panel).clipped()
+    }
+}
+
 private struct SectionCancelButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         // Keep the explicit yellow treatment while .disabled still blocks the
@@ -152,6 +201,7 @@ private struct NativeSectionProgressBar: NSViewRepresentable {
     static func dismantleNSView(_ view: NativeSectionProgressView, coordinator: ()) { view.stop() }
 }
 private final class NativeSectionProgressView: NSView {
+    private let barBackground = CALayer()
     private let bar = CALayer()
     private var timer: Timer?
     private var running = false, countdown = false
@@ -160,6 +210,8 @@ private final class NativeSectionProgressView: NSView {
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame); wantsLayer = true
+        barBackground.backgroundColor = NSColor.black.cgColor
+        layer?.addSublayer(barBackground)
         layer?.addSublayer(bar)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -186,9 +238,11 @@ private final class NativeSectionProgressView: NSView {
         let width = bounds.width * (countdown ? 1 - fraction : fraction)
         let scale = window?.backingScaleFactor ?? 2
         let rect = CGRect(x: 0, y: max(0, bounds.height - 5), width: (width * scale).rounded() / scale, height: min(5, bounds.height))
+        let backgroundRect = CGRect(x: 0, y: rect.minY, width: bounds.width, height: rect.height)
         let color = countdown ? Self.countdownColor : Self.playbackColor
-        guard bar.frame != rect || bar.backgroundColor != color else { return }
+        guard bar.frame != rect || bar.backgroundColor != color || barBackground.frame != backgroundRect else { return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
+        barBackground.frame = backgroundRect
         bar.frame = rect; bar.backgroundColor = color
         CATransaction.commit()
     }
@@ -200,6 +254,7 @@ private final class NativeSectionProgressView: NSView {
 /// Transport updates stay in this small panel, independently of the grid canvas.
 struct SmoothSeekPanel: View {
     let placement: SMK37Navigation.Panel
+    let horizontal: Bool
     @State private var automaticSection: TimelineMarker?
     #if os(macOS)
     let show: ShowController
@@ -207,8 +262,9 @@ struct SmoothSeekPanel: View {
     #else
     @ObservedObject var show: ShowController
     #endif
-    init(show: ShowController, placement: SMK37Navigation.Panel = .setlist) {
+    init(show: ShowController, placement: SMK37Navigation.Panel = .setlist, horizontal: Bool = false) {
         self.placement = placement
+        self.horizontal = horizontal
         #if os(macOS)
         self.show = show
         _updates = StateObject(wrappedValue: SectionPanelObserver(show: show))
@@ -240,8 +296,16 @@ struct SmoothSeekPanel: View {
                 .accessibilityLabel("Cancel queued section")
                 .padding(4)
             #endif
-            SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing, playing: transport.playing, selectionRequests: show.partsTabSelection.compactMap { $0 }.filter { $0.panel == nil || $0.panel == placement }.eraseToAnyPublisher()) { secondary in
-                bank(region: secondary ? queued : current, secondary: secondary)
+            if horizontal {
+                HStack(spacing: 5) {
+                    bank(region: current, secondary: false)
+                    Rectangle().fill(JarasTheme.line).frame(width: 1)
+                    bank(region: queued, secondary: true)
+                }.padding(.horizontal, 5)
+            } else {
+                SectionListTabs(current: current?.displayName, queued: queued?.displayName, subPlaying: transport.subPlay.playing, playing: transport.playing, selectionRequests: show.partsTabSelection.compactMap { $0 }.filter { $0.panel == nil || $0.panel == placement }.eraseToAnyPublisher()) { secondary in
+                    bank(region: secondary ? queued : current, secondary: secondary)
+                }
             }
         }.background(JarasTheme.panel)
         .sheet(item: $automaticSection) { marker in
@@ -254,7 +318,7 @@ struct SmoothSeekPanel: View {
         let transport = show.snapshot.transport
         let trigger = transport.queuedSectionMarkerId == nil ? nil : show.current?.nextSectionTrigger(for: transport)
         let end = !secondary && transport.playing ? transport.ignoreNextEnd ?? region?.endTime ?? 0 : region?.endTime ?? 0
-        return SmoothSeekBankView(title: secondary ? (transport.subPlay.playing ? "Sub Play" : "Queued") : "Playing / Selected",
+        return SmoothSeekBankView(title: secondary ? "Queued" : (transport.playing ? "Now playing" : "Selected song"),
             name: region?.name ?? "—", markers: markers, end: end,
             position: secondary && transport.subPlay.playing ? transport.subPlay.position : transport.playing ? transport.position : transport.editPosition ?? transport.position,
             showsPosition: !secondary || transport.subPlay.playing, positionRunning: secondary ? transport.subPlay.playing : transport.playing, queued: transport.queuedSectionMarkerId,
@@ -271,7 +335,8 @@ struct SmoothSeekPanel: View {
             }, livePlayback: { [weak show] in
                 guard let show else { return (0, ProcessInfo.processInfo.systemUptime) }
                 return (show.snapshot.transport.position, show.timelinePlaybackSampleTime)
-            }, editAutomatic: { id in automaticSection = show.current?.markers?.first { $0.id == id } })
+            }, editAutomatic: { id in automaticSection = show.current?.markers?.first { $0.id == id } },
+            horizontal: horizontal)
     }
 }
 
@@ -297,6 +362,7 @@ struct SmoothSeekBankView: View {
     var livePosition: (() -> (position: Double, time: Double))? = nil
     var livePlayback: (() -> (position: Double, time: Double))? = nil
     var editAutomatic: ((UUID) -> Void)? = nil
+    var horizontal = false
     #if os(macOS)
     @State private var scrollController = SidebarScrollController()
     #endif
@@ -313,7 +379,17 @@ struct SmoothSeekBankView: View {
     }
 
     var body: some View {
-        if verticalList {
+        if horizontal {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(LocalizedStringKey(title)).foregroundStyle(JarasTheme.secondary)
+                    Text(verbatim: name).foregroundStyle(JarasTheme.text).lineLimit(1)
+                    Spacer(minLength: 0)
+                }.font(.jarasSystem(size: 11, weight: .semibold)).frame(height: 17)
+                    .accessibilityAddTraits(.isHeader)
+                horizontalBank
+            }.frame(maxWidth: .infinity)
+        } else if verticalList {
             ScrollViewReader { reader in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 5) {
@@ -346,6 +422,30 @@ struct SmoothSeekBankView: View {
             }.frame(maxWidth: .infinity)
         }
     }
+    private var horizontalBank: some View {
+        let sections = displayMarkers
+        return ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: 5), count: 4), spacing: 4) {
+                    ForEach(sections) { marker in
+                        sectionButton(marker).frame(height: 48).id(marker.id)
+                    }
+                }.padding(.trailing, 10)
+                #if os(macOS)
+                .background(SidebarScrollProbe(controller: scrollController))
+                .background(SetlistScrollbarsHidden())
+                #endif
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            #if os(macOS)
+            .overlay(alignment: .trailing) { PartsScrollbar(controller: scrollController).frame(width: 10) }
+            #endif
+            .onAppear { if let id = navigationSelection { proxy.scrollTo(id) } }
+            .onChange(of: navigationSelection) { id in
+                if let id, sections.contains(where: { $0.id == id }) { proxy.scrollTo(id) }
+            }
+        }
+    }
     private func sectionButton(_ marker: TimelineMarker) -> some View {
         let queued = queued == marker.id
         let isStart = marker.id == regionID
@@ -374,14 +474,13 @@ struct SmoothSeekBankView: View {
                     }.font(.jarasSystem(size: isStart ? 16 : 12, weight: isStart ? .heavy : .semibold)).lineLimit(nil).multilineTextAlignment(.center).minimumScaleFactor(0.35)
                 }.foregroundStyle(foreground).padding(.horizontal, 5).frame(maxWidth: .infinity, maxHeight: .infinity)
                 if marker.isLoopSection {
-                    RoundedRectangle(cornerRadius: 5).strokeBorder(
-                        LinearGradient(colors: [Color(hex: 0xff5050), Color(hex: 0x51ef93), Color(hex: 0x409cff)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 2)
-                        .allowsHitTesting(false)
-                    if selected {
-                        RoundedRectangle(cornerRadius: 3).strokeBorder(JarasTheme.green, lineWidth: 1.5)
-                            .padding(3).allowsHitTesting(false)
-                    }
+                    Text(verbatim: "LOOP").font(.jarasSystem(size: 7, weight: .bold))
+                        .foregroundStyle(Color.black).padding(.horizontal, 4).padding(.vertical, 2)
+                        .background(JarasTheme.yellow).clipShape(RoundedRectangle(cornerRadius: 3))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(3).allowsHitTesting(false)
+                    RoundedRectangle(cornerRadius: 5).strokeBorder(selected ? JarasTheme.green : JarasTheme.line,
+                        lineWidth: selected ? 1.5 : 0.5).allowsHitTesting(false)
                 } else {
                     RoundedRectangle(cornerRadius: 5).strokeBorder(selected ? JarasTheme.green : JarasTheme.line,
                                                                                 lineWidth: selected ? 1.5 : 0.5)
@@ -427,8 +526,10 @@ private struct SectionPlaybackBar: View {
             let elapsed = running ? min(0.25, max(0, ProcessInfo.processInfo.systemUptime - sampleTime)) : 0
             let fraction = SectionPlaybackProgress.fraction(position: position + elapsed, start: start, end: end)
             GeometryReader { geometry in
-                Rectangle().fill(JarasTheme.green)
-                    .frame(width: geometry.size.width * fraction, height: 5)
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Color.black)
+                    Rectangle().fill(JarasTheme.green).frame(width: geometry.size.width * fraction)
+                }.frame(height: 5)
                     .frame(maxHeight: .infinity, alignment: .bottom)
             }
         }
@@ -465,8 +566,10 @@ private struct SectionCountdownBar: View {
             let duration = max(0.001, trigger - (startedAt ?? initialPosition ?? position))
             let remaining = min(1, max(0, (trigger - (samplePosition ?? position) - elapsed) / duration))
             GeometryReader { geometry in
-                Rectangle().fill(JarasTheme.yellow)
-                    .frame(width: geometry.size.width * remaining, height: 5)
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Color.black)
+                    Rectangle().fill(JarasTheme.yellow).frame(width: geometry.size.width * remaining)
+                }.frame(height: 5)
                     .frame(maxHeight: .infinity, alignment: .bottom)
             }
         }
@@ -601,7 +704,7 @@ struct SectionListDock<Primary: View, Sections: View>: View {
         remember(detached: true, visible: true)
         if let window {
             if window.isMiniaturized { window.deminiaturize(nil) }
-            window.makeKeyAndOrderFront(nil); isVisible = true; return
+            ProjectionWindow.presentWorkspaceWindow(window); isVisible = true; return
         }
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -613,7 +716,7 @@ struct SectionListDock<Primary: View, Sections: View>: View {
         panel.contentView = host; InterfaceScaling.shared.register(panel)
         if !panel.setFrameUsingName("CatLiveDetachedParts", force: true) { panel.center() }
         panel.setFrameAutosaveName("CatLiveDetachedParts")
-        window = panel; isDetached = true; isVisible = true; panel.makeKeyAndOrderFront(nil)
+        window = panel; isDetached = true; isVisible = true; ProjectionWindow.presentWorkspaceWindow(panel)
     }
     private func savePlacement() { window?.saveFrame(usingName: "CatLiveDetachedParts") }
     func windowDidMove(_ notification: Notification) { savePlacement() }
@@ -646,12 +749,17 @@ struct AutomaticSectionEditor: View {
     let close: () -> Void
     @State private var selectedRegion: UUID?
     @State private var selectedTarget: UUID?
+    @State private var repeatChoice: Int
+    @State private var customRepeatCount: String
     private let projectID: UUID
     init(show: ShowController, source: UUID, close: @escaping () -> Void) {
         self.show = show; self.source = source; self.close = close
         projectID = show.snapshot.project.id
         let song = show.current
         let marker = song?.markers?.first { $0.id == source }
+        let count = marker?.automaticSectionRepeatCount ?? 0
+        _repeatChoice = State(initialValue: count > 5 ? 21 : count)
+        _customRepeatCount = State(initialValue: String(max(1, count)))
         _selectedRegion = State(initialValue: song?.parts.first(where: { part in
             song?.sectionMarkers(in: part).contains(where: { $0.id == source }) == true &&
             song?.parts.contains(where: { $0.parentRegionID == part.id }) != true
@@ -663,6 +771,8 @@ struct AutomaticSectionEditor: View {
         return song.parts.filter { part in !song.parts.contains { $0.parentRegionID == part.id } }
             .sorted { $0.startTime < $1.startTime }
     }
+    private var repeatCount: Int? { repeatChoice == 21 ? Int(customRepeatCount) : repeatChoice == 0 ? nil : repeatChoice }
+    private var validRepeatCount: Bool { repeatChoice == 0 || repeatCount.map { (1...20).contains($0) } == true }
     private var markers: [TimelineMarker] {
         guard let song = show.current, let region = regions.first(where: { $0.id == selectedRegion }) else { return [] }
         return song.sectionMarkers(in: region)
@@ -672,6 +782,17 @@ struct AutomaticSectionEditor: View {
             Text("Engatilhamento automático").font(.jarasTitle2.bold())
             Text("Escolha o trecho de destino. O aviso começa 5 segundos antes do marcador.")
                 .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            HStack {
+                Picker("Repetições", selection: $repeatChoice) {
+                    Text(verbatim: "Infinite").tag(0)
+                    ForEach(1...5, id: \.self) { Text(verbatim: "\($0)x").tag($0) }
+                    Text("Personalizado").tag(21)
+                }.frame(width: 240)
+                if repeatChoice == 21 {
+                    TextField("1–20", text: $customRepeatCount).textFieldStyle(.roundedBorder).frame(width: 64)
+                    Text("1–20").font(.jarasCaption).foregroundStyle(validRepeatCount ? JarasTheme.secondary : .red)
+                }
+            }
             HStack(alignment: .top, spacing: 12) {
                 ScrollViewReader { proxy in
                 ScrollView {
@@ -709,9 +830,9 @@ struct AutomaticSectionEditor: View {
                 Button("Cancelar", action: close).keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Aplicar") {
-                    if show.snapshot.project.id == projectID { show.setAutomaticSectionTarget(source: source, target: selectedTarget) }
+                    if show.snapshot.project.id == projectID { show.setAutomaticSectionTarget(source: source, target: selectedTarget, repeatCount: repeatCount) }
                     close()
-                }.keyboardShortcut(.defaultAction)
+                }.keyboardShortcut(.defaultAction).disabled(!validRepeatCount)
             }.buttonStyle(StageButtonStyle(color: JarasTheme.accent))
         }.padding(20).foregroundStyle(JarasTheme.text).background(JarasTheme.panel)
     }

@@ -23,9 +23,11 @@ int main() {
                 // processing can be shared between these test voices.
                 kernel->cache = std::make_shared<PreparedPCMCache>(std::make_shared<PreparedPCMReader>(reader->file));
                 kernel->cache->requested.store(0);
-                assert(kernel->cache->prefetch(16, &error) == PreparedPCMCache::Prefetch::ready);
+                assert(kernel->cache->prefetch(64, &error) == PreparedPCMCache::Prefetch::ready);
                 kernel->endFrame.store(480000); kernel->configureStretchGroup();
-                assert(kernel->prime(0, 1.12, 0)); kernel->rate.store(1.12); kernel->playback.start();
+                assert(kernel->prime(0, 1, 0)); kernel->rate.store(1); kernel->playback.start();
+                kernel->startHost.store([AVAudioTime hostTimeForSeconds:10]);
+                kernel->dryClockHost = kernel->startHost.load();
                 return kernel;
             };
             PreparedRenderSources coordinator;
@@ -33,32 +35,44 @@ int main() {
             for (int n = 0; n < 12; ++n) {
                 actual.push_back(make()); references.push_back(make()); coordinator.add(actual.back());
             }
-            auto render = [&](PreparedClipKernel &kernel, int frames) {
+            auto render = [&](PreparedClipKernel &kernel, int frames, double sample) {
                 auto out = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:frames];
                 out.frameLength = frames;
                 AudioTimeStamp time{};
+                time.mFlags = kAudioTimeStampSampleTimeValid | kAudioTimeStampHostTimeValid;
+                time.mSampleTime = sample;
+                time.mHostTime = [AVAudioTime hostTimeForSeconds:10 + sample / sourceRate];
                 assert(kernel.render(&time, frames, out.mutableAudioBufferList) == noErr);
                 return std::vector<float>(out.floatChannelData[0], out.floatChannelData[0] + frames);
             };
             double maximumError = 0;
+            std::vector<double> sampleClocks(actual.size(), 0);
             for (int block = 0; block < 60; ++block) {
                 for (size_t n = 0; n < actual.size(); ++n) {
-                    const double rate = 1.12 + ((block + n) % 13) * .007;
-                    const double tuning = block % 19 == 0 ? 2 : 0;
+                    const double rate = block < 15 ? 1 : 1.12 + ((block + n) % 13) * .007;
+                    const double tuning = block >= 15 && block % 19 == 0 ? 2 : 0;
                     for (auto *kernel : {actual[n].get(), references[n].get()}) {
                         kernel->rate.store(rate); kernel->semitones.store(tuning);
                     }
                 }
-                jaras::realtimeClock = {1, double(block * 2048), 48000, 1e9};
+                if (block == 8) for (auto &clock : sampleClocks) clock += sourceRate == 48000 ? 2048 : 1882;
+                jaras::realtimeClock = {[AVAudioTime hostTimeForSeconds:10 + double(block + (block >= 8)) * 2048 / 48000],
+                    double(block + (block >= 8)) * 2048, 48000, double([AVAudioTime hostTimeForSeconds:1])};
                 coordinator.prepare(2048);
                 jaras::realtimeClock = {};
                 for (size_t n = 0; n < actual.size(); ++n) {
                     // A rate converter consumes its guaranteed prefix and
                     // sometimes one additional frame on this pull.
                     const int frames = sourceRate == 48000 ? 2048 : 1881 + (block + n) % 2;
-                    const auto expected = render(*references[n], frames), result = render(*actual[n], frames);
+                    const auto expected = render(*references[n], frames, sampleClocks[n]), result = render(*actual[n], frames, sampleClocks[n]);
+                    sampleClocks[n] += frames;
                     for (size_t sample = 0; sample < result.size(); ++sample)
                         maximumError = std::max(maximumError, double(std::abs(result[sample] - expected[sample])));
+                    if (maximumError >= 2e-6) {
+                        std::cerr << "PARALLEL_PCM_MISMATCH rate=" << sourceRate << " block=" << block
+                            << " voice=" << n << " error=" << maximumError
+                            << " source=" << actual[n]->source << " reference=" << references[n]->source << '\n';
+                    }
                     assert(maximumError < 2e-6);
                     assert(std::abs(actual[n]->source - references[n]->source) < 1e-6);
                     assert(actual[n]->misses.load() == 0);
@@ -76,7 +90,7 @@ int main() {
             }
             actual.clear(); references.clear(); reader.reset();
             [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
-            std::cout << "PARALLEL_DISTINCT_TEMPO_PITCH_PCM_OK rate=" << sourceRate << " error=" << maximumError << '\n';
+            std::cout << "PARALLEL_DISTINCT_DRY_TEMPO_PITCH_PCM_OK rate=" << sourceRate << " error=" << maximumError << '\n';
         }
     }
 }

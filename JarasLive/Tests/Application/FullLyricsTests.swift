@@ -6,6 +6,25 @@ final class FullLyricsTests: XCTestCase {
         XCTAssertEqual(FullLyrics.stanzas("\n\nVerse one\nline two\n\nline four\n \n\t\nChorus\r\nlast line\r\n\r\n"), ["Verse one\nline two\n\nline four", "Chorus\nlast line"])
         XCTAssertEqual(FullLyrics.stanzas("A\n\nB"), ["A\n\nB"])
     }
+    func testStanzaColorsSurviveSplitAndPortableLyricsRoundTrip() throws {
+        let colored = ItemTextColors.encode([.init(text: "Verso 🎵", color: 0xff4040),
+            .init(text: "\n\n\nRefrão", color: 0x54ef86)])
+        XCTAssertEqual(FullLyrics.stanzas(colored).map(ItemTextColors.runs), [
+            [.init(text: "Verso 🎵", color: 0xff4040)], [.init(text: "Refrão", color: 0x54ef86)]
+        ])
+        let columns = ItemTextColors.encodeColumns([colored, "Segunda coluna"])
+        let clip = AudioClip(id: UUID(), name: "Letra", startTime: 29, duration: 8, text: columns)
+        let data = try JSONEncoder().encode(JLLyricsDocument(teleprompter: 2, clips: [clip], origin: 25))
+        let lyrics = try JSONDecoder().decode(JLLyricsDocument.self, from: data)
+        var song = Project.empty(name: "Lyrics").songs[0]
+        try song.insertLyrics(lyrics, at: 50)
+        let track = try XCTUnwrap(song.tracks.first(where: { $0.kind == .teleprompt2 }))
+        let item = try XCTUnwrap(track.clips.first)
+        XCTAssertEqual(item.text, columns)
+        XCTAssertEqual(item.startTime, 54)
+        XCTAssertEqual(item.duration, 8)
+        XCTAssertNotEqual(item.id, clip.id)
+    }
     func testCursorInsideSongUsesWholeRangeAndExactEnd() throws {
         var song = Project.empty(name: "Lyrics").songs[0]
         song.parts = [.init(id: UUID(), name: "Song", startTime: 20, endTime: 120)]

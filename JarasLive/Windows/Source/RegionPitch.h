@@ -58,6 +58,17 @@ inline int value(const jaras::Song &song, const jaras::Track &track, double posi
     auto *part = at(song, position);
     return part && selected(song, track, *part) ? part->pitchSemitones.value_or(0) : 0;
 }
+inline int value(const jaras::Song &song, const jaras::Track &track, const jaras::AudioClip &clip) {
+    const double end = clip.startTime + clip.duration;
+    const auto rootID = jaras::regionMovementOwner(song, clip.startTime, end, clip.regionOwnerID);
+    if (!rootID) return 0;
+    const auto root = std::find_if(song.parts.begin(), song.parts.end(), [&](const auto &part) { return part.id == *rootID; });
+    if (root == song.parts.end() ||
+        std::max(0.0, std::min(end, root->endTime) - std::max(clip.startTime, root->startTime)) <= clip.duration / 2) return 0;
+    const auto ownerID = jaras::regionOwnerForMedia(song, clip.startTime, end, clip.regionOwnerID);
+    const auto part = std::find_if(song.parts.begin(), song.parts.end(), [&](const auto &part) { return ownerID && part.id == *ownerID; });
+    return part != song.parts.end() && selected(song, track, *part) ? part->pitchSemitones.value_or(0) : 0;
+}
 inline std::vector<ID> defaults(const jaras::Song &song, bool groups) {
     std::vector<ID> result;
     for (const auto &track : song.tracks)

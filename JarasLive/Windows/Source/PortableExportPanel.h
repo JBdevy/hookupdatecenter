@@ -11,13 +11,13 @@ class PortableExportPanel final : public Component, private Timer {
     };
     Session &session;
     std::function<void(std::function<void()>)> save;
-    TextButton close{localization::translate("Fechar")}, saveButton{localization::translate("Salvar")}, exportButton{localization::translate("Exportar para CatLive iPadOS")},
+    TextButton close{localization::translate("Fechar")}, saveButton{localization::translate("Salvar")}, exportButton{localization::translate("Export ziplive")},
         reveal{"Mostrar na pasta"};
     std::unique_ptr<FileChooser> chooser;
     std::shared_ptr<Work> work;
     String error, excluded;
     File exported;
-    String title() const { return localization::translate("Exportar para CatLive iPadOS"); }
+    String title() const { return localization::translate("Export ziplive"); }
     bool requiresSave() const { return session.dirty || !session.document.existsAsFile(); }
     void start(const File &destination, const File &document, const ID &identity) {
         if (session.document != document || session.project().id != identity || requiresSave() ||

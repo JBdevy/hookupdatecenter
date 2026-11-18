@@ -15,10 +15,14 @@ class ClipTempo {
         if (compiled) {
             for (const auto& point:compiled->points(clip))
                 if(point.time>clip.startTime && point.time<end)edges.push_back(point.time);
-        } else if (song && song->markers)
-            for (const auto &marker : *song->markers)
-                if (marker.tempoBPM && marker.position > clip.startTime && marker.position < end)
-                    edges.push_back(marker.position);
+        } else if (song && song->markers) {
+            const bool global = jaras::TempoEditMap::tempoOwner(*song,clip) == nullptr;
+            for (const auto &marker : *song->markers) if (marker.tempoBPM) {
+                if (marker.position > clip.startTime && marker.position < end) edges.push_back(marker.position);
+                const double limit = jaras::tempoPlayback::markerEnd(*song,marker);
+                if (global && limit > clip.startTime && limit < end) edges.push_back(limit);
+            }
+        }
         std::sort(edges.begin(), edges.end());
         edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
         double source = clip.sourceOffset;

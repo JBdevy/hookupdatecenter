@@ -1,5 +1,11 @@
-// Included after the real TrackPanFader/TrackVolumeFader and native sliders by
+// Included after the real TrackPanKnob/TrackVolumeFader and native sliders by
 // scripts/test-master-control-project-identity.sh. No production callback is replaced.
+private enum JarasLocalization { static func string(_ value: String) -> String { value } }
+private enum GridSelectionHeaderControls {
+    static func knob(in rect: CGRect, position: Double, pan: Bool, context: CGContext) {}
+    static func drawValueTooltip(_ value: String, in rect: CGRect) {}
+}
+private enum TrackEnvelope { static func gain(_ value: Double) -> Double { value } }
 private enum AutomationTarget { enum Kind { case pan, volume } }
 private enum ShowCommand { case pan, volume }
 private struct TestProject { var id = UUID(); var masterPan = 0.0; var masterVolume = 1.0 }
@@ -19,6 +25,8 @@ private struct TestSong { var tracks: [TestTrack] = [] }
     }
     var projectSessionID = UUID()
     let projectPresentation = ShowProjectPresentation()
+    let transportFadeout = TransportFadeout()
+    let multiLoopFaders = MultiLoopFaderPresentation()
     @Published var snapshot = TestSnapshot() {
         didSet { projectPresentation.objectWillChange.send() }
     }
@@ -44,7 +52,18 @@ private struct PhaseInvertButton: View {
     let show: ShowController; let track: UUID; let inverted: Bool
     var body: some View { EmptyView() }
 }
-private extension View { func jarasHelp(_ text: String) -> some View { self } }
+private extension View {
+    func jarasHelp(_ text: String) -> some View { self }
+    func trackControlSelectionExclusion(selectsTrack: Bool = false) -> some View { self }
+}
+private extension Font {
+    static func jarasSystem(size: CGFloat, weight: Weight, design: Design = .default) -> Font { .system(size: size, weight: weight, design: design) }
+}
+private extension NSFont {
+    static func jarasMonospacedSystemFont(ofSize size: CGFloat, weight: Weight) -> NSFont {
+        monospacedSystemFont(ofSize: size, weight: weight)
+    }
+}
 
 @MainActor private struct MasterControlsFixture: View {
     let show: ShowController
@@ -55,7 +74,7 @@ private extension View { func jarasHelp(_ text: String) -> some View { self } }
     }
     var body: some View {
         VStack(spacing: 12) {
-            TrackPanFader(show: show, track: nil, pan: show.snapshot.project.masterPan, compact: true)
+            TrackPanKnob(show: show, track: nil, pan: show.snapshot.project.masterPan)
                 .frame(width: 120, height: 28)
             TrackVolumeFader(show: show, track: nil, volume: show.snapshot.project.masterVolume,
                              phaseInverted: false, compact: true)
@@ -82,25 +101,39 @@ private extension View { func jarasHelp(_ text: String) -> some View { self } }
         RunLoop.main.run(until: Date().addingTimeInterval(0.03))
         host.layoutSubtreeIfNeeded()
     }
-    func sliders() -> [DirectVolumeSliderView] {
-        func collect(_ view: NSView) -> [DirectVolumeSliderView] {
-            (view as? DirectVolumeSliderView).map { [$0] } ?? view.subviews.flatMap(collect)
+    @MainActor struct Control {
+        let view: NSView
+        var mini: Bool { view is NativeMixerKnobView }
+        var boundProject: UUID? { (view as? NativeMixerKnobView)?.boundProject ?? (view as? DirectVolumeSliderView)?.boundProject }
+        var boundSession: UUID? { (view as? NativeMixerKnobView)?.boundSession ?? (view as? DirectVolumeSliderView)?.boundSession }
+        var trackingPointer: Bool { (view as? NativeMixerKnobView)?.dragging ?? (view as? DirectVolumeSliderView)?.trackingPointer ?? false }
+        func mouseDown(with event: NSEvent) { view.mouseDown(with: event) }
+        func mouseDragged(with event: NSEvent) { view.mouseDragged(with: event) }
+        func mouseUp(with event: NSEvent) { view.mouseUp(with: event) }
+    }
+    func sliders() -> [Control] {
+        func collect(_ view: NSView) -> [Control] {
+            if view is NativeMixerKnobView || view is DirectVolumeSliderView { return [Control(view: view)] }
+            return view.subviews.flatMap(collect)
         }
         return collect(host)
     }
-    func event(_ type: NSEvent.EventType, _ slider: DirectVolumeSliderView, fraction: CGFloat, clickCount: Int = 1) -> NSEvent {
-        let point = slider.convert(NSPoint(x: slider.bounds.width * fraction, y: slider.bounds.midY), to: nil)
+    func event(_ type: NSEvent.EventType, _ slider: Control, fraction: CGFloat, clickCount: Int = 1) -> NSEvent {
+        let view = slider.view
+        let y = slider.mini ? view.bounds.height * fraction : view.bounds.midY
+        let point = view.convert(NSPoint(x: view.bounds.width * fraction, y: y), to: nil)
         return NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 1,
             windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: clickCount, pressure: 1)!
     }
-    func doubleClick(_ slider: DirectVolumeSliderView) {
+    func doubleClick(_ slider: Control) {
         slider.mouseDown(with: event(.leftMouseDown, slider, fraction: 0.5, clickCount: 2))
         slider.mouseUp(with: event(.leftMouseUp, slider, fraction: 0.5, clickCount: 2))
         settle()
     }
-    func click(_ slider: DirectVolumeSliderView, fraction: CGFloat) {
+    func click(_ slider: Control, fraction: CGFloat) {
         slider.mouseDown(with: event(.leftMouseDown, slider, fraction: fraction))
-        slider.mouseUp(with: event(.leftMouseUp, slider, fraction: fraction))
+        if slider.mini { slider.mouseDragged(with: event(.leftMouseDragged, slider, fraction: fraction + 0.2)) }
+        slider.mouseUp(with: event(.leftMouseUp, slider, fraction: slider.mini ? fraction + 0.2 : fraction))
         settle()
     }
 }
@@ -221,7 +254,7 @@ private extension View { func jarasHelp(_ text: String) -> some View { self } }
         fixture.settle()
         expect(fixture.show.commands.count == before, "A copied project's old gesture must never commit during workspace teardown")
         let freshSlider = fixture.sliders().first { $0.mini == pan }!
-        expect(freshSlider !== oldSlider && freshSlider.boundSession == fixture.show.projectSessionID,
+        expect(freshSlider.view !== oldSlider.view && freshSlider.boundSession == fixture.show.projectSessionID,
                "A same-UUID document must start with a newly bound native control")
         fixture.click(freshSlider, fraction: 0.4)
         expect(fixture.show.commands.dropFirst(before).contains { !$0.preview }, "New same-UUID session must accept fader/pan commands")

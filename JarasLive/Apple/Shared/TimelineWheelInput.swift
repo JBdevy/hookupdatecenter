@@ -651,7 +651,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     private func applyPendingFocus() {
         guard let pending = pendingFocus, window != nil,
               let horizontal = scrollViews.first, horizontal.documentView != nil,
-              horizontal.contentView.documentRect.width > 0, horizontal.contentView.bounds.width > 0 else { return }
+              horizontal.contentView.documentRect.maxX > 0, horizontal.contentView.bounds.width > 0 else { return }
         let x = pending.x
         pendingFocus = nil; lastFocusRequest = pending.request
         // The native viewport already has its geometry. Revealing a cursor must
@@ -660,17 +660,16 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             takeHorizontalControl(horizontal)
             let visible = horizontal.contentView.bounds
             // User-selected left limit: the region start is 14 points inside the grid.
-            // At time zero there is no negative timeline available for that inset.
             let leftInset: CGFloat = 14
             let requiredStart = visible.minX + min(leftInset, x)
             // Right limit captured from the user's Música 3 position: 547/1003
             // of the visible grid width. Preserve that proportion when resizing.
             let rightLimit = visible.minX + max(leftInset, visible.width * (547.0 / 1003.0))
             if x < requiredStart - 0.5 {
-                self.scroll(horizontal, x: max(0, x - leftInset))
+                self.scroll(horizontal, x: x - leftInset)
             } else if x > rightLimit + 0.5 {
                 let rightInset = rightLimit - visible.minX
-                self.scroll(horizontal, x: max(0, x - rightInset))
+                self.scroll(horizontal, x: x - rightInset)
             }
             // Restoring a project can scroll before the bounds observer attaches.
             // Publish the final viewport as well, so its tiles are ready at startup.
@@ -726,7 +725,10 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         guard let document = view.documentView else { return }
         let clip = view.contentView
         var origin = clip.bounds.origin
-        if let x { origin.x = min(max(0, x), max(0, clip.documentRect.width - clip.bounds.width)) }
+        if let x {
+            let rect = clip.documentRect
+            origin.x = min(max(rect.minX, x), max(rect.minX, rect.maxX - clip.bounds.width))
+        }
         if let y { origin.y = min(max(0, y), max(0, document.frame.height - clip.bounds.height)) }
         if let grid = view as? GridNativeScrollView { grid.prepareHorizontalViewport(at: origin.x) }
         else if x != nil, publishHorizontalOffset(origin.x) { document.layoutSubtreeIfNeeded() }
@@ -758,7 +760,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             let limited = horizontalLimiter.limit(movement, timestamp: event.timestamp, begins: event.phase.contains(.began), speed: shifting ? 12600 : 4200)
             let origin = horizontal.contentView.bounds.minX
             let target = origin - limited
-            if horizontal.documentView != nil, target + horizontal.contentView.bounds.width > horizontal.contentView.documentRect.width - 160 { extend?() }
+            if horizontal.documentView != nil, target + horizontal.contentView.bounds.width > horizontal.contentView.documentRect.maxX - 160 { extend?() }
             scroll(horizontal, x: target)
 
         } else if event.hasPreciseScrollingDeltas && (!event.phase.isEmpty || !event.momentumPhase.isEmpty) {
@@ -778,7 +780,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
                 let limited = horizontalLimiter.limit(event.scrollingDeltaX, timestamp: event.timestamp, begins: event.phase.contains(.began))
                 let target = horizontal.contentView.bounds.minX - limited
                 if event.scrollingDeltaX < 0, horizontal.documentView != nil,
-                   target + horizontal.contentView.bounds.width > horizontal.contentView.documentRect.width - 300 { extend?() }
+                   target + horizontal.contentView.bounds.width > horizontal.contentView.documentRect.maxX - 300 { extend?() }
                 scroll(horizontal, x: target)
             } else {
                 applyWheelZoom(event, delta: event.scrollingDeltaY, horizontal: horizontal)
@@ -834,7 +836,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             // Native geometry may lag a newer scale, especially after a fast
             // reversal. Derive the document target from the model, not that
             // intermediate frame; otherwise the anchor can never settle.
-            documentUnitWidth = modelUnitWidth ?? ((grid.zoomAnchor?.width ?? horizontal.contentView.documentRect.width) / zoom)
+            documentUnitWidth = modelUnitWidth ?? ((grid.zoomAnchor?.width ?? horizontal.contentView.documentRect.maxX) / zoom)
             // The musical position is independent of the rendered scale.
             // cursorX can still belong to the previous layout when a fast new
             // gesture arrives after the native document has changed width.
@@ -844,7 +846,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
                 // At a limit there is no new layout to center. A real scale
                 // change centers only when its new geometry is ready, avoiding
                 // a synchronous preparation of an immediately obsolete scale.
-                let cursor = CGFloat(fraction) * horizontal.contentView.documentRect.width
+                let cursor = CGFloat(fraction) * horizontal.contentView.documentRect.maxX
                 scroll(horizontal, x: cursor - horizontal.contentView.bounds.width / 2)
                 publishHorizontalOffset(horizontal.contentView.bounds.minX)
             }
@@ -913,7 +915,8 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         let fraction = gestureAnchor ?? zoomPosition
         let width = documentUnitWidth * next
         let screenX = grid.contentView.frame.width / 2
-        let offset = min(max(0, CGFloat(fraction) * width - screenX), max(0, width - grid.contentView.frame.width))
+        let firstOffset = grid.contentView.documentRect.minX
+        let offset = min(max(firstOffset, CGFloat(fraction) * width - screenX), max(firstOffset, width - grid.contentView.frame.width))
         grid.zoomAnchor = (fraction, screenX, CGFloat(width))
         zoom = next
         awaitingRenderedZoom = next
@@ -1022,9 +1025,10 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
         while let view = parent {
             if let scroll = view as? NSScrollView, scroll.documentView != nil {
                 let clip = scroll.contentView
-                let target = max(0, clip.bounds.minX - delta)
-                if delta < 0 && target + clip.bounds.width > clip.documentRect.width - 300 { extend?() }
-                clip.scroll(to: NSPoint(x: min(target, max(0, clip.documentRect.width - clip.bounds.width)), y: clip.bounds.minY))
+                let firstOffset = clip.documentRect.minX
+                let target = max(firstOffset, clip.bounds.minX - delta)
+                if delta < 0 && target + clip.bounds.width > clip.documentRect.maxX - 300 { extend?() }
+                clip.scroll(to: NSPoint(x: min(target, max(firstOffset, clip.documentRect.maxX - clip.bounds.width)), y: clip.bounds.minY))
                 scroll.reflectScrolledClipView(clip)
                 break
             }

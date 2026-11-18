@@ -16,7 +16,10 @@ region = Path('Apple/Shared/RegionEditor.swift').read_text()
 track_environment = region[region.index('/// Immutable menu target:'):]
 models = Path('Application/Project/ProjectModels.swift').read_text()
 geometry = models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
-Path(sys.argv[1]).write_text(geometry + fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + track_environment)
+theme = Path('Apple/Shared/Theme.swift').read_text()
+appearance = theme.index('enum TimelineAppearanceDefaults {')
+appearance = theme[appearance:theme.index('\n}', appearance) + 2]
+Path(sys.argv[1]).write_text(geometry + fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + track_environment + '\n' + appearance)
 PY
 python3 - "$test_dir/main.swift" <<'PYTEST'
 from pathlib import Path
@@ -25,7 +28,7 @@ source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 divider_start = source.index('struct MixerResizeHandle:')
 Path(sys.argv[1]).with_name('divider.swift').write_text('import SwiftUI\nimport AppKit\n' + source[divider_start:source.index('\n#endif', divider_start)])
 start = source.index('    private func beginNormalize(')
-end = source.index('    private func previewItemEdit(', start)
+end = source.index('\n    private func', start + 1)
 notification = next(line.strip() for line in source.splitlines() if '.onReceive(show.$normalizeItemsRequest.dropFirst())' in line)
 tests = Path('Tests/Apple/GridHostingIntegrationTests.swift').read_text()
 tests = tests.replace('NORMALIZATION_NOTIFICATION', notification)

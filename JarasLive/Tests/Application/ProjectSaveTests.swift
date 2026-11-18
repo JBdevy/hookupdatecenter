@@ -17,6 +17,7 @@ import XCTest
     var playing = false
     var playCommands = 0
     var tempoBatches = 0
+    var cursorPosition = 0.0
     var advancedTime = 0.0
     var timeAtTempoEdit = 0.0
     var regionItems: [UUID] = []
@@ -25,9 +26,9 @@ import XCTest
     func load(_ project: Project) throws { self.project = project }
     func snapshot() throws -> ShowSnapshot {
         snapshotCount += 1
-        return ShowSnapshot(project: project, transport: TransportState(playing: playing, songId: project.songs.first?.id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+        return ShowSnapshot(project: project, transport: TransportState(playing: playing, songId: project.songs.first?.id, position: cursorPosition, editPosition: cursorPosition, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
     }
-    func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: TransportState(playing: playing, songId: project.songs.first?.id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))) }
+    func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: TransportState(playing: playing, songId: project.songs.first?.id, position: cursorPosition, editPosition: cursorPosition, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))) }
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
         if command == .play { playCommands += 1 }
         if command == .selectRegion || command == .queueRegion, let target { regionSelections.append(target); regionCommands.append(command) }
@@ -193,7 +194,7 @@ final class ProjectSaveTests: XCTestCase {
         show.redo(); XCTAssertEqual(Set(show.current?.markers?.map(\.id) ?? []), Set(beforeDelete.songs[0].markers!.map(\.id)))
         XCTAssertFalse(show.current?.markers?.contains { $0.regionOwnerID == first.id } ?? true)
     }
-    @MainActor func testTempoAdjustmentAttachesNewBoundariesToCorrectSongs() throws {
+    @MainActor func testTempoAdjustmentCreatesOnlyTheRequiredStartMarker() throws {
         var project = markerOwnershipProject()
         let first = project.songs[0].parts[0], next = project.songs[0].parts[1]
         let inside = TimelineMarker(id: UUID(), name: "TEMPO", position: 20, color: 0, regionOwnerID: first.id, tempoBPM: 140, tempoTimebase: .free)
@@ -203,12 +204,13 @@ final class ProjectSaveTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
         show.focusRegion(first.id); show.adjustTempo(1)
         XCTAssertEqual(show.current?.markers?.first { $0.position == 10 }?.regionOwnerID, first.id)
-        XCTAssertEqual(show.current?.markers?.first { $0.position == 30 }?.regionOwnerID, next.id)
+        XCTAssertFalse(show.current?.markers?.contains { $0.position == 30 } ?? true)
         XCTAssertEqual(show.current?.markers?.first { $0.id == inside.id }?.regionOwnerID, first.id)
-        XCTAssertNil(show.current?.markers?.first { $0.id == loose.id }?.regionOwnerID)
-        XCTAssertEqual(executor.project.songs[0].markers, show.current?.markers)
+        XCTAssertEqual(show.current?.markers?.first { $0.id == loose.id }?.regionOwnerID, first.id)
+        XCTAssertEqual(executor.project.songs[0].markers?.sorted { $0.position < $1.position },
+                       show.current?.markers?.sorted { $0.position < $1.position })
         XCTAssertTrue(show.deleteSetlistEntries([first.id]))
-        XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 10, 20, 22, 30])
+        XCTAssertEqual(Set(show.current?.markers?.map(\.position) ?? []), [0, 10, 20, 22])
         XCTAssertFalse(show.current?.markers?.contains { $0.regionOwnerID == first.id } ?? true)
     }
     @MainActor func testRedetectedTempoReplacesOldMarkersAndAssignsRegionOwnership() throws {
@@ -406,25 +408,26 @@ final class ProjectSaveTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
         let snapshots = executor.snapshotCount, transport = show.snapshot.transport
         var previews = 0; show.audioClipFX = { id,_ in XCTAssertEqual(id,clip.id); previews += 1 }
-        show.insertClipFX(clip.id, effect: "EQ"); show.insertClipFX(clip.id, effect: "Compressor")
+        let eqKey = try XCTUnwrap(show.insertClipFX(clip.id, effect: "EQ"))
+        let compressorKey = try XCTUnwrap(show.insertClipFX(clip.id, effect: "Compressor"))
         let baseline = show.clipFXSettings(clip.id), revision = show.projectRevision
         for gain in 1...50 {
-            var eq = baseline; eq.bands[1].gain = Double(gain) / 10
-            show.updateClipFX(clip.id, effect: "EQ", settings: eq)
+            var eq = baseline.settings(for: eqKey); eq.bands[1].gain = Double(gain) / 10
+            show.updateClipFX(clip.id, effect: eqKey, settings: eq)
         }
-        var compressor = baseline; compressor.threshold = -12
-        show.updateClipFX(clip.id, effect: "Compressor", settings: compressor)
+        var compressor = baseline.settings(for: compressorKey); compressor.threshold = -12
+        show.updateClipFX(clip.id, effect: compressorKey, settings: compressor)
         XCTAssertEqual(show.projectRevision, revision, "knob motion must not rebuild the timeline")
-        XCTAssertEqual(show.clipFXSettings(clip.id).bands[1].gain,5)
-        XCTAssertEqual(show.clipFXSettings(clip.id).threshold,-12, "another open editor merges only its own effect")
+        XCTAssertEqual(show.clipFXSettings(clip.id).settings(for: eqKey).bands[1].gain,5)
+        XCTAssertEqual(show.clipFXSettings(clip.id).settings(for: compressorKey).threshold,-12, "another open editor merges only its own effect")
         show.commitFX()
         XCTAssertEqual(show.projectRevision,revision+1); XCTAssertGreaterThan(previews, 2)
         XCTAssertEqual(executor.snapshotCount,snapshots); XCTAssertEqual(executor.projectEditCount,0)
         XCTAssertEqual(show.snapshot.transport,transport); XCTAssertEqual(show.current?.tracks[0].clips[0].waveform,clip.waveform)
         show.undo(); XCTAssertEqual(show.clipFXSettings(clip.id),baseline)
-        show.redo(); XCTAssertEqual(show.clipFXSettings(clip.id).threshold,-12)
-        show.toggleClipFXBypass(clip.id,effect: "EQ"); XCTAssertFalse(show.clipFXSettings(clip.id).eqEnabled)
-        show.removeClipFX(clip.id,effect: "EQ"); XCTAssertEqual(show.clipFXSettings(clip.id).inserted,["Compressor"])
+        show.redo(); XCTAssertEqual(show.clipFXSettings(clip.id).settings(for: compressorKey).threshold,-12)
+        show.toggleClipFXBypass(clip.id,effect: eqKey); XCTAssertFalse(show.clipFXSettings(clip.id).eqEnabled)
+        show.removeClipFX(clip.id,effect: eqKey); XCTAssertEqual(show.clipFXSettings(clip.id).inserted,[compressorKey])
     }
     @MainActor func testItemFXReorderCommitsAudioOrderAndUndoWithoutMovingTransportOrTrackFX() throws {
         var project = Project.empty(name: "Item order")
@@ -502,6 +505,11 @@ final class ProjectSaveTests: XCTestCase {
         show.redo(); XCTAssertEqual(show.clipFXSettings(clip.id).effectKeys, [first])
         show.removeClipFX(clip.id, effect: first)
         XCTAssertTrue(show.clipFXSettings(clip.id).effectKeys.isEmpty)
+        let reverb = try XCTUnwrap(show.insertClipFX(clip.id, effect: "Reverb"))
+        let eq = try XCTUnwrap(show.insertClipFX(clip.id, effect: "EQ"))
+        let pitch = try XCTUnwrap(show.insertClipFX(clip.id, effect: "Pitch"))
+        XCTAssertEqual(show.clipFXSettings(clip.id).clipEffectKeys, [reverb, eq, pitch])
+        show.removeAllClipFX(clip.id)
         XCTAssertNil(show.insertClipFX(clip.id, effect: "Instruments"))
         executor.failsClipFX = true
         XCTAssertNil(show.insertClipFX(clip.id, effect: "EQ"))
@@ -709,6 +717,38 @@ final class ProjectSaveTests: XCTestCase {
         show.tick()
         XCTAssertEqual(executor.advancedTime, 10, accuracy: 0.000001, "The next timer tick must not consume edit time twice")
     }
+    @MainActor func testRegionTempoUsesFixedReferenceAndMovesMarkersWithAudioWithoutEndMarker() throws {
+        for playing in [false,true] { for cursor in [12.0,25.0] {
+            var project = Project.empty(name: "147 and 140")
+            let region = Part(id: UUID(), name: "Music", startTime: 10, endTime: 40)
+            let next = Part(id: UUID(), name: "Next", startTime: 50, endTime: 70)
+            project.songs[0].parts = [region,next]; project.songs[0].duration = 80
+            var timing = project.songs[0].projectTime; timing.timebase = .relative; project.songs[0].timeSettings = timing
+            let first = TimelineMarker(id: UUID(), name: "TEMPO", position: 10, color: 0, regionOwnerID: region.id, tempoBPM: 147, tempoTimebase: .relative, tempoReferenceBPM: 147)
+            let second = TimelineMarker(id: UUID(), name: "TEMPO", position: 20, color: 0, regionOwnerID: region.id, tempoBPM: 140, tempoTimebase: .relative, tempoReferenceBPM: 140)
+            project.songs[0].markers = [first,second]
+            let item = AudioClip(id: UUID(), name: "Music", startTime: 10, duration: 30, audioFile: AudioFile(path: "music.wav"), regionOwnerID: region.id)
+            let other = AudioClip(id: UUID(), name: "Next", startTime: 50, duration: 20, audioFile: AudioFile(path: "next.wav"), regionOwnerID: next.id)
+            project.songs[0].tracks = [Track(id: UUID(), name: "Audio", role: .other, clips: [item,other])]
+            let executor = SaveTestExecutor(); executor.cursorPosition = cursor; executor.playing = playing
+            let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
+            if !playing { show.focusRegion(region.id) }
+            XCTAssertEqual(show.tempoControlBPM,147)
+            show.adjustTempo(1)
+            let song = try XCTUnwrap(show.current)
+            XCTAssertEqual(Set(song.markers!.map(\.id)),[first.id,second.id],"A BPM edit must not create start/end/reset markers outside the music")
+            XCTAssertEqual(song.markers!.first { $0.id == first.id }!.tempoBPM!,148,accuracy:1e-9)
+            XCTAssertEqual(song.markers!.first { $0.id == second.id }!.tempoBPM!,141,accuracy:1e-9)
+            let scale = 147.0/148
+            XCTAssertEqual(song.markers!.first { $0.id == second.id }!.position,10+10*scale,accuracy:1e-8)
+            XCTAssertEqual(song.tracks[0].clips[0].duration,30*scale,accuracy:1e-8)
+            XCTAssertTrue(song.tempoAudioSegments(song.tracks[0].clips[0]).allSatisfy { abs($0.audioRate-148/147)<1e-8 })
+            XCTAssertEqual(song.tracks[0].clips[1].duration,20,accuracy:1e-8)
+            XCTAssertTrue(song.tempoAudioSegments(song.tracks[0].clips[1]).allSatisfy { abs($0.audioRate-1)<1e-8 })
+            XCTAssertEqual(song.tempoSection(at:song.parts[0].endTime+1).bpm,song.bpm)
+            XCTAssertEqual(show.tempoControlBPM,148)
+        } }
+    }
     @MainActor func testRegionTempoShiftsAllMarkersAndKeepsNextSong() throws {
         var project = Project.empty(name: "Tempo batch")
         let region = Part(id: UUID(), name: "Selected", startTime: 10, endTime: 30)
@@ -722,21 +762,21 @@ final class ProjectSaveTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
         show.focusRegion(region.id)
         show.adjustTempo(1)
-        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100,121,151.25,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
+        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100.0,121,151,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
         XCTAssertEqual(show.current?.markers?.first(where: { $0.id == cue.id }), cue)
         XCTAssertEqual(executor.tempoBatches, 1)
         XCTAssertEqual(show.current?.parts, project.songs[0].parts)
         show.setTempo(125)
-        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100,125,156.25,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
+        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100.0,125,155,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
         show.adjustTempo(-1)
-        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100.0,124,155,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
+        for (actual, expected) in zip(try XCTUnwrap(show.current?.markers?.compactMap(\.tempoBPM)), [100.0,124,154,90]) { XCTAssertEqual(actual, expected, accuracy: 1e-9) }
         XCTAssertEqual(show.current?.markers?.compactMap(\.tempoReferenceBPM), [100,120,150,90])
         XCTAssertEqual(executor.tempoBatches, 3)
         try show.snapshot.project.validate()
         let copy = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(show.snapshot.project))
         XCTAssertEqual(copy.songs[0].markers, show.current?.markers)
     }
-    @MainActor func testRegionTempoBoundsPreserveRatiosAndRestoreInheritedTempo() throws {
+    @MainActor func testRegionTempoBoundsClampSharedDeltaAndRestoreInheritedTempo() throws {
         var project = Project.empty(name: "Tempo bounds")
         let region = Part(id: UUID(), name: "Selected", startTime: 10, endTime: 30)
         project.songs[0].parts = [region]; project.songs[0].duration = 60
@@ -747,21 +787,20 @@ final class ProjectSaveTests: XCTestCase {
         let show = try ShowController(executor: executor, persistence: SaveTestStore(), initialProject: project)
         let innerID = project.songs[0].markers![1].id
         show.focusRegion(region.id); show.adjustTempo(2)
-        let limited = 120.0 * 300.0 / 299.0
         func entryBPM() -> Double {
             let current = show.current!
             return current.activeTempoMarker(at: current.parts[0].startTime + 1e-6)!.tempoBPM!
         }
         func innerBPM() -> Double { show.current!.markers!.first(where: { $0.id == innerID })!.tempoBPM! }
-        XCTAssertEqual(entryBPM(), limited, accuracy: 1e-9)
+        XCTAssertEqual(entryBPM(), 121, accuracy: 1e-9)
         XCTAssertEqual(innerBPM(), 300, accuracy: 1e-9)
         XCTAssertEqual(show.current?.activeTempoMarker(at: 5)?.tempoBPM, 120)
         XCTAssertEqual(show.current?.markers?.first(where: { $0.id == innerID })?.tempoBeats, 3)
         show.adjustTempo(1); XCTAssertEqual(executor.tempoBatches, 1)
         show.adjustTempo(-1)
-        XCTAssertEqual(entryBPM(), limited - 1, accuracy: 1e-9)
-        XCTAssertEqual(innerBPM(), 300 * (limited - 1) / limited, accuracy: 1e-9)
-        XCTAssertEqual(show.current?.activeTempoMarker(at: show.current!.parts[0].endTime + 1e-6)?.tempoBPM, 299)
+        XCTAssertEqual(entryBPM(), 120, accuracy: 1e-9)
+        XCTAssertEqual(innerBPM(), 299, accuracy: 1e-9)
+        XCTAssertEqual(show.current?.tempoSection(at: show.current!.parts[0].endTime + 1e-6).bpm, 120)
         XCTAssertEqual(executor.tempoBatches, 2)
         try show.snapshot.project.validate()
     }
@@ -1157,9 +1196,7 @@ final class ProjectSaveTests: XCTestCase {
                        TimelineMarker(id: UUID(), name: "TEMPO", position: 8.123, color: 0x999999, tempoBPM: 90, tempoBeats: 4, tempoUnit: 4, tempoTimebase: .global)]
         XCTAssertTrue(show.applyDetectedTempo(markers, project: project.id, song: project.songs[0].id))
         let saved = try XCTUnwrap(show.current?.markers)
-        XCTAssertEqual(saved.first?.position, 0)
-        XCTAssertEqual(saved.first?.tempoBPM, 120)
-        XCTAssertEqual(Array(saved.dropFirst()), markers)
+        XCTAssertEqual(saved, markers, "Detection must not add an extra marker in the empty lead-in")
         show.undo(); XCTAssertTrue(show.current?.markers?.isEmpty ?? true)
         show.redo(); XCTAssertEqual(show.current?.markers, saved)
     }
@@ -1525,6 +1562,10 @@ final class ProjectSaveTests: XCTestCase {
         let reads = executor.snapshotCount
         var updates = 0
         show.audioUpdate = { _, _ in updates += 1 }
+        var mutes: [UUID?] = [], solos: [UUID?] = [], volumes: [Double] = []
+        show.audioMute = { id, _ in mutes.append(id) }
+        show.audioSolo = { id, _ in solos.append(id) }
+        show.audioVolume = { id, value in XCTAssertEqual(id, track.id); volumes.append(value) }
         show.send(.mute, target: track.id)
         XCTAssertEqual(show.snapshot.project.songs[0].tracks[0].mute, !track.mute)
         show.send(.solo, target: track.id)
@@ -1534,7 +1575,8 @@ final class ProjectSaveTests: XCTestCase {
         show.send(.mute)
         XCTAssertEqual(show.snapshot.project.masterMute, true)
         XCTAssertEqual(executor.snapshotCount, reads)
-        XCTAssertEqual(updates, 4)
+        XCTAssertEqual(updates, 0, "Direct controls must not request a complete audio update")
+        XCTAssertEqual(mutes, [track.id, nil]); XCTAssertEqual(solos, [track.id]); XCTAssertEqual(volumes, [0.25])
         XCTAssertTrue(show.hasUnsavedChanges)
     }
 

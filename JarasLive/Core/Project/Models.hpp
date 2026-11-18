@@ -63,6 +63,10 @@ void validateRouting(const Song&);
 void validate(const Project& project);
 void synchronizeTimecode(Project& project);
 std::optional<ID> regionOwnerAt(const Song& song, double start, std::optional<double> end = {});
+std::optional<ID> dominantUnifiedOwner(const Song& song, const Part& root, double start, double end,
+                                      const std::optional<ID>& preferred);
+std::optional<ID> regionOwnerForMedia(const Song& song, double start, double end,
+                                     const std::optional<ID>& preferred = {});
 bool regionOwns(const Song& song, const ID& root, const std::optional<ID>& owner);
 std::optional<ID> regionMovementOwner(const Song&, double start, std::optional<double> end = {},
                                     const std::optional<ID>& preferred = {});

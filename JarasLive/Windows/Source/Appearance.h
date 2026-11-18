@@ -10,6 +10,12 @@ class Appearance final : public ChangeBroadcaster {
                                        .getChildFile("Hook Developer/CatLive/appearance.json") : std::move(file)) {
         auto loaded = JSON::parse(location);
         values = loaded.isObject() ? loaded : object();
+        auto metro = JSON::parse(metronomeFile());
+        metronomeValues = metro.isObject() ? metro : object();
+        for (auto key : {"enabled","preset","mode","gainA","gainB","output","pathA","pathB"}) {
+            const Identifier full("jaras.metronome." + String(key));
+            if (get(metronomeValues,full).isVoid() && !get(values,full).isVoid())put(metronomeValues,full,get(values,full));
+        }
     }
     // Legacy appearance files may contain 75%/125%. The workspace is now
     // always 100%; the native peer still follows the monitor's system DPI.
@@ -30,7 +36,26 @@ class Appearance final : public ChangeBroadcaster {
     }
     bool invertWaveformColors() const { return flag(values, "jaras.timeline.invertWaveformColors", false); }
     bool gridlines() const { return flag(values, "jaras.timeline.gridlines", true); }
-    var value(const String &key, var fallback = {}) const { return get(values, Identifier(key), fallback); }
+    var value(const String &key, var fallback = {}) const {
+        return get(key.startsWith("jaras.metronome.") ? metronomeValues : values, Identifier(key), fallback);
+    }
+    // Audio controls are not appearance changes. Persist on one worker without
+    // reloading preferences or broadcasting a workspace-wide layout refresh.
+    void setMetronome(const String &key, var value, std::function<void(String)> completion = {}) {
+        jassert(key.startsWith("jaras.metronome."));
+        put(metronomeValues,Identifier(key),std::move(value));
+        const auto destination=metronomeFile();
+        const auto snapshot=metronomeValues.clone();
+        static ThreadPool writer(1);
+        writer.addJob([destination,snapshot,key,completion=std::move(completion)] {
+            auto merged=JSON::parse(destination);
+            if(!merged.isObject())merged=snapshot.clone();
+            put(merged,Identifier(key),get(snapshot,Identifier(key)));
+            const auto result=destination.getParentDirectory().createDirectory();
+            const auto error=result.failed()?result.getErrorMessage():destination.replaceWithText(JSON::toString(merged))?String():String("Could not save metronome settings");
+            if(completion)MessageManager::callAsync([completion,error]{completion(error);});
+        });
+    }
     File storageFile() const { return location; }
     void preview(const String &key,var value) { put(previews,Identifier(key),value);sendChangeMessage(); }
     void clearPreview(const String &key) { if(auto *p=previews.getDynamicObject())p->removeProperty(Identifier(key));sendChangeMessage(); }
@@ -50,6 +75,8 @@ class Appearance final : public ChangeBroadcaster {
   private:
     File location;
     var values;
+    var metronomeValues;
+    File metronomeFile() const { return location.getSiblingFile(location.getFileNameWithoutExtension()+"-metronome.json"); }
     var previews=object();
 };
 }

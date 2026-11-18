@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 root=Path(sys.argv[1]);source=Path('Apple/Shared/TrackMixerRow.swift').read_text()
 start=source.index('struct TrackMixerHeightGeometry')
-root.joinpath('layout.swift').write_text('import SwiftUI\n'+source[start:source.index('\n#endif',start)])
+root.joinpath('layout.swift').write_text('import SwiftUI\n'+source[start:source.index('\n/// Content and environment',start)])
 main=Path('Apple/Shared/MainView.swift').read_text()
 with root.joinpath('layout.swift').open('a') as f:
  f.write('\n'+main[main.index('enum SidebarWidthLimits {'):main.index('private struct WorkspaceProjectIdentity:')])

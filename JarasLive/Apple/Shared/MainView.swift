@@ -83,6 +83,8 @@ struct MainView: View {
     @StateObject private var vinhetasWindow = VinhetasWindow()
     #endif
     @AppStorage("jaras.layout.parts.open", store: WorkspaceLayoutPreferences.storage) private var partsLeftOpen = false
+    @AppStorage("jaras.layout.parts.horizontal", store: WorkspaceLayoutPreferences.storage) private var partsLeftHorizontal = false
+    @AppStorage("jaras.layout.parts.heightScale", store: WorkspaceLayoutPreferences.storage) private var partsHeightScale = 1.0
     @AppStorage("jaras.layout.partsRight.open", store: WorkspaceLayoutPreferences.storage) private var partsRightOpen = false
     @AppStorage("jaras.layout.setlist.placement", store: WorkspaceLayoutPreferences.storage) private var setlistPlacement: SetlistPlacement = .right
     @AppStorage("jaras.layout.setlist.dockSide", store: WorkspaceLayoutPreferences.storage) private var setlistDockPlacement: SetlistPlacement = .right
@@ -171,10 +173,20 @@ struct MainView: View {
         }
         #endif
     }
+    private func setRightPartsOpen(_ visible: Bool) {
+        if visible && partsLeftHorizontal { partsLeftOpen = false }
+        partsRightOpen = visible
+    }
+    private func toggleRightParts() { setRightPartsOpen(!partsRightOpen) }
+    private func setLeftPartsOpen(_ visible: Bool) {
+        if visible && partsLeftHorizontal { partsRightOpen = false }
+        partsLeftOpen = visible
+    }
     #if os(macOS)
     private func restoreGlobalPanels() {
         guard !remotePresentation, DesktopProjectTabs.shared.isForeground(show) else { return }
         let defaults = WorkspaceLayoutPreferences.storage
+        if partsLeftHorizontal && partsLeftOpen && partsRightOpen { setLeftPartsOpen(true) }
         if defaults.bool(forKey: "jaras.layout.vinhetas.detached") {
             let visible = defaults.object(forKey: "jaras.layout.vinhetas.visible") as? Bool ?? true
             vinhetasOpen = false; vinhetasWindow.open(show: show)
@@ -185,7 +197,7 @@ struct MainView: View {
             showDetachedMixer()
             if !visible { detachedMixer.hide() }
         }
-        if defaults.bool(forKey: "jaras.layout.parts.detached") {
+        if !partsLeftHorizontal, defaults.bool(forKey: "jaras.layout.parts.detached") {
             let visible = defaults.object(forKey: "jaras.layout.parts.visible") as? Bool ?? true
             partsLeftOpen = false; detachedParts.open(show: show)
             if !visible { detachedParts.hide() }
@@ -200,7 +212,8 @@ struct MainView: View {
         detachedSetlist.setPartsVisible(partsRightOpen)
         detachedSetlist.open(onDock: { placeSetlist(setlistDockPlacement) }) {
             DetachedSetlistContent(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
-                                   partsOpen: $partsRightOpen)
+                                   partsOpen: Binding(get: { partsRightOpen }, set: setRightPartsOpen))
+                .environment(\.multitrackAction, documents.openMultitrackExport)
         }
     }
     private func showDetachedMixer() {
@@ -268,15 +281,16 @@ struct MainView: View {
                                 if finalWidth > 0 { setlistRestoreWidth = finalWidth }
                                 setlistWidth = finalWidth
                             }) {
-                            SectionListDock(visible: partsLeftOpen, storageKey: "catlive.parts.left.width",
+                            SectionListDock(visible: partsLeftOpen && !partsLeftHorizontal, storageKey: "catlive.parts.left.width",
                                             minimumPrimaryWidth: 260 + max(0, CGFloat(mixerWidth)), defaultFraction: 0.24, leading: true) {
                                 TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
-                                                 toggleMixer: toggleMixer)
+                                                 toggleMixer: toggleMixer).equatable()
                                     .foregroundStyle(JarasTheme.text)
                             } sections: { SmoothSeekPanel(show: show, placement: .left) }
                         } trailing: {
                             SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), sidebarScrollController: setlistScrollController,
-                                partsOpen: partsRightOpen, toggleParts: { partsRightOpen.toggle() })
+                                partsOpen: partsRightOpen, toggleParts: toggleRightParts)
+                                .environment(\.multitrackAction, documents.openMultitrackExport)
                                 .foregroundStyle(JarasTheme.text)
                         }
                         } sections: { SmoothSeekPanel(show: show) }
@@ -286,9 +300,9 @@ struct MainView: View {
                     SectionListDock(visible: partsRightOpen, storageKey: "catlive.local.sections.width",
                                     minimumPrimaryWidth: 480, defaultFraction: 0.22) {
                         HStack(spacing: 1) {
-                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer)
+                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation, toggleMixer: toggleMixer).equatable()
                             SongListView(show: show, mediaDirectory: documents.currentURL?.deletingLastPathComponent(), partsOpen: partsRightOpen,
-                                toggleParts: { partsRightOpen.toggle() }).frame(width: 220)
+                                toggleParts: toggleRightParts).frame(width: 220)
                         }
                     } sections: {
                         SmoothSeekPanel(show: show)
@@ -300,6 +314,13 @@ struct MainView: View {
                 FooterMixerPanel(show: show, active: footerMixerOpen,
                     maximumHeight: max(180, workspaceHeight - 240 - (keyboardOpen ? 108 : 0)),
                     resizeCoordinator: footerResizeCoordinator)
+                #if os(macOS)
+                if partsLeftOpen && partsLeftHorizontal && !detachedParts.isDetached {
+                    HorizontalPartsDock(heightScale: $partsHeightScale) {
+                        SmoothSeekPanel(show: show, placement: .left, horizontal: true)
+                    }
+                }
+                #endif
                 if keyboardOpen { FooterPianoKeyboard().frame(height: 108) }
                 #if os(macOS)
                 FooterNativeHeightHost(storedHeight: 240, minimum: 240, maximum: 240,
@@ -395,6 +416,8 @@ struct MainView: View {
                 Button("OK") { documents.audioImportError = "" }
             } message: { Text(LocalizedStringKey(documents.audioImportError)) }
 
+            .environment(\.multitrackAction, documents.openMultitrackExport)
+            .modifier(MultitrackSheet(presentation: documents.multitrack))
             .environment(\.openFX, { track, effect in
                 #if os(macOS)
                 FXWindows.shared.open(show: show, track: track, effect: effect, language: language)
@@ -516,16 +539,16 @@ struct MainView: View {
                 show.smkPartsVisibility = { (false, partsRightOpen) }
                 #endif
                 show.smkRecord = { recording.toggle(show: show) }
-                show.togglePartsPanel = { partsRightOpen.toggle() }
+                show.togglePartsPanel = toggleRightParts
                 show.showPartsPanel = {
                     #if os(macOS)
                     if detachedParts.isDetached { detachedParts.open(show: show) }
                     else if !partsLeftOpen {
-                        partsRightOpen = true
+                        setRightPartsOpen(true)
                         if setlistCollapsed { toggleSetlist() }
                     }
                     #else
-                    partsRightOpen = true
+                    setRightPartsOpen(true)
                     #endif
                 }
                 show.toggleTracksPanel = { toggleMixer() }
@@ -671,7 +694,7 @@ struct MainView: View {
                 if detachedParts.isDetached {
                     if detachedParts.isVisible { detachedParts.hide() }
                     else { detachedParts.open(show: show) }
-                } else { partsLeftOpen.toggle() }
+                } else { setLeftPartsOpen(!partsLeftOpen) }
             } label: {
                 PartsListIcon()
                     .font(.jarasSystem(size: 16, weight: .semibold)).frame(width: 26, height: 24)
@@ -682,7 +705,11 @@ struct MainView: View {
                     Button(LocalizedStringKey(detachedParts.isDetached ? "Dock Parts" : "Undock Parts")) {
                         if detachedParts.isDetached { detachedParts.close(); partsLeftOpen = true }
                         else { partsLeftOpen = false; detachedParts.open(show: show) }
-                    }
+                    }.disabled(partsLeftHorizontal)
+                    Button(partsLeftHorizontal ? "Vert-Parts" : "Hoz-Parts") {
+                        partsLeftHorizontal.toggle()
+                        setLeftPartsOpen(true)
+                    }.disabled(detachedParts.isDetached)
                 }
             }
             MacProjectionRail(show: show)

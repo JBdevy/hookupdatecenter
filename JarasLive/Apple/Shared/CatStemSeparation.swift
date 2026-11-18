@@ -11,6 +11,7 @@ struct CatStemRequest {
     let track: Track
     let clip: AudioClip
     let directory: URL
+    var stems = Set(CatStem.allCases)
 }
 
 private enum CatStemRenderer {
@@ -113,7 +114,7 @@ private enum CatStemRenderer {
         try checkCancellation()
         #endif
         var tracks: [Track] = []
-        for (index, stem) in CatStem.allCases.enumerated() {
+        for (index, stem) in CatStem.allCases.filter(request.stems.contains).enumerated() {
             try checkCancellation()
             progress(0.9 + Double(index) * 0.02, "Preparando \(stem.rawValue)…")
             let url = folder.appendingPathComponent(stem.rawValue + ".wav")
@@ -155,11 +156,23 @@ private enum CatStemRenderer {
     @Published var progress = 0.0
     @Published var status = ""
     @Published var error = ""
+    @Published var choosing = false
+    @Published var selected = Set(CatStem.allCases)
+    private var selection: ((Set<CatStem>) -> Void)?
     private var cancellation = AudioExportCancellation()
     // Cancellation releases UI admission immediately. The immutable render
     // snapshot can finish cleanup without retaining transport/input ownership.
     private var releaseBusy: (() -> Void)?
+    func confirmSelection() {
+        guard !selected.isEmpty else { return }
+        let action = selection
+        selection = nil
+        choosing = false
+        action?(selected)
+    }
     func cancel() {
+        selection = nil
+        choosing = false
         cancellation.cancel()
         releaseBusy?(); releaseBusy = nil
         if running { status = "Cancelando…" }
@@ -172,7 +185,15 @@ private enum CatStemRenderer {
         guard let song = show.current, let track = song.tracks.first(where: { $0.clips.contains { $0.id == item } }),
               track.kind == .standard, let clip = track.clips.first(where: { $0.id == item }),
               AudioSeparation.accepts(clip, on: track) else { error = "Selecione apenas um item de áudio."; return }
-        start(CatStemRequest(project: show.snapshot.project, song: song, track: track, clip: clip, directory: directory), show: show, documents: documents)
+        let request = CatStemRequest(project: show.snapshot.project, song: song, track: track, clip: clip, directory: directory)
+        selected = Set(CatStem.allCases)
+        selection = { [weak self, weak show, weak documents] stems in
+            guard let show, let documents else { return }
+            var selectedRequest = request
+            selectedRequest.stems = stems
+            self?.start(selectedRequest, show: show, documents: documents)
+        }
+        choosing = true
     }
     func start(_ request: CatStemRequest, show: ShowController, documents: ProjectDocuments) {
         guard !running, !documents.busy else { return }
@@ -239,11 +260,28 @@ struct CatStemProgressView: View {
             Text(verbatim: "Separation audio").font(.jarasHeadline)
             Text(verbatim: session.status).fixedSize(horizontal: false, vertical: true)
             if !session.error.isEmpty { Text(verbatim: session.error).foregroundStyle(.red) }
-            if session.running {
+            if session.choosing {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(CatStem.allCases, id: \.self) { instrument in
+                        Toggle(LocalizedStringKey(instrument.rawValue), isOn: Binding(
+                            get: { session.selected.contains(instrument) },
+                            set: { enabled in
+                                if enabled { session.selected.insert(instrument) }
+                                else { session.selected.remove(instrument) }
+                            }
+                        ))
+                    }
+                }
+                HStack {
+                    Button("Cancel") { session.cancel(); close() }.keyboardShortcut(.cancelAction)
+                    Button("Separate") { session.confirmSelection() }.keyboardShortcut(.defaultAction)
+                        .disabled(session.selected.isEmpty)
+                }
+            } else if session.running {
                 ProgressView(value: session.progress).progressViewStyle(JarasProgressBarStyle())
                 Button("Cancel") { session.cancel(); close() }.keyboardShortcut(.cancelAction)
             } else { Button("Close", action: close).keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width: 400).interactiveDismissDisabled(session.running)
-            .onDisappear { if session.running { session.cancel() } }
+            .onDisappear { if session.running || session.choosing { session.cancel() } }
     }
 }

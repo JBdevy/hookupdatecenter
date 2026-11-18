@@ -5,7 +5,11 @@ private struct Track: Identifiable {
     var id = UUID(), name = "Test track"
     var role = Role(), kind = Kind.standard, outputPatches: [OutputPatch] = [.master]
     var parentTrackID: UUID?, inputPatch: OutputPatch?, stereoLink: Link?, midiInput: Int?, midiChannel: Int?, routing: Routing?
-    struct Role { var rawValue = "audio" }; enum Kind { case standard, timecode, click }
+    struct Role { var rawValue = "audio" }
+    enum Kind {
+        case standard, timecode, click, teleprompt, teleprompt2
+        var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 }
+    }
     struct Link { var left: Bool }; struct Routing { var receives: [UUID?] = [], transmitters: [UUID?] = [] }
 }
 private struct Song { var tracks = [Track()] }

@@ -1,6 +1,7 @@
 #pragma once
 #include "Common.h"
 #include "PlaylistOccurrences.h"
+#include "../../Core/Project/UnifiedRegionNaming.hpp"
 namespace catlive::regionEditing {
 inline void require(bool ok, const std::string &message) { if (!ok) throw std::runtime_error(message); }
 inline bool hasChildren(const jaras::Song &song, const ID &id) {
@@ -40,7 +41,13 @@ inline ID unify(jaras::Project &project, const ID &songID, const ID &id, String 
     for (const auto &root : roots) if (replaced.count(root.id) && (!existing || root.id == id)) existing = root;
     require(existing.has_value() || name.trim().isNotEmpty(), "Choose a name");
     jaras::Part group = existing.value_or(jaras::Part{});
-    if (!existing) { group.id = uuid(); group.name = utf8(name.trim()); group.color = roots.front().color; }
+    if (!existing) {
+        std::vector<std::string> names;
+        for (const auto& current : project.songs) for (const auto& part : current.parts)
+            if (std::any_of(current.parts.begin(), current.parts.end(), [&](const auto& child) { return child.parentRegionID == part.id; })) names.push_back(part.name);
+        group.id = uuid(); group.name = jaras::nextUnifiedRegionName(utf8(name.trim()), names); group.color = roots.front().color;
+    }
+    group.name = jaras::normalizedUnifiedRegionName(group.name);
     group.startTime = roots.front().startTime; group.endTime = roots.front().endTime;
     for (const auto &root : roots) { group.startTime = std::min(group.startTime, root.startTime); group.endTime = std::max(group.endTime, root.endTime); }
     for (const auto &part : members) { memberIDs.insert(part.id); group.startTime = std::min(group.startTime, part.startTime); group.endTime = std::max(group.endTime, part.endTime); }

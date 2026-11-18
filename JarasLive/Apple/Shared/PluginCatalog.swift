@@ -448,7 +448,7 @@ struct ExternalPluginBrowserPresenter: NSViewRepresentable {
                 let panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 680, height: 560),
                                     styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
                 panel.title = JarasLocalization.string("External (VST3)")
-                panel.isFloatingPanel = true
+                panel.isFloatingPanel = false
                 panel.hidesOnDeactivate = false
                 panel.minSize = CGSize(width: 620, height: 390)
                 panel.delegate = coordinator
@@ -470,7 +470,7 @@ struct ExternalPluginBrowserPresenter: NSViewRepresentable {
                                                 y: min(frame.maxY - panel.frame.height, max(frame.minY, center.y - panel.frame.height / 2))))
                 } else { panel.center() }
                 coordinator.panel = panel
-                owner?.addChildWindow(panel, ordered: .above)
+                ProjectionWindow.followWorkspaceWindow(panel)
                 panel.makeKeyAndOrderFront(nil)
             }
         } else if coordinator.panel != nil { coordinator.close() }

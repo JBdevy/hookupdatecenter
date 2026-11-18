@@ -10,10 +10,12 @@ source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 start = source.index('private func fadedTimelineWaveform(')
 end = source.index('private func drawTimelineItem(', start)
 stub = '''import SwiftUI
-public struct AudioClip {
+struct Song { var tracks: [Track] }
+struct Track { var clips: [AudioClip] }
+public struct AudioClip: Equatable {
     var id = UUID()
     var startTime: Double; var duration: Double; var sourceOffset: Double
-    var playbackRate: Double; var gain: Double?
+    var playbackRate: Double; var gain: Double?; var pan: Double? = nil; var normalizationGain: Double? = nil; var phaseInverted: Bool? = nil
     var loopLength: Double? = nil; var loopStart: Double? = nil
     var recordingLane: Int? = nil
     var channelMode: Int? = nil

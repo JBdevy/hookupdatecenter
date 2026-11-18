@@ -98,6 +98,8 @@ class Workspace final : public Component,
     std::function<bool(File)> activateExistingProjectTab;
     std::function<void(String)> projectTabLoadFinished;
     std::function<void(File)> openInNewProjectTab;
+    std::function<void(std::vector<File>)> openMultipleProjectTabs;
+    std::function<std::vector<std::pair<ID,Session *>>()> multitrackTabs;
     std::function<void(File, ID)> openRemoteProjectInNewTab;
     std::function<void(int)> navigateProjectTab;
     std::function<void()> toggleWorkspaceFullscreen;
@@ -115,8 +117,9 @@ class Workspace final : public Component,
     void chooseSoundFont();
     void openVideo();
     void editRegion(ID);
-    void showRegionMenu(ID, Point<int>);
+    void showRegionMenu(ID, Point<int>, std::set<ID> selection);
     void exportRegions(std::set<ID>);
+    void exportMultitrack(std::set<ID>);
     void detectRegions(std::set<ID>);
     void editMultiLoops(ID);
     void deleteRegions(std::set<ID>, bool withContents = false);
@@ -225,7 +228,13 @@ class Workspace final : public Component,
     TrackMixerViewport tracksViewport;
     Viewport dockViewport;
     Component tracksContent, dockContent;
-    OwnedArray<TrackRow> rows;
+    OwnedArray<TrackRow> rows, pinnedMixerRows;
+    Component pinnedMixer;
+    std::vector<int> pinnedRowIndices;
+    std::vector<ID> pinnedMixerIDs;
+    void refreshFixedTracks();
+    int fixedTrackHeight(int row) const;
+    int fixedTracksHeight() const;
     OwnedArray<TextButton> buttons;
     std::map<String, std::unique_ptr<DocumentWindow>> floatingWindows;
     std::map<String, TextButton *> controls;
@@ -264,9 +273,10 @@ class Workspace final : public Component,
     std::unique_ptr<FileChooser> chooser;
     std::unique_ptr<FileLogger> logger;
     bool mixerVisible = true, setlistVisible = true, keyboardVisible = false,
-         footerMixerVisible = false, partsLeftVisible = false, partsRightVisible = false;
+         footerMixerVisible = false, partsLeftVisible = false, partsRightVisible = false, partsLeftHorizontal = false;
     std::optional<bool> lastEditorVisible;
     int mixerWidth = 281, setlistWidth = 336, trackHeight = 64, verticalOffset = 0;
+    int horizontalPartsHeight = PartsPanel::defaultHorizontalHeight;
     int partsLeftWidth = 260, partsRightWidth = 0; // Zero keeps the original automatic right width until resized.
     double pixelsPerSecond = 20;
     ID selectedTrack, selectedClip;

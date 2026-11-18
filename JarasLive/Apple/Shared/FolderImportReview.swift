@@ -111,6 +111,7 @@ struct NativeStemFolderBrowser: View {
     @State private var current: URL
     @State private var children: [URL] = []
     @State private var audioCounts: [URL: Int] = [:]
+    @State private var multitrackFolders: Set<URL> = []
     @State private var selected: [URL] = []
     @State private var loading = true
     @State private var failure = ""
@@ -135,7 +136,7 @@ struct NativeStemFolderBrowser: View {
                     .disabled(current.standardizedFileURL == root.standardizedFileURL)
                 Text(current.lastPathComponent).font(.jarasHeadline).lineLimit(1)
                 Spacer()
-                Button("Select all") { for folder in children where (audioCounts[folder] ?? 0) > 0 && !selected.contains(folder) { selected.append(folder) } }
+                Button("Select all") { for folder in children where hasMedia(folder) && !selected.contains(folder) { selected.append(folder) } }
                     .disabled(loading || children.isEmpty)
             }
             HStack(alignment: .top, spacing: 16) {
@@ -187,23 +188,26 @@ struct NativeStemFolderBrowser: View {
                     Image(systemName: selected.contains(folder) ? "checkmark.square.fill" : "square").foregroundStyle(JarasTheme.green)
                     VStack(alignment: .leading) {
                         Text(folder.lastPathComponent).lineLimit(2)
-                        if let count = audioCounts[folder] {
+                        if multitrackFolders.contains(folder) {
+                            Text("Export Multitrack").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                        } else if let count = audioCounts[folder] {
                             if count > 0 { Text("\(count) audio files").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
                             else { Text("No audio directly in this folder").font(.jarasCaption).foregroundStyle(JarasTheme.secondary) }
                         }
                     }
                     Spacer(minLength: 0)
                 }.padding(12).frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
-            }.buttonStyle(.plain).disabled((audioCounts[folder] ?? 0) == 0)
-                .opacity((audioCounts[folder] ?? 0) == 0 ? 0.5 : 1)
+            }.buttonStyle(.plain).disabled(!hasMedia(folder))
+                .opacity(hasMedia(folder) ? 1 : 0.5)
             if !currentFolder {
                 Button { navigate(folder) } label: { Image(systemName: "chevron.right").frame(width: 48, height: 48).contentShape(Rectangle()) }
                     .buttonStyle(.plain).accessibilityLabel(Text("Open folder") + Text(" ") + Text(folder.lastPathComponent))
             }
         }.background(JarasTheme.panel, in: RoundedRectangle(cornerRadius: 8))
     }
+    private func hasMedia(_ folder: URL) -> Bool { multitrackFolders.contains(folder) || (audioCounts[folder] ?? 0) > 0 }
     private func toggle(_ folder: URL) {
-        guard (audioCounts[folder] ?? 0) > 0 || selected.contains(folder) else { return }
+        guard hasMedia(folder) || selected.contains(folder) else { return }
         if let index = selected.firstIndex(of: folder) { selected.remove(at: index) }
         else { selected.append(folder) }
     }
@@ -232,17 +236,20 @@ struct NativeStemFolderBrowser: View {
                 if let coordinationError { throw coordinationError }
                 let folders = try result.get()
                 var counts: [URL: Int] = [:]
+                var multitracks = Set<URL>()
                 for folder in [directory] + folders {
-                    let entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+                    let entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey, .isSymbolicLinkKey])
+                    if entries.contains(where: { MultitrackRegionData.isManifest($0.lastPathComponent) }) { multitracks.insert(folder) }
                     counts[folder] = try entries.filter {
                         guard ["wav", "wave", "aif", "aiff", "mp3"].contains($0.pathExtension.lowercased()) else { return false }
-                        return try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory != true
+                        let values = try $0.resourceValues(forKeys: [.isDirectoryKey, .isHiddenKey])
+                        return values.isDirectory != true && values.isHidden != true
                     }.count
                 }
-                return (folders, counts)
+                return (folders, counts, multitracks)
             }.value
             guard !Task.isCancelled, request == refresh else { return }
-            children = result.0; audioCounts.merge(result.1) { _, new in new }; loading = false
+            children = result.0; audioCounts.merge(result.1) { _, new in new }; multitrackFolders.formUnion(result.2); loading = false
         } catch {
             guard !Task.isCancelled, request == refresh else { return }
             failure = error.localizedDescription; loading = false

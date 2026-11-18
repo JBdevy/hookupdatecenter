@@ -1,5 +1,27 @@
 import Foundation
 
+public enum UnifiedRegionNaming {
+    private static func split(_ name: String) -> (number: Int?, title: String) {
+        var title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var number: Int?
+        while let range = title.range(of: "^[0-9]{3,}\\s*-\\s*", options: .regularExpression) {
+            let prefix = title[range].prefix(while: { $0.isNumber })
+            if number == nil { number = Int(prefix) }
+            title.removeSubrange(range)
+        }
+        return (number, title)
+    }
+    public static func normalized(_ name: String) -> String {
+        let value = split(name)
+        guard let number = value.number else { return value.title }
+        return String(format: "%03d", number)+" - "+value.title
+    }
+    public static func next(_ title: String, existing: [String]) -> String {
+        let highest = max(existing.count, existing.compactMap { split($0).number }.max() ?? 0)
+        return String(format: "%03d", highest + 1) + " - " + split(title).title
+    }
+}
+
 public extension Song {
     func isOrdinaryRegion(_ part: Part) -> Bool {
         part.parentRegionID == nil && !parts.contains { $0.parentRegionID == part.id }
@@ -361,7 +383,9 @@ public extension Project {
                 throw ProjectError.invalid("More than one unified marker refers to the same song. Resolve the duplicate markers before unifying these regions.")
             }
         }
-        var group = existingGroup ?? Part(id: UUID(), name: name, startTime: start, endTime: end, color: first.color)
+        let groupNames = songs.flatMap { song in song.parts.filter { part in song.parts.contains { $0.parentRegionID == part.id } }.map(\.name) }
+        var group = existingGroup ?? Part(id: UUID(), name: UnifiedRegionNaming.next(name, existing: groupNames), startTime: start, endTime: end, color: first.color)
+        group.name = UnifiedRegionNaming.normalized(group.name)
         group.startTime = start; group.endTime = end
         songs[songIndex].parts.removeAll { replacedGroups.contains($0.id) }
         let memberIDs = Set(members.map(\.id))
@@ -383,6 +407,20 @@ public extension Project {
         markers.removeAll { $0.unifiedRegionID.map(replacedGroups.contains) == true }
         markers += members.map { TimelineMarker(id: UUID(), name: originalMarkers[$0.id]?.name ?? $0.name, position: originalMarkers[$0.id]?.position ?? $0.startTime, color: originalMarkers[$0.id]?.color ?? $0.color ?? 0x54ff93, unifiedRegionID: group.id, sourceRegionID: $0.id) }
         songs[songIndex].markers = markers
+        let unifiedSong = songs[songIndex]
+        for track in songs[songIndex].tracks.indices {
+            for index in songs[songIndex].tracks[track].clips.indices {
+                let clip = songs[songIndex].tracks[track].clips[index]
+                // A clip deliberately left loose, or owned by a different
+                // overlapping region, must not be adopted by this drawer.
+                guard let priorOwner = clip.regionOwnerID,
+                      rootIDs.contains(priorOwner) || memberIDs.contains(priorOwner) || priorOwner == group.id,
+                      clip.audioFile != nil || songs[songIndex].tracks[track].audioFile != nil,
+                      let owner = unifiedSong.dominantUnifiedOwner(at: clip.startTime, end: clip.startTime + clip.duration,
+                                                                   group: group.id, preferred: clip.regionOwnerID) else { continue }
+                songs[songIndex].tracks[track].clips[index].regionOwnerID = owner
+            }
+        }
         if var state = regionSetlist {
             for index in state.playlists.indices where state.playlists[index].songId == songs[songIndex].id {
                 var inserted = false
@@ -565,16 +603,41 @@ public extension Project {
     }
     /// Turn a root track into the folder for every normal root below it.
     /// Existing subgroups keep their descendants and route through this new parent.
-    mutating func createTrackGroup(_ id: UUID, song songID: UUID) throws {
-        guard let song = songs.firstIndex(where: { $0.id == songID }),
-              songs[song].canCreateTrackGroup(id),
-              let parent = songs[song].tracks.firstIndex(where: { $0.id == id }) else { return }
-        var candidate = self
-        for index in candidate.songs[song].tracks.indices where index > parent {
-            let track = candidate.songs[song].tracks[index]
-            guard track.kind == .standard, track.role.rawValue != "vinhetas", track.parentTrackID == nil else { continue }
-            candidate.songs[song].tracks[index].sendToGroup(id)
+    mutating func createTrackGroup(_ id: UUID, song songID: UUID, selection: Set<UUID>? = nil) throws {
+        if selection == nil {
+            guard let song = songs.firstIndex(where: { $0.id == songID }), songs[song].canCreateTrackGroup(id),
+                  let parent = songs[song].tracks.firstIndex(where: { $0.id == id }) else { return }
+            var candidate = self
+            for index in candidate.songs[song].tracks.indices where index > parent {
+                let track = candidate.songs[song].tracks[index]
+                guard track.kind == .standard, track.role.rawValue != "vinhetas", track.parentTrackID == nil else { continue }
+                candidate.songs[song].tracks[index].sendToGroup(id)
+            }
+            try candidate.validate(); self = candidate
+            return
         }
+        guard let song = songs.firstIndex(where: { $0.id == songID }),
+              let parent = songs[song].tracks.first(where: { $0.id == id }),
+              parent.kind == .standard, parent.role.rawValue != "vinhetas", parent.stereoLink == nil else { return }
+        let chosen = selection ?? Set(songs[song].tracks.drop(while: { $0.id != id }).dropFirst().filter {
+            $0.kind == .standard && $0.role.rawValue != "vinhetas" && $0.parentTrackID == nil
+        }.map(\.id))
+        let hierarchy = TrackHierarchy(songs[song].tracks)
+        let selected = Set(songs[song].tracks.filter {
+            $0.id != id && chosen.contains($0.id) && $0.kind == .standard && $0.role.rawValue != "vinhetas" &&
+                ($0.stereoLink == nil || $0.stereoLink.map { chosen.contains($0.partner) } == true) && !hierarchy.ancestors(of: id).contains($0.id)
+        }.map(\.id))
+        guard !selected.isEmpty else { return }
+        var moving = selected
+        for target in selected { moving.formUnion(hierarchy.descendants(of: target)) }
+        var candidate = self
+        var members = candidate.songs[song].tracks.filter { moving.contains($0.id) }
+        for index in members.indices where selected.contains(members[index].id) &&
+            !hierarchy.ancestors(of: members[index].id).contains(where: selected.contains) { members[index].sendToGroup(id) }
+        var remaining = candidate.songs[song].tracks.filter { !moving.contains($0.id) }
+        guard let index = remaining.firstIndex(where: { $0.id == id }) else { return }
+        remaining.insert(contentsOf: members, at: index + 1)
+        candidate.songs[song].tracks = remaining
         try candidate.validate()
         self = candidate
     }
@@ -907,8 +970,11 @@ public struct ProjectEditHistory {
         for index in past.indices { update(&past[index]) }
         for index in future.indices { update(&future[index]) }
     }
-    public mutating func record(_ project: Project, preservingMediaStorage: Bool = false) {
-        guard project != baseline else { return }
+    public mutating func record(_ project: Project, preservingMediaStorage: Bool = false,
+                                knownChanged: Bool = false) {
+        // A mixer gesture has already compared its scalar values. Comparing
+        // every clip and waveform again can pause the UI in large projects.
+        guard knownChanged || project != baseline else { return }
         past.append(baseline); if past.count > 100 { past.removeFirst() }
         // Mixer controls already retain immutable clip/waveform storage.
         // Preserve that storage directly instead of visiting every project item.
@@ -1038,7 +1104,8 @@ public extension Song {
                   row == to || (tracks[row].kind == .standard && tracks[to].kind == .standard) || original.isProjectionMedia else { return nil }
             var clip = original; clip.startTime += delta
             guard result.tracks[to].canPlaceItem(start: clip.startTime, duration: clip.duration, media: clip.isProjectionMedia) else { return nil }
-            clip.regionOwnerID = regionOwner(at: clip.startTime)
+            clip.regionOwnerID = (clip.audioFile ?? tracks[row].audioFile) == nil ? regionOwner(at: clip.startTime)
+                : regionOwnerForMedia(at: clip.startTime, end: clip.startTime + clip.duration, preferred: clip.regionOwnerID)
             result.tracks[to].clips.append(clip)
             result.duration = max(result.duration, clip.startTime + clip.duration)
         }

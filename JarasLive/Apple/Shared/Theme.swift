@@ -287,6 +287,7 @@ private final class NativeJarasBlinkHost: NSHostingView<AnyView> {
 
 /// CatLive factory colors. Explicit user timeline choices remain intact.
 enum TimelineAppearanceDefaults {
+    static let leadingSpace: CGFloat = 6
     static let background = 0x161616
     static let primaryGrid = 0x535250
     static let secondaryGrid = 0x333235

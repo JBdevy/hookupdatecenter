@@ -386,7 +386,10 @@ public:
         }
         ProcessSetup setup{processMode,kSample32,frames,rate};if(processor->setupProcessing(setup)!=kResultOk)throw std::runtime_error("VST3 audio setup failed.");
         if(component->setActive(true)!=kResultOk)throw std::runtime_error("Could not activate this VST3 processor.");active=true;
-        if(processor->setProcessing(true)!=kResultOk)throw std::runtime_error("Could not start this VST3 processor.");processing=true;
+        const auto processingResult=processor->setProcessing(true);
+        if(processingResult!=kResultOk&&processingResult!=kNotImplemented)
+            throw std::runtime_error("Could not start this VST3 processor ("+std::to_string(processingResult)+").");
+        processing=true;
         appliedComponent=spec[@"componentState"];appliedController=spec[@"controllerState"];
         bypass=[spec[@"bypassed"] boolValue];
     } catch (...) { close(); throw; } }

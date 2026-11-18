@@ -221,6 +221,11 @@
   "Move a MIDI fader or knob.": "Move a MIDI fader or knob.",
   "Choose folders": "Choose folders",
   "Search folders": "Search folders",
+  "Pin track": "Pin track",
+  "Unpin track": "Unpin track",
+  "You can pin up to six tracks.": "You can pin up to six tracks.",
+  "Check all": "Check all",
+  "Uncheck all": "Uncheck all",
   "Select all": "Select all",
   "Deselect all": "Deselect all",
   "Folders will be placed on the grid in the order you check them.": "Folders will be placed on the grid in the order you check them.",
@@ -1454,6 +1459,7 @@
   "audio files": "audio files",
   "Importing": "Importing",
   "Choose tracks": "Choose tracks",
+  "On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items.": "On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items.",
   "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.": "On these tracks, automatic Subplay stops items from the previous song and keeps only the incoming song's items.",
   "Only six Program Change markers are allowed at the same position.": "Only six Program Change markers are allowed at the same position.",
   "Choose a MIDI output in Patch.": "Choose a MIDI output in Patch.",
@@ -1821,7 +1827,7 @@
   "Cannot save the firmware backup at this location.": "Cannot save the firmware backup at this location.",
   "Cannot prepare the firmware backup.": "Cannot prepare the firmware backup.",
   "Reset duration": "Reset duration",
-  "Restore the full original file duration for the selected items?": "Restore the full original file duration for the selected items?",
+  "Restore the full original file duration for the selected items?": "Remove expanded portions without moving the selected items or extending trimmed items?",
   "Set region end to longest item": "Set region end to longest item",
   "Space regions by 30 s": "Space regions by 30 s",
   "Config rate": "Config rate",
@@ -1853,5 +1859,14 @@
   "Too many stanzas for this song duration.": "Too many stanzas for this song duration.",
   "The text track is no longer available.": "The text track is no longer available.",
   "The song changed. Open Full lyrics again.": "The song changed. Open Full lyrics again.",
-  "Could not create the lyrics items.": "Could not create the lyrics items."
+  "Could not create the lyrics items.": "Could not create the lyrics items.",
+  "250+ — Not available": "250+ — Not available",
+  "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.": "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.",
+  "Export ziplive": "Export ziplive",
+  "Preparing project deletion…": "Preparing project deletion…",
+  "Hold Shift and click − or + to adjust all listed items by the same amount.": "Hold Shift and click − or + to adjust all listed items by the same amount."
+,
+  "Open multiple projects": "Open multiple projects"
+,
+  "Opening projects…": "Opening projects…"
 }

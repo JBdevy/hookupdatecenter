@@ -9,7 +9,7 @@ int main() {
         NSError *error = nil;
         assert([engine enableManualRenderingMode:AVAudioEngineManualRenderingModeRealtime
             format:format maximumFrameCount:4096 error:&error]);
-        auto pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:BufferedAudioState::block];
+        auto pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:BufferedAudioState::maximumBlock];
         BufferedAudioState state(2,48000);
         __block int64_t written=0;
         auto expected=[](int64_t frame) { return .1f + float(frame%1024)/2048; };
@@ -38,7 +38,11 @@ int main() {
         // must preserve every source frame across repeated ring wraparound.
         const unsigned blocks[]={128,512,480,64,1024,256,2048,192};
         for(unsigned step=0;step<4000;++step) {
-            while(state.writeFrame.load()-state.readFrame.load()<BufferedAudioState::target) prepare();
+            // Change producer size on the live ring, preserving the original
+            // hardware clock and every sample through both transitions.
+            if(step==1000) { state.setPlaybackSourceCount(610); assert(state.renderFrames==4096 && state.targetFrames()==12288); }
+            if(step==3000) { state.setPlaybackSourceCount(120); assert(state.renderFrames==2048 && state.targetFrames()==4096); }
+            while(state.writeFrame.load()-state.readFrame.load()<state.targetFrames()) prepare();
             consume(blocks[step%8]);
         }
         assert(state.underruns.load()==0);
@@ -47,18 +51,17 @@ int main() {
         while(state.readFrame.load()<state.writeFrame.load())
             consume(unsigned(std::min<int64_t>(4096,state.writeFrame.load()-state.readFrame.load())));
         for(unsigned n=0;n<10;++n) consume(4096,true);
-        while(state.writeFrame.load()-state.readFrame.load()<BufferedAudioState::target) prepare();
+        while(state.writeFrame.load()-state.readFrame.load()<state.targetFrames()) prepare();
         consume(512);
         assert(state.underruns.load()==10);
         auto stopFrame=state.readFrame.load();
-        state.generation.fetch_add(1);
+        state.beginStop();
         AudioTimeStamp stamp{}; stamp.mFlags=kAudioTimeStampHostTimeValid;
         stamp.mHostTime=[AVAudioTime hostTimeForSeconds:10+double(stopFrame)/48000];
         assert(state.consume(&stamp,512,output.mutableAudioBufferList)==noErr);
         for(unsigned ch=0;ch<2;++ch) {
-            const auto origin=expected(stopFrame-1)*(ch ? -1 : 1);
             for(unsigned n=0;n<512;++n) {
-                const auto wanted=n<state.transitionLength ? origin*(1-float(n+1)/state.transitionLength) : 0;
+                const auto wanted=n<state.transitionLength ? expected(stopFrame+n)*(ch ? -1 : 1)*(1-float(n+1)/state.transitionLength) : 0;
                 assert(std::abs(output.floatChannelData[ch][n]-wanted)<1e-7f);
             }
         }
@@ -66,7 +69,37 @@ int main() {
         assert(state.hardwareClock.read(host,frame) && frame==stopFrame);
         const auto delta=[AVAudioTime secondsForHostTime:state.hostAt(frame+4800)-host];
         assert(std::abs(delta-.1)<1e-6);
-        std::cout << "BUFFERED_OUTPUT_WRAP_UNDERRUN_RECOVERY_STOP_FADE_CLOCK_OK\n";
+        // The producer keeps running while the control side clears sources and
+        // plugins. Nonzero intermediary graph output must never leak to hardware.
+        for(unsigned cycle=0;cycle<12;++cycle) {
+            while(state.writeFrame.load()-state.readFrame.load()<state.targetFrames())prepare();
+            consume(512,true);
+        }
+        state.endStop();
+        while(state.readFrame.load()<state.writeFrame.load())
+            consume(unsigned(std::min<int64_t>(4096,state.writeFrame.load()-state.readFrame.load())),true);
+        const auto restart=state.readFrame.load();
+        written=restart;
+        // The first post-cleanup pull drains any delayed route fade. It is not
+        // fresh live audio yet, even though the cleanup hold has ended.
+        prepare();consume(unsigned(state.renderFrames.load()),true);
+        while(state.writeFrame.load()-state.readFrame.load()<state.targetFrames())prepare();
+        consume(512);
+        std::cout << "BUFFERED_OUTPUT_ADAPTIVE_QUANTUM_WRAP_UNDERRUN_RECOVERY_STOP_FADE_CLOCK_OK\n";
+        std::cout << "BUFFERED_STOP_GATES_INTERMEDIATE_RESET_PCM_UNTIL_CLEAN_RESTART_OK\n";
+        // Stop can begin and finish inside a single producer render. The
+        // generation check must reject that mixed block after the hold expires.
+        auto crossing=std::make_shared<BufferedAudioState>(2,48000);
+        AVAudioEngineManualRenderingBlock crossingRender=^AVAudioEngineManualRenderingStatus(AVAudioFrameCount frames, AudioBufferList *out, OSStatus *status) {
+            crossing->beginStop();
+            for(unsigned ch=0;ch<2;++ch)std::fill_n(static_cast<float *>(out->mBuffers[ch].mData),frames,.9f);
+            crossing->endStop();*status=noErr;
+            return AVAudioEngineManualRenderingStatusSuccess;
+        };
+        crossing->produce(engine,crossingRender,pcm);
+        assert(crossing->consume(&stamp,512,output.mutableAudioBufferList)==noErr);
+        for(unsigned ch=0;ch<2;++ch)for(unsigned n=0;n<512;++n)assert(output.floatChannelData[ch][n]==0);
+        std::cout << "BUFFERED_STOP_CROSSING_RENDER_REJECTS_MIXED_EPOCH_OK\n";
 
         // Read the real graph epoch from its render callback. Resetting the
         // engine and a rejected render must not invent an advancing timeline.

@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import GameController
 import UniformTypeIdentifiers
 
 @MainActor struct IpadItemMenuCommand: Identifiable {
@@ -142,7 +143,7 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
                     if fileURL != nil { action("Open file location", symbol: "folder") { locatingFile = true } }
                     if track.kind.isText && !clip.isProjectionMedia { action("Edit", symbol: "text.alignleft") { editingText = true } }
                     if track.kind == .standard || clip.isProjectionMedia {
-                        action("FX", symbol: "slider.horizontal.3") { fx = true }
+                        action("FX", symbol: "slider.horizontal.3") { show.reportItemSelection(targets); fx = true }
                     }
                     if !editableIDs.isEmpty {
                         let muted = standard.allSatisfy { $0.1.muted == true }
@@ -258,15 +259,25 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
     private func channelTitle(_ mode: Int) -> String {
         switch mode { case 4: return "Swap - LR"; case 1: return "Convert Mono - L"; case 2: return "Convert Mono - R"; case 3: return "Convert Mono L-R"; default: return "Convert Stereo" }
     }
+    private func adjustPitch(_ id: UUID, by step: Double) {
+        let keyboard = GCKeyboard.coalesced?.keyboardInput
+        let together = keyboard?.button(forKeyCode: .leftShift)?.isPressed == true || keyboard?.button(forKeyCode: .rightShift)?.isPressed == true
+        show.adjustItemPitch(together ? Set(audio.map { $0.1.id }) : [id], by: step)
+    }
     private var tuner: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(verbatim: "Tuner").font(.jarasHeadline)
+            if audio.count > 1 {
+                Text("Hold Shift and click − or + to adjust all listed items by the same amount.")
+                    .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(audio.map { $0.1 }) { clip in
                 HStack(spacing: 8) {
                     Text(verbatim: clip.name).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                    Button { show.setItemPitch(clip.id, semitones: max(-12, (clip.pitchSemitones ?? 0) - 1)) } label: { Image(systemName: "minus").frame(width: 34, height: 34) }
+                    Button { adjustPitch(clip.id, by: -1) } label: { Image(systemName: "minus").frame(width: 34, height: 34) }
                     Text(verbatim: String(format: "%+.2g st", clip.pitchSemitones ?? 0)).monospacedDigit().frame(width: 54)
-                    Button { show.setItemPitch(clip.id, semitones: min(12, (clip.pitchSemitones ?? 0) + 1)) } label: { Image(systemName: "plus").frame(width: 34, height: 34) }
+                    Button { adjustPitch(clip.id, by: 1) } label: { Image(systemName: "plus").frame(width: 34, height: 34) }
                 }
             }
         }.padding(10).background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 7))

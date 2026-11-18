@@ -3,6 +3,48 @@
 #include "InterfaceIcons.h"
 #include "RecentProjectStorage.h"
 namespace catlive {
+namespace {
+class MultipleProjectPicker final : public Component {
+    std::vector<std::unique_ptr<ToggleButton>> checks;
+    std::vector<File> ordered;
+    Viewport viewport;
+    Component rows;
+    TextButton cancel{localization::translate("Cancel")}, apply{localization::translate("Open")};
+    std::vector<File> files;
+    std::function<void(std::vector<File>)> selected;
+    void refreshNames(){
+        for(size_t i=0;i<files.size();++i){
+            const auto at=std::find(ordered.begin(),ordered.end(),files[i]);
+            checks[i]->setButtonText((at==ordered.end()?String("—"):String(int(at-ordered.begin())+1))+"  "+files[i].getFileNameWithoutExtension());
+        }
+        apply.setEnabled(!ordered.empty());
+    }
+public:
+    MultipleProjectPicker(std::vector<File> values,std::function<void(std::vector<File>)> action):files(std::move(values)),selected(std::move(action)){
+        addAndMakeVisible(viewport);viewport.setViewedComponent(&rows,false);viewport.setScrollBarsShown(true,false);
+        for(const auto &file:files){
+            auto check=std::make_unique<ToggleButton>();auto *button=check.get();
+            button->setEnabled(file.existsAsFile());button->setTooltip(file.getFullPathName());
+            button->onClick=[this,file,button]{
+                if(button->getToggleState()){if(std::find(ordered.begin(),ordered.end(),file)==ordered.end())ordered.push_back(file);}
+                else ordered.erase(std::remove(ordered.begin(),ordered.end(),file),ordered.end());
+                refreshNames();
+            };
+            rows.addAndMakeVisible(*button);checks.push_back(std::move(check));
+        }
+        addAndMakeVisible(cancel);addAndMakeVisible(apply);refreshNames();
+        cancel.onClick=[this]{if(auto *window=findParentComponentOfClass<DialogWindow>())window->exitModalState(0);};
+        apply.onClick=[this]{auto action=selected;auto values=ordered;if(auto *window=findParentComponentOfClass<DialogWindow>())window->exitModalState(0);if(action)MessageManager::callAsync([action,values]{action(values);});};
+        setSize(520,450);
+    }
+    void resized() override {
+        auto area=getLocalBounds().reduced(20);auto buttons=area.removeFromBottom(28);
+        cancel.setBounds(buttons.removeFromLeft(90));apply.setBounds(buttons.removeFromRight(90));area.removeFromBottom(12);
+        viewport.setBounds(area);rows.setSize(std::max(1,area.getWidth()-18),int(checks.size())*38);
+        for(size_t i=0;i<checks.size();++i)checks[i]->setBounds(0,int(i)*38,rows.getWidth(),36);
+    }
+};
+}
 void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
     g.setColour(theme::panel.brighter(down ? .12f : over ? .06f : 0.f));
     g.fillRoundedRectangle(getLocalBounds().toFloat(), 6);
@@ -15,6 +57,8 @@ void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
     Path path;
     if (icon == recording) {
         drawInterfaceIcon(g, "record", {x, y, 16, 16});
+    } else if (icon == clock) {
+        drawInterfaceIcon(g, "clock", {x, y, 16, 16});
     } else if (icon == piano) {
         drawInterfaceIcon(g, "piano", {x, y, 16, 16});
     } else if (icon == folder || icon == plusFolder) {
@@ -61,6 +105,8 @@ ProjectBrowser::ProjectBrowser() {
         button->setComponentID(button->getName());
     }
     addAndMakeVisible(browseButton);
+    addAndMakeVisible(multipleButton);
+    multipleButton.setComponentID("openMultipleProjects");
     addChildComponent(cancelLoading);
     cancelLoading.setComponentID("cancelProjectLoading");
     cancelLoading.onClick = [this] {
@@ -122,6 +168,15 @@ ProjectBrowser::ProjectBrowser() {
     browseButton.onClick = [this] {
         if (browse)
             browse();
+    };
+    multipleButton.onClick=[this]{
+        if(!openMultiple||loading)return;
+        std::vector<File> files;for(const auto &path:RecentProjects::read())files.emplace_back(path);
+        DialogWindow::LaunchOptions options;
+        options.dialogTitle=localization::translate("Open multiple projects");options.dialogBackgroundColour=theme::background;
+        options.useNativeTitleBar=true;options.resizable=false;
+        options.content.setOwned(new MultipleProjectPicker(std::move(files),[safe=SafePointer<ProjectBrowser>(this)](auto values){if(safe&&safe->openMultiple)safe->openMultiple(std::move(values));}));
+        options.componentToCentreAround=getTopLevelComponent();options.launchAsync();
     };
     back.onClick = [this] {
         if (resume)
@@ -197,6 +252,7 @@ void ProjectBrowser::updateEnabled() {
                          &logic, &recording, &package, &back})
         button->setEnabled(!loading);
     browseButton.setEnabled(!loading);
+    multipleButton.setEnabled(!loading && bool(openMultiple));
     cancelLoading.setEnabled(!loading || (bool)cancelLoadingAction);
     search.setEnabled(!loading);
     recents.setEnabled(!loading);
@@ -205,6 +261,7 @@ void ProjectBrowser::refresh() {
     for (auto *button : {&create, &add, &recent, &empty, &temporary, &stems, &reaper, &logic, &recording, &package, &back})
         button->setButtonText(localization::translate(button->getName()));
     browseButton.setButtonText(localization::translate(String::fromUTF8("Browse…")));
+    multipleButton.setButtonText(localization::translate("Open multiple projects"));
     search.setTextToShowWhenEmpty(localization::translate("Search recent projects"), theme::secondary);
     filtered.clear();
     for (auto &path : RecentProjects::read())
@@ -248,7 +305,7 @@ void ProjectBrowser::paint(Graphics &g) {
     if (mode == opening) {
         g.setFont(theme::font(11));
         g.setColour(theme::secondary);
-        g.drawText(localization::translate("Projetos recentes"), 24, 114, getWidth() - 150, 24, Justification::centredLeft);
+        g.drawText(localization::translate("Projetos recentes"), 24, 114, std::max(0,getWidth() - 320), 24, Justification::centredLeft);
         if (filtered.isEmpty())
             g.drawText(localization::translate("Nenhum projeto recente encontrado."), 24, 202, getWidth() - 48, 24,
                        Justification::centredLeft);
@@ -290,9 +347,11 @@ void ProjectBrowser::resized() {
         package.setBounds(34 + optionWidth, 114, width - optionWidth - 10, 38);
     }
     browseButton.setVisible(mode == opening);
+    multipleButton.setVisible(mode == opening);
     search.setVisible(mode == opening);
     recents.setVisible(mode == opening);
     browseButton.setBounds(getWidth() - 100, 114, 76, 24);
+    multipleButton.setBounds(getWidth()-290,114,182,24);
     search.setBounds(24, 148, width, 35);
     const bool hasError = loadingError.getText().isNotEmpty();
     const int statusHeight = loading ? 60 : hasError ? 44 : 0;

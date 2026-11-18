@@ -23,7 +23,7 @@ int main() {
             auto kernel = std::make_unique<PreparedClipKernel>(44100, 2);
             kernel->cache = std::make_shared<PreparedPCMCache>(shared ? reader : std::make_shared<PreparedPCMReader>(reader->file));
             kernel->cache->requested.store(0);
-            assert(kernel->cache->prefetch(16, &error) == PreparedPCMCache::Prefetch::ready);
+            assert(kernel->cache->prefetch(64, &error) == PreparedPCMCache::Prefetch::ready);
             kernel->endFrame.store(441000); kernel->configureStretchGroup();
             assert(kernel->prime(0, 1.12, 0));
             kernel->rate.store(1.12); kernel->timingRun.store(1);

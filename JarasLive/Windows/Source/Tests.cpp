@@ -500,7 +500,11 @@ int runTests(const File &directory) {
         });
         while(!held.load())std::this_thread::yield();
         try {
-            audio.configureMetronome(settings);
+            bool ready=false;String failure;
+            audio.configureMetronome(settings,[&](String error){failure=error;ready=true;});
+            const auto until=Time::getMillisecondCounterHiRes()+4000;
+            while(!ready&&Time::getMillisecondCounterHiRes()<until)floatingControlTests::pump();
+            expect(ready&&failure.isEmpty(),"Metronome worker did not publish its prepared sound");
             song.bpm=80; audio.refreshTiming(song);
         } catch(...) {release.store(true);device.join();throw;}
         release.store(true);device.join();
@@ -516,7 +520,12 @@ int runTests(const File &directory) {
                "Prepared metronome used the old sound or gain");
         // Configuring before a new graph must retain user preferences, even if
         // no callback has consumed the edit when project loading begins.
-        put(settings,"preset","Clave"); audio.configureMetronome(settings);
+        put(settings,"preset","Clave");
+        bool claveReady=false;
+        audio.configureMetronome(settings,[&](String error){expect(error.isEmpty(),"Clave preparation failed");claveReady=true;});
+        const auto claveDeadline=Time::getMillisecondCounterHiRes()+4000;
+        while(!claveReady&&Time::getMillisecondCounterHiRes()<claveDeadline)floatingControlTests::pump();
+        expect(claveReady,"Clave preparation did not complete");
         audio.prepareSong(song,directory);
         state.position=0; audio.transport(state);
         audio.render(output.getArrayOfWritePointers(),4,512);
@@ -1409,13 +1418,13 @@ int runTests(const File &directory) {
             expect(tall>0,"A short transient disappeared in the physical-pixel overview");
         }
     });
-    test("Manual grid scroll resumes after one and a half idle seconds", [&] {
+    test("Manual grid scroll resumes after five idle seconds", [&] {
         TimelinePlaybackFollowPolicy policy;jaras::TransportState state;state.playing=true;
-        policy.pause(state,1.5,100);
-        expect(policy.isPaused(state,101.49),"Follow resumed before the idle deadline");
-        policy.pause(state,1.5,101);
-        expect(policy.isPaused(state,102),"More scrolling did not extend the pause");
-        expect(!policy.isPaused(state,102.5),"Follow failed to resume after 1.5 idle seconds");
+        policy.pause(state,5,100);
+        expect(policy.isPaused(state,104.99),"Follow resumed before the idle deadline");
+        policy.pause(state,5,101);
+        expect(policy.isPaused(state,105.99),"More scrolling did not extend the pause");
+        expect(!policy.isPaused(state,106),"Follow failed to resume after five idle seconds");
         jaras::Track track;jaras::AudioClip clip;clip.name="Title";clip.duration=60;
         ItemHeader header({0,0,800,80},800,track,clip,"Title",true);
         expect(header.gainRect.isEmpty() && header.muteRect.isEmpty() && header.fxRect.isEmpty(),"Hidden header still has clickable controls");
@@ -2015,6 +2024,28 @@ int runTests(const File &directory) {
         session.command(jaras::CommandKind::stopAll);session.undo();
         expect(tempoEditing::bpm(*session.song(),10)==120,"Undo restores tempo");
         expect(!tempoEditing::needsRender(*session.song(), &session.song()->parts[0]),"Restored reference tempo clears highlighting");
+    });
+    test("Song tempo uses one reference regardless of cursor and creates no end marker", [&] {
+        auto p=projectFixture();auto &song=p.songs[0];song.tracks.clear();song.parts={{"music","Music",10,40},{"next","Next",50,70}};song.duration=80;
+        song.timeSettings=jaras::ProjectTimeSettings{};song.timeSettings->timebase=jaras::ProjectTimebase::relative;
+        auto a=tempoEditing::boundary(song,10),b=tempoEditing::boundary(song,20);
+        a.tempoBPM=147;a.tempoReferenceBPM=147;a.regionOwnerID="music";
+        b.tempoBPM=140;b.tempoReferenceBPM=140;b.regionOwnerID="music";
+        song.markers=std::vector<jaras::TimelineMarker>{a,b};
+        for(const double cursor:{12.,25.}) {
+            Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(p));session.audio.setOffline(true);
+            session.command(jaras::CommandKind::selectRegion,"music");session.command(jaras::CommandKind::editSeek,{},cursor);
+            expect(std::abs(session.tempoBPM()-147)<1e-9,"Cursor changed the music reference");
+            session.setTempo(148);
+            expect(session.song()->markers->size()==2,"BPM edit created a boundary marker");
+            const auto &markers=*session.song()->markers;
+            const auto first=std::find_if(markers.begin(),markers.end(),[&](const auto& m){return m.id==a.id;});
+            const auto second=std::find_if(markers.begin(),markers.end(),[&](const auto& m){return m.id==b.id;});
+            expect(first!=markers.end()&&second!=markers.end(),"BPM edit replaced original markers");
+            expect(std::abs(*first->tempoBPM-148)<1e-9&&std::abs(*second->tempoBPM-140.*148/147)<1e-9,"BPM depended on cursor");
+            expect(std::abs(second->position-(10+10.*147/148))<1e-8,"Marker did not follow source speed");
+            expect(!tempoEditing::active(*session.song(),session.song()->parts[0].endTime+1),"Tempo leaked outside the music");
+        }
     });
     test("Unified stopped tempo changes only the child song under the edit cursor", [&] {
         auto p=projectFixture();auto &song=p.songs[0];song.tracks.clear();song.timeSettings=jaras::ProjectTimeSettings{};
@@ -3255,7 +3286,7 @@ int runTests(const File &directory) {
         auto original=song;original.bpm=87;original.beatsPerBar=7;original.markers=std::vector<jaras::TimelineMarker>{{uuid(),"Manual",15,0xff0000}};
         clickTempo::insert(original,region,detected);
         const auto initial=std::find_if(original.markers->begin(),original.markers->end(),[](const auto &m){return m.tempoBPM&&m.position==0;});
-        expect(initial!=original.markers->end() && initial->tempoBPM==120 && initial->tempoReferenceBPM==120 && initial->tempoBeats==4 && initial->tempoUnit==4,"Empty lead-in differs from current Mac initial tempo");
+        expect(initial==original.markers->end(),"Detection added a tempo marker to the empty lead-in");
         expect(std::any_of(original.markers->begin(),original.markers->end(),[](const auto &m){return m.name=="Manual";}),"Tempo detection removed manual marker");
         const auto count=original.markers->size();clickTempo::insert(original,region,detected);
         expect(original.markers->size()==count,"Repeated BPM application duplicates markers");
@@ -3371,6 +3402,25 @@ int runTests(const File &directory) {
         PNGImageFormat().writeImageToStream(output, stream);
     });
     compactTextBaselineTests::registerTests(test, skipped);
+    test("Metronome preferences do not broadcast appearance or rewrite workspace settings", [&] {
+        const auto file=directory.getNonexistentChildFile("metronome-isolated", ".json");
+        Appearance settings(file);
+        expect(settings.set("jaras.timeline.zoom",7).wasOk(),"Initial appearance save failed");
+        const auto original=file.loadFileAsString();
+        struct Listener final:ChangeListener {int calls=0;void changeListenerCallback(ChangeBroadcaster *)override{++calls;}} listener;
+        for(int i=0;i<3;++i)floatingControlTests::pump();
+        settings.addChangeListener(&listener);
+        auto done=std::make_shared<bool>(false);auto failure=std::make_shared<String>();
+        settings.setMetronome("jaras.metronome.enabled",true,[done,failure](String error){*failure=error;*done=true;});
+        expect((bool)settings.value("jaras.metronome.enabled"),"Toggle must update the in-memory preference immediately");
+        const auto deadline=Time::getMillisecondCounterHiRes()+4000;
+        while(!*done&&Time::getMillisecondCounterHiRes()<deadline)floatingControlTests::pump();
+        settings.removeChangeListener(&listener);
+        expect(*done&&failure->isEmpty(),"Background metronome save failed");
+        expect(listener.calls==0,"Metronome refreshed the entire appearance tree");
+        expect(file.loadFileAsString()==original,"Metronome rewrote workspace appearance settings");
+        expect((bool)Appearance(file).value("jaras.metronome.enabled"),"Isolated metronome preference did not persist");
+    });
     test("Embedded font faces and persisted setlist appearance", [&] {
         auto file = directory.getNonexistentChildFile("appearance", ".json");
         Appearance settings(file);
@@ -4580,7 +4630,7 @@ int runTests(const File &directory) {
         project.regionSetlist->subplayExclusiveTrackIDs=std::vector<ID>{song.tracks[0].id};
         const auto restored=ProjectCodec::decode(ProjectCodec::encode(project,{}));
         expect(restored.regionSetlist->subplayExclusiveTrackIDs==project.regionSetlist->subplayExclusiveTrackIDs,"Selected Subplay tracks were not saved");
-        jaras::Engine core;core.loadProject(project);AudioEngine audio;audio.prepareOffline(48000);audio.prepareSong(*core.currentSong(),media,{},&core.project());audio.setOffline(true);
+        jaras::Engine core;core.loadProject(restored);AudioEngine audio;audio.prepareOffline(48000);audio.prepareSong(*core.currentSong(),media,{},&core.project());audio.setOffline(true);
         AudioBuffer<float> output(2,512);
         const auto check=[&](float expected){
             const auto& transport=core.transport();AudioEngine::State state;state.position=transport.position;state.playing=transport.playing;state.subPosition=transport.subPlay.position;state.subPlaying=transport.subPlay.playing;
@@ -4644,6 +4694,39 @@ int runTests(const File &directory) {
         core.execute({jaras::CommandKind::stop}); render(.05f, "Promotion did not retain secondary scope");
         core.execute({jaras::CommandKind::stopAll}); core.execute({jaras::CommandKind::selectRegion, a}); core.execute({jaras::CommandKind::play}); core.advance(3.99);
         core.execute({jaras::CommandKind::ignoreNext}); render(0, "Ignore Next rendered past last owned audio");
+    });
+    test("Legacy 1.36 unified songs render majority-owned pickups after save and reopen", [&] {
+        const auto media=directory.getChildFile("unified-legacy-pickup");media.createDirectory();
+        WavAudioFormat wav;auto stream=media.getChildFile("tone.wav").createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(),48000,2,24,{},0));
+        expect(bool(writer),"Cannot create legacy unified fixture");stream.release();
+        AudioBuffer<float> tone(2,48000*8);for(int ch=0;ch<2;++ch)FloatVectorOperations::fill(tone.getWritePointer(ch),.1f,tone.getNumSamples());
+        expect(writer->writeFromAudioSampleBuffer(tone,0,tone.getNumSamples()),"Cannot write legacy unified fixture");writer.reset();
+        for(bool parentOwner:{false,true}){
+            jaras::Project project;project.id=uuid();project.name="Legacy unified";
+            jaras::Song song;song.id=uuid();song.name="Timeline";song.duration=12;song.bpm=120;
+            const auto root=uuid(),outgoing=uuid(),incoming=uuid();
+            song.parts={{root,"Unified",0,12},{outgoing,"Outgoing",0,6},{incoming,"Incoming",4,12}};
+            song.parts[1].parentRegionID=root;song.parts[2].parentRegionID=root;
+            song.regionOwnershipInitialized=true;song.regionOwnershipVersion=3;
+            jaras::Track track;track.id=uuid();track.name="CLICK";track.role.id="other";
+            jaras::AudioClip clip;clip.id=uuid();clip.name="Incoming pickup";clip.startTime=3.5;clip.duration=8;clip.audioFile=jaras::AudioFile{"tone.wav"};clip.regionOwnerID=parentOwner?root:outgoing;
+            track.clips={clip};song.tracks={track};project.songs={song};
+            auto restored=ProjectCodec::decode(ProjectCodec::encode(project,{}));
+            jaras::Engine core;core.loadProject(restored);
+            expect(core.currentSong()->tracks[0].clips[0].regionOwnerID==incoming,"Legacy parent/outgoing attachment must migrate to the majority incoming song");
+            AudioEngine audio;audio.prepareOffline(48000);audio.prepareSong(*core.currentSong(),media,{},&core.project());audio.setOffline(true);
+            AudioBuffer<float> output(2,512);
+            const auto render=[&](float expected){
+                const auto &transport=core.transport();AudioEngine::State state;state.position=transport.position;state.playing=transport.playing;
+                state.scope[0]=jaras::playbackScope(*core.currentSong(),transport);audio.transport(state);
+                for(int n=0;n<8;++n)audio.render(output.getArrayOfWritePointers(),2,512);
+                expect(std::abs(output.getSample(0,256)-expected)<.002f,"Unified entry silenced a majority-owned pickup");
+            };
+            core.execute({jaras::CommandKind::editSeek,{},4.5});core.execute({jaras::CommandKind::play});render(.1f);
+            core.execute({jaras::CommandKind::stopAll});core.execute({jaras::CommandKind::selectRegion,outgoing});
+            core.execute({jaras::CommandKind::play});core.advance(4.5);core.execute({jaras::CommandKind::ignoreNext});render(0);
+        }
     });
     test("Constant audio item gain preserves PCM and channel modes", [&] { audioDSPKernelTests::gain(); });
     test("Accelerated FFT preserves portable spectrum and round trip", [&] { audioDSPKernelTests::fft(); });
@@ -5435,7 +5518,11 @@ int runTests(const File &directory) {
         put(patch, "firstChannel", 3);
         put(patch, "channelCount", 2);
         put(settings, "output", patch);
-        engine.configureMetronome(settings);
+        bool metronomeReady=false;
+        engine.configureMetronome(settings,[&](String error){expect(error.isEmpty(),"Metronome preparation failed");metronomeReady=true;});
+        const auto metronomeDeadline=Time::getMillisecondCounterHiRes()+4000;
+        while(!metronomeReady&&Time::getMillisecondCounterHiRes()<metronomeDeadline)floatingControlTests::pump();
+        expect(metronomeReady,"Metronome preparation did not complete");
         state.position = 0;
         engine.transport(state);
         engine.render(output.getArrayOfWritePointers(), 4, 4800);

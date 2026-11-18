@@ -1203,8 +1203,36 @@ MainActor.assumeIsolated {
     precondition(rangeGrid.selected == Set([rangeIDs[0], rangeIDs[4]]))
     rangeClick(3)
     precondition(rangeGrid.selected == [rangeIDs[3]])
+    func shiftedEvent(_ type: NSEvent.EventType, _ point: CGPoint) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: rangeGrid.convert(point, to: nil), modifierFlags: .shift,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: rangeWindow.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    }
+    var shiftMoves: [(UUID, Bool)] = [], shiftResizes: [(UUID, Bool, Bool)] = []
+    rangeGrid.move = { id, _, _, ended in shiftMoves.append((id, ended)) }
+    rangeGrid.resize = { id, left, _, ended in shiftResizes.append((id, left, ended)) }
+    for x: CGFloat in [495, 441, 549] {
+        let start = CGPoint(x: x, y: 160), end = CGPoint(x: x + 12.5, y: 160)
+        precondition(rangeGrid.handlePointerEvent(shiftedEvent(.leftMouseDown, start)))
+        precondition(rangeGrid.handlePointerEvent(shiftedEvent(.leftMouseDragged, end)))
+        precondition(rangeGrid.handlePointerEvent(shiftedEvent(.leftMouseUp, end)))
+    }
+    precondition(shiftMoves.map { $0.1 } == [false, true] && shiftMoves.allSatisfy { $0.0 == rangeIDs[3] },
+                 "Shift held before mouse-down permits item movement")
+    precondition(shiftResizes.map { $0.1 } == [true, true, false, false] &&
+                 shiftResizes.map { $0.2 } == [false, true, false, true],
+                 "Shift held before mouse-down permits either resize edge")
+    precondition(rangeGrid.selected == [rangeIDs[3]], "Shift drags do not become range selections")
+    let cancelledPoint = CGPoint(x: 75, y: 160)
+    _ = rangeGrid.handlePointerEvent(shiftedEvent(.leftMouseDown, cancelledPoint))
+    NativeTimelineInputGate.shared.cancelPendingClicks(for: rangeWindow)
+    _ = rangeGrid.handlePointerEvent(shiftedEvent(.leftMouseUp, cancelledPoint))
+    precondition(rangeGrid.selected == [rangeIDs[3]], "Scrolling cancels a pending Shift selection")
+    _ = rangeGrid.handlePointerEvent(shiftedEvent(.leftMouseDown, cancelledPoint))
+    _ = rangeGrid.handlePointerEvent(shiftedEvent(.leftMouseUp, CGPoint(x: 810, y: 160)))
+    precondition(rangeGrid.selected == [rangeIDs[3]], "Releasing outside cancels a pending Shift selection")
     rangeWindow.close()
-    print("GRID_ITEM_SHIFT_INTERVAL_REVERSE_STABLE_ANCHOR_AND_COMMAND_TOGGLE_OK")
+    print("GRID_ITEM_SHIFT_INTERVAL_DRAG_RESIZE_CANCEL_AND_COMMAND_TOGGLE_OK")
 }
 
 // The shared edge owns a distinct cursor and one atomic drag callback.
@@ -1213,8 +1241,12 @@ do {
     let host = NSWindow(contentRect: view.frame,styleMask: [.borderless],backing: .buffered,defer: false)
     host.contentView = view
     let left = UUID(), right = UUID()
-    view.items = [GridSelectionItem(id: left,rect: CGRect(x: 20,y: 20,width: 160,height: 100),duration: 10,trackIndex: 0),
-                  GridSelectionItem(id: right,rect: CGRect(x: 180,y: 20,width: 160,height: 100),duration: 10,trackIndex: 0)]
+    view.items = [GridSelectionItem(id: left,rect: CGRect(x: 20,y: 20,width: 160,height: 100),teleprompterText: true,duration: 10,trackIndex: 0),
+                  GridSelectionItem(id: right,rect: CGRect(x: 180,y: 20,width: 160,height: 100),teleprompterText: true,duration: 10,trackIndex: 0)]
+    precondition(view.sharedBoundary(at: CGPoint(x: 180,y: 75)) == nil, "Unselected text does not share a resize gesture")
+    view.updateSelection([left])
+    precondition(view.sharedBoundary(at: CGPoint(x: 180,y: 75)) == nil, "Both adjacent texts must be selected")
+    view.updateSelection([left, right])
     precondition(view.sharedBoundary(at: CGPoint(x: 180,y: 75))?.left == left)
     precondition(view.pointerCursor(at: CGPoint(x: 180,y: 75)) !== NSCursor.resizeLeftRight)
     precondition(view.sharedBoundary(at: CGPoint(x: 180,y: 25)) == nil,"Keep header controls separate")
@@ -1233,5 +1265,39 @@ do {
     precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil)
     locked[1].resizable = true; locked[1].laneIndex = 1; view.items = locked
     precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil)
+    locked[1].laneIndex = 0; locked[1].trackIndex = 1; view.items = locked
+    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil, "Text must belong to the same teleprompter track")
+    locked[1].trackIndex = 0; locked[1].teleprompterText = false; view.items = locked
+    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil, "Both items must be teleprompter text")
+    locked[0].teleprompterText = false; view.items = locked
+    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil, "Ordinary audio edges resize independently")
     print("SHARED_ITEM_BOUNDARY_DISTINCT_CURSOR_SINGLE_COMMIT_LOCK_AND_LANE_OK")
+}
+
+
+do {
+    final class TimelineDocument: NSView { override var isFlipped: Bool { true } }
+    let scroll = GridNativeScrollView(frame: CGRect(x: 0, y: 0, width: 600, height: 440))
+    scroll.borderType = .noBorder
+    scroll.documentView = TimelineDocument(frame: CGRect(x: 0, y: 0, width: 600, height: 1800))
+    scroll.showTimelineVerticalBar(inset: 55)
+    let bar = scroll.subviews.compactMap { $0 as? GridNativeScrollView.GreenScroller }.first!
+    precondition(bar.frame.height == 385 && scroll.contentView.frame.maxX == bar.frame.minX,
+        "The draggable bar uses a separate gutter below the ruler")
+    scroll.contentView.scroll(to: CGPoint(x: 0, y: 340))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    let range = CGFloat(1800) - scroll.contentView.bounds.height
+    precondition(abs(bar.doubleValue - 340 / range) < 0.001, "Wheel and row navigation must move the thumb")
+    bar.doubleValue = 0.8
+    NSApp.sendAction(bar.action!, to: bar.target, from: bar)
+    precondition(abs(scroll.contentView.bounds.minY - 0.8 * range) < 1,
+        "The thumb must scroll the shared grid and Track Mixer clip")
+    scroll.prepareTrackHeightAnchor(to: 550, height: 80)
+    precondition(scroll.trackHeightAnchor(for: 64, documentHeight: 1800) == nil,
+        "The previous row geometry cannot commit an anchor for a newer height")
+    precondition(scroll.trackHeightAnchor(for: 80, documentHeight: 1800) == 550)
+    scroll.commitTrackHeightAnchor()
+    precondition(scroll.contentView.bounds.minY == 550 &&
+        scroll.trackHeightAnchor(for: 80, documentHeight: 1800) == nil)
+    print("TIMELINE_VERTICAL_BAR_GUTTER_SCROLL_SYNC_AND_HEIGHT_ANCHOR_OK")
 }

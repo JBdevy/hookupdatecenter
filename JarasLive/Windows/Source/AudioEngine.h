@@ -1,4 +1,5 @@
 #pragma once
+#include "../../Core/Audio/StopTransition.hpp"
 #include "../../Core/Transport/SongPluginTempo.hpp"
 #include "../../Core/Loop/MultiLoopMixer.hpp"
 #include "SystemAudioDefaults.h"
@@ -62,7 +63,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     String outputAvailabilityError() const;
     String openDevice();
     void configureDeviceChannels(const BigInteger &inputs, const BigInteger &outputs);
-    void configureMetronome(const var &);
+    void configureMetronome(const var &, std::function<void(String)> completed = {});
     void setEffects(const ID &, const var &);
     std::shared_ptr<native::vst3::Processor> externalEffect(const ID &, const String &) const;
     void captureExternalEffects(const ID &, var &) const;
@@ -515,6 +516,14 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     TimecodeMIDI timecodeMIDI;
     float timecodeGain = 1;
     ClickProgram metronome;
+    struct MetronomePreparation {
+        ClickProgram::Sample a,b;
+        String error;
+        std::atomic<bool> done{false};
+        std::function<void(String)> completed;
+    };
+    std::shared_ptr<MetronomePreparation> metronomePreparation;
+    void publishPreparedMetronome();
     jaras::PluginTempoMap pluginTempo;
     var metronomeSettings;
     int metronomeMode = 0, metronomeOutput = 1, metronomeChannels = 2;
@@ -540,6 +549,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     audio::RealtimeLatestValue<Update> masterUpdates;
     audio::PreparedAudioEdits preparedEdits;
     State current;
+    jaras::audio::StopTransition stopTransition;
     struct ParallelClipJob { Voice *voice=nullptr;AudioFormatReader *reader=nullptr;int head=0,frames=0;double local=0; };
     std::vector<ParallelClipJob> parallelClipJobs;
     std::unique_ptr<ParallelAudioWork> parallelClips;

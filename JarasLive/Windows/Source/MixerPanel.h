@@ -11,6 +11,19 @@
 #include "HozMixerFocusGesture.h"
 #include "MixerSlotLayout.h"
 namespace catlive {
+struct MixerScrollLook final : LookAndFeel_V4 {
+    bool areScrollbarButtonsVisible() override { return false; }
+    void drawScrollbar(Graphics &g, ScrollBar &, int x, int y, int width, int height,
+                       bool vertical, int start, int size, bool, bool) override {
+        g.setColour(Colour::fromFloatRGBA(.12f, .12f, .12f, 1));
+        if (vertical) g.fillRoundedRectangle(x + width / 2.f - 3, (float)y, 6, (float)height, 3);
+        else g.fillRoundedRectangle((float)x, y + height / 2.f - 3, (float)width, 6, 3);
+        g.setColour(Colour(0xff54ff93));
+        if (vertical) g.fillRoundedRectangle(x + width / 2.f - 3, (float)start, 6, (float)size, 3);
+        else g.fillRoundedRectangle((float)start, y + height / 2.f - 3, (float)size, 6, 3);
+    }
+};
+
 class MixerPanel final : public Component, public DragAndDropContainer, private Timer, private ScrollBar::Listener {
   public:
     MixerPanel(Session &owner, std::function<void(ID,String)> effects, std::function<void(ID, ModifierKeys)> selected,
@@ -22,6 +35,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         master=std::make_unique<Strip>(*this,ID{});addAndMakeVisible(*master);
         viewport.setComponentID("mixerTracksViewport");horizontal.setComponentID("mixerHorizontalScroll");
         addAndMakeVisible(viewport);
+
         viewport.setViewedComponent(&content, false);
         // Wheel events bubble from the controls to this panel exactly once.
         // The hidden Viewport scrollbar must not apply a second wheel delta.
@@ -43,11 +57,21 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         g.fillAll(theme::background);
         g.setColour(theme::line);
         g.drawHorizontalLine(0, 0, (float)getWidth());
+        if (fixedDividerX >= 0) g.fillRect(fixedDividerX, 0, 2, getHeight());
     }
     void resized() override {
         const int masterWidth=roundToInt(stripWidth*1.25f);
-        const int trackStart=masterRight?0:masterWidth+3;
-        const int trackWidth=std::max(1,getWidth()-masterWidth-3);
+        const int trackArea = masterRight ? 0 : masterWidth + 3;
+        const int available = std::max(1, getWidth() - masterWidth - 3);
+        const int fixedWidth = fixedStrips.isEmpty() ? 0 : std::min(fixedStrips.size() * stripStride + 2, std::max(0, available - stripStride));
+        const int trackStart = trackArea + fixedWidth;
+        const int trackWidth = available - fixedWidth;
+        for (int i = 0; i < fixedStrips.size(); ++i) {
+            const int x = trackArea + i * stripStride;
+            fixedStrips[i]->setVisible(x + stripWidth <= trackStart);
+            fixedStrips[i]->setBounds(x, 20, stripWidth, std::max(1, getHeight()-20));
+        }
+        fixedDividerX = fixedWidth > 0 ? trackStart - 2 : -1;
         master->setBounds(masterRight?std::max(0,getWidth()-masterWidth):0,20,masterWidth,std::max(1,getHeight()-20));
         horizontal.setBounds(trackStart+4,5,std::max(0,trackWidth-8),14);
         viewport.setBounds(trackStart,20,trackWidth,std::max(1,getHeight()-20));
@@ -78,15 +102,30 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         slotsOnly=enabled;
         master->resized();master->repaint();
         for(auto *strip:strips){strip->resized();strip->repaint();}
+        for(auto *strip:fixedStrips){strip->resized();strip->repaint();}
         repaint();
     }
+    void setFixedTracks(const std::vector<ID> &pins) {
+        if (requestedPins == pins) return;
+        requestedPins = pins;
+        refresh();
+    }
     void refresh() {
+        std::vector<ID> fixed;
+        if (const auto *song = session.song()) for (const auto& id : requestedPins)
+            if (trackTree::index(*song, id) < song->tracks.size()) fixed.push_back(id);
+        const bool fixedChanged = fixed != fixedIDs;
+        if (fixedChanged) {
+            fixedStrips.clear();
+            for (const auto& id : fixed) addAndMakeVisible(*fixedStrips.add(new Strip(*this, id)));
+            fixedIDs = std::move(fixed);
+        }
         const bool icons=trackIcons::visible(session.song());
         if(icons!=showsIcons){showsIcons=icons;master->resized();master->repaint();for(auto *strip:strips){strip->resized();strip->repaint();}}
         std::vector<ID> wanted;
         if (const auto *song = session.song())
             for (const auto &track : song->tracks)
-                if ((jaras::fixedTrackName(track.role).empty() || track.role.id == "generatedClick")&&
+                if ((jaras::fixedTrackName(track.role).empty() || track.role.id == "generatedClick" || jaras::isTeleprompterRole(track.role))&&
                     (!isTrackVisible||isTrackVisible(track.id)))
                     wanted.push_back(track.id);
         if (wanted != ids) {
@@ -104,11 +143,16 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             }
             resized();
         }
+        if (fixedChanged) { resized(); repaint(); }
         refreshVisible();
         syncScroll();
     }
     void refreshVisible() {
         master->refresh();
+        for (auto *strip : fixedStrips) if (strip->isVisible()) {
+            strip->ensureControlLayout();
+            strip->refresh();
+        }
         const auto visible = viewport.getViewArea();
         const int first = std::max(0, visible.getX() / stripStride);
         const int end = std::min(strips.size(), (visible.getRight() + stripStride - 1) / stripStride);
@@ -132,6 +176,10 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         focusGesture.reset();
         if (master->getLocalBounds().contains(event.getEventRelativeTo(master.get()).getPosition())) {
             master->scrollEffects(event.getEventRelativeTo(master.get()),wheel);return;
+        }
+        for (auto *strip : fixedStrips) if (strip->isVisible()) {
+            const auto local = event.getEventRelativeTo(strip);
+            if (strip->getLocalBounds().contains(local.getPosition()) && strip->scrollEffects(local, wheel)) return;
         }
         const auto point = event.getEventRelativeTo(&content).getPosition();
         const int index = point.x < 0 ? -1 : point.x / stripStride;
@@ -241,6 +289,10 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             fader.onDragStart = [this] { mixer.session.beginMixerGesture(jaras::CommandKind::volume,id); };
             fader.onDragEnd = [this] { mixer.session.endMixerGesture(); };
             fader.onValueChange = [this] { command(jaras::CommandKind::volume, fader.getValue()); };
+            addChildComponent(teleprompterPatch);
+            teleprompterPatch.setWantsKeyboardFocus(false);
+            teleprompterPatch.getProperties().set("fontSize", 10);
+            teleprompterPatch.onClick = [this] { if(mixer.specialAction)mixer.specialAction(id,"patch"); };
             addAndMakeVisible(pan);
             pan.setComponentID("mixerPan");
             pan.setRange(-1, 1, .01);
@@ -329,8 +381,8 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             if (!id.empty() && mixer.selectedTrack(id)) { g.setColour(Colours::white.withAlpha(.08f)); g.fillAll(); }
             g.setColour(colour);
             g.fillRect(0, 0, getWidth(), 3);
-            const auto meterBounds = fader.getBounds();
-            if (!mixer.slotsOnly && meterPaintBounds().contains(g.getClipBounds())) {
+            const auto meterBounds = meterPaintBounds();
+            if (!mixer.slotsOnly && meterBounds.contains(g.getClipBounds())) {
                 const auto levels = mixer.session.audio.meterLevels(id);
                 for (int ch=0; ch<2; ++ch)
                     meterDisplay::bar(g, {meterX() + ch*5, (float)meterBounds.getY()+4,
@@ -389,7 +441,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             const int controls = geometry.controlsY;
             const int meterTop=meterBounds.getY()+4,meterBottom=meterBounds.getBottom()-4;
             const auto levels = mixer.session.audio.meterLevels(id);
-            for (int ch = 0; !jaras::isTeleprompterRole(t->role) && t->role.id!="chords" && t->role.id!="programChange" && ch < 2; ++ch)
+            for (int ch = 0; t->role.id!="chords" && t->role.id!="programChange" && ch < 2; ++ch)
                 meterDisplay::bar(g, {meterX() + ch * 5, (float)meterTop, 3, (float)(meterBottom - meterTop)}, levels[(size_t)ch]);
             const auto shownVolume = mixer.session.trackDisplayVolume(id,t->volume);
             const auto db = shownVolume > 0 ? String(Decibels::gainToDecibels(shownVolume), 1)
@@ -418,18 +470,23 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             controlLayoutPending=true;
             if(!id.empty() && !getBounds().intersects(mixer.viewport.getViewArea()))return;
             controlLayoutPending=false;
-            const auto *t=track();const bool standard=t&&jaras::fixedTrackName(t->role).empty(),textTrack=t&&(jaras::isTeleprompterRole(t->role)||t->role.id=="chords");
+            const auto *t=track();const bool standard=t&&jaras::fixedTrackName(t->role).empty();
+            const bool teleprompter=t&&jaras::isTeleprompterRole(t->role);
+            const bool textTrack=teleprompter||(t&&t->role.id=="chords");
             if(mixer.slotsOnly) {
-                for(auto *control:std::initializer_list<Component*>{&fx,&mute,&solo,&phase,&record,&mono,&pan,&fader,peak.get(),special.get()})
+                for(auto *control:std::initializer_list<Component*>{&fx,&mute,&solo,&phase,&record,&mono,&pan,&fader,&teleprompterPatch,peak.get(),special.get()})
                     control->setVisible(false);
                 firstSlot=jlimit(0,maximumFirstSlot(),firstSlot);
                 return;
             }
-            fx.setVisible(standard);record.setVisible(standard&&!id.empty());pan.setVisible(standard);phase.setVisible(standard&&!id.empty());mono.setVisible(id.empty());fader.setVisible(!textTrack&&t&&t->role.id!="programChange");mute.setVisible(standard||(t&&(t->role.id=="timecode"||t->role.id=="generatedClick"||t->role.id=="programChange")));solo.setVisible(mute.isVisible());
+            fx.setVisible(standard);record.setVisible(standard&&!id.empty());pan.setVisible(standard);phase.setVisible(standard&&!id.empty());mono.setVisible(id.empty());fader.setVisible(teleprompter||(!textTrack&&t&&t->role.id!="programChange"));mute.setVisible(standard||(t&&(t->role.id=="timecode"||t->role.id=="generatedClick"||t->role.id=="programChange")));solo.setVisible(mute.isVisible());
+            const auto faderStyle = teleprompter ? Slider::RotaryVerticalDrag : Slider::LinearVertical;
+            if(fader.getSliderStyle()!=faderStyle)fader.setSliderStyle(faderStyle);
+            teleprompterPatch.setVisible(teleprompter);
             const auto geometry=layout();
             firstSlot=jlimit(0,maximumFirstSlot(),firstSlot);
             const int y=geometry.controlsY,available=geometry.controlsHeight;
-            if(special){special->setVisible(!standard);special->setBounds((getWidth()-47)/2,y,47,t&&t->role.id=="programChange"?72:21);special->refresh();}
+            if(special){special->setVisible(!standard&&!teleprompter);special->setBounds((getWidth()-47)/2,y,47,t&&t->role.id=="programChange"?72:21);special->refresh();}
             const int gap=jlimit(2,5,(available-117)/5);
             const int buttonHeight=std::min(21,std::max(16,(available-12-5*gap)/5));
             const int step=buttonHeight+gap;
@@ -442,7 +499,10 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             peak->setBounds(1,y+(standard?5*step:25+2*step),43,12);
             pan.setBounds(42+controlsOffset(),y+11,24,24);
             const int faderOffset=standard?49:38;
-            fader.setBounds(43+controlsOffset(),y+faderOffset,31,std::max(1,available-faderOffset));
+            if(teleprompter) {
+                teleprompterPatch.setBounds((getWidth()-44)/2,y,44,21);
+                fader.setBounds(43+controlsOffset(),y+24,24,24);
+            } else fader.setBounds(43+controlsOffset(),y+faderOffset,31,std::max(1,available-faderOffset));
         }
         void mouseMove(const MouseEvent &event) override { const int next=slotAt(event.getPosition());if(next!=hoveredSlot){hoveredSlot=next;repaint();} }
         void mouseExit(const MouseEvent &) override {hoveredSlot=-1;repaint();}
@@ -572,7 +632,8 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         int controlsOffset() const { return 17 + std::max(0,(getWidth()-stripWidth)/2); }
         float meterX() const { return 33.f+controlsOffset(); }
         juce::Rectangle<int> meterPaintBounds() const {
-            const auto bounds=fader.getBounds();
+            auto bounds=fader.getBounds();
+            if(teleprompterPatch.isVisible()) bounds.setHeight(std::max(0, layout().controlsHeight - 24));
             return {32+controlsOffset(),bounds.getY(),10,bounds.getHeight()};
         }
         bool dragging=false;
@@ -661,6 +722,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
 
         std::unique_ptr<meterDisplay::PeakReadout> peak;
         std::unique_ptr<SpecialTrackControls> special;
+        TextButton teleprompterPatch{"Patch"};
         QuietButton fx{"FX"}, mute{"M"}, solo{"S"}, phase{String::fromUTF8("Ø")}, record{"REC"}, mono;
         GainFader fader;
         ParameterSlider pan;
@@ -693,13 +755,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
     HozMixerFocusGesture focusGesture;
     double wheelRemainder=0;
     std::optional<trackDrop::Destination> dropPreview;ID blocked;
-    struct MixerScrollLook final : LookAndFeel_V4 {
-        bool areScrollbarButtonsVisible() override { return false; }
-        void drawScrollbar(Graphics &g,ScrollBar &,int x,int y,int w,int h,bool,int start,int size,bool,bool) override {
-            g.setColour(Colour::fromFloatRGBA(.12f,.12f,.12f,1));g.fillRoundedRectangle((float)x,y+h/2.f-3,(float)w,6,3);
-            g.setColour(Colour(0xff54ff93));g.fillRoundedRectangle((float)start,y+h/2.f-3,(float)size,6,3);
-        }
-    } scrollLook;
+    MixerScrollLook scrollLook;
     struct MixerHorizontalScroll final : ScrollBar {
         MixerHorizontalScroll():ScrollBar(false) {}
         void mouseWheelMove(const MouseEvent &event,const MouseWheelDetails &wheel) override {
@@ -717,8 +773,9 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         void visibleAreaChanged(const juce::Rectangle<int> &) override { if (moved) moved(); }
     } viewport;
     Component content;
-    OwnedArray<Strip> strips;
-    std::vector<ID> ids;
+    OwnedArray<Strip> strips, fixedStrips;
+    std::vector<ID> ids, requestedPins, fixedIDs;
+    int fixedDividerX = -1;
     void timerCallback() override {
         if (isShowing()) {
             // Structure changes have a revision; audio level changes do not.

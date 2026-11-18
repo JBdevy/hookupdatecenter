@@ -387,6 +387,14 @@ struct MetronomeSignal {
         }
     }
 };
+@interface JarasPreparedMetronomeProgram () {
+@public
+    std::unique_ptr<MetronomeProgram> value;
+}
+@end
+@implementation JarasPreparedMetronomeProgram
+@end
+
 @implementation JarasMetronomeGenerator {
     std::shared_ptr<MetronomeSignal> _signal;
 }
@@ -399,12 +407,20 @@ struct MetronomeSignal {
     } return self;
 }
 - (void)setSections:(NSArray<NSDictionary*>*)sections soundA:(NSData*)a soundB:(NSData*)b mode:(NSInteger)mode {
+    [self applyPreparedSections:[JarasMetronomeGenerator prepareSections:sections soundA:a soundB:b mode:mode]];
+}
++ (JarasPreparedMetronomeProgram *)prepareSections:(NSArray<NSDictionary*>*)sections soundA:(NSData*)a soundB:(NSData*)b mode:(NSInteger)mode {
     auto value=std::make_unique<MetronomeProgram>(); value->mode=int(mode);
     for(NSDictionary* s in sections) value->sections.push_back({[s[@"start"] doubleValue],[s[@"bpm"] doubleValue],[s[@"beats"] intValue],[s[@"unit"] intValue]});
     const auto* pa=static_cast<const float*>(a.bytes); const auto* pb=static_cast<const float*>(b.bytes);
     if(a.length) value->a.assign(pa,pa+a.length/sizeof(float));
     if(b.length) value->b.assign(pb,pb+b.length/sizeof(float));
-    _signal->publish(std::move(value));
+    auto *prepared=[JarasPreparedMetronomeProgram new];
+    prepared->value=std::move(value);
+    return prepared;
+}
+- (void)applyPreparedSections:(JarasPreparedMetronomeProgram *)prepared {
+    if(prepared->value) _signal->publish(std::move(prepared->value));
 }
 - (void)setClickSections:(NSArray<NSDictionary*>*)sections sound:(NSData*)sound {
     auto value=std::make_unique<MetronomeProgram>(); value->mode=1; value->bounded=true;

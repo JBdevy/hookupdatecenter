@@ -37,7 +37,7 @@ int main(int argc,char**argv){@autoreleasepool{
     NSDictionary* original=[NSJSONSerialization JSONObjectWithData:input options:0 error:&error];
     NSDictionary* snapshot=[NSJSONSerialization JSONObjectWithData:[core snapshotWithError:&error] options:0 error:&error];
     expect(equalJSON(original,snapshot[@"project"]),"bridge round trip preserves all fields and clips");
-    expect([snapshot[@"project"][@"songs"][0][@"regionOwnershipVersion"] intValue] == 3,
+    expect([snapshot[@"project"][@"songs"][0][@"regionOwnershipVersion"] intValue] == 4,
            "native snapshots retain versioned region ownership so loose items are not migrated again");
     expect([snapshot[@"project"][@"regionSetlist"][@"automaticSubplayNext"] boolValue], "Next mode survives the native bridge");
     expect([snapshot[@"project"][@"songs"][0][@"parts"][0][@"subplayInitSeconds"] intValue]==3 && [snapshot[@"project"][@"songs"][0][@"parts"][1][@"subplayInitBars"] intValue]==2,

@@ -17,7 +17,7 @@ struct WaveformRenderer {
 
     static double gain(const jaras::AudioClip &clip, std::optional<double> itemGainOverride = std::nullopt) {
         const auto limit=std::pow(10.,24./20);
-        return jlimit(0.,limit,itemGainOverride.value_or(clip.gain.value_or(1))) * jlimit(0.,limit,clip.normalizationGain.value_or(1)) * (clip.phaseInverted.value_or(false) ? -1 : 1);
+        return jlimit(0.,limit,itemGainOverride.value_or(clip.gain.value_or(1))) * std::max(0.,clip.normalizationGain.value_or(1)) * (clip.phaseInverted.value_or(false) ? -1 : 1);
     }
     static double panGain(double pan, int channel, int channels) {
         pan = jlimit(-1., 1., pan);

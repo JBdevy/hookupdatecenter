@@ -6,6 +6,28 @@ namespace catlive::projectReduction {
 struct Group { ID id=uuid(); String name; std::set<ID> sources; };
 struct Span { double start=0,end=0; };
 struct Progress { double fraction=0; String message; };
+inline bool hasMutedItems(const jaras::Project &project) {
+    for (const auto &song:project.songs) for (const auto &track:song.tracks)
+        if (std::any_of(track.clips.begin(),track.clips.end(),[](const auto &clip){return clip.muted;})) return true;
+    return false;
+}
+inline void unmuteItems(jaras::Project &project, const std::set<ID> &retained = {}) {
+    for (auto &song:project.songs) for (auto &track:song.tracks) if (!retained.count(track.id)) for (auto &clip:track.clips) clip.muted=false;
+}
+inline String regionName(Span span,const jaras::Song &song) {
+    const jaras::Part *match=nullptr;
+    double bestOverlap=0;
+    for (const auto &part:song.parts) {
+        const double overlap=std::min(span.end,part.endTime)-std::max(span.start,part.startTime);
+        if (overlap<=0) continue;
+        if (overlap>bestOverlap || (overlap==bestOverlap && match &&
+                part.endTime-part.startTime<match->endTime-match->startTime)) {
+            match=&part;
+            bestOverlap=overlap;
+        }
+    }
+    return match ? text(match->name) : String::fromUTF8("Fora de região");
+}
 inline bool audioItem(const jaras::AudioClip &clip,const jaras::Track &track) {
     const auto file=clip.audioFile?clip.audioFile:track.audioFile;
     if(file&&File(text(file->path)).hasFileExtension("mp4;mov;m4v;avi;mkv;webm;mpg;mpeg;wmv;mts;m2ts"))return false;
@@ -86,6 +108,9 @@ inline void write(const jaras::Project &original,const std::vector<Group> &group
         const auto &sourceSong=original.songs[si];std::vector<jaras::Track> sources;
         for(const auto &t:sourceSong.tracks)if(group.sources.count(t.id))sources.push_back(t);
         if(sources.size()!=group.sources.size())throw std::runtime_error("Escolha pistas do mesmo arranjo.");
+        if (sources.size()==1 && !jaras::fixedTrackName(sources[0].role).empty()) {
+            destinations[si].push_back(sources[0]);retained.insert(sources[0].id);continue;
+        }
         const auto trackLabel="Pista "+String((int)index+1)+"/"+String((int)groups.size())+": "+group.name;
         report(.9*index/groups.size(),"Preparando "+trackLabel);
         const auto ranges=sampleAligned(spans(sources,sourceSong),rate);
@@ -102,13 +127,24 @@ inline void write(const jaras::Project &original,const std::vector<Group> &group
         }
         auto renderProject=original;renderProject.masterFXJSON.reset();renderProject.masterAutomationJSON.reset();renderProject.masterVolume=1;renderProject.masterPan=0;renderProject.masterMute=false;renderProject.masterSolo=false;renderProject.masterMono=false;renderProject.masterPhaseInverted=false;
         ExportRequest request;request.directory=folder.getChildFile("Stems");request.encodings[0].format=format;request.encodings[0].bits=bits;request.encodings[0].rate=rate;request.encodings[0].bitrate=bitrate;request.encodings[0].floatingPoint=bits==32;
-        for(size_t n=0;n<ranges.size();++n){int suffix=int(n)+1;String name;do{name=File::createLegalFileName(group.name).substring(0,80)+" - "+String(suffix++)+"."+format.toLowerCase();}while(!names.insert(utf8(("Stems/"+name).toLowerCase())).second);ExportJob job;job.name=name;job.start=ranges[n].start;job.end=ranges[n].end;request.jobs.push_back(job);}
+        std::vector<String> regionNames;
+        for (const auto range:ranges) {
+            const auto region=regionName(range,sourceSong);
+            regionNames.push_back(region);
+            const auto base=File::createLegalFileName(group.name+" - "+region).substring(0,120);
+            const auto extension="."+format.toLowerCase();
+            auto name=base+extension;
+            int suffix=1;
+            while (!names.insert(utf8(("Stems/"+name).toLowerCase())).second)
+                name=base+" - "+String(++suffix)+extension;
+            ExportJob job;job.name=name;job.start=range.start;job.end=range.end;
+            request.jobs.push_back(job);
+        }
         String renderingFile=request.jobs.front().name;
         try{audioExport::render(renderProject,song,media,request,cancel,[&](double value){
             const auto n=std::min(request.jobs.size()-1,(size_t)(std::clamp(value,0.0,1.0)*request.jobs.size()));
-            const auto &job=request.jobs[n];renderingFile=job.name;const jaras::Part *region=nullptr;
-            for(const auto &part:sourceSong.parts)if(part.startTime<job.end&&part.endTime>job.start&&(!region||part.endTime-part.startTime<region->endTime-region->startTime))region=&part;
-            report(.9*(index+value)/groups.size(),"Renderizando "+trackLabel+String::fromUTF8("\nMúsica/região ")+String((int)n+1)+"/"+String((int)request.jobs.size())+": "+(region?text(region->name):String::fromUTF8("Fora de região"))+" - "+job.name);
+            const auto &job=request.jobs[n];renderingFile=job.name;
+            report(.9*(index+value)/groups.size(),"Renderizando "+trackLabel+String::fromUTF8("\nMúsica/região ")+String((int)n+1)+"/"+String((int)request.jobs.size())+": "+regionNames[n]+" - "+job.name);
         });
         }catch(const std::exception &error){throw std::runtime_error(utf8(String::fromUTF8("Falha ao renderizar ")+group.name+" - "+renderingFile+": "+String::fromUTF8(error.what())));}
         jaras::Track output;output.id=group.id;output.name=utf8(group.name);output.role.id="other";output.color=sources[0].color;
@@ -116,7 +152,12 @@ inline void write(const jaras::Project &original,const std::vector<Group> &group
         for(const auto &source:sources)for(auto clip:source.clips)if(!audioItem(clip,source)){if(!clip.audioFile)clip.audioFile=source.audioFile;output.clips.push_back(clip);}
         destinations[si].push_back(output);retained.insert(output.id);
     }
-    for(size_t si=0;si<result.songs.size();++si)result.songs[si].tracks=std::move(destinations[si]);
+    for (size_t si=0;si<result.songs.size();++si) {
+        auto &song=result.songs[si];
+        song.tracks=std::move(destinations[si]);
+        if (auto &markers=song.markers)
+            markers->erase(std::remove_if(markers->begin(),markers->end(),[](const auto &marker){return marker.tempoBPM.has_value();}),markers->end());
+    }
     retain(result,retained);jaras::validate(result);
     const auto paths=mediaCleanup::references(result);size_t fileIndex=0;
     for(const auto &path:paths){

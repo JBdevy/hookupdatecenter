@@ -12,7 +12,7 @@ source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 start = source.index('    private var selectedTrack: UUID?')
 selection = source[start:source.index('    @State private var addingTrack', start)]
 fixture = Path('Tests/Apple/TrackCopySelectionPresentationTests.swift').read_text()
-metadata_start = source.index('private func mixerMetadata(')
+metadata_start = source.index('func mixerMetadata(')
 metadata = source[metadata_start:source.index('\n#if os(macOS)', metadata_start)]
 Path(sys.argv[1]).write_text(fixture.replace('    // INSERT_PRODUCTION_SELECTION', selection).replace('// INSERT_PRODUCTION_MIXER_METADATA', metadata))
 PY

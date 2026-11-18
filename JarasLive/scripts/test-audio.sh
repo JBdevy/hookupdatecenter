@@ -12,7 +12,11 @@ for fixture in "${fixtures[@]}"; do
 done
 export MACOSX_DEPLOYMENT_TARGET=12.0
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-audio.XXXXXX")"
-trap 'rm -rf "$build_dir"' EXIT
+if [[ "${JARAS_AUDIO_KEEP_BUILD:-0}" == 1 ]]; then
+ printf 'Audio test build directory: %s\n' "$build_dir"
+else
+ trap 'rm -rf "$build_dir"' EXIT
+fi
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasCoreBridge.mm -o "$build_dir/bridge.o"
 clang++ -std=c++17 -c Core/Project/Models.cpp -o "$build_dir/models.o"
 clang++ -std=c++17 -c Core/Transport/Engine.cpp -o "$build_dir/engine.o"

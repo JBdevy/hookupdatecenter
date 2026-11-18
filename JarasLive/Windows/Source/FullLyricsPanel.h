@@ -2,10 +2,11 @@
 #include "Common.h"
 #include "Localization.h"
 #include "ModalSheet.h"
+#include "TextItemPanel.h"
 
 namespace catlive {
 class FullLyricsPanel final : public Component {
-    TextEditor editor;
+    TextItemPanel editor{{}, [this](String value) { submit(value); }, true, true};
     Label song, instructions, warning;
     TextButton cancel{localization::translate("Cancel")}, create{localization::translate("Create items")};
     std::function<String(String)> apply;
@@ -15,16 +16,16 @@ public:
         song.setText(name, dontSendNotification); song.setFont(theme::font(16));
         instructions.setText(localization::translate("Separate each stanza with two blank lines. Items will fill the whole song equally."), dontSendNotification);
         instructions.setFont(theme::font(12)); instructions.setColour(Label::textColourId, theme::secondary);
-        editor.setMultiLine(true, true); editor.setReturnKeyStartsNewLine(true); editor.setScrollbarsShown(true);
-        editor.setFont(theme::font(15)); editor.setIndents(8, 8); editor.setName(localization::translate("Full lyrics"));
+        editor.setName(localization::translate("Full lyrics"));
         warning.setFont(theme::font(12)); warning.setColour(Label::textColourId, Colours::orange);
         cancel.onClick = [this] { ModalSheet::dismiss(*this); };
         create.setColour(TextButton::buttonColourId, theme::green);
-        create.onClick = [this] {
-            const auto error = apply(editor.getText());
-            if (error.isEmpty()) ModalSheet::dismiss(*this);
-            else warning.setText(error, dontSendNotification);
-        };
+        create.onClick = [this] { submit(editor.value()); };
+    }
+    void submit(const String &draft) {
+        const auto error = apply(draft);
+        if (error.isEmpty()) ModalSheet::dismiss(*this);
+        else warning.setText(error, dontSendNotification);
     }
     void resized() override {
         auto area = getLocalBounds().reduced(18);

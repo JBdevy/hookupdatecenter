@@ -5,6 +5,7 @@ import Combine
 // The production views and analyzers run unchanged. Their audio source and
 // app-only theme/font registration are replaced for this standalone fixture.
 @MainActor final class StemAudioPlayback {
+    let processingSampleRate = 44_100.0
     static let shared = StemAudioPlayback()
     var rta = 0, meters = 0, spectrogram = 0
     func eqSpectrumFrames(_ target: UUID?, effect: String) -> [EQAnalysisFrame] { rta += 1; return [] }

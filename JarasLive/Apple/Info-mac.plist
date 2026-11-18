@@ -53,6 +53,12 @@
 <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><string>rpp</string></dict>
 </dict></array>
 <key>UTExportedTypeDeclarations</key><array>
+        <dict>
+            <key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.jllyrics</string>
+            <key>UTTypeDescription</key><string>CatLive Lyrics</string>
+            <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+            <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>jllyrics</string></array></dict>
+        </dict>
 <dict>
 <key>UTTypeIdentifier</key><string>com.hookdeveloper.catlive.zipfx</string>
 <key>UTTypeDescription</key><string>CatLive Pads Presets</string>

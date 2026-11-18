@@ -184,6 +184,48 @@
         "PCM readiness must leave retained text/media ink untouched")
     print("NATIVE_BODY_FILL_AND_TEXT_BEFORE_PCM_READINESS_WITHOUT_FILL_OR_INK_REDRAW_OK")
 
+    // A row-height gesture changes the vertical projection of reused item IDs.
+    // Preserve ready sources and submit each surface once at the new geometry.
+    var heightSong = song
+    heightSong.tracks = (0..<18).map { index in
+        var track = audioTrack
+        track.id = UUID()
+        track.heightScale = index % 2 == 0 ? 1 : 1.25
+        var clip = first
+        clip.id = UUID()
+        track.clips = [clip]
+        return track
+    }
+    let heightMetadata = TimelineRenderMetadata(song: heightSong)
+    let heightCache = NativeTimelineAudioBodyCache()
+    let heightBody = NativeTimelineAudioBodyView()
+    for height: CGFloat in [64, 112, 157, 240, 85, 32, 24, 64] {
+        let rows = TrackRowLayout(tracks: heightSong.tracks, baseHeight: height)
+        let config = heightCache.configuration(song: heightSong, renderKey: unchangedKey, rows: rows,
+            metadata: heightMetadata, rulerHeight: 55, selectedClips: [], mediaDirectory: directory, missingAudioPaths: [])
+        let fillsBefore = heightBody.fillSubmissionsForTest
+        let waveformsBefore = heightBody.waveformSubmissionsForTest
+        heightBody.configure(config)
+        let destination = CGRect(x: 0, y: rows.offsets[8], width: 600, height: 260)
+        heightBody.project(viewport: destination, documentSize: CGSize(width: 4000, height: 55 + rows.totalHeight), scale: 300)
+        if fillsBefore > 0 {
+            precondition(heightBody.fillSubmissionsForTest == fillsBefore + 1 && heightBody.waveformSubmissionsForTest == waveformsBefore + 1,
+                "Height-only updates must replace the projected surfaces without an intervening empty frame")
+        }
+        let heightFills = heightBody.fillsForTest!, heightWaves = heightBody.waveformsForTest!
+        precondition(heightFills.coordinateSpace == heightWaves.coordinateSpace)
+        let origin = heightFills.coordinateSpace!.documentOrigin
+        let rowPositions = rows.offsets.indices.map { CGRect(x: 1, y: 58 + rows.offsets[$0], width: 598, height: rows.laneHeights[$0] - 6) }
+        let visibleRects = heightFills.items.map { $0.rect.offsetBy(dx: origin.x, dy: origin.y) }
+        precondition(visibleRects.allSatisfy { rect in rowPositions.contains {
+            abs($0.minY - rect.minY) < 0.001 && abs($0.height - rect.height) < 0.001
+        } }, "Every fill must match the current track height and offset")
+        precondition(heightWaves.strokes.allSatisfy { stroke in
+            heightFills.items.contains { $0.rect == stroke.itemRect }
+        }, "Every waveform must stay inside its item at the new track height")
+    }
+    print("NATIVE_BODY_TRACK_HEIGHT_FILLS_AND_WAVEFORMS_SHARE_ROWS_AND_SUBMIT_ONCE_OK")
+
     // A preference-only change must replace cached GPU colors without changing
     // the document, its selection, its source data or text/media appearances.
     let appearanceCache = NativeTimelineAudioBodyCache()
@@ -242,7 +284,10 @@
     for (index, offset) in [CGFloat(0), 0.25, 63.75, 128, 255.5, 384, 511.999].enumerated() {
         let movingViewport = bucketStart.offsetBy(dx: offset, dy: 0)
         let exactScale = Double(400 + index)
+        let previousWaveforms = body.waveformSubmissionsForTest
         body.project(viewport: movingViewport, documentSize: largeDocument, scale: exactScale)
+        precondition(body.waveformSubmissionsForTest <= previousWaveforms + 1,
+                     "Zoom must replace the waveform frame directly, without clearing its drawable and source buffers first")
         precondition(body.surfaceGeometryForTest == retainedSurfaceGeometry,
                      "subbucket zoom origins must not mutate body, surface, or MTKView frames/bounds")
         precondition(body.frame.contains(movingViewport),
@@ -251,6 +296,14 @@
         precondition(exact.coordinateSpace?.pixelsPerSecond == exactScale &&
                      abs(exact.items[0].rect.width - (2 * exactScale - 2)) < 0.001,
                      "retained surface geometry still redraws item coordinates at the exact live scale")
+        let waveform = body.waveformsForTest!
+        precondition(waveform.coordinateSpace == exact.coordinateSpace && waveform.size == exact.size,
+                     "The waveform and item fills must use the same viewport on every zoom frame")
+        let audioRect = exact.items[0].rect
+        precondition(!waveform.strokes.isEmpty && waveform.strokes.contains { stroke in
+            abs(stroke.itemRect.minX - audioRect.minX) < 0.001 &&
+                abs(stroke.itemRect.maxX - audioRect.maxX) < 0.001
+        }, "Waveform passes must keep the item edges aligned during rapid zoom")
     }
     for movingViewport in [CGRect(x: 1024, y: 512, width: 600, height: 260),
                            CGRect(x: 1535.999, y: 1023.999, width: 600, height: 260),

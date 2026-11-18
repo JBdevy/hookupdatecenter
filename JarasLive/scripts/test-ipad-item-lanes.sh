@@ -13,7 +13,8 @@ geometry = view[view.index('private struct IpadNativeItemGeometry {'):view.index
 protocol = Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()
 Path(sys.argv[1]).write_text('import Foundation\n' + '''
 public struct AudioClip { var id = UUID(); var startTime: Double; var duration: Double; var recordingLane: Int? }
-public struct Track { var clips: [AudioClip] }
+public struct Track { var clips: [AudioClip]; var kind = FixtureTrackKind() }
+public struct FixtureTrackKind { var isTeleprompter = false }
 ''' + Path('Application/Project/TeleprompterSettings.swift').read_text() + protocol + lanes + geometry + Path('Tests/Apple/IpadItemLaneTests.swift').read_text())
 PY
 swiftc -O -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"

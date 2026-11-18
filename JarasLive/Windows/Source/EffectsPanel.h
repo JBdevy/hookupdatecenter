@@ -457,7 +457,7 @@ class EQGraph final : public Component {
 
 };
 } // namespace fxui
-class EffectsPanel final : public Component, private ListBoxModel, private Timer {
+class EffectsPanel final : public Component, public DragAndDropContainer, public DragAndDropTarget, private ListBoxModel, private Timer {
   public:
     static constexpr int minimumContentWidth = 840, minimumContentHeight = 600;
     std::function<bool(const KeyPress &)> globalKey;
@@ -724,6 +724,31 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
         g.setFont(theme::semiboldFont(12));
         g.drawText(name, 35, 0, width - 40, height, Justification::centredLeft);
     }
+    var getDragSourceDescription(const SparseSet<int> &rows) override {
+        auto keys=list(get(settings,"inserted"));
+        return rows.size()==1 && rows[0]>=0 && rows[0]<keys.size() ? keys[rows[0]] : var();
+    }
+    bool isInterestedInDragSource(const SourceDetails &details) override {
+        return details.sourceComponent.get()==&chain && list(get(settings,"inserted")).contains(details.description);
+    }
+    void itemDropped(const SourceDetails &details) override {
+        if(!isInterestedInDragSource(details)||session.busy)return;
+        auto keys=list(get(settings,"inserted"));
+        const auto effect=details.description;
+        const int source=keys.indexOf(effect);
+        const auto point=chain.getLocalPoint(this,details.localPosition);
+        int destination=chain.getRowContainingPosition(point.x,point.y);
+        if(destination<0)destination=point.y<0?0:keys.size();
+        else if(point.y>=chain.getRowPosition(destination,true).getCentreY())++destination;
+        if(source<0)return;
+        keys.remove(source);if(destination>source)--destination;
+        destination=jlimit(0,keys.size(),destination);
+        if(destination==source)return;
+        keys.insert(destination,effect);put(settings,"inserted",keys);
+        if(commit()){
+            chain.updateContent();chain.selectRow(destination);selected=destination;show();
+        }
+    }
     void selectedRowsChanged(int row) override {
         selected = row;
         show();
@@ -906,7 +931,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
                 target.getParentDirectory().createDirectory();
                 if (source != target && !source.copyFileTo(target)) throw std::runtime_error("Could not copy the instrument to the project.");
             }
-            auto targets = item || insertionTargets.empty() ? std::vector<ID>{track} : insertionTargets;
+            auto targets = insertionTargets.empty() ? std::vector<ID>{track} : insertionTargets;
             if (kind == "Instruments" && targets.size() != 1) throw std::runtime_error("Escolha apenas uma pista para inserir um instrumento.");
             std::map<ID, var> changes;
             String ownKey;
@@ -922,7 +947,7 @@ class EffectsPanel final : public Component, private ListBoxModel, private Timer
                     auto plugins = list(get(next, "externalPlugins")); plugins.add(plugin); put(next, "externalPlugins", plugins);
                     key = "External:" + str(plugin, "id");
                 } else {
-                    if ((item||kind=="CatStemSeparation 5") && inserted.contains(var(kind))) { chain.selectRow(inserted.indexOf(var(kind))); return true; }
+                    if (kind=="CatStemSeparation 5" && inserted.contains(var(kind))) { chain.selectRow(inserted.indexOf(var(kind))); return true; }
                     auto initialize = [&](var &value) {
                         fxui::reset(kind, value); fxui::defaults(value); fxui::enable(kind, value, true);
                         if(kind=="CatStemSeparation 5")put(value,"stemMix",stemMix::defaults());

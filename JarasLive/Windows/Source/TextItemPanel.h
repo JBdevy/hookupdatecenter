@@ -7,7 +7,7 @@
 namespace catlive {
 class TextItemPanel final : public Component {
   public:
-    TextItemPanel(String initial, std::function<void(String)> save, bool isColumn=false) : commit(std::move(save)), embedded(isColumn) {
+    TextItemPanel(String initial, std::function<void(String)> save, bool isColumn=false, bool outlineStanzas=false) : commit(std::move(save)), embedded(isColumn) {
         const auto parts=ItemTextColors::columns(initial);twoColumns=!embedded && parts.size()==2;
         initial=parts[0];
         if(!embedded) {
@@ -16,6 +16,7 @@ class TextItemPanel final : public Component {
             addAndMakeVisible(columnMode);columnMode.setButtonText(twoColumns?localization::translate("2 columns"):"Default");
             columnMode.onClick=[this]{toggleColumns();};
         }
+        editor.outlineStanzas = outlineStanzas;
         addAndMakeVisible(editor);
         editor.setMultiLine(true, true);
         editor.setReturnKeyStartsNewLine(true);
@@ -51,6 +52,7 @@ class TextItemPanel final : public Component {
                 safe->editor.grabKeyboardFocus();
         });
     }
+    String value() { return twoColumns ? ItemTextColors::encodeColumns(encoded(), second->encoded()) : encoded(); }
     void paint(Graphics &g) override {
         g.fillAll(theme::panel);
         if(embedded)return;
@@ -78,7 +80,19 @@ class TextItemPanel final : public Component {
   private:
     struct Notepad final : TextEditor {
         std::function<void()> apply,chooseColor,prepareInsertion;
-        bool coloring=false, pasteHeld=false;
+        bool coloring=false, pasteHeld=false, outlineStanzas=false;
+        void paintOverChildren(Graphics &g) override {
+            TextEditor::paintOverChildren(g);
+            if (!outlineStanzas) return;
+            g.setColour(theme::secondary.withAlpha(.45f));
+            Graphics::ScopedSaveState saved(g);
+            g.reduceClipRegion(getLocalBounds().reduced(3));
+            for (const auto &range : ItemTextColors::stanzaRanges(getText())) {
+                const auto box = getTextBounds(range).getBounds();
+                if (!box.isEmpty())
+                    g.drawRoundedRectangle(Rectangle<float>(4.f, float(box.getY()) - 2.f, float(getWidth() - 20), float(box.getHeight()) + 4.f), 4.f, 1.f);
+            }
+        }
         void insertTextAtCaret(const String &text) override {
             if(!coloring && prepareInsertion)prepareInsertion();
             TextEditor::insertTextAtCaret(text);
@@ -192,7 +206,7 @@ class TextItemPanel final : public Component {
         return ItemTextColors::encode(runs);
     }
     void apply() {
-        commit(twoColumns?ItemTextColors::encodeColumns(encoded(),second->encoded()):encoded());
+        commit(value());
     }
 };
 } // namespace catlive

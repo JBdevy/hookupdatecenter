@@ -679,7 +679,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         peers = []; peerName = ""; status = ""
         setImageProject(nil)
         #if os(iOS)
-        if role == .client && !isLocalWorkspace { UIApplication.shared.isIdleTimerDisabled = false }
+        if role == .client && !isLocalWorkspace { UIApplication.shared.isIdleTimerDisabled = UIApplication.shared.applicationState == .active }
         #endif
     }
     #if os(iOS)
@@ -713,7 +713,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         previous?.close()
         failPendingNotices(.disconnected)
         #if os(iOS)
-        if role == .client && !isLocalWorkspace { UIApplication.shared.isIdleTimerDisabled = false }
+        if role == .client && !isLocalWorkspace { UIApplication.shared.isIdleTimerDisabled = UIApplication.shared.applicationState == .active }
         #endif
     }
     func resumeAfterBackground() {
@@ -953,7 +953,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             self.status = wasConnected ? "Disconnected" : "Connection failed. Keep the devices nearby and enable Remote on the PC."
             if self.role == .host { self.refreshHostPresence(); self.parentHost?.refreshHostPresence() }
             #if os(iOS)
-            if role == .client && !isLocalWorkspace { UIApplication.shared.isIdleTimerDisabled = false }
+            if role == .client && !isLocalWorkspace { UIApplication.shared.isIdleTimerDisabled = UIApplication.shared.applicationState == .active }
             #endif
         }
         channel.start()

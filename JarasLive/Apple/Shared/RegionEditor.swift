@@ -410,6 +410,7 @@ struct RegionRightClick: NSViewRepresentable {
     var detectBPM: (() -> Void)? = nil
     var disunify: (() -> Void)? = nil
     var delete: (() -> Void)? = nil
+    var exportMultitrack: (() -> Void)? = nil
     var exportAudio: (() -> Void)? = nil
     var resizable = true
     var seek: (() -> Void)? = nil
@@ -417,7 +418,7 @@ struct RegionRightClick: NSViewRepresentable {
     var cancelDrag: (() -> Void)? = nil
     var drag: (CGFloat, Bool, Int) -> Void = { _, _, _ in }
     func makeNSView(context: Context) -> RegionRightClickView { RegionRightClickView() }
-    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.drag = drag; view.resizable = resizable; view.seek = seek; view.select = select; view.cancelDrag = cancelDrag }
+    func updateNSView(_ view: RegionRightClickView, context: Context) { view.edit = edit; view.detectBPM = detectBPM; view.unify = unify; view.disunify = disunify; view.delete = delete; view.exportAudio = exportAudio; view.exportMultitrack = exportMultitrack; view.drag = drag; view.resizable = resizable; view.seek = seek; view.select = select; view.cancelDrag = cancelDrag }
 }
 final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var edit: (() -> Void)?
@@ -425,6 +426,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     var unify: (() -> Void)?
     var disunify: (() -> Void)?
     var delete: (() -> Void)?
+    var exportMultitrack: (() -> Void)?
     var exportAudio: (() -> Void)?
     var drag: ((CGFloat, Bool, Int) -> Void)?
     var seek: (() -> Void)?
@@ -491,7 +493,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         hoverEdge = 0
         nativeGrip.isHidden = true
         nativeGrip.path = nil
-        edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil; exportAudio = nil
+        edit = nil; detectBPM = nil; unify = nil; disunify = nil; delete = nil; exportAudio = nil; exportMultitrack = nil
         drag = nil; seek = nil; select = nil; cancelDrag = nil
         guard !presentingProjectedMenu else { return false }
         timelineInputGateChanged(blocked: true)
@@ -652,10 +654,12 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
         if detectBPM != nil { add("Detect BPM…", #selector(detectSelected)) }
         if unify != nil { add("Unify", #selector(unifySelected)) }
         if disunify != nil { add("Disunify", #selector(disunifySelected)) }
+        if exportMultitrack != nil { add("Export Multitrack", #selector(exportMultitrackSelected)) }
         if exportAudio != nil { add("Export Audio", #selector(exportAudioSelected)) }
         if delete != nil { add("Delete region", #selector(deleteSelected)) }
         return menu
     }
+    @objc private func exportMultitrackSelected() { exportMultitrack?() }
     @objc private func exportAudioSelected() { exportAudio?() }
     @objc private func detectSelected() { detectBPM?() }
     @objc private func deleteSelected() { delete?() }
@@ -664,12 +668,8 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
     @objc private func disunifySelected() { disunify?() }
     override func mouseDown(with event: NSEvent) {
         guard inputAvailable else { timelineInputGateChanged(blocked: true); return }
-        if let select, !event.modifierFlags.intersection([.shift, .command]).isEmpty,
-           !event.modifierFlags.contains(.control), !event.modifierFlags.contains(.option) {
-            startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil
-            select(event.modifierFlags)
-            return
-        }
+        // Apply Shift/Command selection on mouse-up only if this remained a
+        // click. The same press can begin a free region move or edge resize.
         if event.modifierFlags.contains(.control) { startX = nil; activeDrag = nil; activeSeek = nil; activeDelete = nil; rightMouseDown(with: event) }
         else {
             startX = event.locationInWindow.x

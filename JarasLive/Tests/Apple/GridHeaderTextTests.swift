@@ -105,7 +105,7 @@ for name in names {
 }
 let labels: [(String, GridSelectionHeaderText.Title, Bool, NSColor)] = [
     ("M", GridSelectionHeaderText.mute, true, .white), ("FX", GridSelectionHeaderText.fx, true, .white),
-    ("FX", GridSelectionHeaderText.activeFX, true, .systemGreen), ("Edit", GridSelectionHeaderText.edit, true, .white),
+    ("Edit", GridSelectionHeaderText.edit, true, .white),
     ("−∞ dB", GridSelectionHeaderText.gain("−∞ dB"), false, .white), ("+3.5 dB", GridSelectionHeaderText.gain("+3.5 dB"), false, .white),
     ("Center", GridSelectionHeaderText.gain("Center"), false, .white), ("R-100%", GridSelectionHeaderText.gain("R-100%"), false, .white),
     ("-60.0 dB", GridSelectionHeaderText.gain("-60.0 dB"), false, .white), ("+24.0 dB", GridSelectionHeaderText.gain("+24.0 dB"), false, .white),
@@ -225,11 +225,11 @@ precondition(compactHeader.headerRect.width - compactHeader.titleInset - 8 >= co
 print("GRID_HEADER_COMPACT_VOLUME_KNOB_OK")
 
 let normalTitle = GridSelectionHeaderText.title("Selected item")
-let selectedTitle = GridSelectionHeaderText.title("Selected item", selected: true)
-precondition(normalTitle !== selectedTitle && selectedTitle === GridSelectionHeaderText.title("Selected item", selected: true))
-precondition(normalTitle.width == selectedTitle.width, "Selection color must not change item layout")
+let blackTitle = GridSelectionHeaderText.title("Selected item", black: true)
+precondition(normalTitle !== blackTitle && blackTitle === GridSelectionHeaderText.title("Selected item", black: true))
+precondition(normalTitle.width == blackTitle.width, "Contrast color must not change item layout")
 let normalRaster = bitmap(scale: 2, flipped: true) { normalTitle.draw(in: CGRect(x: 4, y: 7, width: 300, height: 17)) }
-let selectedRaster = bitmap(scale: 2, flipped: true) { selectedTitle.draw(in: CGRect(x: 4, y: 7, width: 300, height: 17)) }
-precondition(normalRaster.bytes != selectedRaster.bytes && normalRaster.extent == selectedRaster.extent,
-    "Selected item names must change color without changing glyph geometry")
-print("GRID_HEADER_SELECTED_TITLE_COLOR_AND_METRICS_OK")
+let blackRaster = bitmap(scale: 2, flipped: true) { blackTitle.draw(in: CGRect(x: 4, y: 7, width: 300, height: 17)) }
+precondition(normalRaster.bytes != blackRaster.bytes && normalRaster.extent == blackRaster.extent,
+    "Item names must change ink without changing glyph geometry")
+print("GRID_HEADER_CONTRAST_COLOR_AND_METRICS_OK")

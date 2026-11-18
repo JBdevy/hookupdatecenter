@@ -9,6 +9,7 @@ import sys
 scroll = Path('Apple/Shared/GridScrollView.swift').read_text()
 diagnostics = scroll[scroll.index('enum TimelineLayoutDiagnostics'):scroll.index('protocol SidebarResizeLayoutBoundary')]
 diagnostics += scroll[scroll.index('struct GridRowReveal:'):scroll.index('/// The grid owns these scroll views.')]
+diagnostics += scroll[scroll.index('enum TimelineVerticalBar {'):scroll.index('struct GridScrollView<')]
 diagnostics += '\nprivate final class GridDocumentView: NSView { var followsViewportWidth = false; func synchronizeHostedViewport() {} }\n'
 def native_class(name):
     start = scroll.index('final class ' + name)

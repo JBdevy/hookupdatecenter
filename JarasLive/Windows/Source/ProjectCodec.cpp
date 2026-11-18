@@ -782,10 +782,12 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 optionalNum(rm, "tempoUnit", m.tempoUnit);
                 optionalNum(rm, "tempoReferenceBPM", m.tempoReferenceBPM);
                 optionalNum(rm, "tempoPlaybackRate", m.tempoPlaybackRate);
+                if (get(rm, "regionTempoAnchor").isBool()) m.regionTempoAnchor = flag(rm, "regionTempoAnchor");
                 optionalText(rm, "tempoTimebase", m.tempoTimebase);
                 optionalNum(rm, "section", m.section);
                 optionalNum(rm, "loopSection", m.loopSection);
                 optionalText(rm, "automaticSectionTargetID", m.automaticSectionTargetID);
+                optionalNum(rm, "automaticSectionRepeatCount", m.automaticSectionRepeatCount);
                 optionalText(rm, "unifiedRegionID", m.unifiedRegionID);
                 optionalText(rm, "sourceRegionID", m.sourceRegionID);
                 optionalText(rm, "regionOwnerID", m.regionOwnerID);
@@ -1143,6 +1145,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 emit(rm, "tempoUnit", m.tempoUnit);
                 emit(rm, "tempoReferenceBPM", m.tempoReferenceBPM);
                 emit(rm, "tempoPlaybackRate", m.tempoPlaybackRate);
+                emit(rm, "regionTempoAnchor", m.regionTempoAnchor);
                 emit(rm, "tempoTimebase", m.tempoTimebase);
                 emit(rm, "unifiedRegionID", m.unifiedRegionID);
                 emit(rm, "sourceRegionID", m.sourceRegionID);
@@ -1151,6 +1154,7 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 emit(rm, "section", m.section);
                 emit(rm, "loopSection", m.loopSection);
                 emit(rm, "automaticSectionTargetID", m.automaticSectionTargetID);
+                emit(rm, "automaticSectionRepeatCount", m.automaticSectionRepeatCount);
                 markers.add(rm);
             }
             put(raw, "markers", markers);

@@ -77,7 +77,7 @@ final class StemSeparationTests: XCTestCase {
         XCTAssertEqual(before, project)
         project.songs[0].tracks[0].clips[0] = clip
         let unchanged = project
-        XCTAssertThrowsError(try project.insertSeparatedStems(Array(tracks.prefix(4)), song: project.songs[0].id, sourceTrack: project.songs[0].tracks[0].id, original: clip))
+        XCTAssertThrowsError(try project.insertSeparatedStems([], song: project.songs[0].id, sourceTrack: project.songs[0].tracks[0].id, original: clip))
         XCTAssertEqual(project, unchanged)
     }
     func testDuplicateOutputIDsAreRejectedAndNoSourceIsMuted() throws {

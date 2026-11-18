@@ -74,15 +74,15 @@ final class ItemDurationTests: XCTestCase {
         XCTAssertEqual(song.item(faster, withRate: 1).duration, original.duration, accuracy: 1e-9)
         var video = original; video.audioFile = AudioFile(path: "Videos/source.mp4")
         XCTAssertEqual(song.item(video, withRate: 2).duration, 5, "Projection playback uses its own constant source rate")
-        XCTAssertEqual(song.restoringItemDuration(video, sourceDuration: 20).duration, 20)
+        XCTAssertEqual(song.restoringItemDuration(video, sourceDuration: 20).duration, video.duration)
     }
     func testFullSourceRestorationPreservesPositionRateMixAndTakeAutomation() {
         let song = Project.empty(name: "Duration").songs[0]
         var clip = AudioClip(id: UUID(), name: "Trimmed", startTime: 10, duration: 2, sourceOffset: 3, gain: 0.4, pan: -0.2, playbackRate: 2, loopStart: 1, loopLength: 4)
         clip.automation = TrackAutomation()
         let restored = song.restoringItemDuration(clip, sourceDuration: 20)
-        XCTAssertEqual(restored.startTime, 10); XCTAssertEqual(restored.duration, 10)
-        XCTAssertEqual(restored.sourceOffset, 0); XCTAssertNil(restored.loopLength)
+        XCTAssertEqual(restored.startTime, 10); XCTAssertEqual(restored.duration, 2)
+        XCTAssertEqual(restored.sourceOffset, 3); XCTAssertNil(restored.loopLength)
         XCTAssertEqual(restored.audioRate, 2); XCTAssertEqual(restored.gain, 0.4); XCTAssertEqual(restored.pan, -0.2)
         XCTAssertEqual(restored.automation, clip.automation)
     }
@@ -90,12 +90,13 @@ final class ItemDurationTests: XCTestCase {
         var song = Project.empty(name: "Tempo duration").songs[0]
         song.bpm = 120; song.timeSettings = ProjectTimeSettings(); song.timeSettings?.timebase = .relative
         song.markers = [.init(id: UUID(), name: "Tempo", position: 5, color: 0, tempoBPM: 240, tempoTimebase: .relative, tempoReferenceBPM: 120)]
-        var clip = AudioClip(id: UUID(), name: "Trimmed", startTime: 3, duration: 1, sourceOffset: 8)
+        var clip = AudioClip(id: UUID(), name: "Expanded", startTime: 3, duration: 20, sourceOffset: 2)
         let restored = song.restoringItemDuration(clip, sourceDuration: 10)
-        XCTAssertEqual(restored.duration, 6)
-        XCTAssertEqual(song.tempoAudioSegments(restored).reduce(0) { $0 + $1.duration * $1.audioRate }, 10, accuracy: 1e-9)
+        XCTAssertEqual(restored.duration, 5)
+        XCTAssertEqual(restored.startTime, 3); XCTAssertEqual(restored.sourceOffset, 2)
+        XCTAssertEqual(song.tempoAudioSegments(restored).reduce(0) { $0 + $1.duration * $1.audioRate }, 8, accuracy: 1e-9)
         clip.renderedTempo = true
-        XCTAssertEqual(song.restoringItemDuration(clip, sourceDuration: 10).duration, 10)
+        XCTAssertEqual(song.restoringItemDuration(clip, sourceDuration: 10).duration, 8)
         XCTAssertEqual(song.restoringItemDuration(clip, sourceDuration: .nan), clip)
     }
 }

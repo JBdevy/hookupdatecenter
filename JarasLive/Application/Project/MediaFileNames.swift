@@ -10,6 +10,29 @@ struct MediaFileNames {
             }
         }
     }
+    /// Repeated unification belongs to one filename family, not nested suffixes.
+    mutating func allocateUnification(_ name: String) -> String {
+        let clean = name.replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: "/", with: "-")
+        let ext = (clean as NSString).pathExtension
+        var stem = (clean as NSString).deletingPathExtension
+        var latest = 0
+        while let range = stem.range(of: "\\s*-\\s*[0-9]{3}$", options: .regularExpression) {
+            latest = max(latest, Int(stem[range].filter(\.isNumber)) ?? 0)
+            stem.removeSubrange(range)
+        }
+        stem = stem.trimmingCharacters(in: .whitespacesAndNewlines)
+        while stem.utf8.count > 210 { stem.removeLast() }
+        let family = stem.lowercased()+"-", tail = ext.isEmpty ? "" : "."+ext
+        for candidate in used where candidate.hasPrefix(family) && (candidate as NSString).pathExtension == ext.lowercased() {
+            let number = String((candidate as NSString).deletingPathExtension.dropFirst(family.count))
+            if number.count >= 3 && number.allSatisfy(\.isNumber) { latest = max(latest, Int(number) ?? 0) }
+        }
+        while true {
+            latest += 1
+            let candidate = stem+String(format: "-%03d",latest)+tail
+            if used.insert(candidate.lowercased()).inserted { return candidate }
+        }
+    }
     mutating func allocate(_ name: String, forceSuffix: Bool = false) -> String {
         let clean = name.replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: "/", with: "-")
         let ext = (clean as NSString).pathExtension

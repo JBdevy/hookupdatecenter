@@ -395,6 +395,5 @@ public extension Song {
                 markers![index] = replacement
             } else { markers!.append(markerWithRegionOwnership(marker)) }
         }
-        ensureInitialTempoMarker()
     }
 }

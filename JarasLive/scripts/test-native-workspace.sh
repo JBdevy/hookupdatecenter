@@ -17,7 +17,7 @@ start=source.index('struct MixerResizeHandle:')
 row_start=source.index('private struct TimelineMixerRowVersion<')
 row_version=source[row_start:source.index('\n#endif',row_start)]
 observer_start=source.index('@MainActor private final class TimelineMixerRowUpdates<')
-row_version += '\n' + source[observer_start:source.index('private struct TimelineLiveMixerRow<', observer_start)]
+row_version += '\n' + source[observer_start:source.index('private final class TimelineMixerRowContent<', observer_start)]
 (folder/'main.swift').write_text('import SwiftUI\nimport Combine\nsetbuf(stdout, nil)\n'+row_version+'\n'+Path('Tests/Apple/NativeWorkspaceSplitTests.swift').read_text()+'\n'+Path('Tests/Apple/TimelineGeometryRetentionTests.swift').read_text()+'\n'+Path('Tests/Apple/MixerHeaderClickTests.swift').read_text()+'\n'+Path('Tests/Apple/TrackCopyScrollTests.swift').read_text())
 mapping=Path('Apple/Shared/ControlMappings.swift').read_text()
 right_click=mapping[mapping.index('private struct MappingClickAnchor:'):]

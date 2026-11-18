@@ -54,6 +54,22 @@ final class TrackVisibilityTests: XCTestCase {
         XCTAssertEqual(GridDeleteTarget(items: [tracks[2].clips[0].id], tracks: [selected], song: song, visibility: state),
                        .items([tracks[2].clips[0].id]))
     }
+    @MainActor func testFixedTracksRetainOrderAndAllowSixWithoutRemovingOriginalRows() throws {
+        let suite = "catlive.fixed-tracks.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let project = UUID()
+        let model = (1...7).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        let ids = model.map(\.id)
+        let prefs = TrackVisibilityPreferences(defaults: defaults)
+        for id in ids.prefix(6) { XCTAssertTrue(prefs.toggleFixedTrack(id, project: project, available: Set(ids))) }
+        XCTAssertFalse(prefs.toggleFixedTrack(ids[6], project: project, available: Set(ids)))
+        XCTAssertEqual(prefs.state(for: project).fixedTracks, Array(ids.prefix(6)))
+        XCTAssertEqual(prefs.state(for: project).visibleTracks(in: model, area: .trackMixer), model)
+        XCTAssertTrue(prefs.toggleFixedTrack(ids[6], project: project, available: Set(ids.dropFirst())))
+        XCTAssertEqual(TrackVisibilityPreferences(defaults: defaults).state(for: project).fixedTracks, Array(ids.dropFirst()))
+    }
+
     @MainActor func testPreferencesAreLocalPerProjectAndPanelAndRestoreAcrossLaunches() throws {
         let suite = "catlive.track-visibility.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

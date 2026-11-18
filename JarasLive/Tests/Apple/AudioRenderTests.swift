@@ -422,6 +422,15 @@ try audioAutoreleasepool {
     project.masterVolume = 0; project.masterMute = true; project.masterMono = true
     let state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
     try clickAudio.update(state, revision: 1)
+    @MainActor func soundIsReady() -> Bool {
+        let published = Mirror(reflecting: clickAudio).children.first { $0.label == "metronomeSoundRevision" }?.value
+        return (published as? UInt64) == settings.soundRevision
+    }
+    let deadline = Date(timeIntervalSinceNow: 5)
+    while !soundIsReady(), Date() < deadline {
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+    }
+    precondition(soundIsReady(), "Metronome preset must be published before manual rendering")
     let generator = Mirror(reflecting: clickAudio).children.first { $0.label == "metronome" }!.value as! JarasMetronomeGenerator?
     let buffer = AVAudioPCMBuffer(pcmFormat: clickFormat, frameCapacity: 512)!
     @MainActor func clickPeaks() throws -> [Float] {
@@ -1876,6 +1885,8 @@ try audioAutoreleasepool {
     var project = drawerProject
     project.songs[0].regionOwnershipInitialized = true
     project.songs[0].regionOwnershipVersion = 2
+    // The previous item has a playable tail in B, with most of its span in A.
+    project.songs[0].tracks[0].clips[0].duration = 3.75
     project.songs[0].tracks[0].clips[0].regionOwnerID = previousID
     project.songs[0].tracks[1].clips[0].regionOwnerID = incomingID
     project.songs[0].tracks[1].clips[0].startTime = 2 - 0.0000004

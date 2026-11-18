@@ -10,6 +10,8 @@ public enum TrackVisibilityArea: String, CaseIterable, Sendable {
 public struct TrackVisibilityState: Equatable, Sendable {
     public var trackMixer: Set<UUID> = []
     public var barMixer: Set<UUID> = []
+    public var fixedTracks: [UUID] = []
+    public static let fixedTrackLimit = 6
     public init(trackMixer: Set<UUID> = [], barMixer: Set<UUID> = []) {
         self.trackMixer = trackMixer; self.barMixer = barMixer
     }
@@ -54,9 +56,29 @@ public struct TrackVisibilityState: Equatable, Sendable {
         func read(_ area: TrackVisibilityArea) -> Set<UUID> {
             Set((defaults.stringArray(forKey: key(project, area)) ?? []).compactMap(UUID.init(uuidString:)))
         }
-        let state = TrackVisibilityState(trackMixer: read(.trackMixer), barMixer: read(.barMixer))
+        var state = TrackVisibilityState(trackMixer: read(.trackMixer), barMixer: read(.barMixer))
+        var seen = Set<UUID>()
+        state.fixedTracks = Array((defaults.stringArray(forKey: pinKey(project)) ?? [])
+            .compactMap(UUID.init(uuidString:)).filter { seen.insert($0).inserted }
+            .prefix(TrackVisibilityState.fixedTrackLimit))
         cached[project] = state
         return state
+    }
+    private func pinKey(_ project: UUID) -> String { "trackVisibility.\(project.uuidString).fixedTracks" }
+    @discardableResult public func toggleFixedTrack(_ track: UUID, project: UUID, available: Set<UUID>) -> Bool {
+        guard available.contains(track) else { return false }
+        var state = state(for: project)
+        var pins = state.fixedTracks.filter(available.contains)
+        if let index = pins.firstIndex(of: track) { pins.remove(at: index) }
+        else {
+            guard pins.count < TrackVisibilityState.fixedTrackLimit else { return false }
+            pins.append(track)
+        }
+        state.fixedTracks = pins
+        cached[project] = state
+        defaults.set(pins.map(\.uuidString), forKey: pinKey(project))
+        revision &+= 1
+        return true
     }
     public func setVisible(_ visible: Bool, track: UUID, in area: TrackVisibilityArea, project: UUID) {
         var state = state(for: project)
@@ -96,6 +118,33 @@ public extension Song {
             guard let source = tracksByID[edge.source] else { return true }
             return source.parentTrackID != edge.destination || !source.outputPatches.contains(.masterGroup)
         }
+    }
+    /// Reconcile edits from either end without doubling the audible connection.
+    mutating func applyReciprocalRouting(_ edits: [UUID: TrackRouting]) -> [UUID: TrackRouting] {
+        let before = tracks
+        let indices = Dictionary(tracks.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { a, _ in a })
+        for (id, routing) in edits { if let i = indices[id] { tracks[i].routing = routing } }
+        for (id, routing) in edits {
+            guard let index = indices[id] else { continue }
+            let previous = before[index].routing ?? TrackRouting()
+            for receive in [true, false] {
+                let old = Set((receive ? previous.receives : previous.transmitters).compactMap { $0 })
+                let new = Set((receive ? routing.receives : routing.transmitters).compactMap { $0 })
+                for other in old.union(new) where other != id {
+                    guard let i = indices[other] else { continue }
+                    var mirror = tracks[i].routing ?? TrackRouting()
+                    var slots = receive ? mirror.transmitters : mirror.receives
+                    if new.contains(other) {
+                        if !slots.contains(id) { if let empty = slots.firstIndex(of: nil) { slots[empty] = id } else { slots.append(id) } }
+                    } else { slots = slots.map { $0 == id ? nil : $0 } }
+                    if receive { mirror.transmitters = slots } else { mirror.receives = slots }
+                    tracks[i].routing = mirror
+                }
+            }
+        }
+        var result: [UUID: TrackRouting] = [:]
+        for (old, current) in zip(before, tracks) where old.routing != current.routing { result[current.id] = current.routing ?? TrackRouting() }
+        return result
     }
     func validateTrackRouting() throws {
         let audio = Set(tracks.filter { $0.kind == .standard }.map(\.id))

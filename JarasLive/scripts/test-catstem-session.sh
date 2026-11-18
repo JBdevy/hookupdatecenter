@@ -10,7 +10,9 @@ source=Path('Apple/Shared/CatStemSeparation.swift').read_text()
 start=source.index('@MainActor final class CatStemSession')
 end=source.index('struct CatStemProgressView:',start)
 fixture=Path('Tests/Apple/CatStemSessionLifecycleTests.swift').read_text()
-Path(sys.argv[1]).write_text(fixture.replace('// INSERT_SESSION',source[start:end]))
+model = Path('Application/Project/StemSeparation.swift').read_text()
+stem = model[model.index('public enum CatStem:'):model.index('public enum AudioSeparation')]
+Path(sys.argv[1]).write_text(stem + fixture.replace('// INSERT_SESSION',source[start:end]))
 PY
 swiftc -swift-version 5 -parse-as-library "$build_dir/session.swift" -o "$build_dir/session-test"
 "$build_dir/session-test"

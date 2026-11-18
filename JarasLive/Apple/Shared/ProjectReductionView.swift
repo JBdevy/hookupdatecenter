@@ -21,6 +21,8 @@ import UniformTypeIdentifiers
     @State private var name = ""
     @State private var naming = false
     @State private var choosingFormat = false
+    @State private var confirmingUnmute = false
+    @State private var unmuteItems = false
     @State private var format: AudioExportFormat = .wav
     @State private var bitDepth = 32
     @State private var sampleRate = 48000.0
@@ -32,6 +34,17 @@ import UniformTypeIdentifiers
     @State private var error = ""
     @State private var result: URL?
     @State private var cancellation = AudioExportCancellation()
+    @State private var addingSpecialTracks = false
+    @State private var selectedSpecialTracks: Set<UUID> = []
+    @State private var pendingSpecialTracks: Set<UUID> = []
+    private var specialTracks: [Track] { ProjectReduction.specialTracks(in: show.snapshot.project) }
+    private var reductionGroups: [ProjectReductionTrack] {
+        groups + specialTracks.filter { selectedSpecialTracks.contains($0.id) }.map { track in
+            var group = ProjectReductionTrack(name: track.name, sources: [track.id])
+            group.id = track.id
+            return group
+        }
+    }
     private var needsSave: Bool { documents.currentURL == nil || documents.show.needsSave || documents.show.saving }
     private var sources: [Track] { ProjectReduction.sourceTracks(in: documents.show.snapshot.project) }
     var body: some View {
@@ -48,6 +61,8 @@ import UniformTypeIdentifiers
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
                             Button { create() } label: { Label("Create Track", systemImage: "plus") }
+                            Button("Add") { pendingSpecialTracks = selectedSpecialTracks; addingSpecialTracks = true }
+                                .disabled(specialTracks.isEmpty)
                             Button("Editar", action: rename).disabled(selected == nil)
                             Button("Remover") {
                                 groups.removeAll { $0.id == selected }; selected = nil; checked = []
@@ -128,7 +143,7 @@ import UniformTypeIdentifiers
                 Button("Cancelar") { if busy { cancellation.cancel() } else { dismiss() } }.keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Reduzir", action: reduce).buttonStyle(StageButtonStyle(color: JarasTheme.green))
-                    .disabled(!ready || busy || groups.isEmpty || TrackRecording.shared.recording)
+                    .disabled(!ready || busy || reductionGroups.isEmpty || TrackRecording.shared.recording)
             }
             }
         }.padding(24).frame(width: 720)
@@ -139,6 +154,32 @@ import UniformTypeIdentifiers
             .onChange(of: checked) { _ in saveDraft() }
             .onChange(of: selected) { _ in saveDraft() }
             .onChange(of: show.saving) { saving in if !saving && !needsSave { ready = true } }
+            .alert("Itens mutados", isPresented: $confirmingUnmute) {
+                Button("Sim") { prepareReduction(unmuteItems: true) }
+                Button("Cancelar", role: .cancel) {}
+            } message: {
+                Text("Existem um ou mais itens mutados. Deseja desmutar todos antes de reduzir?")
+            }
+            .sheet(isPresented: $addingSpecialTracks) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Special tracks").font(.jarasHeadline)
+                    ScrollView {
+                        VStack(alignment: .leading) {
+                            ForEach(specialTracks) { track in
+                                Toggle(isOn: Binding(get: { pendingSpecialTracks.contains(track.id) }, set: {
+                                    if $0 { pendingSpecialTracks.insert(track.id) }
+                                    else { pendingSpecialTracks.remove(track.id) }
+                                })) { Text(verbatim: track.name) }
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    HStack {
+                        Button("Cancelar") { addingSpecialTracks = false }
+                        Spacer()
+                        Button("OK") { selectedSpecialTracks = pendingSpecialTracks; addingSpecialTracks = false }
+                    }
+                }.padding(20).frame(width: 400, height: 300)
+            }
             .sheet(isPresented: $naming) {
                 ReductionTrackNameEditor(initialName: name, editing: namingTarget != nil,
                     cancel: { naming = false }) { value in
@@ -243,11 +284,17 @@ import UniformTypeIdentifiers
         naming = true
     }
     private func reduce() {
-        guard ready, let document = documents.currentURL else { return }
-        do { try ProjectReduction.validate(groups, project: documents.show.snapshot.project) }
+        guard ready else { return }
+        do { try ProjectReduction.validate(reductionGroups, project: show.snapshot.project) }
         catch { self.error = error.localizedDescription; return }
+        if ProjectReduction.hasMutedItems(show.snapshot.project) { confirmingUnmute = true }
+        else { prepareReduction(unmuteItems: false) }
+    }
+    private func prepareReduction(unmuteItems: Bool) {
+        guard let document = documents.currentURL else { return }
+        self.unmuteItems = unmuteItems
         error = ""; estimate = nil; choosingFormat = true
-        let project = documents.show.snapshot.project, definitions = groups, media = document.deletingLastPathComponent()
+        let project = documents.show.snapshot.project, definitions = reductionGroups, media = document.deletingLastPathComponent()
         Task {
             do {
                 while show.saving { try await Task.sleep(nanoseconds: 50_000_000) }
@@ -270,7 +317,9 @@ import UniformTypeIdentifiers
         choosingFormat = false
         let selectedFormat = format, selectedBits = bitDepth, selectedRate = sampleRate, selectedBitrate = bitrate
         let target = ProjectDirectoryPolicy.newProjectDestination(for: chosen)
-        let project = documents.show.snapshot.project, media = document.deletingLastPathComponent(), definitions = groups
+        var snapshot = show.snapshot.project
+        if unmuteItems { ProjectReduction.unmuteItems(in: &snapshot, excluding: selectedSpecialTracks) }
+        let project = snapshot, media = document.deletingLastPathComponent(), definitions = reductionGroups
         let instruments = Dictionary(uniqueKeysWithValues: project.songs.flatMap(\.tracks).filter { $0.clips.contains { $0.midi != nil } }.map { ($0.id, ItemReRender.midiInstruments(for: $0, projectDirectory: media)) })
         cancellation = AudioExportCancellation(); let token = cancellation
         busy = true; progress = 0; progressMessage = "Preparando redução…"; error = ""; result = nil

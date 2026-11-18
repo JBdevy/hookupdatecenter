@@ -1,7 +1,9 @@
 ﻿param(
     [ValidateSet('Debug','Release')][string]$Configuration='Release',
-    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='1.36',
+    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='1.37',
     [string]$BuildDirectory=(Join-Path $env:LOCALAPPDATA 'CatLiveBuild/windows'),
+    [string]$OfflineDependencies,
+    [string]$OfflineStemRuntime,
     [switch]$SkipTests,
     [switch]$Installer,
     [switch]$Run
@@ -17,8 +19,26 @@ elseif (Test-Path $vswhere) {
 }
 if (-not $catCmake -or -not (Test-Path $catCmake)) { throw 'Instale Visual Studio 2022/2026 com Desenvolvimento para desktop com C++ e CMake.' }
 $cmakeArgs=@('-S',$sourceDirectory,'-B',$BuildDirectory,'-A','x64',"-DCATLIVE_VERSION=$Version")
-$juceCache=Join-Path $env:LOCALAPPDATA 'CatLiveBuild/JUCE-8.0.15'
-if (Test-Path (Join-Path $juceCache 'CMakeLists.txt')) { $cmakeArgs+="-DCATLIVE_JUCE_SOURCE=$juceCache" }
+if ($OfflineDependencies) {
+    $localDependencies=(Resolve-Path -LiteralPath $OfflineDependencies).ProviderPath
+    $juce=Join-Path $localDependencies 'JUCE'
+    $quickjs=Join-Path $localDependencies 'QuickJS'
+    $ffmpegHeaders=Join-Path $localDependencies 'FFmpegHeaders'
+    $ffmpegRuntime=Join-Path $localDependencies 'FFmpegRuntime'
+    foreach ($required in @('JUCE/CMakeLists.txt','QuickJS/CMakeLists.txt','FFmpegHeaders/libavcodec/avcodec.h','ImGui/imgui.cpp','WebView2/build/native/include/WebView2.h','WebView2/build/native/x64/WebView2LoaderStatic.lib','FFmpegRuntime/avutil-60.dll','FFmpegRuntime/swresample-6.dll','FFmpegRuntime/avcodec-62.dll','FFmpegRuntime/avformat-62.dll','FFmpegRuntime/swscale-9.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $localDependencies $required) -PathType Leaf)) {
+            throw "Dependência offline ausente: $required"
+        }
+    }
+    $imgui=Join-Path $localDependencies 'ImGui'
+    $webview=Join-Path $localDependencies 'WebView2'
+    $cmakeArgs+=@("-DCATLIVE_JUCE_SOURCE=$juce","-DFETCHCONTENT_SOURCE_DIR_CATLIVE_QUICKJS=$quickjs",
+                  "-DFETCHCONTENT_SOURCE_DIR_CATLIVE_IMGUI=$imgui","-DCATLIVE_WEBVIEW2_SDK=$webview",
+                  "-DCATLIVE_FFMPEG_INCLUDE_DIR=$ffmpegHeaders",'-DFETCHCONTENT_FULLY_DISCONNECTED=ON')
+} else {
+    $juceCache=Join-Path $env:LOCALAPPDATA 'CatLiveBuild/JUCE-8.0.15'
+    if (Test-Path (Join-Path $juceCache 'CMakeLists.txt')) { $cmakeArgs+="-DCATLIVE_JUCE_SOURCE=$juceCache" }
+}
 & $catCmake @cmakeArgs
 if ($LASTEXITCODE) { throw 'Falha na configuração do CMake.' }
 & $catCmake --build $BuildDirectory --config $Configuration --parallel 4
@@ -36,7 +56,7 @@ if ($Configuration -eq 'Release') {
 $runtimeDirectory=Split-Path -Parent $binary
 # The projection regression loads the shipped DLLs relative to CatLive.exe.
 # Prepare them before CTest, including on a clean GitHub runner.
-& (Join-Path $sourceDirectory 'scripts/prepare-ffmpeg-runtime.ps1') -BuildDirectory $BuildDirectory -PackageDirectory $runtimeDirectory -SourceDirectory $sourceDirectory
+& (Join-Path $sourceDirectory 'scripts/prepare-ffmpeg-runtime.ps1') -BuildDirectory $BuildDirectory -PackageDirectory $runtimeDirectory -SourceDirectory $sourceDirectory -OfflineRuntime $ffmpegRuntime
 if($LASTEXITCODE){throw 'Falha ao preparar o runtime FFmpeg do vídeo.'}
 if (-not $SkipTests) {
     $catCtest=Join-Path (Split-Path $catCmake) 'ctest.exe'
@@ -49,6 +69,22 @@ if (-not $SkipTests) {
         }
         throw 'Os testes falharam. O pacote não foi gerado.'
     }
+}
+if ($OfflineDependencies) {
+    if (-not $OfflineStemRuntime) {
+        $bundledStemRuntime=Join-Path $localDependencies 'CatStemRuntime'
+        if (Test-Path -LiteralPath (Join-Path $bundledStemRuntime 'runtime.json') -PathType Leaf) {
+            $OfflineStemRuntime=$bundledStemRuntime
+        }
+    }
+    if (-not $OfflineStemRuntime) {
+        if ($Installer) { throw 'O instalador offline precisa do CatStemRuntime preparado em Windows x64. Informe -OfflineStemRuntime.' }
+        Write-Host "Executável: $binary"
+        Write-Host 'Compilação offline concluída. Para montar o ZIP com separação de áudio, informe -OfflineStemRuntime.'
+        if ($Run) { Start-Process -FilePath $binary -WindowStyle Normal }
+        return
+    }
+    $OfflineStemRuntime=(Resolve-Path -LiteralPath $OfflineStemRuntime).ProviderPath
 }
 $packageDirectory=Join-Path $BuildDirectory "package/CatLive-Windows-x64"
 New-Item -ItemType Directory -Force $packageDirectory | Out-Null
@@ -99,18 +135,27 @@ $stemPreparation=Join-Path $sourceDirectory '../WindowsNative/StemSeparation/pre
 $stemLock=Join-Path $sourceDirectory '../WindowsNative/StemSeparation/requirements.lock'
 $stemVersion=(Get-FileHash -LiteralPath $stemLock -Algorithm SHA256).Hash.Substring(0,12).ToLowerInvariant()
 $stemRuntime=Join-Path $BuildDirectory ("catstem-runtime-"+$stemVersion)
-$pythonCommand=Get-Command python -ErrorAction SilentlyContinue
-if(-not $pythonCommand){throw 'Python 3.11+ é necessário para preparar o pacote CatStem durante o build.'}
-if(-not $SkipTests) {
-    & $pythonCommand.Source (Join-Path $sourceDirectory '../WindowsNative/StemSeparation/test_runtime_dependencies.py')
-    if($LASTEXITCODE){throw 'Falha na validação das dependências nativas do separador.'}
+if ($OfflineStemRuntime) {
+    $stemRuntime=$OfflineStemRuntime
+    $stemVerifier=Join-Path $stemRuntime 'python/python.exe'
+    if (-not (Test-Path -LiteralPath $stemVerifier -PathType Leaf)) { throw 'O CatStemRuntime offline não contém python/python.exe.' }
+    & $stemVerifier -I -B $stemPreparation --output $stemRuntime --verify
+    if ($LASTEXITCODE) { throw 'O CatStemRuntime offline não passou na verificação.' }
+} else {
+    $pythonCommand=Get-Command python -ErrorAction SilentlyContinue
+    if(-not $pythonCommand){throw 'Python 3.11+ é necessário para preparar o pacote CatStem durante o build.'}
+    $stemVerifier=$pythonCommand.Source
+    if(-not $SkipTests) {
+        & $stemVerifier (Join-Path $sourceDirectory '../WindowsNative/StemSeparation/test_runtime_dependencies.py')
+        if($LASTEXITCODE){throw 'Falha na validação das dependências nativas do separador.'}
+    }
+    & $stemVerifier $stemPreparation --output $stemRuntime
+    if($LASTEXITCODE){throw 'Falha ao preparar o CatStem. O pacote não foi gerado.'}
 }
-& $pythonCommand.Source $stemPreparation --output $stemRuntime
-if($LASTEXITCODE){throw 'Falha ao preparar o CatStem. O pacote não foi gerado.'}
 $stemPackage=Join-Path $packageDirectory 'StemSeparationRuntime'
 if(Test-Path -LiteralPath $stemPackage){Remove-Item -LiteralPath $stemPackage -Recurse -Force}
 Copy-Item -LiteralPath $stemRuntime -Destination $stemPackage -Recurse -Force
-& $pythonCommand.Source $stemPreparation --output $stemPackage --verify
+& $stemVerifier -I -B $stemPreparation --output $stemPackage --verify
 if($LASTEXITCODE){throw 'O runtime CatStem do pacote falhou na verificação.'}
 if(-not $SkipTests) {
     & (Join-Path $stemRuntime 'python/python.exe') -I -B (Join-Path $sourceDirectory '../WindowsNative/StemSeparation/test_backend.py')

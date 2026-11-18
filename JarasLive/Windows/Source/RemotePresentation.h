@@ -15,6 +15,26 @@ class Presentation final {
     std::function<void()> save;
     std::function<void(bool)> fadeout;
     ID fadeoutCommand;
+    int patchOutputChannels() const {
+        auto* device = session.audio.devices.getCurrentAudioDevice();
+        return device ? std::min(1024, device->getOutputChannelNames().size()) : 0;
+    }
+    static std::vector<jaras::OutputPatch> masterOutputRoutes(const jaras::Project &project) {
+        if (project.masterOutputs) return *project.masterOutputs;
+        std::vector<jaras::OutputPatch> routes{project.masterPatch.value_or(jaras::OutputPatch{1, 2})};
+        if (project.masterSecondaryPatch) routes.push_back(*project.masterSecondaryPatch);
+        return routes;
+    }
+    static var outputRoutes(const std::vector<jaras::OutputPatch> &routes) {
+        Array<var> result;
+        for (const auto &route : routes) {
+            auto value = object();
+            put(value, "firstChannel", route.firstChannel);
+            put(value, "channelCount", route.channelCount);
+            result.add(value);
+        }
+        return result;
+    }
     var snapshot(int panel) {
         const auto &p = session.project();
         const auto *song = session.song();
@@ -23,6 +43,8 @@ class Presentation final {
         put(result, "sequence", (int64)0);
         put(result, "project", wireID(p.id));
         put(result, "projectName", text(p.name));
+        if (const auto notice = session.liveCapacityWarning(); notice.isNotEmpty()) put(result, "footerInformation", notice);
+        else if(t.automaticSectionNotice) put(result, "footerInformation", text(*t.automaticSectionNotice));
         if (song)
             put(result, "song", wireID(song->id));
         put(result, "songName", song ? text(song->name) : String());
@@ -59,6 +81,7 @@ class Presentation final {
                 put(v, "solo", track.solo);
                 put(v, "heightScale", track.heightScale.value_or(1));
                 put(v, "role", text(track.role.id));
+                put(v, "outputRoutes", outputRoutes(track.outputPatches()));
                 if (track.instrumentIcon)
                     put(v, "instrumentIcon", text(*track.instrumentIcon));
                 if (track.parentTrackID)
@@ -189,6 +212,8 @@ class Presentation final {
             put(result, "loopEnd", *t.loop.end);
         put(result, "masterVolume", p.masterVolume);
         put(result, "masterPan", p.masterPan);
+        put(result, "patchOutputChannels", patchOutputChannels());
+        put(result, "masterOutputRoutes", outputRoutes(masterOutputRoutes(p)));
         put(result, "masterMute", p.masterMute);
         put(result, "masterSolo", p.masterSolo);
         put(result, "masterMono", p.masterMono);
@@ -344,6 +369,32 @@ class Presentation final {
         const auto track =
             std::find_if(song->tracks.begin(), song->tracks.end(),
                          [&](const auto &v) { return wireID(v.id) == wireID(c.target); });
+        if (a == "setOutputRoutes") {
+            if (!c.target.empty() && (track == song->tracks.end() || !jaras::fixedTrackName(track->role).empty())) return false;
+            const int channels = patchOutputChannels();
+            const auto current = c.target.empty() ? masterOutputRoutes(session.project()) : track->outputPatches();
+            for (const auto &patch : c.outputRoutes) {
+                if (patch.firstChannel == -2 && (track == song->tracks.end() || !track->parentTrackID)) return false;
+                if (patch.firstChannel > 0 && patch.firstChannel + patch.channelCount - 1 > channels &&
+                    std::none_of(current.begin(), current.end(), [&](const auto &route) {
+                        return route.firstChannel == patch.firstChannel && route.channelCount == patch.channelCount;
+                    })) return false;
+            }
+            const ID trackID = c.target.empty() ? ID{} : track->id;
+            session.editTrackSettings([&](jaras::Project &project) {
+                if (trackID.empty()) {
+                    project.masterOutputs = c.outputRoutes;
+                    project.masterPatch.reset();
+                    project.masterSecondaryPatch.reset();
+                } else for (auto &item : project.songs) if (item.id == song->id)
+                    for (auto &candidate : item.tracks) if (candidate.id == trackID) {
+                        candidate.outputs = c.outputRoutes;
+                        candidate.patch.reset();
+                        candidate.secondaryPatch.reset();
+                    }
+            }, true);
+            return true;
+        }
         const jaras::RegionPlaylist *selected=nullptr;
         if(session.project().regionSetlist)for(const auto &entry:session.project().regionSetlist->playlists)
             if(entry.id==session.project().regionSetlist->selectedId && entry.songId==song->id) selected=&entry;

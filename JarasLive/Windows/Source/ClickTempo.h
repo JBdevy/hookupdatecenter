@@ -325,8 +325,6 @@ inline void insert(jaras::Song &song,const jaras::Part &region,const std::vector
         m.regionOwnerID=jaras::regionOwnerAt(song,m.position);
         if(at!=song.markers->end()){m.id=at->id;if(at->position==m.position)m.regionOwnerID=at->regionOwnerID;*at=m;}else song.markers->push_back(m);
     }
-    if(std::any_of(song.markers->begin(),song.markers->end(),[](const auto &m){return m.tempoBPM.has_value();}) && std::none_of(song.markers->begin(),song.markers->end(),[](const auto &m){return m.tempoBPM&&m.position<=0;})){
-        jaras::TimelineMarker initial;initial.id=uuid();initial.name="TEMPO";initial.position=0;initial.color=0x999999;initial.regionOwnerID=jaras::regionOwnerAt(song,0);initial.tempoBPM=120;initial.tempoReferenceBPM=120;initial.tempoBeats=4;initial.tempoUnit=4;initial.tempoTimebase="global";song.markers->push_back(initial);
-    }
+
 }
 }

@@ -1,5 +1,4 @@
 import Foundation
-#if os(macOS)
 import AudioToolbox
 
 /// Reads standard MIDI files with the system's SMF decoder. Importing never
@@ -109,4 +108,3 @@ enum StandardMIDIFileImport {
         return Document(tracks: tracks, tempoPoints: tempoPoints, hasUnsupportedEvents: unsupported)
     }
 }
-#endif

@@ -27,10 +27,21 @@
 #include "JarasPreparedTiming.inc"
 
 namespace {
+// Counts owned PCM payloads once even when several pages/voices share them.
+// These are control/decoder-side diagnostics, never a callback heap scan.
+struct PreparedAudioMemory {
+    static inline std::atomic<uint64_t> pcmBytes{0}, pcmBlocks{0}, readers{0}, caches{0}, stretchStates{0};
+};
 struct PreparedPCMBlock {
     int64_t first = 0;
     int count = 0;
     std::array<std::vector<float>, 2> samples;
+    uint64_t ownedBytes = 0;
+    PreparedPCMBlock() { PreparedAudioMemory::pcmBlocks.fetch_add(1, std::memory_order_relaxed); }
+    ~PreparedPCMBlock() {
+        PreparedAudioMemory::pcmBytes.fetch_sub(ownedBytes, std::memory_order_relaxed);
+        PreparedAudioMemory::pcmBlocks.fetch_sub(1, std::memory_order_relaxed);
+    }
 };
 
 // Preparation/workers only. Independent playheads share immutable decoded
@@ -40,9 +51,29 @@ struct PreparedPCMReader {
     AVAudioFile *__strong file;
     std::mutex mutex;
     std::map<int64_t, std::weak_ptr<const PreparedPCMBlock>> blocks;
-    std::deque<std::shared_ptr<const PreparedPCMBlock>> recent;
-    size_t recentBytes = 0;
-    explicit PreparedPCMReader(AVAudioFile *value) : file(value) {}
+    // Opportunistic seek reuse has one process-wide budget. Active source
+    // pages pin their own PCM; retaining another 8 MiB per file here made a
+    // large independent-stem project grow by gigabytes during playback.
+    struct RecentBlocks {
+        std::mutex mutex;
+        std::deque<std::shared_ptr<const PreparedPCMBlock>> blocks;
+        size_t bytes = 0;
+        static constexpr size_t limit = 16 * 1024 * 1024;
+        void retain(std::shared_ptr<const PreparedPCMBlock> block) {
+            std::lock_guard<std::mutex> lock(mutex);
+            bytes += size_t(block->count) * 2 * sizeof(float);
+            blocks.push_back(std::move(block));
+            while (bytes > limit) {
+                bytes -= size_t(blocks.front()->count) * 2 * sizeof(float);
+                blocks.pop_front();
+            }
+        }
+    };
+    static RecentBlocks &recentBlocks() { static RecentBlocks value; return value; }
+    explicit PreparedPCMReader(AVAudioFile *value) : file(value) {
+        PreparedAudioMemory::readers.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~PreparedPCMReader() { PreparedAudioMemory::readers.fetch_sub(1, std::memory_order_relaxed); }
     static std::shared_ptr<PreparedPCMReader> open(NSURL *url, NSError **error) {
         static std::mutex registryMutex;
         static std::map<std::string, std::weak_ptr<PreparedPCMReader>> registry;
@@ -69,18 +100,26 @@ struct PreparedPCMReader {
         registry[key] = reader;
         return reader;
     }
-    std::shared_ptr<const PreparedPCMBlock> read(int64_t first, AVAudioFrameCount frames,
-                                                NSError **error, bool background, bool &busy) {
+    using Read = std::vector<std::shared_ptr<const PreparedPCMBlock>>;
+    static constexpr int blockFrames = 4096;
+    Read read(int64_t first, AVAudioFrameCount frames,
+              NSError **error, bool background, bool &busy) {
         std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
         busy = false;
         if (background) {
             if (!lock.try_lock()) { busy = true; return {}; }
         } else { lock.lock(); }
-        auto it = blocks.upper_bound(first);
-        if (it != blocks.begin()) {
+        Read result;
+        for (auto cursor = first; cursor < first + frames;) {
+            auto it = blocks.upper_bound(cursor);
+            if (it == blocks.begin()) break;
             --it;
-            if (auto block = it->second.lock(); block && first < block->first + block->count) return block;
+            auto block = it->second.lock();
+            if (!block || cursor >= block->first + block->count) break;
+            cursor = block->first + block->count;
+            result.push_back(std::move(block));
         }
+        if (!result.empty()) return result;
         AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat frameCapacity:frames];
         if (file.framePosition != first) file.framePosition = first;
         if (!buffer || ![file readIntoBuffer:buffer frameCount:frames error:error]) return {};
@@ -89,33 +128,36 @@ struct PreparedPCMReader {
                 userInfo:@{NSLocalizedDescriptionKey:@"Could not decode source audio"}];
             return {};
         }
-        auto block = std::make_shared<PreparedPCMBlock>();
-        block->first = first; block->count = int(buffer.frameLength);
         const auto channels = buffer.format.channelCount;
         const auto stride = buffer.stride;
         const auto data = buffer.floatChannelData;
-        for (int channel = 0; channel < 2; ++channel) {
-            const float *input = data[std::min(channel, int(channels) - 1)];
-            auto &output = block->samples[channel];
-            if (stride == 1) output.assign(input, input + block->count);
-            else {
-                output.resize(block->count);
-                for (int n = 0; n < block->count; ++n) output[n] = input[n * stride];
+        // Batch physical reads, but own each page separately. Retaining one
+        // wanted page must not pin every expired sample from its whole batch.
+        for (int offset = 0; offset < int(buffer.frameLength); offset += blockFrames) {
+            auto block = std::make_shared<PreparedPCMBlock>();
+            block->first = first + offset;
+            block->count = std::min(blockFrames, int(buffer.frameLength) - offset);
+            for (int channel = 0; channel < 2; ++channel) {
+                const float *input = data[std::min(channel, int(channels) - 1)] + offset * stride;
+                auto &output = block->samples[channel];
+                if (stride == 1) output.assign(input, input + block->count);
+                else {
+                    output.resize(block->count);
+                    for (int n = 0; n < block->count; ++n) output[n] = input[n * stride];
+                }
             }
-        }
-        blocks[first] = block;
-        recent.push_back(block); recentBytes += size_t(block->count) * 2 * sizeof(float);
-        // Bound idle lookahead per file. Active pages retain their own shared
-        // blocks independently, so eviction never removes audio in use.
-        while (recentBytes > 8 * 1024 * 1024 && recent.size() > 1) {
-            recentBytes -= size_t(recent.front()->count) * 2 * sizeof(float); recent.pop_front();
+            for (const auto &channel : block->samples) block->ownedBytes += channel.capacity() * sizeof(float);
+            PreparedAudioMemory::pcmBytes.fetch_add(block->ownedBytes, std::memory_order_relaxed);
+            blocks[block->first] = block;
+            recentBlocks().retain(block);
+            result.push_back(std::move(block));
         }
         if (blocks.size() > 128) {
             for (auto entry = blocks.begin(); entry != blocks.end();) {
                 if (entry->second.expired()) entry = blocks.erase(entry); else ++entry;
             }
         }
-        return block;
+        return result;
     }
 };
 
@@ -127,9 +169,9 @@ struct PreparedPCMPage {
 };
 
 struct PreparedPCMCache {
-    // Slots are cheap until populated. Keep six streaming pages plus spectral
-    // lookahead; very high source rates/speeds need more initial coverage.
-    static constexpr int pageSize = 32768, pageCount = 64;
+    // High rates/speeds can use more slots; ordinary sources retain only their
+    // current sliding window, not every page they previously passed through.
+    static constexpr int pageSize = PreparedPCMReader::blockFrames, pageCount = 512;
     std::shared_ptr<PreparedPCMReader> reader;
     AVAudioFile *__strong file;
     NSURL *__strong url;
@@ -140,7 +182,9 @@ struct PreparedPCMCache {
     Pages pages;
     std::atomic<double> requested{0}, loopStart{0}, loopEnd{0};
     std::atomic<bool> active{false};
+    std::atomic<bool> releaseRequested{false};
     std::atomic<int> lookaheadPages{6};
+    std::atomic<double> minimumAheadFrames{0};
     std::chrono::steady_clock::time_point retryAfter{}; // Decoder lock only.
     struct Request {
         double frame, loopStart, loopEnd;
@@ -153,10 +197,14 @@ struct PreparedPCMCache {
     // Decoder lock only. A completed request owns all its wanted pages until
     // another prefetch changes this cache; there is no external page eviction.
     std::optional<Request> readyRequest;
-    enum class Prefetch { ready, pending, busy, failed };
+    std::optional<Request> bufferedRequest;
+    enum class Prefetch { ready, buffered, pending, busy, failed };
 
     explicit PreparedPCMCache(std::shared_ptr<PreparedPCMReader> value)
-        : reader(std::move(value)), file(reader->file), url(file.url), length(file.length), sampleRate(file.processingFormat.sampleRate) {}
+        : reader(std::move(value)), file(reader->file), url(file.url), length(file.length), sampleRate(file.processingFormat.sampleRate) {
+        PreparedAudioMemory::caches.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~PreparedPCMCache() { PreparedAudioMemory::caches.fetch_sub(1, std::memory_order_relaxed); }
     explicit PreparedPCMCache(AVAudioFile *f) : PreparedPCMCache(std::make_shared<PreparedPCMReader>(f)) {}
     double wrapped(double frame) const {
         const double start = loopStart.load(), end = loopEnd.load();
@@ -195,9 +243,14 @@ struct PreparedPCMCache {
             if (pages.retiredCount() != 0) pages.collectRetired();
             return Prefetch::ready;
         }
+        if (background && bufferedRequest && *bufferedRequest == request) {
+            pages.collectRetired();
+            return Prefetch::buffered;
+        }
         // A different request can evict pages before returning pending/failed.
         // Never let a later seek reuse the earlier request's readiness claim.
         readyRequest.reset();
+        bufferedRequest.reset();
         if (background && std::chrono::steady_clock::now() < retryAfter) return Prefetch::busy;
         // Physical pages on opposite sides of a loop can have the same ring
         // index. Keep the whole lookahead set resident instead of letting one
@@ -218,6 +271,29 @@ struct PreparedPCMCache {
             const double next = double(first + pageSize);
             frame = end > start && next >= end ? start : next;
         }
+        if (background) {
+            double available = 0;
+            int covered = 0;
+            for (; covered < wantedCount; ++covered) {
+                const auto *page = producerPageAt(wanted[covered]);
+                if (!page) break;
+                available += page->count;
+                if (covered == 0) {
+                    double position = request.frame;
+                    if (end > start && position >= start) position = start + std::fmod(position - start, end - start);
+                    available -= std::clamp(position - page->first, 0., double(page->count));
+                }
+            }
+            const double watermark = std::max(request.pages * pageSize * 0.6,
+                                              minimumAheadFrames.load());
+            if (covered < wantedCount && available >= watermark) {
+                // Refill in useful batches at the low watermark, rather than
+                // reading one missing page for every source at every page edge.
+                bufferedRequest = request;
+                pages.collectRetired();
+                return Prefetch::buffered;
+            }
+        }
         int decoded = 0;
         for (int i = 0; i < wantedCount; ++i) {
             const auto first = wanted[i];
@@ -227,17 +303,16 @@ struct PreparedPCMCache {
                 // One bounded read per stem per pass keeps refills fair.
                 if (decoded != 0) return Prefetch::pending;
             }
-            // Amortize storage/decoder latency over a contiguous read. Also
-            // keep a small forward reserve beyond the requested window: if we
-            // only fill its single missing page, every stem incurs another
-            // physical read as soon as playback crosses the next page edge.
-            // Never evict a wanted page, cross a loop seam, or exceed the fixed
-            // cache capacity. The callback still only leases immutable PCM.
-            std::array<size_t, 4> slots{};
+            // Amortize storage/decoder latency over a contiguous read inside
+            // the retained window. Reading beyond it and retiring that tail
+            // immediately forces the next MP3 refill to seek backwards through
+            // samples we already decoded. The low watermark batches refills
+            // without discarding that sequential decoder progress.
+            std::array<size_t, 16> slots{};
             int batchPages = 0;
             for (int pageIndex = 0; pageIndex < int(slots.size()); ++pageIndex) {
                 const int64_t pageFirst = first + int64_t(pageIndex) * pageSize;
-                if (pageFirst >= length || producerPageAt(pageFirst) ||
+                if (pageFirst >= length || !contains(pageFirst) || producerPageAt(pageFirst) ||
                     (pageIndex > 0 && end > start && pageFirst >= end)) break;
                 size_t slot = 0;
                 for (; slot < pageCount; ++slot) {
@@ -251,19 +326,24 @@ struct PreparedPCMCache {
             if (batchPages == 0) return Prefetch::failed;
             const auto readFrames = AVAudioFrameCount(batchPages * pageSize);
             bool readerBusy = false;
-            const auto block = reader->read(first, readFrames, error, background, readerBusy);
+            const auto blocks = reader->read(first, readFrames, error, background, readerBusy);
             if (readerBusy) return Prefetch::busy;
-            if (!block) {
+            if (blocks.empty()) {
                 // An unavailable/cloud-backed file cannot consume every pass
                 // with repeated failing reads while healthy tracks need PCM.
                 retryAfter = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
                 return Prefetch::failed;
             }
             for (int pageIndex = 0; pageIndex < batchPages; ++pageIndex) {
-                const int offset = int(first - block->first) + pageIndex * pageSize;
-                if (offset >= block->count) break;
+                const auto pageFirst = first + pageIndex * pageSize;
+                const auto found = std::find_if(blocks.begin(), blocks.end(), [pageFirst](const auto &block) {
+                    return pageFirst >= block->first && pageFirst < block->first + block->count;
+                });
+                if (found == blocks.end()) break;
+                const auto &block = *found;
+                const int offset = int(pageFirst - block->first);
                 auto page = std::make_unique<PreparedPCMPage>();
-                page->first = first + pageIndex * pageSize;
+                page->first = pageFirst;
                 page->count = std::min(pageSize, block->count - offset);
                 page->block = block;
                 for (int channel = 0; channel < 2; ++channel) page->samples[channel] = block->samples[channel].data() + offset;
@@ -271,9 +351,30 @@ struct PreparedPCMCache {
             }
             ++decoded;
         }
+        for (size_t slot = 0; slot < pageCount; ++slot) {
+            const auto *page = pages.producerView(slot);
+            if (page && !contains(page->first)) pages.publish(slot, nullptr);
+        }
         pages.collectRetired();
         readyRequest = request;
         return Prefetch::ready;
+    }
+    bool collectIdlePages() {
+        std::unique_lock<std::mutex> lock(decoder, std::try_to_lock);
+        if (!lock.owns_lock()) return false;
+        if (!releaseRequested.load()) return true;
+        if (active.load()) { releaseRequested.store(false); return true; }
+        readyRequest.reset(); bufferedRequest.reset();
+        for (size_t slot = 0; slot < pageCount; ++slot)
+            if (pages.producerView(slot)) pages.publish(slot, nullptr);
+        pages.collectRetired();
+        releaseRequested.store(pages.retiredCount() != 0);
+        return !releaseRequested.load();
+    }
+    void releaseIdlePages() {
+        active.store(false);
+        releaseRequested.store(true);
+        collectIdlePages(); // Never wait behind a disk read on the UI thread.
     }
 
 };
@@ -284,13 +385,16 @@ class PreparedPCMWorkers {
     bool closing = false;
     uint64_t wakeGeneration = 0;
     std::vector<std::weak_ptr<PreparedPCMCache>> caches;
-    std::array<std::thread, 2> threads;
+    std::array<std::thread, 8> threads;
     void run() {
         std::unique_lock<std::mutex> lock(mutex);
         while (!closing) {
             std::vector<std::shared_ptr<PreparedPCMCache>> work;
             for (auto it = caches.begin(); it != caches.end();) {
-                if (auto cache = it->lock()) { if (cache->active.load()) work.push_back(cache); ++it; }
+                if (auto cache = it->lock()) {
+                    if (cache->active.load() || cache->releaseRequested.load()) work.push_back(cache);
+                    ++it;
+                }
                 else it = caches.erase(it);
             }
             const auto observedWake = wakeGeneration;
@@ -298,19 +402,23 @@ class PreparedPCMWorkers {
             bool pending = false;
             @autoreleasepool {
                 for (auto &cache : work) {
+                    if (cache->releaseRequested.load()) { cache->collectIdlePages(); continue; }
                     const auto result = cache->prefetch(cache->lookaheadPages.load(), nullptr, true);
                     pending = pending || result == PreparedPCMCache::Prefetch::pending;
                 }
             }
             lock.lock();
             if (!pending) {
-                wake.wait_for(lock, std::chrono::milliseconds(10), [this, observedWake] {
-                    return closing || wakeGeneration != observedWake;
-                });
+                const auto changed = [this, observedWake] { return closing || wakeGeneration != observedWake; };
+                if (work.empty()) wake.wait(lock, changed);
+                else wake.wait_for(lock, std::chrono::milliseconds(10), changed);
             }
         }
     }
     PreparedPCMWorkers() {
+        // Register the cache singleton's destructor first: decoder threads
+        // must be joined before their global recent-block mutex is destroyed.
+        (void)PreparedPCMReader::recentBlocks();
         // A blocked file decoder must not prevent healthy stems from refilling.
         // The per-cache try-lock serializes each decoder without blocking the
         // other worker; neither worker runs on the audio callback.
@@ -326,9 +434,12 @@ class PreparedPCMWorkers {
     }
 public:
     static PreparedPCMWorkers &shared() { static PreparedPCMWorkers workers; return workers; }
-    void add(const std::shared_ptr<PreparedPCMCache> &cache) { std::lock_guard<std::mutex> lock(mutex); caches.push_back(cache); ++wakeGeneration; wake.notify_all(); }
+    void add(const std::shared_ptr<PreparedPCMCache> &cache) {
+        std::lock_guard<std::mutex> lock(mutex); caches.push_back(cache);
+        if (cache->active.load()) { ++wakeGeneration; wake.notify_one(); }
+    }
     // Control/preparation threads only; the audio callback never signals locks.
-    void requestWake() { std::lock_guard<std::mutex> lock(mutex); ++wakeGeneration; wake.notify_all(); }
+    void requestWake() { std::lock_guard<std::mutex> lock(mutex); ++wakeGeneration; wake.notify_one(); }
     ~PreparedPCMWorkers() { { std::lock_guard<std::mutex> lock(mutex); closing = true; } wake.notify_all(); for (auto &thread : threads) thread.join(); }
 };
 
@@ -368,6 +479,8 @@ struct PreparedClipKernel : PreparedRenderSource {
     // Control-side only, protected by preparation. A cache URL/range alone is
     // not evidence that its PCM and spectral history were successfully primed.
     bool prepared = false;
+    bool registeredActive = false; // Control side, after playback quiescence.
+    std::atomic<bool> streamingSuspended{false};
     bool spectral = false, ramp = false;
     bool nativeTempo = true;
     bool mobileClockAnchored = false;
@@ -376,12 +489,27 @@ struct PreparedClipKernel : PreparedRenderSource {
     PreparedClipKernel(double sr, int ch) : sampleRate(sr), channels(ch) {
         for (auto &buffer : output) buffer.resize(PreparedStretchState::maximumFrames);
     }
-    ~PreparedClipKernel() { if (timing) timing->remove(timingID); }
-    void configureStretchGroup() {
-        if (stretchGroup && stretchGroup->reader == cache->reader) return;
+    void stopRegisteredPlayback() {
+        playback.stop(); playback.waitStopped();
+        if (registeredActive) { stretchGroup->deactivate(); registeredActive = false; }
+    }
+    ~PreparedClipKernel() {
+        stopRegisteredPlayback();
+        if (timing) timing->remove(timingID);
+    }
+    void configureStretchGroup(bool deferInactive = false) {
+        if (stretchGroup && stretchGroup->reader == cache->reader) {
+            if (!stretch) {
+                std::lock_guard<std::mutex> lock(stretchGroup->preparation);
+                const auto count = stretchGroup->registeredVoices;
+                if (!stretchGroup->reserveStates(count <= 2 ? count : count * 2 - 1, sampleRate)) return;
+                stretch = stretchGroup->pool.acquire();
+            }
+            return;
+        }
         pendingStretch.reset(); pendingConsumed = 0;
         stretch.reset();
-        stretchGroup = PreparedStretchGroup::open(cache->reader, sampleRate);
+        stretchGroup = PreparedStretchGroup::open(cache->reader, sampleRate, deferInactive);
         stretch = stretchGroup->pool.acquire();
         seekFrames = stretch->pitch.outputSeekLength(1.f);
         for (auto &buffer : input) buffer.resize(std::max(8192, seekFrames));
@@ -471,15 +599,21 @@ struct PreparedClipKernel : PreparedRenderSource {
         // Exact dry PCM and the warm spectral processor have separate cursors.
         // Include their separation even at high source rates/live rate changes;
         // a fixed six-page window can otherwise evict needed FFT lookahead.
-        // Six pages cover seconds at ordinary rates, but only 32 ms at
-        // 192 kHz / 32x. Preserve at least 100 ms of decoded output ahead of
-        // the spectral cursor, including worker wake/scheduling jitter.
-        const double streamingFrames = std::max(6.0 * PreparedPCMCache::pageSize,
+        // About 1.5 seconds plus FFT history, with small reclaimable pages.
+        // High speeds retain at least 100 ms of decoded output ahead of the
+        // spectral cursor, up to the same two-million-frame capacity as before.
+        const double streamingFrames = std::max(sampleRate * 1.5,
                                                 sampleRate * speed * 0.1);
         const double spectralFrames = seekFrames * speed;
         return std::clamp(int(std::ceil((streamingFrames + spectralFrames) /
                                       PreparedPCMCache::pageSize)),
-                          6, PreparedPCMCache::pageCount);
+                          2, PreparedPCMCache::pageCount);
+    }
+    double refillWatermark(double speed) const {
+        // The dry cursor can trail its warm spectral history by a full seek
+        // window. A fraction of total capacity alone may fall behind that
+        // history at high rates, even while dry PCM still looks well buffered.
+        return seekFrames * speed + sampleRate * speed * 0.05;
     }
     bool prime(double frame, double speed, double tuning) {
         parallelInPlaceReady = false; parallelConsumed = 0;
@@ -648,10 +782,18 @@ struct PreparedClipKernel : PreparedRenderSource {
         if (parallelInPlaceReady) return false;
         if (!cache || !stretch || source >= endFrame.load() || source == preparedFrame) return false;
         if (startHost.load() > host) return false;
+        // A sample-rate converter may split a pull at a fractional boundary.
+        // Keep that source on the serial path: an independently prepared
+        // prefix can change the warm-to-spectral transition's history.
+        if (sampleRate != graphRate) return false;
+        if (!spectral && dryClockHost && std::isfinite(dryNextSample) &&
+            std::abs(jaras::realtimeClock.sample - dryNextSample) > 1.5) return false;
         double speed = rate.load(), tuning = semitones.load();
         if (timing) timing->read(timingID, timingRun.load(), speed, tuning);
         const bool processing = spectral || std::abs(tuning - 12 * std::log2(speed)) >= 1e-8;
-        if (!processing) return false;
+        // Neutral playback still advances the warm history for later edits.
+        // Independent dry sources can prepare that work on the same helpers;
+        // their returned PCM remains the unprocessed disk samples.
         // Only compute the guaranteed prefix. A converter may ask for one
         // extra frame; serial rendering finishes that tail at the current
         // controls instead of carrying old tempo PCM into the next graph pull.
@@ -731,6 +873,7 @@ struct PreparedClipKernel : PreparedRenderSource {
             spectral = spectral || std::abs(shift) >= 1e-8;
             preparedRate = speed; preparedPitch = tuning;
             cache->lookaheadPages.store(prefetchPages(speed));
+            cache->minimumAheadFrames.store(refillWatermark(speed));
             if (time->mFlags & kAudioTimeStampHostTimeValid) {
                 dryClockHost = time->mHostTime + [AVAudioTime hostTimeForSeconds:double(offset) / sampleRate];
                 dryClockFrame = source;
@@ -797,7 +940,11 @@ struct PreparedClipKernel : PreparedRenderSource {
             diagnosticAhead.store(ahead, std::memory_order_relaxed);
             diagnosticRate.store(speed, std::memory_order_relaxed);
         }
-        cache->requested.store(spectral ? std::max(ahead, source) : source);
+        double wantedFrame = spectral ? std::max(ahead, source) : source;
+        // A private edit can fork a partially consumed shared converter block.
+        // Keep that block's input prefix until its history is fully adopted.
+        if (pendingStretch) wantedFrame = std::min(wantedFrame, pendingStretch->key.frame);
+        cache->requested.store(wantedFrame);
         return noErr;
     }
 };
@@ -828,6 +975,13 @@ struct PreparedClipKernel : PreparedRenderSource {
     return self;
 }
 - (AVAudioSourceNode *)node { return _node; }
++ (NSDictionary<NSString *, NSNumber *> *)memoryDiagnostics {
+    return @{ @"pcmBytes":@(PreparedAudioMemory::pcmBytes.load(std::memory_order_relaxed)),
+        @"pcmBlocks":@(PreparedAudioMemory::pcmBlocks.load(std::memory_order_relaxed)),
+        @"readers":@(PreparedAudioMemory::readers.load(std::memory_order_relaxed)),
+        @"caches":@(PreparedAudioMemory::caches.load(std::memory_order_relaxed)),
+        @"stretchStates":@(PreparedAudioMemory::stretchStates.load(std::memory_order_relaxed)) };
+}
 - (double)sourcePosition { return _kernel->position.load() / _kernel->sampleRate; }
 - (BOOL)playing { return _kernel->playback.running(); }
 - (uint64_t)underruns { return _kernel->misses.load(); }
@@ -847,17 +1001,16 @@ struct PreparedClipKernel : PreparedRenderSource {
         return NO;
     }
     std::lock_guard<std::mutex> lock(_kernel->preparation);
-    _kernel->playback.stop();
-    _kernel->playback.waitStopped();
+    _kernel->stopRegisteredPlayback();
     auto &cache = _kernel->cache;
     if (_kernel->prepared && cache && [cache->url isEqual:url] && _kernel->source == frame && _kernel->preparedFrame == frame &&
         _kernel->preparedRate == rate && _kernel->preparedPitch == pitch && _kernel->endFrame.load() == end &&
         cache->loopStart.load() == loopStart && cache->loopEnd.load() == loopEnd) {
-        cache->active.store(true);
-        PreparedPCMWorkers::shared().requestWake();
-        return YES;
+        cache->active.store(false);
+        return _kernel->stretchGroup->prepareActivation(_kernel->sampleRate);
     }
     _kernel->prepared = false;
+    _kernel->streamingSuspended.store(false);
     ++_kernel->timingRun;
     if (cache) cache->active.store(false);
     if (!cache || ![cache->url isEqual:url]) {
@@ -866,14 +1019,22 @@ struct PreparedClipKernel : PreparedRenderSource {
         cache = std::make_shared<PreparedPCMCache>(std::move(reader));
         PreparedPCMWorkers::shared().add(cache);
     }
-    _kernel->configureStretchGroup();
+    _kernel->configureStretchGroup(true);
+    // Concurrent heads need an extra working history. Reserve it with the
+    // decoder preparation, not while the UI commits hundreds of start calls.
+    if (!_kernel->stretchGroup->prepareActivation(_kernel->sampleRate)) {
+        if (error) *error = [NSError errorWithDomain:@"CatLive.PreparedAudio" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Could not reserve source processing"}];
+        return NO;
+    }
     {
         // Publish a coherent preparation only while the worker is excluded.
         // Leave it inactive if synchronous preparation or priming fails.
         std::lock_guard<std::mutex> decoderLock(cache->decoder);
+        cache->releaseRequested.store(false);
         cache->loopStart.store(loopStart); cache->loopEnd.store(loopEnd);
         cache->requested.store(frame);
         cache->lookaheadPages.store(_kernel->prefetchPages(rate));
+        cache->minimumAheadFrames.store(_kernel->refillWatermark(rate));
     }
     _kernel->endFrame.store(end); _kernel->rate.store(rate); _kernel->semitones.store(pitch);
     const double lookahead = _kernel->seekFrames * rate;
@@ -886,15 +1047,17 @@ struct PreparedClipKernel : PreparedRenderSource {
         return NO;
     }
     _kernel->prepared = true;
-    cache->active.store(true);
-    PreparedPCMWorkers::shared().requestWake();
+    // Preparation owns a complete initial window. It needs no polling or
+    // background decoder until the source is actually scheduled to play.
+    cache->active.store(false);
     return YES;
 }
 - (void)startAtHostTime:(uint64_t)host ramp:(BOOL)ramp {
     std::lock_guard<std::mutex> lock(_kernel->preparation);
-    _kernel->playback.stop();
-    _kernel->playback.waitStopped();
+    _kernel->stopRegisteredPlayback();
     if (!_kernel->prepared) return;
+    if (!_kernel->stretchGroup->activate(_kernel->sampleRate)) return;
+    _kernel->registeredActive = true;
     _kernel->ramp = ramp; _kernel->rampFrame = 0;
     _kernel->mobileClockAnchored = false;
     _kernel->startHost.store(host);
@@ -914,6 +1077,21 @@ struct PreparedClipKernel : PreparedRenderSource {
 - (void)stop {
     _kernel->playback.stop();
     if (_kernel->cache) _kernel->cache->active.store(false);
+}
+- (void)suspendStreaming {
+    if (_kernel->streamingSuspended.load()) return;
+    std::lock_guard<std::mutex> lock(_kernel->preparation);
+    _kernel->stopRegisteredPlayback();
+    _kernel->prepared = false;
+    _kernel->streamingSuspended.store(true);
+    // A stopped transition must not pin the active source's FFT history. Its
+    // next prepare reacquires reserved storage on the control side. Otherwise
+    // every independent stem copies a complete history on the first Play.
+    _kernel->pendingStretch.reset(); _kernel->pendingConsumed = 0;
+    _kernel->stretch.reset();
+    _kernel->parallelInPlaceReady = false; _kernel->parallelConsumed = 0;
+    if (_kernel->stretchGroup) _kernel->stretchGroup->trimStoppedTransitionStorage();
+    if (_kernel->cache) _kernel->cache->releaseIdlePages();
 }
 - (void)dealloc { [self stop]; [_timingOwner removeRenderSource:_kernel.get()]; }
 @end

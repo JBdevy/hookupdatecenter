@@ -18,8 +18,8 @@ test=Path('Tests/Core/WindowsRemoteTuningTests.cpp').read_text()
 # Region targeting and target defaults are the actual production header; only
 # its Windows/JUCE include is replaced with the same portable Core model types.
 header=Path('Windows/Source/RegionPitch.h').read_text().replace('#include "Common.h"',
-    '#include "Songs/Song.hpp"\n#include "Transport/TransportState.hpp"\n#include <algorithm>\nnamespace catlive { using jaras::ID; }')
+    '#include "Project/Models.hpp"\n#include "Transport/TransportState.hpp"\n#include <algorithm>\nnamespace catlive { using jaras::ID; }')
 (out/'RemotePitchForTest.h').write_text(header)
 PY
-"${CXX:-clang++}" -std=c++17 -Wall -Wextra -Wno-missing-field-initializers -pedantic -I Core "$test_dir/test.cpp" -o "$test_dir/test"
+"${CXX:-clang++}" -std=c++17 -Wall -Wextra -Wno-missing-field-initializers -pedantic -I Core Core/Project/Models.cpp "$test_dir/test.cpp" -o "$test_dir/test"
 "$test_dir/test"

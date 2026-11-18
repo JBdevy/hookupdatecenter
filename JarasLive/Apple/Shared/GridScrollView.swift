@@ -54,6 +54,14 @@ struct GridRowReveal: Equatable {
 }
 
 /// The grid owns these scroll views. SwiftUI cannot recreate scrollers or reserve gutters.
+enum TimelineVerticalBar {
+    #if os(macOS)
+    static let width: CGFloat = 14
+    #else
+    static let width: CGFloat = 20
+    #endif
+}
+
 struct GridScrollView<Content: View>: View {
     let axis: Axis.Set
     let contentWidth: CGFloat
@@ -62,6 +70,7 @@ struct GridScrollView<Content: View>: View {
     /// width while the native document retains the full scrollable extent.
     var viewportWidth: CGFloat? = nil
     var trackHeight: CGFloat? = nil
+    var timelineVerticalBarTop: CGFloat? = nil
     var rowHeights: [CGFloat] = []
     var selectedRow: Int? = nil
     var rowReveal: GridRowReveal? = nil
@@ -70,12 +79,124 @@ struct GridScrollView<Content: View>: View {
     @ViewBuilder let content: () -> Content
     var body: some View {
         #if os(macOS)
-        NativeGridScroll(horizontal: axis == .horizontal, contentWidth: contentWidth, contentHeight: contentHeight, viewportWidth: viewportWidth, trackHeight: trackHeight, rowHeights: rowHeights, selectedRow: selectedRow, rowReveal: rowReveal, fileDrop: fileDrop, fileDropPreview: fileDropPreview, content: content())
+        NativeGridScroll(horizontal: axis == .horizontal, contentWidth: contentWidth, contentHeight: contentHeight, viewportWidth: viewportWidth, trackHeight: trackHeight, timelineVerticalBarTop: timelineVerticalBarTop, rowHeights: rowHeights, selectedRow: selectedRow, rowReveal: rowReveal, fileDrop: fileDrop, fileDropPreview: fileDropPreview, content: content())
         #else
         ScrollView(axis, showsIndicators: false, content: content)
         #endif
     }
 }
+
+#if os(iOS)
+import UIKit
+
+@MainActor final class TimelineTouchScrollConnection {
+    fileprivate weak var bar: TimelineTouchScrollBarView? {
+        didSet { bar?.observe(scroll) }
+    }
+    weak var scroll: UIScrollView? {
+        didSet { if oldValue !== scroll { bar?.observe(scroll) } }
+    }
+}
+
+struct TimelineTouchScrollBar: UIViewRepresentable {
+    let connection: TimelineTouchScrollConnection
+    let move: (CGFloat) -> Void
+    func makeUIView(context: Context) -> TimelineTouchScrollBarView { TimelineTouchScrollBarView() }
+    func updateUIView(_ view: TimelineTouchScrollBarView, context: Context) {
+        view.move = move
+        if connection.bar !== view { connection.bar = view }
+    }
+}
+
+final class TimelineTouchScrollBarView: UIView {
+    private weak var scroll: UIScrollView?
+    private var observers: [NSKeyValueObservation] = []
+    private let slot = CALayer()
+    private let knob = CALayer()
+    private var grabOffset: CGFloat = 0
+    private var lastPercentage: Int?
+    var move: ((CGFloat) -> Void)?
+
+    init() {
+        super.init(frame: .zero)
+        slot.backgroundColor = UIColor(white: 0.12, alpha: 1).cgColor
+        knob.backgroundColor = UIColor(red: 84.0 / 255, green: 1, blue: 147.0 / 255, alpha: 1).cgColor
+        for layer in [slot, knob] {
+            layer.cornerRadius = 3
+            self.layer.addSublayer(layer)
+        }
+        isAccessibilityElement = true
+        accessibilityLabel = NSLocalizedString("Vertical timeline scroll", comment: "")
+        accessibilityTraits = .adjustable
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func observe(_ scroll: UIScrollView?) {
+        observers.removeAll()
+        self.scroll = scroll
+        if let scroll {
+            observers = [scroll.observe(\.contentOffset) { [weak self] _, _ in self?.updateThumb() },
+                         scroll.observe(\.contentSize) { [weak self] _, _ in self?.updateThumb() },
+                         scroll.observe(\.bounds) { [weak self] _, _ in self?.updateThumb() }]
+        }
+        updateThumb()
+    }
+
+    private var range: CGFloat {
+        guard let scroll else { return 0 }
+        return max(0, scroll.contentSize.height + scroll.adjustedContentInset.top + scroll.adjustedContentInset.bottom - scroll.bounds.height)
+    }
+    override func layoutSubviews() { super.layoutSubviews(); updateThumb() }
+
+    private func updateThumb() {
+        let available = range
+        let viewport = scroll?.bounds.height ?? 0
+        let value = available > 0 ? min(1, max(0, ((scroll?.contentOffset.y ?? 0) + (scroll?.adjustedContentInset.top ?? 0)) / available)) : 0
+        let height = min(bounds.height, max(18, bounds.height * viewport / max(1, viewport + available)))
+        let trackFrame = CGRect(x: bounds.midX - 3, y: 0, width: 6, height: bounds.height)
+        let thumbFrame = CGRect(x: trackFrame.minX, y: (bounds.height - height) * value, width: 6, height: height)
+        let opacity: Float = available > 0 ? 1 : 0.28
+        if slot.frame != trackFrame || knob.frame != thumbFrame || knob.opacity != opacity {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            slot.frame = trackFrame
+            knob.frame = thumbFrame
+            knob.opacity = opacity
+            CATransaction.commit()
+        }
+        let percentage = Int((value * 100).rounded())
+        if lastPercentage != percentage {
+            lastPercentage = percentage
+            accessibilityValue = "\(percentage)%"
+        }
+    }
+
+    private func scroll(to y: CGFloat) {
+        guard let scroll else { return }
+        move?(min(range, max(0, y)) - scroll.adjustedContentInset.top)
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let y = touches.first?.location(in: self).y else { return }
+        grabOffset = (knob.frame.minY...knob.frame.maxY).contains(y) ? y - knob.frame.minY : knob.frame.height / 2
+        drag(to: y)
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let y = touches.first?.location(in: self).y { drag(to: y) }
+    }
+    private func drag(to y: CGFloat) {
+        let distance = bounds.height - knob.frame.height
+        if distance > 0 { scroll(to: (y - grabOffset) / distance * range) }
+    }
+    override func accessibilityIncrement() { page(by: 1) }
+    override func accessibilityDecrement() { page(by: -1) }
+    private func page(by direction: CGFloat) {
+        guard let scroll else { return }
+        self.scroll(to: scroll.contentOffset.y + scroll.adjustedContentInset.top + direction * scroll.bounds.height * 0.85)
+    }
+}
+#endif
+
 #if os(macOS)
 import AppKit
 
@@ -1282,6 +1403,7 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
     let contentHeight: CGFloat
     var viewportWidth: CGFloat? = nil
     var trackHeight: CGFloat? = nil
+    var timelineVerticalBarTop: CGFloat? = nil
     var rowHeights: [CGFloat] = []
     var selectedRow: Int? = nil
     var rowReveal: GridRowReveal? = nil
@@ -1319,7 +1441,7 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
     func makeNSView(context: Context) -> GridNativeScrollView {
         let scroll = GridNativeScrollView()
         scroll.wantsLayer = true
-        scroll.contentView = TimelineClipView()
+        scroll.contentView = TimelineClipView(leadingSpace: horizontal ? TimelineAppearanceDefaults.leadingSpace : 0)
         if horizontal {
             scroll.registerForDraggedTypes([.fileURL])
             SidebarScrollController.registerTimelineWheelClip(scroll.contentView)
@@ -1351,7 +1473,12 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
         document.host = host; document.addSubview(host)
         scroll.hostedProjectionDidLayout = { [weak document] in document?.commitHostedProjection() ?? true }
         scroll.documentView = document
+        if horizontal {
+            scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.documentRect.minX, y: 0))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
         document.setHostedViewport(width: hostedViewportWidth, clip: scroll.contentView)
+        if let timelineVerticalBarTop { scroll.showTimelineVerticalBar(inset: timelineVerticalBarTop) }
         return scroll
     }
     func updateNSView(_ scroll: GridNativeScrollView, context: Context) {
@@ -1361,7 +1488,9 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
         defer { CATransaction.commit() }
         scroll.fileDrop = fileDrop
         scroll.fileDropPreview = fileDropPreview
-        let anchoredY = scroll.trackHeightOffset(height: trackHeight, rows: rowHeights, selected: selectedRow)
+        if let trackHeight, let anchoredY = scroll.trackHeightOffset(height: trackHeight, rows: rowHeights, selected: selectedRow) {
+            scroll.prepareTrackHeightAnchor(to: anchoredY, height: trackHeight)
+        }
         // Update the existing, typed hosting root directly so SwiftUI can diff
         // unchanged descendants. An ObservableObject relay invalidated the
         // entire hosted root again on every parent layout/resize transaction.
@@ -1382,21 +1511,10 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
             // hosting document and clip to redraw discards their backing reuse.
         }
         document.setHostedViewport(width: hostedViewportWidth, clip: scroll.contentView)
+        if let timelineVerticalBarTop { scroll.showTimelineVerticalBar(inset: timelineVerticalBarTop) }
         // Commit the viewport after the hosting view has laid out this scale.
         // Scrolling here exposed old item geometry at the next scale's origin.
         if scroll.zoomAnchor != nil { host.needsLayout = true }
-        if let anchoredY {
-            let clip = scroll.contentView
-            var bounds = clip.bounds
-            bounds.origin.y = anchoredY
-            let origin = clip.constrainBoundsRect(bounds).origin
-            if origin != clip.bounds.origin {
-                // TimelineClipView prepares the destination before committing
-                // its bounds. Preparing here as well repeats the hosted layout
-                // inside this representable's height update on Ventura.
-                scroll.anchorTrackHeight(to: origin)
-            }
-        }
         if !horizontal { scroll.revealRow(rowReveal) }
     }
 }
@@ -1624,6 +1742,77 @@ private final class GridHostingView<Content: View>: NSHostingView<Content> {
     override var fittingSize: NSSize { frame.size }
 }
 final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, NativeTimelineSelectionScrollHost, NativeTimelineFollowPresentation {
+    final class GreenScroller: NSScroller {
+        private func drawBar(_ rect: NSRect, color: NSColor) {
+            let bar = bounds.height > bounds.width
+                ? NSRect(x: bounds.midX - 3, y: rect.minY, width: 6, height: rect.height)
+                : NSRect(x: rect.minX, y: bounds.midY - 3, width: rect.width, height: 6)
+            color.setFill()
+            NSBezierPath(roundedRect: bar, xRadius: 3, yRadius: 3).fill()
+        }
+
+        override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
+            drawBar(slotRect, color: NSColor(white: 0.12, alpha: 1))
+        }
+
+        override func drawKnob() {
+            drawBar(rect(for: .knob), color: NSColor(calibratedRed: 84.0 / 255, green: 1, blue: 147.0 / 255, alpha: 1))
+        }
+    }
+
+    private var timelineVerticalBar: GreenScroller?
+    private var timelineVerticalBarTop: CGFloat?
+
+    func showTimelineVerticalBar(inset: CGFloat) {
+        guard timelineVerticalBarTop != inset else { syncTimelineVerticalBar(); return }
+        timelineVerticalBarTop = inset
+        if timelineVerticalBar == nil {
+            let bar = GreenScroller(frame: NSRect(x: 0, y: 0, width: TimelineVerticalBar.width, height: 200))
+            bar.scrollerStyle = .legacy
+            bar.controlSize = .small
+            bar.target = self
+            bar.action = #selector(scrollWithTimelineVerticalBar)
+            bar.setAccessibilityLabel(NSLocalizedString("Vertical timeline scroll", comment: ""))
+            timelineVerticalBar = bar
+            addSubview(bar, positioned: .above, relativeTo: contentView)
+        }
+        tile()
+    }
+
+    private func syncTimelineVerticalBar() {
+        guard let bar = timelineVerticalBar else { return }
+        let clip = contentView
+        let height = documentView?.frame.height ?? 0
+        let range = max(0, height - clip.bounds.height)
+        let value = range > 0 ? min(1, max(0, clip.bounds.minY / range)) : 0
+        let proportion = height > 0 ? min(1, clip.bounds.height / height) : 1
+        if bar.isEnabled != (range > 0) { bar.isEnabled = range > 0 }
+        if bar.knobProportion != proportion { bar.knobProportion = proportion }
+        if bar.doubleValue != value { bar.doubleValue = value }
+    }
+
+    @objc private func scrollWithTimelineVerticalBar() {
+        guard let bar = timelineVerticalBar, let documentView else { return }
+        let clip = contentView
+        var origin = clip.bounds.origin
+        let page = clip.bounds.height * 0.85
+        switch bar.hitPart {
+        case .decrementPage: origin.y -= page
+        case .incrementPage: origin.y += page
+        case .decrementLine: origin.y -= 40
+        case .incrementLine: origin.y += 40
+        default: origin.y = bar.doubleValue * max(0, documentView.frame.height - clip.bounds.height)
+        }
+        pauseManualPlaybackFollow()
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        reflectScrolledClipView(clip)
+    }
+
+    override func reflectScrolledClipView(_ clip: NSClipView) {
+        super.reflectScrolledClipView(clip)
+        if clip === contentView { syncTimelineVerticalBar() }
+    }
+
     private var lastRowReveal: UUID?
     private var pendingRowReveal: GridRowReveal?
     func revealRow(_ request: GridRowReveal?) {
@@ -1658,9 +1847,9 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
         guard let height, let previousTrackHeight, height != previousTrackHeight,
               rows.count == previousRowHeights.count,
               let anchor = TrackHeightGeometry.ScrollAnchor(heights: previousRowHeights.map(Double.init),
-                  offset: Double(contentView.bounds.minY), selected: selected),
+                  offset: Double(contentView.bounds.minY + contentView.bounds.height / 2), selected: nil),
               let offset = anchor.offset(heights: rows.map(Double.init)) else { return nil }
-        return CGFloat(offset)
+        return max(0, CGFloat(offset) - contentView.bounds.height / 2)
     }
     var manualNavigation: (() -> Void)?
     private var manualScrollMonitor: Any?
@@ -1672,7 +1861,7 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
                                         userInfo: ["active": active])
     }
     func pauseManualPlaybackFollow() {
-        playbackFollowSuspendedUntil = ProcessInfo.processInfo.systemUptime + 1.5
+        playbackFollowSuspendedUntil = ProcessInfo.processInfo.systemUptime + 5
         setPlaybackFollowing(false)
         manualNavigation?()
     }
@@ -1717,6 +1906,23 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     var prepareHostedHorizontalScroll: ((CGFloat) -> Bool)?
     var prepareHostedVerticalScroll: ((CGFloat) -> Bool)?
     private var preparingVerticalScroll = false
+    private var pendingTrackHeightAnchor: (y: CGFloat, height: CGFloat)?
+    func prepareTrackHeightAnchor(to y: CGFloat, height: CGFloat) {
+        pendingTrackHeightAnchor = (y, height)
+    }
+    func trackHeightAnchor(for height: CGFloat, documentHeight: CGFloat) -> CGFloat? {
+        guard let anchor = pendingTrackHeightAnchor, anchor.height == height else { return nil }
+        return min(anchor.y, max(0, documentHeight - contentView.bounds.height))
+    }
+    func commitTrackHeightAnchor() {
+        guard let anchor = pendingTrackHeightAnchor else { return }
+        pendingTrackHeightAnchor = nil
+        let clip = contentView
+        var rect = clip.bounds
+        rect.origin.y = anchor.y
+        anchorTrackHeight(to: clip.constrainBoundsRect(rect).origin)
+    }
+
     private var applyingTrackHeightAnchor = false
     private var preparingHorizontalScroll = false
     func prepareHorizontalViewport(at x: CGFloat) {
@@ -1832,10 +2038,11 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     var zoomAnchor: (fraction: Double, screenX: CGFloat, width: CGFloat)?
     func applyZoomAnchor() {
         guard let anchor = zoomAnchor, documentView != nil else { return }
-        let width = contentView.documentRect.width
+        let rect = contentView.documentRect
+        let width = rect.maxX
         var origin = contentView.bounds.origin
-        origin.x = min(max(0, CGFloat(anchor.fraction) * width - anchor.screenX),
-                       max(0, width - contentView.bounds.width))
+        origin.x = min(max(rect.minX, CGFloat(anchor.fraction) * width - anchor.screenX),
+                       max(rect.minX, width - contentView.bounds.width))
         contentView.scroll(to: origin)
         reflectScrolledClipView(contentView)
         // SwiftUI may commit an intermediate scale after a newer wheel event.
@@ -1860,8 +2067,16 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     }
     override func tile() {
         super.tile()
-        // No border, scroller, or accessory area: the clip fills the entire viewport.
-        if contentView.frame != bounds { contentView.frame = bounds }
+        var viewport = bounds
+        if let bar = timelineVerticalBar {
+            viewport.size.width = max(0, viewport.width - TimelineVerticalBar.width)
+            let inset = min(bounds.height, max(0, timelineVerticalBarTop ?? 0))
+            let barFrame = NSRect(x: viewport.maxX, y: isFlipped ? bounds.minY + inset : bounds.minY,
+                                  width: bounds.maxX - viewport.maxX, height: bounds.height - inset)
+            if bar.frame != barFrame { bar.frame = barFrame }
+        }
+        if contentView.frame != viewport { contentView.frame = viewport }
+        syncTimelineVerticalBar()
         if let document = documentView as? GridDocumentView, document.followsViewportWidth {
             document.synchronizeHostedViewport()
         }
@@ -1873,23 +2088,32 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
 #if os(macOS)
 /// Keep the document inside the viewport on both axes, including momentum scroll.
 private final class TimelineClipView: NSClipView {
+    private let leadingSpace: CGFloat
+    init(leadingSpace: CGFloat = 0) {
+        self.leadingSpace = leadingSpace
+        super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { nil }
     override var documentRect: NSRect {
         var rect = super.documentRect
         if let width = (superview as? GridNativeScrollView)?.logicalDocumentWidth {
             rect.size.width = width
         }
+        rect.origin.x -= leadingSpace
+        rect.size.width += leadingSpace
         return rect
     }
     private func boundedOrigin(_ origin: NSPoint) -> NSPoint {
         var result = origin
-        let maximum = max(0, documentRect.width - bounds.width)
-        result.x = min(maximum, max(0, origin.x))
+        let rect = documentRect
+        let maximum = max(rect.minX, rect.maxX - bounds.width)
+        result.x = min(maximum, max(rect.minX, origin.x))
         let maximumY = max(0, (documentView?.frame.height ?? 0) - bounds.height)
         result.y = min(maximumY, max(0, origin.y))
         return result
     }
     // Momentum scrolling can update bounds directly, bypassing the proposed
-    // rectangle constraint. Enforce time zero on both AppKit entry points.
+    // rectangle constraint. Keep the leading margin on both AppKit entry points.
     private var committingScroll = false
     override func setBoundsOrigin(_ newOrigin: NSPoint) {
         let origin = boundedOrigin(newOrigin)
@@ -1913,8 +2137,9 @@ private final class TimelineClipView: NSClipView {
 
     override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
         var constrained = super.constrainBoundsRect(proposedBounds)
-        let maximum = max(0, documentRect.width - proposedBounds.width)
-        constrained.origin.x = min(max(0, proposedBounds.minX), maximum)
+        let rect = documentRect
+        let maximum = max(rect.minX, rect.maxX - proposedBounds.width)
+        constrained.origin.x = min(max(rect.minX, proposedBounds.minX), maximum)
         let maximumY = max(0, (documentView?.frame.height ?? 0) - proposedBounds.height)
         constrained.origin.y = min(max(0, proposedBounds.minY), maximumY)
         return constrained
@@ -2149,7 +2374,11 @@ struct SidebarScrollMetrics: Equatable {
         refresh()
         // Apply each native delta once, including trackpad momentum events.
         // No additional inertia or deferred movement is introduced here.
-        applyScroll(to: metrics.offset + movement)
+        // The track list needs more travel per mouse-wheel notch. Scale after
+        // limiting so fast notches also retain four times their original distance;
+        // precise trackpad gestures and the Setlist keep their native travel.
+        let wheelScale: CGFloat = limitsScrollVelocity && !event.hasPreciseScrollingDeltas ? 4 : 1
+        applyScroll(to: metrics.offset + movement * wheelScale)
         return true
     }
     func attach(_ scroll: NSScrollView?, owner: NSView? = nil) {

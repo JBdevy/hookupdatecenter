@@ -9,6 +9,7 @@ struct GrandMA2SettingsView: View {
     @State private var selected = Set<UUID>()
     @State private var ports: [IntegrationConnection.Port] = []
     @State private var advanced = false
+    @State private var preparingMap = true
     @State private var busy = false
     @State private var status = ""
     @ObservedObject private var runtime = ResolumeController.shared
@@ -68,12 +69,13 @@ struct GrandMA2SettingsView: View {
                     }
                 }
             }.frame(maxHeight: .infinity).background(Color.black.opacity(0.25)).cornerRadius(6)
+                .overlay { if preparingMap { ProgressView().controlSize(.small) } }
             Text("In grandMA2, import the “Import all” macro from the generated folder and run it once.")
                 .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
             if !status.isEmpty { Text(verbatim: status).font(.jarasCallout).textSelection(.enabled).lineLimit(3) }
             if !runtime.error.isEmpty { Text(LocalizedStringKey(runtime.error)).foregroundStyle(.red).font(.jarasCaption).lineLimit(2) }
             HStack {
-                Button("Save map to project") { _ = save() }.disabled(busy)
+                Button("Save map to project") { _ = save() }.disabled(busy || preparingMap)
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
                 Button("Create grandMA2 macros") { create() }
@@ -83,7 +85,7 @@ struct GrandMA2SettingsView: View {
             }
         }.padding(24).frame(width: 720, height: 650)
             .foregroundStyle(JarasTheme.text).background(JarasTheme.background)
-            .onAppear { refreshMap() }
+            .task { await refreshMap() }
     }
     private func number(_ title: LocalizedStringKey, value: Binding<Int>) -> some View {
         VStack(alignment: .leading, spacing: 4) { Text(title).font(.jarasCaption); TextField("1", value: value, formatter: Self.integer).frame(width: 116) }
@@ -92,8 +94,17 @@ struct GrandMA2SettingsView: View {
     private static func timecode(_ value: Double) -> String {
         let n = Int((value * 30).rounded()); return String(format: "%02d:%02d:%02d:%02d", n / 108000, n / 1800 % 60, n / 30 % 60, n % 30)
     }
-    private func refreshMap() {
-        do { regions = try GrandMA2Map.build(project: show.snapshot.project, settings: settings).plan.regions; selected = Set(regions.map(\.id)) }
+    private func refreshMap() async {
+        let project = show.snapshot.project
+        let config = settings
+        defer { preparingMap = false }
+        let worker = Task.detached(priority: .utility) { try GrandMA2Map.build(project: project, settings: config) }
+        do {
+            let map = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+            guard !Task.isCancelled, show.snapshot.project.id == project.id else { return }
+            regions = map.plan.regions
+            selected = Set(regions.map(\.id))
+        } catch is CancellationError { }
         catch { status = JarasLocalization.string(error.localizedDescription) }
     }
     private func save() -> GrandMA2Map? {

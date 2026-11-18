@@ -35,22 +35,29 @@ for n in 0..<Int(samples.frameLength) {
     samples.floatChannelData![1][n] = -samples.floatChannelData![0][n]
 }
 do { let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: samples) }
+let urls = try (0..<24).map { index -> URL in
+    if index == 0 { return url }
+    let copy = directory.appendingPathComponent("independent-\(index).wav")
+    try FileManager.default.copyItem(at: url, to: copy)
+    return copy
+}
 private let gate = StorageLatency()
 let selector = NSSelectorFromString("readIntoBuffer:frameCount:error:")
 let method = class_getInstanceMethod(AVAudioFile.self, selector)!
 let original = method_getImplementation(method)
 private let read = unsafeBitCast(original, to: AudioReadImplementation.self)
+private let delayedPaths = Set(urls.map { $0.resolvingSymlinksInPath().standardizedFileURL.path })
 let replacement: @convention(block) (AVAudioFile, AVAudioPCMBuffer, AVAudioFrameCount, AutoreleasingUnsafeMutablePointer<NSError?>?) -> Bool = { file, buffer, count, error in
-    if file.url == url { gate.beforeRead(count) }
+    if delayedPaths.contains(file.url.resolvingSymlinksInPath().standardizedFileURL.path) { gate.beforeRead(count) }
     return read(file, selector, buffer, count, error)
 }
 method_setImplementation(method, imp_implementationWithBlock(replacement))
 defer { method_setImplementation(method, original) }
 let engine = AVAudioEngine()
 let sources = (0..<24).map { _ in JarasPreparedClip(format: format) }
-for source in sources {
+for (source, mediaURL) in zip(sources, urls) {
     engine.attach(source.node); engine.connect(source.node, to: engine.mainMixerNode, format: format)
-    try source.prepare(url, sourceFrame: 0, endFrame: 48000 * 30, rate: 1, pitch: 0, loopStart: 0, loopEnd: 0)
+    try source.prepare(mediaURL, sourceFrame: 0, endFrame: 48000 * 30, rate: 1, pitch: 0, loopStart: 0, loopEnd: 0)
 }
 try engine.enableManualRenderingMode(.realtime, format: format, maximumFrameCount: 512)
 try engine.start()
@@ -73,6 +80,7 @@ let elapsed = ProcessInfo.processInfo.systemUptime - start
 let misses = sources.map(\.underruns).reduce(0, +)
 let stats = gate.statistics
 sources.forEach { $0.stop() }; engine.stop()
-print("STORAGE_LATENCY_24_STEMS readDelayMs=150 seconds=\(elapsed) readCalls=\(stats.0) largestReadFrames=\(stats.1) underruns=\(misses) maxError=\(maxError)")
+print("STORAGE_LATENCY_24_INDEPENDENT_STEMS readDelayMs=150 seconds=\(elapsed) readCalls=\(stats.0) largestReadFrames=\(stats.1) underruns=\(misses) maxError=\(maxError)")
+precondition(stats.0 >= urls.count && stats.1 >= 32768, "The fixture must actually delay streaming reads for the independent files")
 precondition(misses == 0 && maxError < 0.00001, "Latency-bound storage exhausted the PCM reserve or changed audio")
 print("STORAGE_LATENCY_24_STEMS_EXACT_PCM_NO_DROPOUT_OK")

@@ -85,10 +85,11 @@ struct TextItemEditor: View {
 #if os(macOS)
 import AppKit
 
-private struct TextItemNotepad: NSViewRepresentable {
+struct TextItemNotepad: NSViewRepresentable {
     @Binding var text: String
     let apply: () -> Void
     let cancel: () -> Void
+    var outlineStanzas = false
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
@@ -107,6 +108,7 @@ private struct TextItemNotepad: NSViewRepresentable {
         editor.textContainer?.widthTracksTextView = true
         editor.minSize = NSSize(width: 0, height: 180)
         editor.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        editor.outlineStanzas = outlineStanzas
         editor.loadColoredText(text); editor.delegate = context.coordinator
         editor.apply = apply; editor.cancel = cancel
         scroll.documentView = editor
@@ -116,6 +118,7 @@ private struct TextItemNotepad: NSViewRepresentable {
         context.coordinator.parent = self
         guard let editor = scroll.documentView as? TextItemNotepadView else { return }
         editor.apply = apply; editor.cancel = cancel
+        editor.outlineStanzas = outlineStanzas
         if ItemTextColors.runs(editor.encodedText) != ItemTextColors.runs(text) { editor.loadColoredText(text) }
     }
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -131,6 +134,26 @@ private struct TextItemNotepad: NSViewRepresentable {
 private final class TextItemNotepadView: NSTextView {
     var apply: () -> Void = {}
     var cancel: () -> Void = {}
+    var outlineStanzas = false
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard outlineStanzas, let layoutManager, let textContainer else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        NSColor(JarasTheme.secondary.opacity(0.4)).setStroke()
+        for range in FullLyrics.stanzaRanges(string) {
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            var box = layoutManager.boundingRect(forGlyphRange: glyphs, in: textContainer)
+            box.origin.y += textContainerOrigin.y
+            box.origin.x = 4
+            box.size.width = bounds.width - 8
+            box = box.insetBy(dx: 0, dy: -2)
+            if rect.intersects(box) { NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4).stroke() }
+        }
+    }
+    override func didChangeText() {
+        super.didChangeText()
+        if outlineStanzas { needsDisplay = true }
+    }
     private static let colorKey = NSAttributedString.Key("CatLiveItemColor")
     private var paletteWindow: NSPanel?
     var encodedText: String {

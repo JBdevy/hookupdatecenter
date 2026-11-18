@@ -53,6 +53,10 @@ extension UTType {
     }
     private func configure(_ container: AppContainer) {
         container.documents.openInNewProjectTab = { [weak self] in self?.open($0) }
+        container.documents.openProjectTabAndWait = { [weak self] url in
+            guard let self else { throw CancellationError() }
+            try await self.openAndWait(url)
+        }
         container.documents.activateExistingProjectTab = { [weak self, weak container] url in
             guard let self else { return false }
             guard let index = projects.firstIndex(where: { $0 !== container && self.canonical($0.documents.currentURL) == self.canonical(url) }) else { return false }
@@ -105,9 +109,16 @@ extension UTType {
         }
         DAWRemoteHostBridge.documents = next.documents
         DAWRemoteHostBridge.bind(next.show, session: .nativeHost)
+        next.documents.refreshNativeStorage()
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         next.documents.recent = (UserDefaults.standard.stringArray(forKey: "jaras.recentProjects") ?? []).map { NativeRecentProjectPath.resolve($0, documents: documents) }
         publishTabs()
+    }
+    private func openAndWait(_ url: URL) async throws {
+        open(url)
+        while transitioning { try await Task.sleep(nanoseconds: 20_000_000) }
+        guard let project = active else { throw ProjectError.invalid("Could not open project.") }
+        try await project.documents.waitUntilOpened(at: url)
     }
     func open(_ url: URL) {
         guard canChange, let previous = active, previous.documents.ready else { return }
@@ -335,7 +346,7 @@ extension UTType {
             guard let container = bootstrap.container else { error = bootstrap.error ?? "Could not open Native mode."; return }
             tabs.install(container)
             guard await container.setLocalPlaybackEnabled(true) else { error = container.show.message; return }
-            JarasMobileApplicationDelegate.setRemoteOrientation(false)
+            JarasMobileApplicationDelegate.setLandscapeOnly(true)
             native = true; starting = false
             if let package { container.documents.importPortablePackage(package) }
         }
@@ -347,6 +358,7 @@ extension UTType {
             defer { entering = false }
             guard await tabs.leave() else { error = tabs.active?.documents.error ?? container.documents.error; return }
             native = false
+            JarasMobileApplicationDelegate.setLandscapeOnly(false)
         }
     }
 }
@@ -402,7 +414,9 @@ private struct NativeProjectPicker: UIViewControllerRepresentable {
     let cancelled: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .temporaryDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.audio, .movie, .image] : kind == .trackMedia ? [.image, .movie] : kind == .project ? [.catLiveProject, .catLivePackage, .zip] : [.catLivePackage, .zip]
+        let reaper = UTType(filenameExtension: "rpp") ?? UTType(importedAs: "com.cockos.reaper.project", conformingTo: .data)
+        let logic = UTType(filenameExtension: "logicx") ?? UTType(importedAs: "com.apple.logicx.project", conformingTo: .package)
+        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .temporaryDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.audio, .movie, .image] : kind == .trackMedia ? [.image, .movie] : kind == .reaper ? [reaper] : kind == .logic ? [logic, .package] : kind == .project ? [.catLiveProject, .catLivePackage, .zip, reaper, logic] : [.catLivePackage, .zip]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: kind == .trackAudio || kind == .trackMedia)
         picker.directoryURL = directory
         picker.allowsMultipleSelection = kind == .stems

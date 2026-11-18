@@ -2,6 +2,49 @@
 import SwiftUI
 import UIKit
 
+enum IpadItemHeaderKnob {
+    static func draw(in rect: CGRect, position: Double, pan: Bool = false, context: CGContext) {
+        let center = CGPoint(x: rect.midX, y: rect.midY), radius: CGFloat = min(5, rect.height/2-1)
+        context.setFillColor(UIColor.black.cgColor)
+        context.fillEllipse(in: CGRect(x: center.x-radius,y: center.y-radius,width: radius*2,height: radius*2))
+        let ink = pan ? UIColor(red: 0.75, green: 0.50, blue: 1, alpha: 1) : UIColor(red: 0.2, green: 1, blue: 0.55, alpha: 1)
+        context.setLineWidth(1.3); context.setLineCap(.round); context.setStrokeColor(ink.cgColor)
+        context.addArc(center: center,radius: radius,startAngle: .pi*0.75,endAngle: .pi*2.25,clockwise: false); context.strokePath()
+        let angle = CGFloat.pi*0.75 + CGFloat(min(1,max(0,position)))*CGFloat.pi*1.5
+        context.move(to: center); context.addLine(to: CGPoint(x: center.x+cos(angle)*radius,y: center.y+sin(angle)*radius)); context.strokePath()
+    }
+}
+struct IpadItemMixTooltipAnchor: UIViewRepresentable {
+    let text: String?
+    func makeUIView(context: Context) -> Anchor { Anchor() }
+    func updateUIView(_ view: Anchor, context: Context) { view.text = text; view.refresh() }
+    static func dismantleUIView(_ view: Anchor, coordinator: ()) { view.label.removeFromSuperview() }
+    final class Anchor: UIView {
+        var text: String?
+        let label = UILabel()
+        override init(frame: CGRect) {
+            super.init(frame: frame); isUserInteractionEnabled = false
+            label.isUserInteractionEnabled = false; label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+            label.textColor = .white; label.backgroundColor = UIColor(white: 0.06,alpha: 0.96)
+            label.textAlignment = .center; label.layer.cornerRadius = 4; label.clipsToBounds = true
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func didMoveToWindow() { super.didMoveToWindow(); refresh() }
+        override func layoutSubviews() { super.layoutSubviews(); refresh() }
+        func refresh() {
+            guard let text, let window else { label.removeFromSuperview(); return }
+            label.text = text
+            if label.superview !== window { window.addSubview(label) }
+            let size = label.sizeThatFits(CGSize(width: 180,height: 28)), width = size.width+14, height: CGFloat = 26
+            let anchor = convert(bounds,to: window)
+            let y = anchor.minY >= height+window.safeAreaInsets.top+6 ? anchor.minY-height-5 : anchor.maxY+5
+            label.frame = CGRect(x: min(max(window.safeAreaInsets.left+4,anchor.midX-width/2),window.bounds.maxX-width-window.safeAreaInsets.right-4),
+                y: min(y,window.bounds.maxY-height-window.safeAreaInsets.bottom-4),width: width,height: height)
+            window.bringSubviewToFront(label)
+        }
+    }
+}
+
 /// Weakly registered headers follow the exact native viewport without
 /// rebuilding the waveform or publishing scroll positions through SwiftUI.
 final class IpadItemHeaderViewport: UIScrollView {
@@ -25,6 +68,7 @@ struct IpadItemHeader: UIViewRepresentable {
     var pinsToViewport = true
     var sourceStartOffset: CGFloat = 0
     var mixLocked = false
+    var blackTitle = false
     let mix: (IpadItemMixParameter, Double, Bool, Bool) -> Void
     let mute: () -> Void
     let phase: () -> Void
@@ -36,7 +80,7 @@ struct IpadItemHeader: UIViewRepresentable {
         view.interactionID = interactionID
         view.clip = clip; view.itemTitle = itemTitle; view.editable = editable; view.textEditable = textEditable
         view.pinsToViewport = pinsToViewport; view.sourceStartOffset = sourceStartOffset
-        view.mixLocked = mixLocked
+        view.mixLocked = mixLocked; view.blackTitle = blackTitle
         view.mix = mix; view.mute = mute; view.phase = phase; view.fx = fx; view.menu = menu
         view.isEnabled = enabled; view.setNeedsDisplay()
     }
@@ -44,7 +88,6 @@ struct IpadItemHeader: UIViewRepresentable {
 }
 
 final class IpadItemHeaderControl: UIControl {
-    static let itemBackgroundColor = UIColor(white: 0.19, alpha: 1)
     var clip = AudioClip(id: UUID(), name: "", startTime: 0, duration: 0) {
         didSet { if oldValue.id != clip.id { cancelTracking(with: nil) }; refreshTooltip() }
     }
@@ -58,6 +101,7 @@ final class IpadItemHeaderControl: UIControl {
         didSet { if !editable && oldValue { cancelTracking(with: nil) } }
     }
     var textEditable = false
+    var blackTitle = false
     var mixLocked = false {
         didSet {
             if mixLocked && !oldValue, let hit = activeGesture?.hit, hit == .gain || hit == .pan {
@@ -104,7 +148,7 @@ final class IpadItemHeaderControl: UIControl {
         setNeedsDisplay()
     }
     override init(frame: CGRect) {
-        super.init(frame: frame); isOpaque = true; backgroundColor = Self.itemBackgroundColor
+        super.init(frame: frame); isOpaque = false; backgroundColor = .clear
         isMultipleTouchEnabled = false
         addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:))))
     }
@@ -214,9 +258,10 @@ final class IpadItemHeaderControl: UIControl {
     }
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        UIColor(white: 0.19, alpha: 1).setFill(); context.fill(bounds)
         let g = geometry
-        let green = UIColor(red: 0.37, green: 0.75, blue: 0.25, alpha: 1)
+        let titleInk: UIColor = blackTitle ? .black : .white
+        let buttonFill = UIColor(TrackMixerButtonAppearance.normal)
+        let mutedFill = UIColor(TrackMixerButtonAppearance.muted)
         func label(_ text: String, _ rect: CGRect?, color: UIColor = .white, centered: Bool = true) {
             guard let rect, rect.width > 0 else { return }
             let style = NSMutableParagraphStyle(); style.alignment = centered ? .center : .left
@@ -225,25 +270,20 @@ final class IpadItemHeaderControl: UIControl {
             let line = CGRect(x: rect.minX, y: rect.midY - font.lineHeight / 2, width: rect.width, height: font.lineHeight)
             (text as NSString).draw(in: line, withAttributes: [.font: font, .foregroundColor: color, .paragraphStyle: style])
         }
-        func button(_ rect: CGRect?, active: Bool, text: String, ink: UIColor = .white) {
+        func button(_ rect: CGRect?, text: String, fill: UIColor? = nil, ink: UIColor = .white) {
             guard let rect else { return }
-            (active ? UIColor.systemRed : UIColor.white.withAlphaComponent(0.10)).setFill()
-            context.fill(rect); label(text, rect, color: ink)
+            (fill ?? buttonFill).setFill()
+            context.addPath(TrackMixerButtonAppearance.path(in: rect))
+            context.fillPath()
+            label(text, rect, color: ink)
         }
-        func knob(_ rect: CGRect?, position: Double) {
+        func knob(_ rect: CGRect?, position: Double, pan: Bool = false) {
             guard let rect else { return }
-            let center = CGPoint(x: rect.midX, y: rect.midY), radius: CGFloat = min(5, rect.height / 2 - 1)
-            UIColor.black.setFill(); context.fillEllipse(in: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
-            context.setLineWidth(1.3); context.setLineCap(.round)
-            context.setStrokeColor(UIColor.white.cgColor)
-            context.addArc(center: center, radius: radius, startAngle: .pi * 0.75, endAngle: .pi * 2.25, clockwise: false); context.strokePath()
-            let angle = (.pi * 0.75) + CGFloat(position) * .pi * 1.5
-            context.setStrokeColor(green.cgColor)
-            context.move(to: center); context.addLine(to: CGPoint(x: center.x + cos(angle) * radius, y: center.y + sin(angle) * radius)); context.strokePath()
+            IpadItemHeaderKnob.draw(in: rect,position: position, pan: pan, context: context)
         }
         knob(g.gainKnobRect, position: g.gainPosition); label(g.gainLabel, g.gainLabelRect)
-        button(g.muteRect, active: g.muted, text: "M")
-        button(g.fxRect, active: g.fxBypassed, text: "FX", ink: g.hasFX && !g.fxBypassed ? green : .white)
+        button(g.muteRect, text: "M", fill: g.muted ? mutedFill : nil)
+        button(g.fxRect, text: "FX", ink: UIColor(TrackMixerButtonAppearance.fxText(hasEffects: g.hasFX, bypassed: g.fxBypassed)))
         if let phase = g.phaseRect {
             if g.phaseInverted { UIColor.systemYellow.setFill(); context.fill(phase) }
             context.setStrokeColor((g.phaseInverted ? UIColor.black : .white).cgColor); context.setLineWidth(1.1)
@@ -251,9 +291,9 @@ final class IpadItemHeaderControl: UIControl {
             context.strokeEllipse(in: CGRect(x: center.x - 4.5, y: center.y - 4.5, width: 9, height: 9))
             context.move(to: CGPoint(x: center.x - 5.5, y: center.y + 5.5)); context.addLine(to: CGPoint(x: center.x + 5.5, y: center.y - 5.5)); context.strokePath()
         }
-        knob(g.panKnobRect, position: g.panPosition); label(g.panLabel, g.panLabelRect)
-        button(g.editRect, active: false, text: JarasLocalization.string("Edit"))
-        label(displayTitle, CGRect(x: g.headerRect.minX + g.titleInset, y: 0, width: max(0, g.headerRect.width - g.titleInset - 2), height: bounds.height), centered: false)
+        knob(g.panKnobRect, position: g.panPosition, pan: true); label(g.panLabel, g.panLabelRect)
+        button(g.editRect, text: JarasLocalization.string("Edit"))
+        label(displayTitle, CGRect(x: g.headerRect.minX + g.titleInset, y: 0, width: max(0, g.headerRect.width - g.titleInset - 2), height: bounds.height), color: titleInk, centered: false)
     }
 }
 #endif

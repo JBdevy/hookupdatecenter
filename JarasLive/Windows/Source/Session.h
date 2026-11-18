@@ -8,6 +8,7 @@
 #include <deque>
 #include "TemporaryProjectSession.h"
 namespace catlive {
+struct MultitrackExportProject;
 class Session final : private Timer {
   public:
     explicit Session(std::shared_ptr<AudioDeviceManager> host = {});
@@ -36,6 +37,11 @@ class Session final : private Timer {
     String smkPartPanel; bool smkQueuedParts=false;
     uint64 setlistFocusRevision = 0;
     String message;
+    String capacityWarning;
+    double capacityWarningUntil = 0;
+    bool rejectOverCapacity(std::optional<double> position = {}, bool assumingPlayback = false);
+    String liveCapacityWarning() const { return Time::getMillisecondCounterHiRes() < capacityWarningUntil ? capacityWarning : String(); }
+
     StringArray projectReadWarnings;
     uint64 revision = 0;
     std::function<void()> changed, tick, selectionChanged, mixerChanged, transportChanged;
@@ -82,6 +88,7 @@ class Session final : private Timer {
     void configureSetlist(jaras::RegionSetlist);
     void editTimeline(const std::function<void(jaras::Project &)> &, bool allowTimingEdit = false);
     void editTrackSettings(const std::function<void(jaras::Project &)> &, bool routing = false);
+    void refreshProjectionAudio();
     void editItemControls(const std::function<void(jaras::Project &)> &);
     void moveMarker(const ID &, double);
     std::function<void()> setlistChanged;
@@ -99,6 +106,7 @@ class Session final : private Timer {
     void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
     void resizeItem(const ID &, double start, double end);
     void resizeSharedItemBoundary(const ID &, const ID &, double, std::optional<double> = {}, std::optional<double> = {});
+    void resizeTeleprompterBoundary(const std::set<ID> &, const ID &, const ID &, double);
     std::vector<ID> duplicateTracks(const std::set<ID> &, const var *copiedDocument = nullptr,
                                   const std::map<ID, ID> &insertingAfter = {}, std::map<ID, ID> *createdMapping = nullptr);
     void editTrackHierarchy(const ID &, const std::function<void(jaras::Song &)> &);
@@ -111,10 +119,11 @@ class Session final : private Timer {
                      std::function<void(String)> completion = {}, bool deferWaveform = false);
     void exportMix(const File &, int bits = 24);
     void exportAudio(ExportRequest);
+    void exportMultitrack(std::vector<MultitrackExportProject>, std::function<void()> onCompleted);
     AudioExportProgress exportProgress() const { const ScopedLock guard(exportProgressLock); return exportPreview; }
     bool exportFailed = false;
     void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0, std::function<void(std::set<ID>)> completed = {});
-    void separateAudioItem(ID, std::function<void(std::set<ID>)> completed = {});
+    void separateAudioItem(ID, std::function<void(std::set<ID>)> completed = {}, std::set<int> instruments = {});
     void detectRegionBPM(std::set<ID>);
     bool isDetectingBPM() const { return bpmCancellation != nullptr; }
     void cancelBPMDetection();

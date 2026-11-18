@@ -44,10 +44,16 @@ struct TestSnapshot { var project = TestProject() }
     var projectTabCount = 1, projectTabIndex = 0
     var recent: [URL] = []
     var openInNewProjectTab: ((URL) -> Void)?
+    var openProjectTabAndWait: ((URL) async throws -> Void)?
     var activateExistingProjectTab: ((URL) -> Bool)?
     var navigateProjectTab: ((Int) -> Void)?
     var additionalProtectedMediaURLs: () -> Set<URL> = { [] }
+    func waitUntilOpened(at url: URL) async throws {
+        while busy { try await Task.sleep(nanoseconds: 1_000_000) }
+        guard ready, currentURL == url else { throw ProjectError.invalid("open failed") }
+    }
     func rememberProjectMedia() async throws {}
+    func refreshNativeStorage() {}
     func open(_ url: URL) {
         busy = true
         if url.lastPathComponent == "bad.jl" { ready = false; error = "invalid project" }

@@ -12,6 +12,7 @@ extension View { func interfaceScaled() -> some View { self } }
 // detached Setlist lifecycle and does not mount a main workspace window.
 @MainActor enum ProjectionWindow {
     static func followWorkspaceWindow(_ window: NSWindow) {}
+    static func presentWorkspaceWindow(_ window: NSWindow) { window.makeKeyAndOrderFront(nil) }
 }
 
 

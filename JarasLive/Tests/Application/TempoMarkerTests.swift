@@ -102,7 +102,7 @@ final class TempoMarkerTests: XCTestCase {
             XCTAssertEqual(song.tracks[0].clips[0].duration, 12, accuracy: 0.000001)
         }
     }
-    func testUnifiedTempoRoundTripKeepsRestoreBoundaryOutsideOwnedAudio() {
+    func testUnifiedTempoRoundTripNeedsNoRestoreMarkerAndKeepsOwnedAudio() {
         var song = resizeSong()
         let parent = UUID()
         song.parts[0].startTime = 0; song.parts[0].endTime = 12; song.parts[0].parentRegionID = parent
@@ -125,9 +125,9 @@ final class TempoMarkerTests: XCTestCase {
             }
             TempoEditMap(before: before, after: song).apply(to: &song)
             let currentGroup = song.parts.first { $0.id == parent }!
-            XCTAssertEqual(song.markers!.count, 3, "The restoring boundary must not drift inside the group and multiply")
-            XCTAssertEqual(song.markers!.last!.position, currentGroup.endTime, accuracy: 0.000001)
-            XCTAssertEqual(song.markers!.last!.tempoBPM, 160)
+            XCTAssertEqual(song.markers!.count, 2, "Repeated edits must not create restoring markers")
+            XCTAssertFalse(song.markers!.contains { abs($0.position-currentGroup.endTime)<1e-6 })
+            XCTAssertEqual(song.tempoSection(at: currentGroup.endTime+1).bpm, song.bpm)
             XCTAssertEqual(song.hasUnrenderedTempo(in: currentGroup), step % 2 == 0,
                 "Returning the entire unified region to its original BPM must restore every effective rate")
             if step % 2 == 1 {

@@ -3,8 +3,11 @@
 namespace catlive::fxchain {
 inline var settings(const Session &session, const ID &id) {
     if (id.empty()) return session.project().masterFXJSON ? JSON::parse(text(*session.project().masterFXJSON)) : var();
-    for (const auto &song : session.project().songs) for (const auto &track : song.tracks)
+    for (const auto &song : session.project().songs) for (const auto &track : song.tracks) {
         if (track.id == id) return track.fxJSON ? JSON::parse(text(*track.fxJSON)) : var();
+        for (const auto &clip : track.clips)
+            if (clip.id == id) return clip.fxJSON ? JSON::parse(text(*clip.fxJSON)) : var();
+    }
     return {};
 }
 inline String enabledKey(const String &kind) {

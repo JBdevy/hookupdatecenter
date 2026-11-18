@@ -22,7 +22,7 @@ public struct GridItemClipboard: Equatable, Sendable {
         self.project = project.id; self.song = song; self.moving = moving; self.entries = entries
         sourceRows = Dictionary(uniqueKeysWithValues: source.tracks.enumerated().map { ($0.element.id, $0.offset) })
         sourceTrackTemplates = source.tracks.map {
-            Track(id: $0.id, name: $0.name, role: $0.kind == .standard ? $0.role : .other, color: $0.color)
+            Track(id: $0.id, name: $0.name, role: $0.kind == .standard || $0.kind.isText ? $0.role : .other, color: $0.color)
         }
     }
     public struct CopyPlan: Sendable {

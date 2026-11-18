@@ -16,7 +16,8 @@ struct Track{var kind=Kind.standard;var clips:[AudioClip]=[]}
 struct Song{var id=UUID();var tracks:[Track]=[]}
 struct Project{var id=UUID()}
 struct Snapshot{var project=Project()}
-struct CatStemRequest{let project:Project;let song:Song;let track:Track;let clip:AudioClip;let directory:URL}
+public enum TrackRole { case backingVocal, drums, bass, guitar, other }
+struct CatStemRequest{let project:Project;let song:Song;let track:Track;let clip:AudioClip;let directory:URL;var stems = Set(CatStem.allCases)}
 enum AudioSeparation{static func accepts(_ clip:AudioClip,on track:Track)->Bool{true}}
 enum AudioDestinationSpace{
  static func availableBytes(at:URL)->Int64?{nil}

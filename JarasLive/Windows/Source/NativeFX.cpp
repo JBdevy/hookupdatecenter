@@ -1,3 +1,4 @@
+#include "../../Core/Audio/SmoothBiquad.hpp"
 #include "NativeFX.h"
 #include <cassert>
 #include "Automation.h"
@@ -40,7 +41,7 @@ struct NativeFX::Effect {
     std::shared_ptr<native::stem::Processor> stem;
     native::stem::Mix stemMix;
     std::array<native::vst3::MIDIEvent,4096> midi{};
-    std::vector<std::unique_ptr<juce::dsp::IIR::Filter<float>>> eq[2];
+    std::vector<jaras::audio::SmoothBiquad> eq[2];
     juce::dsp::Compressor<float> compressor;
     float limiterCeiling = 1, limiterRelease = 0, limiterGain = 1;
     Reverb reverb;
@@ -133,8 +134,8 @@ void NativeFX::previewParameters(const String &key, const ParameterPreview &para
         switch(parameters.kind) {
         case ParameterPreview::equalizer:
             for (int ch=0;ch<2;++ch) for (unsigned i=0;i<parameters.eqCount && i<e.eq[ch].size();++i) {
-                if (i>=e.eqActive) e.eq[ch][i]->reset();
-                std::copy(parameters.eq[i].begin(),parameters.eq[i].end(),e.eq[ch][i]->coefficients->getRawCoefficients());
+                if (i>=e.eqActive) e.eq[ch][i].setImmediate(parameters.eq[i].data());
+                else e.eq[ch][i].setTarget(parameters.eq[i].data());
             }
             e.eqActive=parameters.eqCount;break;
         case ParameterPreview::compressor:
@@ -290,16 +291,13 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                                                  : juce::dsp::IIR::Coefficients<float>::makeLowPass(
                                                        sampleRate, (float)frequency, butterworthQ);
                         }
-                        auto filter = std::make_unique<juce::dsp::IIR::Filter<float>>(stageCoefficients);
-                        filter->reset();
-                        e->eq[ch].push_back(std::move(filter));
+                        e->eq[ch].emplace_back(stageCoefficients->getRawCoefficients(),sampleRate);
                     }
             }
         if (kind == "EQ") {
             e->eqActive = (unsigned)e->eq[0].size();
             for (auto &channel : e->eq) while (channel.size() < ParameterPreview::maximumEQStages) {
-                auto filter=std::make_unique<juce::dsp::IIR::Filter<float>>(new juce::dsp::IIR::Coefficients<float>(1,0,0,1,0,0));
-                filter->reset(); channel.push_back(std::move(filter));
+                channel.emplace_back(); channel.back().setSampleRate(sampleRate);
             }
         }
         if (kind == "Compressor") {
@@ -523,7 +521,7 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
                 auto *data = buffer.getWritePointer(ch);
                 for (unsigned index=0; index<e->eqActive; ++index)
                     for (int n = 0; n < samples; ++n)
-                        data[n] = e->eq[ch][index]->processSample(data[n]);
+                        data[n] = e->eq[ch][index].processSample(data[n]);
             }
             if (capturing) e->eqAnalysis->finish(buffer.getReadPointer(0), buffer.getReadPointer(1));
         }

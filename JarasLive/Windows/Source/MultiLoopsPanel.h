@@ -13,6 +13,9 @@ class MultiLoopsPanel final : public Component {
         addAndMakeVisible(view); view.setViewedComponent(&content, false);
         view.setScrollBarsShown(true, false); view.setScrollBarThickness(8);
         addAndMakeVisible(cancel); addAndMakeVisible(next);
+        addAndMakeVisible(capacityNotice);
+        capacityNotice.setColour(Label::textColourId, theme::yellow);
+        capacityNotice.setFont(theme::font(12));
         cancel.onClick = [this] { if (!stage) ModalSheet::dismiss(*this); else { stage = 0; refreshLater(); } };
         next.onClick = [this] {
             if (stage == 1) {
@@ -33,11 +36,18 @@ class MultiLoopsPanel final : public Component {
         view.setBounds(20, 78, getWidth()-40, getHeight()-145);
         content.setSize(std::max(1, view.getWidth()-10), contentHeight);
         cancel.setBounds(20, getHeight()-42, 82, 26); next.setBounds(getWidth()-102, getHeight()-42, 82, 26);
+        capacityNotice.setBounds(114, getHeight()-44, std::max(0,getWidth()-230), 30);
     }
   private:
     Session &session; ID regionID; std::function<void(String)> error;
     Viewport view; Component content; OwnedArray<Component> controls;
     TextButton cancel, next; TextEditor name; int stage = 0, contentHeight = 300;
+    Label capacityNotice;
+    bool rejectLoopCapacity() {
+        const bool rejected = session.rejectOverCapacity({}, true);
+        capacityNotice.setText(rejected ? session.liveCapacityWarning() : String(), dontSendNotification);
+        return rejected;
+    }
     jaras::MultiLoop draft;
     jaras::MultiLoopTrackSelection trackSelection;
     std::optional<jaras::MultiLoopGainDrag> gainDrag;
@@ -148,20 +158,27 @@ class MultiLoopsPanel final : public Component {
     void refreshLater() {
         MessageManager::callAsync([safe=SafePointer<MultiLoopsPanel>(this)] { if (safe) safe->rebuild(); });
     }
-    void change(std::function<void(jaras::Part &)> edit) {
+    bool change(std::function<void(jaras::Part &)> edit) {
         try {
             session.edit([&](jaras::Project &p) { for (auto &song : p.songs) for (auto &part : song.parts) if (part.id == regionID) edit(part); }, false);
             refreshLater();
-        } catch (const std::exception &e) { error(String::fromUTF8(e.what())); }
+            return true;
+        } catch (const std::exception &e) { error(String::fromUTF8(e.what())); return false; }
     }
     void save(const jaras::MultiLoop &loop) {
         if (!validPair(loop)) { error(String::fromUTF8("Escolha dois marcadores diferentes em ordem cronológica.")); return; }
         if (conflicts(loop)) { error(String::fromUTF8("Um multiloop não pode existir dentro de outro multiloop.")); return; }
-        change([&](jaras::Part &part) {
+        const auto *part = region();
+        const bool previouslyEnabled = part && std::any_of(part->multiLoops.begin(), part->multiLoops.end(), [&](const auto &saved) {
+            return saved.id == loop.id && saved.enabled.value_or(true);
+        });
+        if (loop.enabled.value_or(true) && !previouslyEnabled && rejectLoopCapacity()) return;
+        if (!change([&](jaras::Part &part) {
             auto at = std::find_if(part.multiLoops.begin(), part.multiLoops.end(), [&](const auto &value) { return value.id == loop.id; });
             if (at == part.multiLoops.end()) part.multiLoops.push_back(loop); else *at = loop;
-        });
+        })) return;
         stage = 0;
+        refreshLater();
     }
     TextButton *button(String title, int x, int y, int width, std::function<void()> action, bool active = false, Colour colour = theme::green) {
         auto *b = new TextButton(title); controls.add(b); content.addAndMakeVisible(b);
@@ -195,7 +212,11 @@ class MultiLoopsPanel final : public Component {
             add->setAlpha(enoughMarkers ? 1.f : .4f);
             add->setEnabled(!bypass || !enoughMarkers);
             add->setTooltip(localization::translate("Create multiloop"));
-            button("Total Loop",40,0,110,[this, active=part->totalLoop.value_or(false)] { change([&](auto &p) { p.totalLoop = !active; }); },part->totalLoop.value_or(false));
+            button("Total Loop",40,0,110,[this, active=part->totalLoop.value_or(false)] {
+                if (!active && rejectLoopCapacity()) return;
+                capacityNotice.setText({}, dontSendNotification);
+                change([&](auto &p) { p.totalLoop = !active; });
+            },part->totalLoop.value_or(false));
             y = 40;
             for (const auto &loop : part->multiLoops) {
                 button(loop.enabled.value_or(true) ? "On" : "Off",0,y,42,[this,loop] { auto changed = loop; changed.enabled = !loop.enabled.value_or(true); save(changed); },loop.enabled.value_or(true))->setEnabled(!bypass);
@@ -217,7 +238,7 @@ class MultiLoopsPanel final : public Component {
             for (const auto &m : values) {
                 for (bool second : {false,true}) {
                     const bool active = (second ? draft.marker2 : draft.marker1) == m.id;
-                    auto title = (active ? String::fromUTF8("● ") : String::fromUTF8("○ ")) + text(m.name) + "   " + String(m.position,2) + "s";
+                    auto title = (active ? String::fromUTF8("● ") : String::fromUTF8("○ ")) + text(m.name);
                     button(title,second ? 310 : 0,y,280,[this,id=m.id,second] {
                         auto candidate = draft; if(second) candidate.marker2=id; else candidate.marker1=id;
                         if(conflicts(candidate)) { error(String::fromUTF8("Um multiloop não pode existir dentro de outro multiloop.")); return; }

@@ -46,6 +46,23 @@ inline std::vector<Replacement> render(const jaras::Project &project,const jaras
                     auto folder=directory.getChildFile("Stems");if(folder.createDirectory().failed())throw std::runtime_error("Não foi possível criar a pasta Stems.");
                     auto stem=File::createLegalFileName(File(text(clips.front().name)).getFileNameWithoutExtension()).substring(0,80);if(stem.isEmpty())stem="Item";
                     auto destination=folder.getNonexistentChildFile(stem,".wav");
+                    if(glue) {
+                        int latest=0;
+                        for(;;) {
+                            const int dash=stem.lastIndexOfChar('-');if(dash<0)break;
+                            const auto number=stem.substring(dash+1).trim();
+                            if(number.length()!=3 || !number.containsOnly("0123456789"))break;
+                            latest=std::max(latest,number.getIntValue());stem=stem.substring(0,dash).trimEnd();
+                        }
+                        const auto family=stem+"-";
+                        for(const auto& file:folder.findChildFiles(File::findFiles,true,"*.wav")) {
+                            const auto name=file.getFileNameWithoutExtension();
+                            if(!name.startsWithIgnoreCase(family))continue;
+                            const auto number=name.substring(family.length());
+                            if(number.length()>=3 && number.containsOnly("0123456789"))latest=std::max(latest,number.getIntValue());
+                        }
+                        do {destination=folder.getChildFile(stem+"-"+String(++latest).paddedLeft('0',3)+".wav");}while(destination.exists());
+                    }
                     ExportRequest request;request.directory=folder;request.encodings[0].channels=midiChannels==1?1:2;
                     request.jobs.push_back({destination.getFileName(),start,end,track.id,{}});
                     auto neutralProject=project;neutralProject.masterFXJSON.reset();neutralProject.masterAutomationJSON.reset();neutralProject.masterVolume=1;neutralProject.masterPan=0;neutralProject.masterMute=false;neutralProject.masterSolo=false;neutralProject.masterMono=false;

@@ -184,6 +184,7 @@ inline void resize(jaras::Project &project, const ID &id, double start, double e
 }
 inline std::optional<std::pair<jaras::AudioClip,jaras::AudioClip>> sharedBoundary(const jaras::Song &song,const jaras::Track &track,
     const jaras::AudioClip &left,const jaras::AudioClip &right,double position,std::optional<double> leftSource={},std::optional<double> rightSource={}) {
+    if(!jaras::isTeleprompterRole(track.role)||!left.text||!right.text||projection(left)||projection(right))return {};
     if(generatedClick(track,left))if(const auto *region=generatedClickRegion(song,left))position=std::min(position,region->endTime);
     if(generatedClick(track,right))if(const auto *region=generatedClickRegion(song,right))position=std::max(position,region->startTime);
     auto result=jaras::sharedItemBoundary(left,right,position,leftSource,rightSource);

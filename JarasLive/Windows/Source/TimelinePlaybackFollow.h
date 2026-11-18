@@ -36,7 +36,7 @@ struct TimelinePlaybackFollowPolicy {
     }
     std::optional<double> destination(std::optional<double> position, double pixelsPerSecond,
                                       double contentWidth, double origin, double width,
-                                      const String &source, double backingScale) {
+                                      const String &source, double backingScale, double firstOffset = 0.) {
         if (!position) {
             reset();
             return {};
@@ -54,10 +54,10 @@ struct TimelinePlaybackFollowPolicy {
         previousSource = source;
         if (!changed && !backward && x >= origin && x <= origin + width / 2)
             return {};
-        const auto limit = std::max(0., contentWidth - width);
-        auto next = jlimit(0., limit, x - width / 2);
+        const auto limit = std::max(firstOffset, contentWidth - width);
+        auto next = jlimit(firstOffset, limit, x - width / 2);
         if (std::isfinite(backingScale) && backingScale > 0)
-            next = jlimit(0., limit, std::round(next * backingScale) / backingScale);
+            next = jlimit(firstOffset, limit, std::round(next * backingScale) / backingScale);
         return std::abs(next - origin) > .0000001 ? std::optional<double>{next} : std::nullopt;
     }
 };

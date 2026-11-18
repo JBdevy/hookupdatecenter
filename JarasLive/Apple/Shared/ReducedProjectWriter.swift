@@ -46,6 +46,10 @@ enum ReducedProjectWriter {
             if cancellation.cancelled { throw CancellationError() }
             guard let si = project.songs.firstIndex(where: { !group.sources.isDisjoint(with: $0.tracks.map(\.id)) }) else { continue }
             let sourceSong = project.songs[si], sourceTracks = sourceSong.tracks.filter { group.sources.contains($0.id) }
+            if sourceTracks.count == 1, let track = sourceTracks.first, track.kind != .standard {
+                destinations[si].append(track)
+                continue
+            }
             let trackLabel = "Pista \(index + 1)/\(groups.count): \(group.name)"
             report(0.9 * Double(index) / Double(groups.count), "Preparando \(trackLabel)")
             let spans = ProjectReduction.sampleAligned(ProjectReduction.spans(sourceTracks, in: sourceSong), sampleRate: sampleRate)
@@ -74,10 +78,16 @@ enum ReducedProjectWriter {
             }
             var renderProject = project
             renderProject.masterFX = nil; renderProject.masterAutomation = nil; renderProject.masterVolume = 1; renderProject.masterPan = 0; renderProject.masterMute = false; renderProject.masterSolo = false; renderProject.masterMono = false; renderProject.masterPhaseInverted = false
-            let base = group.name.components(separatedBy: CharacterSet(charactersIn: "/\\:\n\r")).joined(separator: "_").prefix(80)
+            let invalidNameCharacters = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/\\:<>\"|?*"))
+            let regions = spans.map { ProjectReduction.regionName(for: $0, in: sourceSong) ?? "Fora de região" }
             let jobs = spans.enumerated().map { n, span -> AudioExportJob in
-                var suffix = n + 1, file = "\(base) - \(n + 1).\(format.fileExtension)"
-                while !names.insert(("Stems/" + file).lowercased()).inserted { suffix += 1; file = "\(base) - \(suffix).\(format.fileExtension)" }
+                let base = String((group.name + " - " + regions[n]).components(separatedBy: invalidNameCharacters).joined(separator: "_").prefix(120))
+                var suffix = 1
+                var file = "\(base).\(format.fileExtension)"
+                while !names.insert(("Stems/" + file).lowercased()).inserted {
+                    suffix += 1
+                    file = "\(base) - \(suffix).\(format.fileExtension)"
+                }
                 return AudioExportJob(id: "\(index)-\(n)", fileName: file, start: span.start, end: span.end)
             }
             var renderingFile = jobs.first?.fileName ?? group.name
@@ -86,8 +96,7 @@ enum ReducedProjectWriter {
                 let jobIndex = jobs.firstIndex(where: { $0.fileName == value.fileName }) ?? 0
                 let job = jobs[jobIndex]
                 renderingFile = job.fileName
-                let region = sourceSong.parts.filter { $0.startTime < job.end && $0.endTime > job.start }
-                    .min { ($0.endTime - $0.startTime) < ($1.endTime - $1.startTime) }?.name ?? "Fora de região"
+                let region = regions[jobIndex]
                 let groupFraction = (Double(jobIndex) + value.fraction) / Double(jobs.count)
                 report(0.9 * (Double(index) + groupFraction) / Double(groups.count),
                        "Renderizando \(trackLabel)\nMúsica/região \(jobIndex + 1)/\(jobs.count): \(region) — \(job.fileName)")
@@ -108,7 +117,10 @@ enum ReducedProjectWriter {
             }
             destinations[si].append(track)
         }
-        for si in result.songs.indices { result.songs[si].tracks = destinations[si] }
+        for si in result.songs.indices {
+            result.songs[si].tracks = destinations[si]
+            result.songs[si].markers?.removeAll(where: \.isTempo)
+        }
         ProjectReduction.retain(Set(destinations.flatMap { $0.map(\.id) }), in: &result)
         try result.validate()
         let paths = Array(result.mediaPaths).sorted()

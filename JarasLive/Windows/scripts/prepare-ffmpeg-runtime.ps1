@@ -1,16 +1,19 @@
 param(
     [Parameter(Mandatory)][string]$BuildDirectory,
     [Parameter(Mandatory)][string]$PackageDirectory,
-    [Parameter(Mandatory)][string]$SourceDirectory
+    [Parameter(Mandatory)][string]$SourceDirectory,
+    [string]$OfflineRuntime
 )
 $ErrorActionPreference='Stop'
 $names=@('avutil-60.dll','swresample-6.dll','avcodec-62.dll','avformat-62.dll','swscale-9.dll')
 $destination=Join-Path $PackageDirectory 'CatLiveRuntime/FFmpeg'
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 $existing=$env:CATLIVE_FFMPEG_RUNTIME
+if ($OfflineRuntime) { $existing=$OfflineRuntime }
 if($existing -and @($names|Where-Object { -not(Test-Path -LiteralPath (Join-Path $existing $_) -PathType Leaf) }).Count -eq 0) {
     foreach($name in $names){Copy-Item -LiteralPath (Join-Path $existing $name) -Destination $destination -Force}
 } else {
+    if ($OfflineRuntime) { throw "Runtime FFmpeg offline incompleto: $OfflineRuntime" }
     $archive=Join-Path $BuildDirectory 'ffmpeg-n8.1-win64-lgpl-shared.zip'
     if(-not(Test-Path -LiteralPath $archive) -or (Get-Item -LiteralPath $archive).Length -lt 50MB) {
         $url='https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip'

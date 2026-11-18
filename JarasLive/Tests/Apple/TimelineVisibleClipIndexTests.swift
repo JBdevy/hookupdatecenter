@@ -67,6 +67,27 @@ func expected(_ intervals: [(start: Double, end: Double)], from: Double, through
         let range = largeIndex.candidateRange(from: query, through: query + 8)
         precondition(range.count == 3, "late viewport scans only its three candidates")
         precondition(largeIndex.indices(from: query, through: query + 8) == [87_500, 87_501, 87_502])
+        // Keep the same inclusive boundary behavior as full scans, even with
+        // variable-height lanes and tall rows above the queried viewport.
+        let heights = (0..<4_000).map { _ in CGFloat(24 + next() % 412) }
+        var height: CGFloat = 0
+        let offsets = heights.map { rowHeight in
+            defer { height += rowHeight }
+            return height
+        }
+        let ruler: CGFloat = 80
+        for _ in 0..<600 {
+            let top = CGFloat(next() % UInt64(height + 1))
+            let bottom = top + CGFloat(next() % 2_000)
+            let expected = offsets.indices.filter {
+                ruler + offsets[$0] <= bottom && ruler + offsets[$0] + heights[$0] >= top
+            }
+            precondition(Array(timelineRowsIntersecting(top...bottom, offsets: offsets, heights: heights, top: ruler)) == expected)
+        }
+        let row = 3_700
+        let sharedEdge = ruler + offsets[row] + heights[row]
+        precondition(timelineRowsIntersecting(sharedEdge...sharedEdge, offsets: offsets, heights: heights, top: ruler) == row..<(row + 2))
+        precondition(timelineRowsIntersecting(0...0, offsets: [], heights: [], top: ruler).isEmpty)
         print("TIMELINE_VISIBLE_CLIP_INDEX_OVERLAP_ORDER_RANDOM_PARITY_MINIMUM_PIXEL_WIDTH_BOUNDED_SCAN_OK")
     }
 }

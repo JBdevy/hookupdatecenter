@@ -49,6 +49,7 @@ class TempoEditMap {
     }
     static double rate(const Song& song, double time, const Part* part=nullptr) {
         const double limit=part?ownerLimit(song,*part):0;
+        if(!part) { const auto* marker=tempoPlayback::active(song,time);return marker?tempoPlayback::rate(song,*marker):1.; }
         const TimelineMarker* active=nullptr;
         if(song.markers) for(const auto& marker:*song.markers)
             if(marker.tempoBPM && (!part || (marker.position>=part->startTime && marker.position<limit &&
@@ -60,7 +61,23 @@ class TempoEditMap {
     struct RatePoint { double time, speed; ID markerID; };
     using Program = std::vector<RatePoint>;
     static Program program(const Song& song, const Part* part=nullptr) {
-        const double limit=part?ownerLimit(song,*part):0;
+        if(!part) {
+            std::vector<double> times;
+            if(song.markers)for(const auto& marker:*song.markers)if(marker.tempoBPM) {
+                times.push_back(marker.position);
+                const auto end=tempoPlayback::markerEnd(song,marker);if(std::isfinite(end))times.push_back(end);
+            }
+            std::sort(times.begin(),times.end());times.erase(std::unique(times.begin(),times.end()),times.end());
+            Program result;
+            for(const auto time:times) {
+                const auto* marker=tempoPlayback::active(song,time);
+                result.push_back({time,marker?tempoPlayback::rate(song,*marker):1.,marker?marker->id:ID{}});
+            }
+            return result;
+        }
+        if (const auto* anchor = tempoPlayback::regionAnchor(song, part->id))
+            return {{0, *anchor->tempoPlaybackRate, anchor->id}};
+        const double limit=ownerLimit(song,*part);
         std::vector<const TimelineMarker*> markers;
         if(song.markers) for(const auto& marker:*song.markers)
             if(marker.tempoBPM && (!part || (marker.position>=part->startTime && marker.position<limit &&
@@ -81,6 +98,7 @@ class TempoEditMap {
         double result=1.;
         for(const auto& point:program) {
             if(point.time>time)break;
+            if(point.markerID.empty()){result=1.;continue;}
             for(const auto& reference:clip.tempoRateReferences)if(reference.markerID==point.markerID){result=reference.rate;break;}
         }
         return result;
@@ -151,6 +169,7 @@ public:
         }
         occupied=std::move(merged);
         std::vector<double> points{0,before.duration,after.duration};
+        for(const Song* song:{&before,&after})for(const auto& part:song->parts) {points.push_back(part.startTime);points.push_back(part.endTime);}
         for(const auto& interval:occupied) {points.push_back(interval.first);points.push_back(interval.second);}
         for(const Song* song:{&before,&after}) if(song->markers) for(const auto& marker:*song->markers) if(marker.tempoBPM) points.push_back(marker.position);
         points.erase(std::remove_if(points.begin(),points.end(),[](double p){return !std::isfinite(p)||p<0;}),points.end());

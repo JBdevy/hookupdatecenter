@@ -43,9 +43,9 @@ class ProjectReductionPanel final : public Component, public DragAndDropContaine
         void selectedRowsChanged(int) override {if(!owner.refreshing)owner.selectionChanged(source);}
     } leftModel{*this,false},rightModel{*this,true};
     Session &session;std::function<void(std::function<void()>)> save;
-    std::vector<jaras::Track> sources;std::vector<projectReduction::Group> groups;
+    std::vector<jaras::Track> sources,special;std::set<ID> selectedSpecial;std::vector<projectReduction::Group> groups;
     ListBox left{"Destinos",&leftModel},right{"Origens",&rightModel};
-    TextButton edit{localization::translate("Editar")},remove{localization::translate("Remover")},create{"+ Create Track"},cancel{localization::translate("Cancelar")},reduce{"Reduzir"},saveButton{localization::translate("Salvar")};
+    TextButton edit{localization::translate("Editar")},remove{localization::translate("Remover")},create{"+ Create Track"},addSpecial{"Add"},cancel{localization::translate("Cancelar")},reduce{"Reduzir"},saveButton{localization::translate("Salvar")};
     double displayedProgress=0;ProgressBar progressBar{displayedProgress};
     Label status;int editing=-1, insertion=-1;bool refreshing=false,ready=false;
     double draftSaveAt=0;
@@ -54,6 +54,36 @@ class ProjectReductionPanel final : public Component, public DragAndDropContaine
     bool saveWarning=false;
     struct Work{std::atomic<bool> cancel{false};std::atomic<double> progress{0};std::mutex mutex;String message;};std::shared_ptr<Work> work;
     std::unique_ptr<FileChooser> chooser;
+    std::vector<projectReduction::Group> reductionGroups() const {
+        auto result=groups;
+        for (const auto &track:special) if (selectedSpecial.count(track.id))
+            result.push_back({track.id,text(track.name),{track.id}});
+        return result;
+    }
+    void chooseSpecialTracks() {
+        auto *dialog=new AlertWindow(localization::translate("Special tracks"),"",MessageBoxIconType::NoIcon,this);
+        std::vector<std::unique_ptr<ToggleButton>> toggles;
+        for (const auto &track:special) {
+            auto toggle=std::make_unique<ToggleButton>(text(track.name));
+            toggle->setToggleState(selectedSpecial.count(track.id)!=0,dontSendNotification);
+            toggle->setSize(270,26);
+            dialog->addCustomComponent(toggle.get());
+            toggles.push_back(std::move(toggle));
+        }
+        dialog->addButton("OK",1,KeyPress(KeyPress::returnKey));
+        dialog->addButton(localization::translate("Cancelar"),0,KeyPress(KeyPress::escapeKey));
+        auto controls=std::make_shared<decltype(toggles)>(std::move(toggles));
+        auto safe=SafePointer<ProjectReductionPanel>(this);
+        dialog->enterModalState(true,ModalCallbackFunction::create([safe,dialog,controls](int answer) {
+            if (safe && answer==1) {
+                safe->selectedSpecial.clear();
+                for (size_t i=0;i<controls->size();++i)
+                    if ((*controls)[i]->getToggleState()) safe->selectedSpecial.insert(safe->special[i].id);
+                safe->timerCallback();
+            }
+            while (dialog->getNumCustomComponents()>0) dialog->removeCustomComponent(0);
+        }),true);
+    }
     bool needsSave()const{return session.dirty||session.isSaving()||!session.document.existsAsFile();}
     void persistDraft(){
         if(refreshing || !ready || session.project().id!=projectID)return;
@@ -126,7 +156,23 @@ class ProjectReductionPanel final : public Component, public DragAndDropContaine
     void run(const File &target,const ExportEncoding &encoding){
         if(work||!ready)return;
         if(needsSave()){auto safe=SafePointer<ProjectReductionPanel>(this);save([safe,target,encoding]{if(safe)safe->run(target,encoding);});return;}
-        const auto original=session.project();const auto media=session.document.getParentDirectory();const auto definitions=groups;
+        if (projectReduction::hasMutedItems(session.project())) {
+            auto *dialog=new AlertWindow(localization::translate("Itens mutados"),
+                localization::translate(String::fromUTF8("Existem um ou mais itens mutados. Deseja desmutar todos antes de reduzir?")),
+                MessageBoxIconType::WarningIcon,this);
+            dialog->addButton(localization::translate("Sim"),1,KeyPress(KeyPress::returnKey));
+            dialog->addButton(localization::translate("Cancelar"),0,KeyPress(KeyPress::escapeKey));
+            auto safe=SafePointer<ProjectReductionPanel>(this);
+            dialog->enterModalState(true,ModalCallbackFunction::create([safe,target,encoding](int answer) {
+                if (safe && answer==1 && safe->session.project().id==safe->projectID) safe->startReduction(target,encoding,true);
+            }),true);
+        } else startReduction(target,encoding,false);
+    }
+    void startReduction(const File &target,const ExportEncoding &encoding,bool unmute) {
+        if (work || session.project().id!=projectID) return;
+        auto original=session.project();
+        if (unmute) projectReduction::unmuteItems(original, selectedSpecial);
+        const auto media=session.document.getParentDirectory();const auto definitions=reductionGroups();
         work=std::make_shared<Work>();auto state=work;auto safe=SafePointer<ProjectReductionPanel>(this);ModalSheet::blockDismiss(*this,true);timerCallback();
         Thread::launch([safe,state,original,definitions,media,target,encoding]{String error;try{projectReduction::write(original,definitions,media,target,state->cancel,[state](const projectReduction::Progress &p){std::lock_guard<std::mutex> lock(state->mutex);state->progress=p.fraction;state->message=p.message;},encoding.format,std::nullopt,encoding.bits,encoding.rate,encoding.bitrate);}catch(const std::exception &e){error=String::fromUTF8(e.what());}
             MessageManager::callAsync([safe,error,target]{if(!safe)return;safe->work.reset();ModalSheet::blockDismiss(*safe,false);safe->status.setText(error.isEmpty()?String::fromUTF8("Projeto reduzido salvo: ")+target.getFullPathName():error,dontSendNotification);safe->timerCallback();});
@@ -151,9 +197,9 @@ class ProjectReductionPanel final : public Component, public DragAndDropContaine
     void timerCallback()override{
         if(!ready&&!needsSave())ready=true;
         const bool editable=ready&&!work;
-        for(Component *c:std::initializer_list<Component*>{&left,&right,&create,&edit,&remove,&reduce})c->setVisible(ready);
-        left.setEnabled(editable);right.setEnabled(editable);create.setEnabled(editable);
-        edit.setEnabled(editable&&editing>=0);remove.setEnabled(editable&&editing>=0);reduce.setEnabled(editable&&!groups.empty());
+        for(Component *c:std::initializer_list<Component*>{&left,&right,&create,&addSpecial,&edit,&remove,&reduce})c->setVisible(ready);
+        left.setEnabled(editable);right.setEnabled(editable);create.setEnabled(editable);addSpecial.setEnabled(editable&&!special.empty());
+        edit.setEnabled(editable&&editing>=0);remove.setEnabled(editable&&editing>=0);reduce.setEnabled(editable&&(!groups.empty()||!selectedSpecial.empty()));
         saveButton.setVisible(!ready);saveButton.setEnabled(!session.busy&&!session.isSaving());
         saveButton.setButtonText(localization::translate(session.isSaving()?"Salvando…":"Salvar"));
         progressBar.setVisible(work!=nullptr);
@@ -169,22 +215,22 @@ class ProjectReductionPanel final : public Component, public DragAndDropContaine
 public:
     ProjectReductionPanel(Session &s,std::function<void(std::function<void()>)> saveAction):session(s),save(std::move(saveAction)),projectID(s.project().id){
         std::set<ID> parents;for(const auto &song:s.project().songs)for(const auto &t:song.tracks)if(t.parentTrackID)parents.insert(*t.parentTrackID);
-        for(const auto &song:s.project().songs)for(const auto &t:song.tracks)if(!parents.count(t.id))sources.push_back(t);
+        for(const auto &song:s.project().songs)for(const auto &t:song.tracks)if(!jaras::fixedTrackName(t.role).empty())special.push_back(t);else if(!parents.count(t.id))sources.push_back(t);
         // The ListBoxes were constructed before the source tracks were populated.
         // Refresh their cached row count now that the project snapshot is available.
         left.updateContent();right.updateContent();
         getProperties().set("selfContainedSheet",true);right.setMultipleSelectionEnabled(true);right.setClickingTogglesRowSelection(true);
-        for(Component *c:std::initializer_list<Component*>{&left,&right,&create,&edit,&remove,&cancel,&reduce,&saveButton,&status,&progressBar})addAndMakeVisible(c);
-        for(auto *b:{&create,&edit,&remove,&cancel,&reduce,&saveButton})b->getProperties().set("flat",true);
+        for(Component *c:std::initializer_list<Component*>{&left,&right,&create,&addSpecial,&edit,&remove,&cancel,&reduce,&saveButton,&status,&progressBar})addAndMakeVisible(c);
+        for(auto *b:{&create,&addSpecial,&edit,&remove,&cancel,&reduce,&saveButton})b->getProperties().set("flat",true);
         reduce.setColour(TextButton::buttonColourId,theme::green);
         reduce.setColour(TextButton::textColourOffId,Colours::black);reduce.setColour(TextButton::textColourOnId,Colours::black);
         left.setComponentID("reductionDestinations");right.setComponentID("reductionSources");
         create.setComponentID("reductionCreate");edit.setComponentID("reductionEdit");remove.setComponentID("reductionRemove");saveButton.setComponentID("reductionSave");reduce.setComponentID("reductionApply");
         status.setColour(Label::textColourId,theme::secondary);status.setJustificationType(Justification::topLeft);progressBar.setColour(ProgressBar::foregroundColourId,theme::green);
-        create.onClick=[this]{nameTrack(false);};edit.onClick=[this]{nameTrack(true);};remove.onClick=[this]{if(editing<0)return;groups.erase(groups.begin()+editing);refreshing=true;editing=-1;left.deselectAllRows();right.deselectAllRows();refreshing=false;left.updateContent();right.repaint();persistDraft();timerCallback();};cancel.onClick=[this]{if(work)work->cancel=true;else ModalSheet::dismiss(*this);};
+        create.onClick=[this]{nameTrack(false);};addSpecial.onClick=[this]{chooseSpecialTracks();};edit.onClick=[this]{nameTrack(true);};remove.onClick=[this]{if(editing<0)return;groups.erase(groups.begin()+editing);refreshing=true;editing=-1;left.deselectAllRows();right.deselectAllRows();refreshing=false;left.updateContent();right.repaint();persistDraft();timerCallback();};cancel.onClick=[this]{if(work)work->cancel=true;else ModalSheet::dismiss(*this);};
         auto safe=SafePointer<ProjectReductionPanel>(this);saveButton.onClick=[safe]{if(safe)safe->save([safe]{if(safe)safe->timerCallback();});};
         reduce.onClick=[this,safe]{
-            const auto size=projectReduction::estimate(session.project(),groups,session.document.getParentDirectory());
+            const auto size=projectReduction::estimate(session.project(),reductionGroups(),session.document.getParentDirectory());
             auto *dialog=new AlertWindow("Formato do projeto reduzido",String::fromUTF8("Tamanho aproximado do projeto, incluindo as mídias copiadas.\nO formato vale para os áudios renderizados; pistas individuais mantêm os arquivos originais. MP3 usa compressão com perda."),MessageBoxIconType::NoIcon);
             dialog->addComboBox("format",StringArray{"WAV","AIFF","MP3"},"Formato");
             dialog->addComboBox("bits",StringArray{"16-bit","24-bit","32-bit float"},"Bits");
@@ -250,7 +296,7 @@ public:
     }
     void resized()override{
         const int half=(getWidth()-64)/2;
-        create.setBounds(24,90,138,28);edit.setBounds(170,90,70,28);remove.setBounds(248,90,86,28);
+        create.setBounds(24,90,124,28);addSpecial.setBounds(154,90,46,28);edit.setBounds(206,90,59,28);remove.setBounds(271,90,75,28);
         left.setBounds(24,128,half,std::max(0,getHeight()-238));right.setBounds(40+half,128,half,std::max(0,getHeight()-238));
         saveButton.setBounds(24,104,112,28);
         progressBar.setBounds(24,getHeight()-107,getWidth()-48,12);

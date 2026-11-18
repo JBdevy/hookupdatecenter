@@ -2,6 +2,29 @@ import XCTest
 @testable import JarasApplication
 
 final class TempoRateRetentionTests: XCTestCase {
+    func testOpeningSavedProjectKeepsItsTempoMapAndRatesAcrossDevices() throws {
+        var project = Project.empty(name: "Transferred")
+        var song = fixture(); song.id = project.songs[0].id
+        project.songs[0] = song
+        let saved = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
+        for bpm in [109.0, 132.12, 180.0] {
+            var opened = saved
+            GlobalProjectTiming(bpm: bpm).applyOnOpen(to: &opened)
+            XCTAssertEqual(opened, saved, "Device-local defaults must not retime a transferred document")
+        }
+    }
+
+    func testRateResetReturnsToOriginalDurationAndPreservesPosition() {
+        let song = Project.empty(name: "Rate").songs[0]
+        let original = AudioClip(id: UUID(), name: "Trimmed", startTime: 20, duration: 12, sourceOffset: 3)
+        for rate in [0.5, 1.159, 2.0] {
+            let changed = song.item(original, withRate: rate)
+            let restored = song.resettingItemRate(changed)
+            XCTAssertEqual(restored.duration, original.duration, accuracy: 1e-9)
+            XCTAssertEqual(restored.startTime, original.startTime)
+            XCTAssertEqual(restored.sourceOffset, original.sourceOffset)
+        }
+    }
     private func fixture() -> Song {
         var song = Project.empty(name: "Rate retention").songs[0]
         song.bpm = 120; song.duration = 20; song.timeSettings = ProjectTimeSettings()
@@ -38,21 +61,32 @@ final class TempoRateRetentionTests: XCTestCase {
         var other = original; other.id = UUID(); song.tracks[0].clips.append(other)
         song.tracks[0].clips[0] = song.resettingItemRate(original)
         XCTAssertEqual(rates(song), [1]); XCTAssertEqual(rates(song, item: 1), [1.5, 1.2])
-        XCTAssertEqual(song.markers, markers); XCTAssertEqual(song.tracks[0].clips[0].duration, original.duration)
+        XCTAssertEqual(song.markers, markers); XCTAssertEqual(song.tracks[0].clips[0].duration, 13.5, accuracy: 1e-9)
         edit(&song, index: 0, bpm: 165)
         XCTAssertEqual(rates(song)[0], 1.1, accuracy: 1e-10); XCTAssertEqual(rates(song)[1], 1)
         let restored = try JSONDecoder().decode(Song.self, from: JSONEncoder().encode(song))
         XCTAssertEqual(restored, song); XCTAssertEqual(rates(restored), rates(song))
     }
-    func testRegionTempoChangesUseOneProportionAcrossDifferentBPMS() {
+    func testRegionTempoChangesUseOneDeltaAcrossDifferentBPMs() {
         var song = fixture(); song.markers![0].tempoReferenceBPM = 150
         let region = Part(id: UUID(), name: "Song", startTime: 0, endTime: 10); song.parts = [region]
         let changes = song.regionTempoChange(15, region: region)
         let first = changes.first { $0.id == song.markers![0].id }!, second = changes.first { $0.id == song.markers![1].id }!
         XCTAssertEqual(first.tempoBPM!, 165, accuracy: 1e-10)
-        XCTAssertEqual(second.tempoBPM!, 99, accuracy: 1e-10)
+        XCTAssertEqual(second.tempoBPM!, 105, accuracy: 1e-10)
         XCTAssertEqual(first.tempoPlaybackRate!, 1.1, accuracy: 1e-10)
         XCTAssertEqual(second.tempoPlaybackRate!, 1.1, accuracy: 1e-10)
+        XCTAssertEqual(first.regionTempoAnchor, true)
+        XCTAssertEqual(second.regionTempoAnchor, false)
+        let before = song
+        song.markers = changes
+        TempoEditMap(before: before, after: song).apply(to: &song)
+        XCTAssertEqual(song.tempoAudioSegments(song.tracks[0].clips[0]).count, 1)
+        XCTAssertEqual(song.tempoAudioSegments(song.tracks[0].clips[0]).first!.audioRate, song.tracks[0].clips[0].audioRate * 1.1, accuracy: 1e-10)
+        let editedSecondary = song.retainingTempoRate(
+            TimelineMarker(id: second.id, name: second.name, position: second.position, color: 0, tempoBPM: 106),
+            previous: song.markers?.first { $0.id == second.id })
+        XCTAssertEqual(editedSecondary.tempoPlaybackRate!, 1.1, accuracy: 1e-10)
     }
     func testFreeTimebaseRetainsItemResetEvenWhenMarkerRateReturnsToOne() {
         var song = fixture()

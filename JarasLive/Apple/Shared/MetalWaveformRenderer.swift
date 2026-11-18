@@ -335,8 +335,7 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             return
         }
         let replacesContent = latestFrame.map {
-            !$0.isEmpty && ($0.coordinateSpace != frame.coordinateSpace || $0.size != frame.size ||
-                !$0.hasSameContent(as: frame))
+            !$0.isEmpty && ($0.coordinateSpace != frame.coordinateSpace || $0.size != frame.size)
         } ?? false
         latestFrame = frame
         // An empty viewport has no GPU work. Hide any old drawable immediately
@@ -352,14 +351,11 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
             didPresent?(frame)
             return
         }
-        if replacesContent {
-            // A busy drawable or a failed GPU allocation must not leave items
-            // from a removed track/previous project visible under new headers.
-            // Keep immutable source buffers reusable, but retire their pixels
-            // and every presentation already issued for the obsolete content.
-            lastPresentedSequence = submittedFrameCount
-            setContentVisible(false)
-        }
+        // A pending detail update can keep pixels at the same geometry. A
+        // different projection invalidates its pending presentations, but a
+        // synchronous replacement can swap drawables without toggling opacity.
+        let previousSequence = submittedFrameCount
+        if replacesContent { lastPresentedSequence = previousSequence }
         drawableRetryUsed = false
         requiresImmediateSubmission = replacesContent || !allowCoalescing
         if requiresImmediateSubmission {
@@ -374,6 +370,11 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         pending = frame
         pendingRequestedAt = TimelineRenderDiagnostics.enabled ? CACurrentMediaTime() : 0
         renderLatest()
+        if replacesContent && lastPresentedSequence == previousSequence {
+            // The new viewport must never display the old viewport's pixels
+            // if Metal could not present the replacement during this update.
+            setContentVisible(false)
+        }
     }
 
     private func renderLatest() {

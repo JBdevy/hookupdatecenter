@@ -5,7 +5,7 @@ namespace catlive {
 // The finalized Xing/LAME tag preserves the original gapless sample clock.
 class MP3Writer {
   public:
-    MP3Writer(const File &,int sampleRate,int channels,int bitrate);
+    MP3Writer(const File &,int sampleRate,int channels,int bitrate,int sourceRate=0);
     ~MP3Writer();
     void write(const AudioBuffer<float> &,int samples);
     void finish();

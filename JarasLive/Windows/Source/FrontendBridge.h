@@ -5,6 +5,7 @@
 
 namespace catlive {
 class NativeFrontendWaveforms;
+class Appearance;
 
 // UI-thread adapter: the native frontend uses the existing Session/AudioEngine.
 // No component tree, audio graph or second project model is created here.
@@ -28,6 +29,7 @@ class FrontendBridge final : private Timer {
     const bool compactPresentation;
     void *ownerWindow = nullptr;
     std::unique_ptr<NativeFrontendWaveforms> waveforms;
+    std::unique_ptr<Appearance> audioPreferences;
     struct RTAState;
     std::unique_ptr<RTAState> rta;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);

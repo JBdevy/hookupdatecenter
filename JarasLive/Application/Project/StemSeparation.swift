@@ -31,7 +31,7 @@ public extension Project {
     /// stale results after a project/item edit, or partially insert a separation.
     mutating func insertSeparatedStems(_ tracks: [Track], song songID: UUID,
                                       sourceTrack: UUID, original: AudioClip) throws {
-        guard tracks.count == CatStem.allCases.count, Set(tracks.map(\.id)).count == tracks.count,
+        guard !tracks.isEmpty, tracks.count <= CatStem.allCases.count, Set(tracks.map(\.id)).count == tracks.count,
               tracks.allSatisfy({ $0.kind == .standard && $0.clips.count == 1 && $0.clips[0].startTime == original.startTime && $0.clips[0].duration == original.duration }),
               let song = songs.firstIndex(where: { $0.id == songID }),
               let channel = songs[song].tracks.firstIndex(where: { $0.id == sourceTrack }),

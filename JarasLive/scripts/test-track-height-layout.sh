@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 models=Path('Application/Project/ProjectModels.swift').read_text()
 grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
+project_error=next(line for line in models.splitlines() if line.startswith('public enum ProjectError:')) + '\n'
 geometry=models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
 lanes=models[models.index('public struct TrackLanes'):models.index('public enum TrackKind')]
 lanes=lanes.replace('public ', '').replace('init(track: Track) {', 'init(track: Track) { LaneBuildCounter.count += 1')
@@ -38,7 +39,7 @@ final class RecordingLaneLayout {
  func count(for id: UUID, existing: Int) -> Int { max(existing, counts[id] ?? 1) }
 }
 '''
-Path(sys.argv[1]).write_text(stubs+geometry+lanes+cache+rows+mixer+Path('Application/Project/TeleprompterSettings.swift').read_text()+Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()+'\n'+Path('Tests/Apple/TrackHeightLayoutTests.swift').read_text())
+Path(sys.argv[1]).write_text(stubs+project_error+geometry+lanes+cache+rows+mixer+Path('Application/Project/TeleprompterSettings.swift').read_text()+Path('Apple/Shared/DAWRemoteProtocol.swift').read_text()+'\n'+Path('Tests/Apple/TrackHeightLayoutTests.swift').read_text())
 PY
-swiftc -Onone -g -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -Onone -g -swift-version 5 Application/Project/OutputPatch.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

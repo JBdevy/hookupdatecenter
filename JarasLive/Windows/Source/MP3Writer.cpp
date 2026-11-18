@@ -20,7 +20,7 @@ struct MP3Writer::Impl {
             throw std::runtime_error("Não foi possível escrever o arquivo MP3.");
     }
 };
-MP3Writer::MP3Writer(const File &file, int rate, int channels, int bitrate)
+MP3Writer::MP3Writer(const File &file, int rate, int channels, int bitrate, int sourceRate)
     : impl(std::make_unique<Impl>()) {
     if ((rate != 32000 && rate != 44100 && rate != 48000) || channels < 1 || channels > 2)
         throw std::runtime_error("Frequência ou canais MP3 inválidos.");
@@ -28,7 +28,7 @@ MP3Writer::MP3Writer(const File &file, int rate, int channels, int bitrate)
     p.channels = channels;
     p.encoder = lame_init();
     if (!p.encoder) throw std::runtime_error("Não foi possível iniciar o encoder MP3.");
-    checked(lame_set_in_samplerate(p.encoder, rate), "MP3 input rate");
+    checked(lame_set_in_samplerate(p.encoder, sourceRate > 0 ? sourceRate : rate), "MP3 input rate");
     checked(lame_set_out_samplerate(p.encoder, rate), "MP3 output rate");
     checked(lame_set_num_channels(p.encoder, channels), "MP3 channels");
     checked(lame_set_mode(p.encoder, channels == 1 ? MONO : JOINT_STEREO), "MP3 channel mode");

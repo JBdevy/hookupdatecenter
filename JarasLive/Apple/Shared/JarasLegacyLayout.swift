@@ -4,6 +4,9 @@ enum JarasDrawingCompatibility {
     static let forceLegacy = ProcessInfo.processInfo.arguments.contains("--catlive-test-macos12")
 }
 
+@available(macOS 13, *)
+struct JarasLayoutSlot: LayoutValueKey { static let defaultValue = -1 }
+
 private struct JarasPlacementKey: EnvironmentKey { static let defaultValue: [CGRect] = [] }
 extension EnvironmentValues {
     var jarasPlacementFrames: [CGRect] {
@@ -40,7 +43,7 @@ private struct JarasPlacedView: ViewModifier {
 }
 extension View {
     @ViewBuilder func jarasPlaced(at index: Int) -> some View {
-        if #available(macOS 13, *), !JarasDrawingCompatibility.forceLegacy { self }
+        if #available(macOS 13, *), !JarasDrawingCompatibility.forceLegacy { self.layoutValue(key: JarasLayoutSlot.self, value: index) }
         else { modifier(JarasPlacedView(index: index)) }
     }
 }

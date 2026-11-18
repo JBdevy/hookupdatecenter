@@ -38,12 +38,21 @@ class AdvancedPanel final : public Component, private Timer {
                      std::function<void(int)>);
     ToggleButton &toggle(const String &, const String &, bool, int);
     void colourRow(const String &, const String &, uint32, int, bool = false);
+    struct MP3Conversion {
+        int total = 0;
+        std::atomic<int> completed{0};
+    };
+    std::shared_ptr<MP3Conversion> mp3Conversion;
+    SafePointer<TextButton> mp3Button;
+    void convertTimelineAudio();
+    void updateMP3ConversionControl();
     std::optional<jaras::ProjectTimebase> observedTimebase;
     void timerCallback() override {
         const auto current=session.song()?session.song()->timeSettings.value_or(jaras::ProjectTimeSettings{}).timebase:jaras::ProjectTimebase::free;
         if(observedTimebase && *observedTimebase!=current && timebase)
             timebase->setSelectedId(current==jaras::ProjectTimebase::relative?2:1,dontSendNotification);
         observedTimebase=current;
+        updateMP3ConversionControl();
     }
     void applyTiming();
 };

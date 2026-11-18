@@ -44,6 +44,9 @@ for block in 0..<180 {
     }
 }
 let sorted = elapsed.sorted()
+let expectedPosition = Double(180 * 512) / format.sampleRate
+precondition(sources.allSatisfy { abs($0.sourcePosition - expectedPosition) < 0.02 },
+             "A silent source anchor must not consume the audio twice or change playback speed")
 print("PREPARED_ITEM_GRAPH voices=\(count) legacy=\(CommandLine.arguments.contains("--legacy")) nodes=\(engine.attachedNodes.count) meanMs=\(elapsed.reduce(0,+)/Double(elapsed.count)) p95Ms=\(sorted[Int(Double(sorted.count)*0.95)]) maxMs=\(sorted.last!) underruns=\(sources.map(\.underruns).reduce(0,+))")
 // Inserting/removing processors on a running prepared source must preserve
 // every source cursor, including untouched tracks and the edited item itself.

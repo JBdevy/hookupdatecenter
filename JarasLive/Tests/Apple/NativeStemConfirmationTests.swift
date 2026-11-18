@@ -3,6 +3,7 @@ import Foundation
 enum ProjectError: Error { case invalid(String) }
 
 // PRODUCTION_DIRECTORY_POLICY
+// PRODUCTION_PROJECT_NAME
 
 struct StemScan { var folders = [1] }
 final class FixtureShow {
@@ -23,7 +24,8 @@ final class FixtureDocuments {
     var nativeNamePrompt = false
     var nativeStorageDirectory: URL?
     var afterNativeStorage: (() -> Void)?
-    enum Picker { case storage }
+    var isTemporary = false
+    enum Picker { case storage, temporaryDestination }
     var nativePicker: Picker?
     var calls: [(detectBPM: Bool, destination: URL?)] = []
     func finish(scan: StemScan?, detectBPM: Bool, destination: URL?, recordingChannels: Int? = nil) {

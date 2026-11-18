@@ -255,6 +255,8 @@
 
 "Choose folders" = "Choose folders";
 "Search folders" = "Search folders";
+"Check all" = "Check all";
+"Uncheck all" = "Uncheck all";
 "Select all" = "Select all";
 "Deselect all" = "Deselect all";
 "Folders will be placed on the grid in the order you check them." = "Folders will be placed on the grid in the order you check them.";
@@ -873,7 +875,7 @@
 
 "Show blocks in the teleprompter" = "Show blocks in the teleprompter";
 
-"Independent normalization gain: up to +24 dB" = "Independent normalization gain: up to +24 dB";
+"Independent normalization gain" = "Independent normalization gain";
 
 "MIDI channel" = "MIDI channel";
 "All channels" = "All";
@@ -2305,7 +2307,7 @@
 
 "Reset rate" = "Reset rate";
 "Reset duration" = "Reset duration";
-"Restore the full original file duration for the selected items?" = "Restore the full original file duration for the selected items?";
+"Restore the full original file duration for the selected items?" = "Remove expanded portions without moving the selected items or extending trimmed items?";
 "Set region end to longest item" = "Set region end to longest item";
 "Space regions by 30 s" = "Space regions by 30 s";
 "Reset selected items to 1x without changing tempo markers?" = "Reset selected items to 1x without changing tempo markers?";
@@ -2379,3 +2381,258 @@
 "The song changed. Open Full lyrics again." = "The song changed. Open Full lyrics again.";
 
 "Could not create the lyrics items." = "Could not create the lyrics items.";
+
+"250+ — Not available" = "250+ — Not available";
+
+"Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable." = "Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable.";
+
+"Export ziplive" = "Export ziplive";
+
+"Preparing project deletion…" = "Preparing project deletion…";
+
+"Hold Shift and click − or + to adjust all listed items by the same amount." = "Hold Shift and click − or + to adjust all listed items by the same amount.";
+
+"Current song" = "Current song";
+
+"Information" = "Information";
+
+"Bypass de todos os Multiloops" = "Bypass all Multiloops";
+
+"Reduzir projeto" = "Reduce project";
+
+"Insert" = "Insert";
+
+"MIDI activity" = "MIDI activity";
+
+"Master Patch" = "Master Patch";
+
+"Master Stereo/Mono" = "Master Stereo/Mono";
+
+"Track number" = "Track number";
+
+"Track volume" = "Track volume";
+
+"Ícone da pista" = "Track icon";
+
+"Abrir ajustes de Rede Local" = "Open Local Network settings";
+
+"Abrir barra lateral" = "Open sidebar";
+
+"Adaptador desconectado" = "Adapter disconnected";
+
+"Atualizar dispositivos" = "Refresh devices";
+
+"Atualizar lista" = "Refresh list";
+
+"Atualize o CatLive no computador para controlar as Vinhetas." = "Update CatLive on the computer to control the pads.";
+
+"Aumentar BPM" = "Increase BPM";
+
+"Aumentar afinação" = "Raise pitch";
+
+"Automático" = "Automatic";
+
+"BPM / Compasso" = "BPM / Time signature";
+
+"Bem-vindo ao CatLive" = "Welcome to CatLive";
+
+"Buscar na rede" = "Search network";
+
+"Captura o áudio do Mac. Monitor Off silencia o retorno, mantendo a gravação e os meters de entrada." = "Captures Mac audio. Monitor Off silences monitoring while keeping recording and input meters active.";
+
+"Conecte os dois computadores por cabo Ethernet. O Remote do app continua disponível pelo Wi-Fi." = "Connect both computers by Ethernet cable. App Remote remains available over Wi-Fi.";
+
+"Configuração salva." = "Settings saved.";
+
+"Configurações de áudio" = "Audio settings";
+
+"Conversão de marcadores" = "Marker conversion";
+
+"Converter" = "Convert";
+
+"Converter marcadores em regiões" = "Convert markers to regions";
+
+"Crie a pista VINHETAS-FX no computador para tocar os pads." = "Create the VINHETAS-FX track on the computer to play the pads.";
+
+"Deixe vazio e salve para entrar sem senha. Observadores entram sem senha e não controlam o PC." = "Leave empty and save to connect without a PIN. Observers connect without a PIN and cannot control the PC.";
+
+"Diminuir BPM" = "Decrease BPM";
+
+"Diminuir afinação" = "Lower pitch";
+
+"Dispositivos conectados" = "Connected devices";
+
+"Editar nome" = "Edit name";
+
+"Engatilhamento automático" = "Automatic trigger";
+
+"Escolha o trecho de destino. O aviso começa 5 segundos antes do marcador." = "Choose the destination section. The notice starts 5 seconds before the marker.";
+
+"Escolha um instrumento no FX da pista para ouvir as notas." = "Choose an instrument in the track FX to hear the notes.";
+
+"Escolher arquivo…" = "Choose file…";
+
+"Escolher local…" = "Choose location…";
+
+"Escolher pistas e grupos do Tuner" = "Choose Tuner tracks and groups";
+
+"Esta música não tem trechos." = "This song has no sections.";
+
+"Exportar projeto completo" = "Export complete project";
+
+"FX da pista" = "Track FX";
+
+"Faixa da região " = "Region strip ";
+
+"Fechar vídeo" = "Close video";
+
+"Formato do projeto reduzido" = "Reduced project format";
+
+"Gerenciar dispositivos" = "Manage devices";
+
+"Imagem indisponível" = "Image unavailable";
+
+"Imagem salva" = "Image saved";
+
+"Import Presets substitui os seis presets atuais. Uma cópia da configuração anterior é guardada no dispositivo." = "Import Presets replaces all six current presets. A copy of the previous configuration is kept on the device.";
+
+"Learn MIDI — aguardando controlador…" = "Learn MIDI — waiting for controller…";
+
+"Login / Trocar conta" = "Login / Switch account";
+
+"Marcadores da música" = "Song markers";
+
+"Mostrar no Finder" = "Show in Finder";
+
+"Mute do item " = "Item mute ";
+
+"Nenhum dispositivo conectado." = "No devices connected.";
+
+"O formato vale para os áudios renderizados. Pistas individuais mantidas sem renderização conservam os arquivos originais. MP3 usa compressão com perda." = "The format applies to rendered audio. Individual tracks kept without rendering retain their original files. MP3 uses lossy compression.";
+
+"O item MIDI foi removido." = "The MIDI item was removed.";
+
+"Opções de salvar" = "Save options";
+
+"PC A controla o transporte. PC B continua tocando de forma independente se o A falhar." = "PC A controls transport. PC B keeps playing independently if A fails.";
+
+"Personalizado" = "Custom";
+
+"Prazo de tolerância" = "Grace period";
+
+"Quantizar…" = "Quantize…";
+
+"Remova um computador para liberar sua licença e entrar em outro." = "Remove a computer to release its license and sign in on another.";
+
+"Rolar pistas para baixo" = "Scroll tracks down";
+
+"Rolar pistas para cima" = "Scroll tracks up";
+
+"Salvar / Exportar" = "Save / Export";
+
+"Salvar recado" = "Save notice";
+
+"Salvar senha" = "Save PIN";
+
+"Salve o projeto antes de reduzir." = "Save the project before reducing.";
+
+"Selecionar playlist" = "Select playlist";
+
+"Selecione as origens à direita. Apenas as pistas escolhidas serão levadas; os áudios serão separados por região." = "Select sources on the right. Only selected tracks will be included; audio will be separated by region.";
+
+"Selecione um computador" = "Select a computer";
+
+"Senha de quatro dígitos · Four-digit PIN" = "Four-digit PIN";
+
+"Senha do modo Diretor" = "Director mode PIN";
+
+"Shift: mover e redimensionar sem encaixe" = "Shift: move and resize without snapping";
+
+"Sincronizar novamente" = "Sync again";
+
+"Solicitar pareamento" = "Request pairing";
+
+"Tamanho aproximado do projeto, incluindo as mídias que serão copiadas." = "Approximate project size, including media to be copied.";
+
+"Tempo da agulha" = "Playhead time";
+
+"Transferindo…" = "Transferring…";
+
+"Transfira os seis presets completos, com nomes, cores, volumes, Gate, mapeamentos MIDI e áudios, em um arquivo .zipfx." = "Transfer all six complete presets, including names, colors, volumes, Gate, MIDI mappings and audio, in a .zipfx file.";
+
+"Usar padrão" = "Use default";
+
+"Use dois dedos em pinça nesta barra para ajustar a altura das pistas" = "Pinch this bar with two fingers to adjust track heights";
+
+"Verificar licença" = "Verify license";
+
+"Volume do item " = "Item volume ";
+
+"Volume do pad" = "Pad volume";
+
+"WAV, AIFF ou MP3. O som escolhido será copiado para a pasta Stems deste projeto." = "WAV, AIFF or MP3. The selected sound will be copied to this project’s Stems folder.";
+
+"Área de rolagem do Track-Mixer" = "Track-Mixer scroll area";
+
+"Último acesso: " = "Last access: ";
+
+"88-key keyboard" = "88-key keyboard";
+
+"Create Track" = "Create Track";
+
+"Disunify regions" = "Disunify regions";
+
+"Export Preset" = "Export Preset";
+
+"Fadeout settings" = "Fadeout settings";
+
+"Import Presets" = "Import Presets";
+
+"Insert audio" = "Insert audio";
+
+"Learn MIDI" = "Learn MIDI";
+
+"Lock timeline movement" = "Lock timeline movement";
+
+"Lower pitch" = "Lower pitch";
+
+"Master pan" = "Master pan";
+
+"Master volume" = "Master volume";
+
+"Mute item" = "Mute item";
+
+"Raise pitch" = "Raise pitch";
+
+"Resize Vinhetas" = "Resize Vinhetas";
+
+"Resize setlist" = "Resize setlist";
+
+"Sound Designer" = "Sound Designer";
+
+"Increase BPM" = "Increase BPM";
+
+"Decrease BPM" = "Decrease BPM";
+
+"On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items." = "On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items.";
+
+"Open multiple projects" = "Open multiple projects";
+
+"Select projects in the order you want their tabs to appear." = "Select projects in the order you want their tabs to appear.";
+
+"Opening projects…" = "Opening projects…";
+
+"Could not open project." = "Could not open project.";
+
+"Could not open project" = "Could not open project";
+
+"Open" = "Open";
+
+"Itens mutados" = "Muted items";
+"Existem um ou mais itens mutados. Deseja desmutar todos antes de reduzir?" = "One or more items are muted. Unmute them before reducing the project?";
+
+"Pin track" = "Pin track";
+"Unpin track" = "Unpin track";
+"You can pin up to six tracks." = "You can pin up to six tracks.";
+
+"Update CatLive on the connected computer to edit outputs." = "Update CatLive on the connected computer to edit outputs.";

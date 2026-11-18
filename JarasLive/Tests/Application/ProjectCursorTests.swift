@@ -15,6 +15,7 @@ import XCTest
         transport.playing = false; transport.subPlay.playing = false
         transport.songId = project.songs.first?.id; transport.position = 0; transport.editPosition = 0
     }
+    func applyProjectEdit(_ project: Project) throws { self.project = project }
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
         commands.append((command, target))
         switch command {
@@ -64,6 +65,34 @@ import XCTest
 }
 
 final class ProjectCursorTests: XCTestCase {
+    @MainActor func testMultipleItemResizeCommitsBothEdgesAsOneUndoStep() throws {
+        var project = Project.empty(name: "Multiple resize")
+        var firstTrack = Track(id: UUID(), name: "First", role: .keys)
+        var secondTrack = Track(id: UUID(), name: "Second", role: .keys)
+        let first = AudioClip(id: UUID(), name: "First", startTime: 10, duration: 10, midi: MIDIItem())
+        let second = AudioClip(id: UUID(), name: "Second", startTime: 30, duration: 20, midi: MIDIItem())
+        let untouched = AudioClip(id: UUID(), name: "Other", startTime: 60, duration: 5, midi: MIDIItem())
+        firstTrack.clips = [first, untouched]; secondTrack.clips = [second]
+        project.songs[0].tracks = [firstTrack, secondTrack]; project.songs[0].duration = 120
+        let show = try ShowController(executor: CursorExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let original = show.snapshot.project
+        show.resizeItems([first.id: (12, 20), second.id: (32, 50)])
+        var clips = try XCTUnwrap(show.current).tracks.flatMap(\.clips)
+        XCTAssertEqual(clips.first { $0.id == first.id }?.startTime, 12)
+        XCTAssertEqual(clips.first { $0.id == second.id }?.startTime, 32)
+        XCTAssertEqual(clips.first { $0.id == untouched.id }, untouched)
+        show.undo()
+        XCTAssertEqual(show.snapshot.project, original, "One undo restores the entire selection")
+        show.resizeItems([first.id: (10, 23), second.id: (30, 53)])
+        clips = try XCTUnwrap(show.current).tracks.flatMap(\.clips)
+        XCTAssertEqual(clips.first { $0.id == first.id }?.duration, 13)
+        XCTAssertEqual(clips.first { $0.id == second.id }?.duration, 23)
+        XCTAssertEqual(clips.first { $0.id == untouched.id }, untouched)
+        let resized = show.snapshot.project
+        show.undo(); XCTAssertEqual(show.snapshot.project, original)
+        show.redo(); XCTAssertEqual(show.snapshot.project, resized)
+    }
+
     @MainActor func testUnifiedSelectionTempoEditsOnlySongUnderEditCursor() throws {
         var project = Project.empty(name: "Unified tempo")
         let group = Part(id: UUID(), name: "Unified", startTime: 0, endTime: 60)

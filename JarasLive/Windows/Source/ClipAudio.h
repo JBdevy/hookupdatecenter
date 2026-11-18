@@ -36,8 +36,7 @@ class ClipAudio {
             const double region =
                 clip.frozenMIDI.value_or(false) || clip.renderedTiming.value_or(false)
                     ? 0
-                    : regionPitch::value(song, track,
-                                         clip.startTime + (bounds[i] + bounds[i + 1]) * .5);
+                    : regionPitch::value(song, track, clip);
             segments.push_back({bounds[i], bounds[i + 1],
                                 clip.pitchSemitones.value_or(0) + region -
                                 12 * std::log2(timing->at(start + bounds[i])->rate)});
@@ -69,12 +68,8 @@ class ClipAudio {
         const ClipTempo timing(clip, &song, compiled);
         for (const auto &span : timing.spans)
             if (std::abs(span.rate - 1) > 1e-9) return true;
-        if (!clip.frozenMIDI.value_or(false) && !clip.renderedTiming.value_or(false))
-            for (const auto &part : song.parts)
-                if (part.pitchSemitones.value_or(0) != 0 && part.endTime > clip.startTime &&
-                    part.startTime < clip.startTime + clip.duration &&
-                    regionPitch::selected(song, track, part))
-                    return true;
+        if (!clip.frozenMIDI.value_or(false) && !clip.renderedTiming.value_or(false) &&
+            regionPitch::value(song, track, clip) != 0) return true;
         return false;
     }
     void prepare(double rate) {

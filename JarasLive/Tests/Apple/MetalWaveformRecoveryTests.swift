@@ -173,4 +173,23 @@ for (name, scene, _) in cases {
     check(surface.submittedFrameCount == repaired, "redraw recovery must not create continuous GPU work")
     print("METAL_\(name.uppercased())_SYSTEM_INVALIDATION_RECOVERS_CACHED_SCENE_WITHOUT_SCROLL_OK")
 }
+
+// A valid drawable should replace the old projection without a hide/show
+// cycle. Missing drawables still use the retirement paths tested above.
+var opacityChanges: [CGFloat] = []
+let opacityObserver = surface.subviews[0].observe(\.alphaValue, options: [.new]) { _, change in
+    if let value = change.newValue { opacityChanges.append(value) }
+}
+for index in 0..<8 {
+    let scene = MetalWaveformFrame(size: size, strokes: [stroke],
+        coordinateSpace: .init(documentOrigin: CGPoint(x: index * 20, y: 0),
+                               pixelsPerSecond: Double(100 + index * 10), contentRevision: 20))
+    opacityChanges.removeAll(keepingCapacity: true)
+    surface.submit(scene)
+    check(surface.presentedForRecoveryTest?.hasSameContent(as: scene) == true)
+    check(!opacityChanges.contains(0), "Ready zoom frames must replace the previous drawable without clearing it")
+    settle()
+}
+opacityObserver.invalidate()
+print("METAL_ZOOM_PRESENTS_CURRENT_PROJECTION_WITHOUT_OPACITY_CYCLE_OK")
 window.close()

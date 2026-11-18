@@ -397,7 +397,7 @@ import Darwin
         window.identifier = NSUserInterfaceItemIdentifier("catlive.tool.bluetoothMIDI")
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .darkAqua)
-        window.hidesOnDeactivate = true
+        window.hidesOnDeactivate = false
         window.styleMask.remove([.resizable, .miniaturizable])
         window.collectionBehavior.remove(.fullScreenPrimary)
         window.collectionBehavior.insert(.fullScreenAuxiliary)

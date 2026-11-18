@@ -76,7 +76,7 @@ final class TimelineMediaURLCache {
     func resolveSource(_ path: String, directory: URL) -> Source {
         if self.directory != directory { self.directory = directory; urls.removeAll(keepingCapacity: true) }
         if let source = urls[path] { return source }
-        let url = directory.appendingPathComponent(path, isDirectory: false)
+        let url = path.hasPrefix("/") ? URL(fileURLWithPath: path, isDirectory: false) : directory.appendingPathComponent(path, isDirectory: false)
         // Percent decoding a long Unicode URL is measurable on each zoom
         // frame. Retain its immutable lookup path beside the existing URL.
         let source = Source(url: url, path: url.path)

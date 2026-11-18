@@ -2,6 +2,7 @@ import Foundation
 public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, clipChannelMode, clipNormalization, clipPitch, clipGain, clipPhase, clipPan, clipMute, selectRegion, queueRegion, play, pause, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, clipFadeInCurve, clipFadeInSCurve, clipFadeOutCurve, clipFadeOutSCurve }
 @MainActor public enum ProjectSyncControl { public static var following = false }
 @MainActor public protocol CommandExecutor {
+    var subplayPreparationPosition: Double? { get }
     func setProjectSyncID(_ id: UUID)
     func executeAutomation(_ command: ShowCommand, target: UUID?, value: Double) throws
     func projectSyncFrame() throws -> Data
@@ -65,6 +66,7 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
 }
 
 public extension CommandExecutor {
+    var subplayPreparationPosition: Double? { nil }
     func setProjectSyncID(_ id: UUID) {}
     func executeAutomation(_ command: ShowCommand, target: UUID?, value: Double) throws { try execute(command, target: target, value: value) }
     func projectSyncFrame() throws -> Data { throw BackendFailure.notConfigured }

@@ -217,6 +217,12 @@ enum AppStartupPresentation {
                 #endif
                 return try audio?.pendingPlaybackPreparation(snapshot, revision: revision)
             }
+            show.pendingSubplayPreparation = { [weak self, weak audio] snapshot, revision in
+                #if os(iOS)
+                guard self?.localPlaybackEnabled == true else { return nil }
+                #endif
+                return audio?.pendingSubplayPreparation(snapshot, revision: revision)
+            }
             var repeatWasEnabled = show.snapshot.transport.loop.enabled
             show.audioUpdate = { [weak self, weak show] snapshot, revision in
                 #if os(iOS)
@@ -234,7 +240,7 @@ enum AppStartupPresentation {
                 repeatWasEnabled = repeatEnabled
                 do {
                     try audio.update(snapshot, revision: revision, sampledAt: show?.timelinePlaybackSampleTime ?? ProcessInfo.processInfo.systemUptime)
-                    if foreground { TrackRecording.shared.observe(snapshot); VideoPlayback.shared.update(snapshot) }
+                    if foreground { TrackRecording.shared.observe(snapshot); VideoPlayback.shared.update(snapshot, revision: show?.projectRevision ?? revision) }
                     if foreground, repeatEnabled, let start = snapshot.transport.loop.start, let end = snapshot.transport.loop.end, let song = snapshot.transport.songId {
                         TimelineAreaSelection.shared.update(song: song, from: start, to: end)
                     }
@@ -602,6 +608,10 @@ enum AppStartupPresentation {
             return !self.closingTab && self.active === container && !container.documents.importingAudio
         }
         container.documents.openInNewProjectTab = { [weak self] url in self?.open(url) }
+        container.documents.openProjectTabAndWait = { [weak self] url in
+            guard let self else { throw CancellationError() }
+            try await self.openAndWait(url)
+        }
         container.documents.openRemoteInNewProjectTab = { [weak self] url, id in self?.open(url, remoteCommandID: id) }
         container.documents.navigateProjectTab = { [weak self] direction in self?.navigate(direction) }
         container.show.navigateProjectTab = { [weak self] direction in self?.navigate(direction) }
@@ -641,11 +651,16 @@ enum AppStartupPresentation {
         DAWRemoteHostBridge.bind(next.show)
         ResolumeController.shared.bind(next.show)
         ControlMappings.shared.bind(next.show)
-        VideoPlayback.shared.update(next.show.snapshot)
+        VideoPlayback.shared.update(next.show.snapshot, revision: next.show.projectRevision)
         next.documents.recent = (UserDefaults.standard.stringArray(forKey: "jaras.recentProjects") ?? []).map { URL(fileURLWithPath: $0) }
         AudioDeviceSettings.shared.canChangeConfiguration = {
             !TrackRecording.shared.recording && !TrackRecording.shared.busy
         }
+    }
+    private func openAndWait(_ url: URL) async throws {
+        open(url)
+        guard let project = active else { throw ProjectError.invalid("Could not open project.") }
+        try await project.documents.waitUntilOpened(at: url)
     }
     func open(_ url: URL, remoteCommandID: UUID? = nil) {
         let rejectRemote: (String) -> Void = { message in
@@ -805,10 +820,11 @@ enum AppStartupPresentation {
             } catch { project.documents.error = error.localizedDescription }
         }
     }
-    func stopAll() {
+    func stopAll(forApplicationTermination: Bool = false) {
         for project in projects {
             project.show.send(.stopAll)
-            project.projectAudio.prepareForClosing()
+            if forApplicationTermination { project.projectAudio.prepareForApplicationTermination() }
+            else { project.projectAudio.prepareForClosing() }
         }
     }
 }

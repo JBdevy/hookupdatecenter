@@ -311,6 +311,8 @@
 
 "Choose folders" = "Escolher pastas";
 "Search folders" = "Pesquisar pastas";
+"Check all" = "Marcar todas";
+"Uncheck all" = "Desmarcar todas";
 "Select all" = "Selecionar tudo";
 "Deselect all" = "Desmarcar tudo";
 "Folders will be placed on the grid in the order you check them." = "As pastas serão colocadas no grid na ordem em que você marcar.";
@@ -873,7 +875,7 @@
 
 "Show blocks in the teleprompter" = "Mostrar blocos no teleprompter";
 
-"Independent normalization gain: up to +24 dB" = "Ganho independente de normalização: até +24 dB";
+"Independent normalization gain" = "Ganho independente de normalização";
 
 "MIDI channel" = "Canal MIDI";
 "All channels" = "Todos";
@@ -2385,7 +2387,7 @@
 
 "Reset rate" = "Redefinir rate";
 "Reset duration" = "Redefinir duração";
-"Restore the full original file duration for the selected items?" = "Restaurar a duração original completa do arquivo nos itens selecionados?";
+"Restore the full original file duration for the selected items?" = "Remover as partes expandidas sem mover os itens selecionados nem estender os itens recortados?";
 "Set region end to longest item" = "Definir fim da região pelo item mais longo";
 "Space regions by 30 s" = "Afastar regiões em 30 s";
 "Reset selected items to 1x without changing tempo markers?" = "Redefinir os itens selecionados para 1× sem alterar os marcadores de tempo?";
@@ -2459,3 +2461,276 @@
 "The song changed. Open Full lyrics again." = "A música mudou. Abra Letra Completa novamente.";
 
 "Could not create the lyrics items." = "Não foi possível criar os itens da letra.";
+
+"250+ — Not available" = "250+ — Não é possível";
+
+"Your project contains more than 250 simultaneous audio voices at some points. At those points, Parts, real-time BPM changes and Repeat are unavailable." = "Seu projeto contém mais de 250 vozes simultâneas em alguns pontos da grade. Nesses pontos, não será possível engatilhar Parts, alterar o BPM em tempo real ou ativar Repeat.";
+
+"Export ziplive" = "Export ziplive";
+
+"Preparing project deletion…" = "Preparando exclusão do projeto…";
+
+"Hold Shift and click − or + to adjust all listed items by the same amount." = "Segure Shift e clique em − ou + para aumentar ou diminuir proporcionalmente todos os itens da lista.";
+
+"Current song" = "Música atual";
+
+"Information" = "Informações";
+
+"Bypass de todos os Multiloops" = "Bypass de todos os Multiloops";
+
+"Reduzir projeto" = "Reduzir projeto";
+
+"Insert" = "Inserir";
+
+"MIDI activity" = "Atividade MIDI";
+
+"Master Patch" = "Patch do Master";
+
+"Master Stereo/Mono" = "Master Estéreo/Mono";
+
+"Track number" = "Número da pista";
+
+"Track volume" = "Volume da pista";
+
+"Ícone da pista" = "Ícone da pista";
+
+"Abrir ajustes de Rede Local" = "Abrir ajustes de Rede Local";
+
+"Abrir barra lateral" = "Abrir barra lateral";
+
+"Adaptador desconectado" = "Adaptador desconectado";
+
+"Atualizar dispositivos" = "Atualizar dispositivos";
+
+"Atualizar lista" = "Atualizar lista";
+
+"Atualize o CatLive no computador para controlar as Vinhetas." = "Atualize o CatLive no computador para controlar as Vinhetas.";
+
+"Aumentar BPM" = "Aumentar BPM";
+
+"Aumentar afinação" = "Aumentar afinação";
+
+"Automático" = "Automático";
+
+"BPM / Compasso" = "BPM / Compasso";
+
+"Bem-vindo ao CatLive" = "Bem-vindo ao CatLive";
+
+"Buscar na rede" = "Buscar na rede";
+
+"Captura o áudio do Mac. Monitor Off silencia o retorno, mantendo a gravação e os meters de entrada." = "Captura o áudio do Mac. Monitor Off silencia o retorno, mantendo a gravação e os meters de entrada.";
+
+"Conecte os dois computadores por cabo Ethernet. O Remote do app continua disponível pelo Wi-Fi." = "Conecte os dois computadores por cabo Ethernet. O Remote do app continua disponível pelo Wi-Fi.";
+
+"Configuração salva." = "Configuração salva.";
+
+"Configurações de áudio" = "Configurações de áudio";
+
+"Conversão de marcadores" = "Conversão de marcadores";
+
+"Converter" = "Converter";
+
+"Converter marcadores em regiões" = "Converter marcadores em regiões";
+
+"Crie a pista VINHETAS-FX no computador para tocar os pads." = "Crie a pista VINHETAS-FX no computador para tocar os pads.";
+
+"Deixe vazio e salve para entrar sem senha. Observadores entram sem senha e não controlam o PC." = "Deixe vazio e salve para entrar sem senha. Observadores entram sem senha e não controlam o PC.";
+
+"Diminuir BPM" = "Diminuir BPM";
+
+"Diminuir afinação" = "Diminuir afinação";
+
+"Dispositivos conectados" = "Dispositivos conectados";
+
+"Editar nome" = "Editar nome";
+
+"Engatilhamento automático" = "Engatilhamento automático";
+
+"Escolha o trecho de destino. O aviso começa 5 segundos antes do marcador." = "Escolha o trecho de destino. O aviso começa 5 segundos antes do marcador.";
+
+"Escolha um instrumento no FX da pista para ouvir as notas." = "Escolha um instrumento no FX da pista para ouvir as notas.";
+
+"Escolher arquivo…" = "Escolher arquivo…";
+
+"Escolher local…" = "Escolher local…";
+
+"Escolher pistas e grupos do Tuner" = "Escolher pistas e grupos do Tuner";
+
+"Esta música não tem trechos." = "Esta música não tem trechos.";
+
+"Exportar projeto completo" = "Exportar projeto completo";
+
+"FX da pista" = "FX da pista";
+
+"Faixa da região " = "Faixa da região ";
+
+"Fechar vídeo" = "Fechar vídeo";
+
+"Formato do projeto reduzido" = "Formato do projeto reduzido";
+
+"Gerenciar dispositivos" = "Gerenciar dispositivos";
+
+"Imagem indisponível" = "Imagem indisponível";
+
+"Imagem salva" = "Imagem salva";
+
+"Import Presets substitui os seis presets atuais. Uma cópia da configuração anterior é guardada no dispositivo." = "Import Presets substitui os seis presets atuais. Uma cópia da configuração anterior é guardada no dispositivo.";
+
+"Learn MIDI — aguardando controlador…" = "Learn MIDI — aguardando controlador…";
+
+"Login / Trocar conta" = "Login / Trocar conta";
+
+"Marcadores da música" = "Marcadores da música";
+
+"Mostrar no Finder" = "Mostrar no Finder";
+
+"Mute do item " = "Mute do item ";
+
+"Nenhum dispositivo conectado." = "Nenhum dispositivo conectado.";
+
+"O formato vale para os áudios renderizados. Pistas individuais mantidas sem renderização conservam os arquivos originais. MP3 usa compressão com perda." = "O formato vale para os áudios renderizados. Pistas individuais mantidas sem renderização conservam os arquivos originais. MP3 usa compressão com perda.";
+
+"O item MIDI foi removido." = "O item MIDI foi removido.";
+
+"Opções de salvar" = "Opções de salvar";
+
+"PC A controla o transporte. PC B continua tocando de forma independente se o A falhar." = "PC A controla o transporte. PC B continua tocando de forma independente se o A falhar.";
+
+"Personalizado" = "Personalizado";
+
+"Prazo de tolerância" = "Prazo de tolerância";
+
+"Quantizar…" = "Quantizar…";
+
+"Remova um computador para liberar sua licença e entrar em outro." = "Remova um computador para liberar sua licença e entrar em outro.";
+
+"Rolar pistas para baixo" = "Rolar pistas para baixo";
+
+"Rolar pistas para cima" = "Rolar pistas para cima";
+
+"Salvar / Exportar" = "Salvar / Exportar";
+
+"Salvar recado" = "Salvar recado";
+
+"Salvar senha" = "Salvar senha";
+
+"Salve o projeto antes de reduzir." = "Salve o projeto antes de reduzir.";
+
+"Selecionar playlist" = "Selecionar playlist";
+
+"Selecione as origens à direita. Apenas as pistas escolhidas serão levadas; os áudios serão separados por região." = "Selecione as origens à direita. Apenas as pistas escolhidas serão levadas; os áudios serão separados por região.";
+
+"Selecione um computador" = "Selecione um computador";
+
+"Senha de quatro dígitos · Four-digit PIN" = "Senha de quatro dígitos · Four-digit PIN";
+
+"Senha do modo Diretor" = "Senha do modo Diretor";
+
+"Shift: mover e redimensionar sem encaixe" = "Shift: mover e redimensionar sem encaixe";
+
+"Sincronizar novamente" = "Sincronizar novamente";
+
+"Solicitar pareamento" = "Solicitar pareamento";
+
+"Tamanho aproximado do projeto, incluindo as mídias que serão copiadas." = "Tamanho aproximado do projeto, incluindo as mídias que serão copiadas.";
+
+"Tempo da agulha" = "Tempo da agulha";
+
+"Transferindo…" = "Transferindo…";
+
+"Transfira os seis presets completos, com nomes, cores, volumes, Gate, mapeamentos MIDI e áudios, em um arquivo .zipfx." = "Transfira os seis presets completos, com nomes, cores, volumes, Gate, mapeamentos MIDI e áudios, em um arquivo .zipfx.";
+
+"Usar padrão" = "Usar padrão";
+
+"Use dois dedos em pinça nesta barra para ajustar a altura das pistas" = "Use dois dedos em pinça nesta barra para ajustar a altura das pistas";
+
+"Verificar licença" = "Verificar licença";
+
+"Volume do item " = "Volume do item ";
+
+"Volume do pad" = "Volume do pad";
+
+"WAV, AIFF ou MP3. O som escolhido será copiado para a pasta Stems deste projeto." = "WAV, AIFF ou MP3. O som escolhido será copiado para a pasta Stems deste projeto.";
+
+"Área de rolagem do Track-Mixer" = "Área de rolagem do Track-Mixer";
+
+"Último acesso: " = "Último acesso: ";
+
+"88-key keyboard" = "Teclado de 88 teclas";
+
+"Create Track" = "Criar pista";
+
+"Disunify regions" = "Desunificar regiões";
+
+"Export Preset" = "Exportar preset";
+
+"Fadeout settings" = "Configurações do fadeout";
+
+"Import Presets" = "Importar presets";
+
+"Insert audio" = "Inserir áudio";
+
+"Learn MIDI" = "Aprender MIDI";
+
+"Lock timeline movement" = "Bloquear movimento na timeline";
+
+"Lower pitch" = "Diminuir afinação";
+
+"Master pan" = "Pan do Master";
+
+"Master volume" = "Volume do Master";
+
+"Mute item" = "Mutar item";
+
+"Raise pitch" = "Aumentar afinação";
+
+"Resize Vinhetas" = "Redimensionar Vinhetas";
+
+"Resize setlist" = "Redimensionar Setlist";
+
+"Sound Designer" = "Editor de som";
+
+"Increase BPM" = "Aumentar BPM";
+
+"Decrease BPM" = "Diminuir BPM";
+
+"On these tracks, Subplay stops items from the previous song and keeps only the incoming song's items." = "Nessas pistas, o Subplay interrompe os itens da música anterior e mantém apenas os itens da música que entra.";
+
+"Open multiple projects" = "Abrir múltiplos projetos";
+
+"Select projects in the order you want their tabs to appear." = "Marque os projetos na ordem em que deseja abrir as abas.";
+
+"Opening projects…" = "Abrindo projetos…";
+
+"Could not open project." = "Não foi possível abrir o projeto.";
+
+"Could not open project" = "Não foi possível abrir o projeto";
+
+"Open" = "Abrir";
+
+"Stop playback and finish recording or importing before converting timeline audio." = "Pare a reprodução e termine a gravação ou importação antes de converter o áudio da timeline.";
+"Convert timeline audio to MP3 at 320 kbps. Existing MP3 files and source files are kept." = "Converter o áudio da timeline para MP3 a 320 kbps. Os arquivos originais e os MP3 existentes serão preservados.";
+"The converted audio is empty." = "O áudio convertido está vazio.";
+"The project changed during conversion. Please try again." = "O projeto mudou durante a conversão. Tente novamente.";
+"No audio files to convert." = "Nenhum áudio para converter.";
+"Timeline audio converted to MP3." = "Áudio da timeline convertido para MP3.";
+
+"Vertical timeline scroll" = "Rolagem vertical da grade";
+
+"Destination" = "Destino";
+"Create a folder for this project" = "Criar uma pasta para este projeto";
+"Ignore muted tracks" = "Ignorar pistas mutadas";
+"Ignore muted items" = "Ignorar itens mutados";
+"Region folders" = "Pastas das regiões";
+"Multitrack export completed." = "Export Multitrack concluído.";
+"Separate" = "Separar";
+"Vocal" = "Voz";
+"Other" = "Outros";
+"Special tracks" = "Pistas especiais";
+
+"Pin track" = "Fixar pista";
+"Unpin track" = "Desafixar pista";
+"You can pin up to six tracks." = "Você pode fixar até seis pistas.";
+
+"Update CatLive on the connected computer to edit outputs." = "Atualize o CatLive no computador conectado para editar as saídas.";
+"Hoz-Parts height" = "Altura do Hoz-Parts";

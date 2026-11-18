@@ -42,7 +42,7 @@ struct TimelinePlaybackFollowPolicy {
     }
 
     mutating func destination(position: Double?, pixelsPerSecond: CGFloat, contentWidth: CGFloat,
-                              viewport: CGRect, source: String, backingScale: CGFloat = 0) -> CGFloat? {
+                              viewport: CGRect, source: String, backingScale: CGFloat = 0, firstOffset: CGFloat = 0) -> CGFloat? {
         guard let position else { reset(); return nil }
         guard position.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0,
               contentWidth.isFinite, contentWidth > 0, viewport.minX.isFinite,
@@ -54,14 +54,14 @@ struct TimelinePlaybackFollowPolicy {
         previousSource = source
         previousPosition = position
         guard changedHead || movedBackward || x < viewport.minX || x > viewport.midX else { return nil }
-        let limit = max(0, contentWidth - viewport.width)
-        var origin = min(max(0, x - viewport.width / 2), limit)
+        let limit = max(firstOffset, contentWidth - viewport.width)
+        var origin = min(max(firstOffset, x - viewport.width / 2), limit)
         // At distant zoom levels the viewport moves only a few physical pixels
         // per second. Do not invalidate every hosting/tracking subtree at 60 Hz
         // for movement smaller than a display pixel. The needle still paints
         // continuously, independently of this viewport offset.
         if backingScale.isFinite && backingScale > 0 {
-            origin = min(limit, max(0, (origin * backingScale).rounded() / backingScale))
+            origin = min(limit, max(firstOffset, (origin * backingScale).rounded() / backingScale))
         }
         return abs(origin - viewport.minX) > 0.0000001 ? origin : nil
     }
@@ -142,7 +142,7 @@ final class TimelinePlaybackFollowView: NSView {
     }
 
     private func geometryMatches(_ sample: Sample, clip: NSClipView) -> Bool {
-        let width = clip.documentRect.width
+        let width = clip.documentRect.maxX
         let tolerance = max(0.0000001, max(abs(width).ulp, abs(sample.contentWidth).ulp) * 8)
         return sample.contentWidth.isFinite && sample.contentWidth > 0 &&
             abs(width - sample.contentWidth) <= tolerance
@@ -160,7 +160,7 @@ final class TimelinePlaybackFollowView: NSView {
         var nextPolicy = policy
         guard let x = nextPolicy.destination(position: sample.position, pixelsPerSecond: sample.pixelsPerSecond,
                                              contentWidth: sample.contentWidth, viewport: viewport, source: sample.source,
-                                             backingScale: window.backingScaleFactor) else {
+                                             backingScale: window.backingScaleFactor, firstOffset: clip.documentRect.minX) else {
             // A seek/head handoff can leave playback before the midpoint.
             // Preserve hiding only while still centered, including rounded
             // subpixel frames at distant zoom; stopping follow restores names.
@@ -183,7 +183,7 @@ final class TimelinePlaybackFollowView: NSView {
               geometryMatches(sample, clip: clip), clip.bounds == viewport else { return }
         policy = nextPolicy
         needsApply = false
-        scroll.setPlaybackFollowing(x > 0 && x < sample.contentWidth - viewport.width)
+        scroll.setPlaybackFollowing(x > clip.documentRect.minX && x < sample.contentWidth - viewport.width)
         clip.scroll(to: CGPoint(x: x, y: viewport.minY))
         scroll.reflectScrolledClipView(clip)
         TimelineFollowCadenceDiagnostics.applied()

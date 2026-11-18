@@ -115,11 +115,14 @@ private final class CaptureWriter: @unchecked Sendable {
     private func drain() {
         while true {
             let count = interleaved.withUnsafeMutableBufferPointer { ring.readFrames($0.baseAddress!, maximum: 4096) }
-            if count == 0 {
-                let time = Double(frames)/sampleRate
-                if time-lastPreview >= 0.08 { lastPreview=time; takePreview?(Dictionary(uniqueKeysWithValues: takes.map { ($0.target.id, Double($0.frames)/sampleRate) }), Dictionary(uniqueKeysWithValues: takes.map { ($0.target.id, $0.waveform) })); preview?(time,Dictionary(uniqueKeysWithValues: takes.map { ($0.target.track,$0.overview.snapshot) })) }
-                return
+            let time = Double(frames)/sampleRate
+            if time-lastPreview >= 0.08 || (count == 0 && time > lastPreview) {
+                lastPreview=time
+                takePreview?(Dictionary(uniqueKeysWithValues: takes.map { ($0.target.id, Double($0.frames)/sampleRate) }),
+                    Dictionary(uniqueKeysWithValues: takes.map { ($0.target.id, $0.waveform) }))
+                preview?(time,Dictionary(uniqueKeysWithValues: takes.map { ($0.target.track,$0.overview.snapshot) }))
             }
+            if count == 0 { return }
             guard failure == nil else { continue }
             do {
                 for take in takes {
@@ -1008,6 +1011,8 @@ private final class CaptureWriter: @unchecked Sendable {
 struct TrackRecordButton: View {
     let show: ShowController
     let track: Track
+    var touchHeight: CGFloat = 28
+    var touchWidth: CGFloat = 28
     @ObservedObject private var recorder = TrackRecording.shared
     @State private var editingMode = false
     private func toggleArm() {
@@ -1021,15 +1026,16 @@ struct TrackRecordButton: View {
                 if recorder.armState.mode(for: track.id) == .automatic {
                     Text(verbatim: "A").font(.jarasSystem(size: 11, weight: .bold))
                 } else { Image(systemName: "record.circle") }
-            }.frame(width: 22, height: 21)
+            }.frame(width: 22, height: min(21, touchHeight))
         }.buttonStyle(RecordingButtonStyle(active: recorder.armed.contains(track.id)))
         #if os(macOS)
         .background(TrackControlSelectionExclusion())
         .immediateRightClick { editingMode = true }
         #else
-        .frame(minWidth: 28, minHeight: 28).contentShape(Rectangle())
+        .frame(minWidth: touchWidth, minHeight: touchHeight).contentShape(Rectangle())
         .overlay { IpadTapHoldTouchSurface(tap: toggleArm, hold: { editingMode = true }) }
         #endif
+        .onChange(of: track.id) { _ in editingMode = false }
         .popover(isPresented: $editingMode) {
             TrackRecordingSettings(show: show, trackID: track.id)
         }

@@ -21,6 +21,23 @@ static std::vector<size_t> onsets(const std::vector<float>& samples) {
     return result;
 }
 int main() {
+    @autoreleasepool {
+        JarasPreparedMetronomeProgram *prepared=nil;
+        std::thread worker([&] {
+            @autoreleasepool {
+                assert(![NSThread isMainThread]);
+                std::vector<float> samples(128,.25f);
+                NSData *sound=[NSData dataWithBytes:samples.data() length:samples.size()*sizeof(float)];
+                prepared=[JarasMetronomeGenerator prepareSections:@[@{@"start":@0,@"bpm":@120,@"beats":@4,@"unit":@4}]
+                    soundA:sound soundB:sound mode:0];
+            }
+        });
+        worker.join();assert(prepared && prepared->value && prepared->value->a.size()==128);
+        auto *generator=[[JarasMetronomeGenerator alloc] initWithFormat:[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2]];
+        [generator applyPreparedSections:prepared];assert(!prepared->value);
+        for(int i=0;i<1000;++i)[generator setEnabled:i%2];
+        std::cout<<"METRONOME_WORKER_PREPARATION_TRANSFER_AND_ATOMIC_TOGGLE_OK\n";
+    }
     {
         // Repeated UI publications must never make the callback spin waiting
         // for a stable program, or reclaim samples while a click tail uses them.

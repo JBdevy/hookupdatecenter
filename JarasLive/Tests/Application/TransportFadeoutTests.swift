@@ -89,7 +89,7 @@ final class TransportFadeoutTests: XCTestCase {
         XCTAssertEqual(executor.projectEdits, 2)
         show.undo(); XCTAssertEqual(show.snapshot.project, before)
     }
-    @MainActor func testResetDurationReadsRealFileCommitsOnceAndCanBeUndone() async throws {
+    @MainActor func testResetDurationPreservesShortenedItemsAndTrimsOnlyExpandedAudio() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -111,9 +111,9 @@ final class TransportFadeoutTests: XCTestCase {
         await show.resetItemsDuration([clip.id], mediaDirectory: directory)
         XCTAssertEqual(show.message, "")
         let restored = try XCTUnwrap(show.current?.tracks[0].clips[0])
-        XCTAssertEqual(restored.startTime, 4); XCTAssertEqual(restored.duration, 1.6, accuracy: 1e-9)
-        XCTAssertEqual(restored.sourceOffset, 0); XCTAssertEqual(restored.audioRate, 1.25)
-        XCTAssertEqual(executor.projectEdits, 1)
+        XCTAssertEqual(restored.startTime, 4); XCTAssertEqual(restored.duration, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(restored.sourceOffset, 0.75); XCTAssertEqual(restored.audioRate, 1.25)
+        XCTAssertEqual(executor.projectEdits, 0, "A shortened item is already within its source duration")
         show.undo(); XCTAssertEqual(show.current?.tracks[0].clips[0], clip)
         XCTAssertTrue(show.configureItemsRate([clip.id], rate: 2.5))
         XCTAssertEqual(show.current!.tracks[0].clips[0].duration, 0.1, accuracy: 1e-9)
@@ -127,6 +127,14 @@ final class TransportFadeoutTests: XCTestCase {
         }
         XCTAssertEqual(show.current?.tracks[0].clips[0].loopLength, 2)
         XCTAssertEqual(show.current?.tracks[0].clips[0].duration, 4)
+        let expanded = show.current!.tracks[0].clips[0]
+        let beforeReset = executor.projectEdits
+        await show.resetItemsDuration([clip.id], mediaDirectory: directory)
+        XCTAssertEqual(show.current!.tracks[0].clips[0].startTime,4)
+        XCTAssertEqual(show.current!.tracks[0].clips[0].sourceOffset,0.75)
+        XCTAssertEqual(show.current!.tracks[0].clips[0].duration,1,accuracy:1e-9)
+        XCTAssertEqual(executor.projectEdits,beforeReset+1)
+        show.undo();XCTAssertEqual(show.current?.tracks[0].clips[0],expanded)
     }
     @MainActor func testResetRatePreservesMarkersOtherItemsAndItemGeometry() throws {
         let executor = FadeoutExecutor()
@@ -144,6 +152,7 @@ final class TransportFadeoutTests: XCTestCase {
         show.resetItemsRate([item.id])
         var expected = project
         expected.songs[0].tracks[0].clips[0].playbackRate = 1
+        expected.songs[0].tracks[0].clips[0].duration = 8.25 // Preserve the complete current source span while resetting speed.
         expected.songs[0].tracks[0].clips[0].tempoBasePlaybackRate = nil
         expected.songs[0].tracks[0].clips[0].tempoRateReferences = [.init(markerID: marker.id, rate: 140.0 / 120)]
         XCTAssertEqual(show.snapshot.project, expected)

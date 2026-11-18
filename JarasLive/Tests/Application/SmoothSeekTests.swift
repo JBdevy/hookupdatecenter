@@ -122,13 +122,15 @@ final class SectionBoundaryTests: XCTestCase {
 final class SmoothSeekTests: XCTestCase {
     func testAutomaticSectionDestinationPersistsAndCanBeCleared() throws {
         let source = TimelineMarker(id: UUID(), name: "Verse", position: 10, color: 0, section: true,
-                                    automaticSectionTargetID: UUID())
+                                    automaticSectionTargetID: UUID(), automaticSectionRepeatCount: 3)
         let restored = try JSONDecoder().decode(TimelineMarker.self, from: JSONEncoder().encode(source))
         XCTAssertEqual(restored.automaticSectionTargetID, source.automaticSectionTargetID)
+        XCTAssertEqual(restored.automaticSectionRepeatCount, 3)
         var cleared = restored; cleared.automaticSectionTargetID = nil
         XCTAssertNil(try JSONDecoder().decode(TimelineMarker.self, from: JSONEncoder().encode(cleared)).automaticSectionTargetID)
         let legacy = "{\"id\":\"\(UUID().uuidString)\",\"name\":\"Old section\",\"position\":10,\"color\":0,\"section\":true}"
         XCTAssertNil(try JSONDecoder().decode(TimelineMarker.self, from: Data(legacy.utf8)).automaticSectionTargetID)
+        XCTAssertNil(try JSONDecoder().decode(TimelineMarker.self, from: Data(legacy.utf8)).automaticSectionRepeatCount)
     }
 
     func testPlayingSectionProgressUsesItsOwnBoundsAndResetsAfterSeek() {

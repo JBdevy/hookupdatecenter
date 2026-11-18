@@ -75,31 +75,34 @@ struct FXInsertEditor: View {
             guard let chosen = plugins.plugins.first(where: { $0.id == external }) else { return }
             guard !vinhetasTarget || !chosen.isInstrument else { return }
             if let clip {
-                // A MIDI take has no audio instance before its first
-                // instrument. Validate the chosen plugin separately,
-                // then let the normal item update build its live voice.
-                let preparation = NativeEffectsChain()
-                defer { preparation.releaseExternal() }
+                var prepared: [(UUID, NativeFXSettings, String)] = []
                 do {
-                    var settings = show.clipFXSettings(clip)
-                    var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
-                    settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
-                    settings.inserted.append(instance.effectKey)
-                    try settings.validateForClip()
-                    let node = try preparation.prepareExternal(instance)
-                    if let state = JarasVST3.state(node, identifier: instance.id) {
-                        instance.componentState = state["componentState"] as? String
-                        instance.controllerState = state["controllerState"] as? String
-                        if let index = settings.externalPlugins?.firstIndex(where: { $0.id == instance.id }) {
+                    for target in show.clipFXTargets(clip) {
+                        let preparation = NativeEffectsChain()
+                        defer { preparation.releaseExternal() }
+                        var settings = show.clipFXSettings(target)
+                        var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
+                        instance.id = UUID().uuidString
+                        settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
+                        settings.inserted.append(instance.effectKey)
+                        try settings.validateForClip()
+                        let node = try preparation.prepareExternal(instance)
+                        if let state = JarasVST3.state(node, identifier: instance.id) {
+                            instance.componentState = state["componentState"] as? String
+                            instance.controllerState = state["controllerState"] as? String
+                            let index = settings.externalPlugins!.count - 1
                             settings.externalPlugins?[index] = instance
                         }
+                        prepared.append((target, settings, instance.effectKey))
                     }
-                    show.previewClipFX(clip, settings: settings); show.commitFX()
-                    guard show.clipFXSettings(clip).inserted.contains(instance.effectKey) else {
+                    for (target, settings, _) in prepared { show.previewClipFX(target, settings: settings) }
+                    show.commitFX()
+                    guard let key = prepared.first(where: { $0.0 == clip })?.2,
+                          show.clipFXSettings(clip).inserted.contains(key) else {
                         externalError = show.message
                         return
                     }
-                    finishInsertion(instance.effectKey, track: nil)
+                    finishInsertion(key, track: nil)
                 } catch { externalError = error.localizedDescription }
                 return
             }
@@ -236,6 +239,13 @@ import Combine
     }
 }
 
+/// Never let focus rings or a transient control's ideal size resize its NSWindow.
+/// The presenter owns the content rectangle, including on macOS 12.
+final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+    override var fittingSize: NSSize { frame.size }
+}
+
 @MainActor private func makeWorkspacePanel(title: String, size: NSSize, minimum: NSSize, matrixPatch: Bool = false) -> NSPanel {
     let rect = NSRect(origin: .zero, size: size)
     let style: NSWindow.StyleMask = [.titled, .closable, .resizable]
@@ -247,7 +257,7 @@ import Combine
     panel.contentMinSize = minimum
     panel.isReleasedWhenClosed = false
     panel.isFloatingPanel = false
-    panel.hidesOnDeactivate = true
+    panel.hidesOnDeactivate = false
     panel.level = .normal
     return panel
 }
@@ -314,7 +324,7 @@ import Combine
         }
         if let panel = windows[key] {
             if let preferredEffect { (panel.contentView as? TrackFXChainView)?.select(preferredEffect) }
-            panel.makeKeyAndOrderFront(nil); return
+            ProjectionWindow.presentWorkspaceWindow(panel); return
         }
         // The normal titlebar provides full-size native window controls for
         // both track chains and item FX, including third-party editors.
@@ -329,7 +339,7 @@ import Combine
         panel.setFrameOrigin(NSPoint(x: panel.frame.minX + stagger,y: panel.frame.minY - stagger))
         windows[key] = panel
         attachWorkspacePanel(panel)
-        panel.makeKeyAndOrderFront(nil)
+        ProjectionWindow.presentWorkspaceWindow(panel)
     }
     func windowWillClose(_ notification: Notification) {
         guard let panel = notification.object as? NSPanel else { return }
@@ -478,7 +488,7 @@ private struct WorkspaceToolContent<Content: View>: View {
                 panel.contentView?.isHidden = false
                 attachWorkspacePanel(panel)
             }
-            panel.makeKeyAndOrderFront(nil)
+            ProjectionWindow.presentWorkspaceWindow(panel)
             return
         }
         let expandable = tool == .matrixPatch
@@ -489,7 +499,7 @@ private struct WorkspaceToolContent<Content: View>: View {
         if tool == .textItem {
             // Keep the draft visible while the user focuses the projection.
             // It remains an independent window, without a modal session.
-            panel.level = .floating
+            panel.level = .normal
             panel.hidesOnDeactivate = false
             panel.collectionBehavior.insert(.fullScreenAuxiliary)
         }
@@ -500,7 +510,7 @@ private struct WorkspaceToolContent<Content: View>: View {
         // Settings and the text editor own their scrolling and fill the window.
         // Advanced has a fixed minimum canvas; scroll that canvas only if the
         // available screen cannot fit it, without asking it for an ideal size.
-        let host = NSHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: tool == .advanced, layoutSize: tool == .advanced ? size : nil).interfaceScaled())
+        let host = WorkspaceEditorHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: tool == .advanced, layoutSize: tool == .advanced ? size : nil).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
         panel.contentView = host
@@ -513,7 +523,7 @@ private struct WorkspaceToolContent<Content: View>: View {
         panel.center()
         windows[tool] = panel
         attachWorkspacePanel(panel)
-        panel.makeKeyAndOrderFront(nil)
+        ProjectionWindow.presentWorkspaceWindow(panel)
     }
     func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
         if window === windows[.matrixPatch] { return window.screen?.visibleFrame ?? newFrame }
@@ -580,12 +590,14 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
     let title: String
     var scrolls = true
     var size: CGSize? = nil
+    var canClose: () -> Bool = { true }
     @ViewBuilder let content: () -> Content
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
     func updateNSView(_ view: NSView, context: Context) {
         let coordinator = context.coordinator
         coordinator.presented = $presented
+        coordinator.canClose = canClose
         guard presented else { coordinator.close(notify: false); return }
         if coordinator.panel != nil { return }
         guard !coordinator.opening else { return }
@@ -606,7 +618,7 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
             // second hosting tree repeats construction and onAppear work before
             // their real window can become visible.
             let initialSize = size ?? workspaceEditorContentSize(editor)
-            let host = NSHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: scrolls).interfaceScaled())
+            let host = WorkspaceEditorHostingView(rootView: WorkspaceEditorViewport(content: editor, scrolls: scrolls).interfaceScaled())
             if #available(macOS 13, *) { host.sizingOptions = [] }
             if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
             panel.contentView = host
@@ -616,7 +628,7 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
             panel.setContentSize(NSSize(width: min(initialSize.width, available.width), height: min(initialSize.height, max(240, available.height - 32))))
             InterfaceScaling.shared.register(panel)
             coordinator.panel = panel
-            panel.center(); attachWorkspacePanel(panel); panel.makeKeyAndOrderFront(nil)
+            panel.center(); attachWorkspacePanel(panel); ProjectionWindow.presentWorkspaceWindow(panel)
         }
     }
     static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.close(notify: false) }
@@ -624,13 +636,28 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
         var presented: Binding<Bool>?
         var panel: NSPanel?
         var opening = false
+        var canClose: () -> Bool = { true }
+        func windowShouldClose(_ sender: NSWindow) -> Bool { canClose() }
         func close(notify: Bool) {
             guard let panel else { return }
-            self.panel = nil; panel.delegate = nil
-            panel.parent?.removeChildWindow(panel); panel.close(); panel.contentView = nil
+            detach(panel)
+            panel.orderOut(nil)
+            panel.close()
             if notify { presented?.wrappedValue = false }
         }
-        func windowWillClose(_ notification: Notification) { close(notify: true) }
+        func windowWillClose(_ notification: Notification) {
+            guard let closing = notification.object as? NSPanel, closing === panel else { return }
+            detach(closing)
+            presented?.wrappedValue = false
+        }
+        private func detach(_ closing: NSPanel) {
+            panel = nil
+            closing.delegate = nil
+            closing.parent?.removeChildWindow(closing)
+            // Let the window leave the screen before tearing down SwiftUI.
+            DispatchQueue.main.async { closing.contentView = nil }
+        }
+
     }
 }
 
@@ -668,9 +695,10 @@ extension View {
         sheet(isPresented: isPresented, content: content)
         #endif
     }
-    @ViewBuilder func workspaceEditor<Item: Identifiable, Content: View>(_ title: String, item: Binding<Item?>, scrolls: Bool = true, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
+    @ViewBuilder func workspaceEditor<Item: Identifiable, Content: View>(_ title: String, item: Binding<Item?>, scrolls: Bool = true,
+        size: CGSize? = nil, canClose: @escaping () -> Bool = { true }, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
         #if os(macOS)
-        background(WorkspaceEditorPresenter(presented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }), title: title, scrolls: scrolls) {
+        background(WorkspaceEditorPresenter(presented: Binding(get: { item.wrappedValue != nil }, set: { if !$0 { item.wrappedValue = nil } }), title: title, scrolls: scrolls, size: size, canClose: canClose) {
             if let value = item.wrappedValue { content(value) }
         }.frame(width: 0, height: 0))
         #else

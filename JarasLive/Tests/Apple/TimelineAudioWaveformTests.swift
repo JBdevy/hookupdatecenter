@@ -77,6 +77,27 @@ for rate in [44_100.0, 48_000.0] {
     precondition(restored.paths == far.paths, "a new waveform cache reproduces the exact signed curve from the disk cache")
     let persistedAgain = try Data(contentsOf: persistentURL)
     precondition(persistedAgain == persistentData, "reopening uses the existing waveform file")
+    let transferred = temporary.appendingPathComponent("transferred-\(Int(rate))/Stems/audio.wav")
+    try FileManager.default.createDirectory(at: transferred.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: url, to: transferred)
+    let sourceDate = try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as! Date
+    try FileManager.default.setAttributes([.modificationDate: sourceDate.addingTimeInterval(0.001)], ofItemAtPath: transferred.path)
+    let transferredWF = TimelineAudioWaveform.diskCacheURL(transferred)
+    try FileManager.default.createDirectory(at: transferredWF.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try persistentData.write(to: transferredWF)
+    let transferredCache = TimelineAudioWaveform()
+    let transferredHeader = waitFor { transferredCache.header(transferred) }
+    let transferredDrawing = waitFor { transferredCache.geometry(transferred, header: transferredHeader, block: 0, pixelsPerSecond: rate / 1024) }
+    precondition(transferredDrawing.paths == far.paths, "a transferred project reuses the same signed WF geometry")
+    let transferredWFData = try Data(contentsOf: transferredWF)
+    precondition(transferredWFData == persistentData, "millisecond timestamp rounding must not rebuild a transferred WF")
+    print("TRANSFERRED_WF_CACHE_REUSED_WITH_MILLISECOND_TIMESTAMP_ROUNDING rate=\(rate)")
+    if ProcessInfo.processInfo.environment["CATLIVE_WF_CACHE_ONLY"] == "1" {
+        if rate == 48_000 { exit(0) }
+        continue
+    }
+
+
     let delayedCurveWorker = DispatchQueue(label: "jaras.waveform.no-simplified-fallback")
     let freshCache = TimelineAudioWaveform(drawingWorker: delayedCurveWorker)
     let freshHeader = waitFor { freshCache.header(url) }

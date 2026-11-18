@@ -15,10 +15,10 @@ let stereo = UUID(), mono = UUID(), mp3 = UUID(), floatWav = UUID()
 let writer = try CaptureWriter(targets: [CaptureTarget(track: stereo, input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav", name: "Capture - 001"), CaptureTarget(track: mono, input: OutputPatch(firstChannel: 1, channelCount: 1), format: "wav", name: "Capture - 002"), CaptureTarget(track: mp3, input: .stereo, format: "mp3", name: "Capture - 003"), CaptureTarget(track: floatWav, input: OutputPatch(firstChannel: 3, channelCount: 2), format: "wav32", name: "Capture - 004")], directory: directory, format: format)
 let previewed = DispatchSemaphore(value: 0)
 writer.start { duration, waveforms in
-    precondition(duration == 1, "live preview follows captured frames")
+    precondition(duration > 0 && duration <= 1, "live preview follows each captured chunk")
     precondition(waveforms[stereo]?.count == 2 && waveforms[mono]?.count == 1, "live waveform preserves stereo and mono")
     precondition((waveforms[stereo]?[0].max() ?? 0) > 0.29, "waveform appears before Stop")
-    previewed.signal()
+    if duration == 1 { previewed.signal() }
 }
 writer.ring.push(buffer)
 precondition(previewed.wait(timeout: .now()+3) == .success, "recording must publish a growing item before finalization")

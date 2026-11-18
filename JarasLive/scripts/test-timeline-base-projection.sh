@@ -51,7 +51,7 @@ project_start = controller.index('        let tile = TimelineCanvasCoverage.prep
 project_end = controller.index('        audioBody.project(', project_start)
 projection = controller[project_start:project_end]
 selection_start = controller.index('        let selectionSize = ')
-selection_end = controller.index('        value.input.applyProjection(', selection_start)
+selection_end = controller.index('            value.input.applyProjection(', selection_start)
 selection_projection = controller[selection_start:selection_end]
 fixture = Path('Tests/Apple/TimelineBaseProjectionTests.swift').read_text()
 drawing_start = controller.index('        let drawingChanged = previous.map {')
@@ -61,5 +61,5 @@ fixture = fixture.replace('PRODUCTION_PROJECTION_STATE', key).replace('PRODUCTIO
 parts.append(fixture)
 Path(sys.argv[1]).write_text('\n'.join(parts))
 PYTHON
-swiftc -swift-version 5 Apple/Shared/TimelineGridInk.swift "$projection_test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$projection_test_dir/main.swift" -o "$projection_test_dir/test"
+swiftc -swift-version 5 Apple/Shared/TimelineGridInk.swift Apple/Shared/TimelineVisibleClipIndex.swift "$projection_test_dir/Fonts.swift" Apple/Shared/TimelineStaticText.swift "$projection_test_dir/main.swift" -o "$projection_test_dir/test"
 "$projection_test_dir/test"

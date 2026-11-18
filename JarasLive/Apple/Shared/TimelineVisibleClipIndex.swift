@@ -62,3 +62,23 @@ struct TimelineVisibleClipIndex {
         return low..<upper
     }
 }
+
+/// Track rows are contiguous and ordered by their document offsets. Find the
+/// visible range without walking every track for each new scroll or zoom tile.
+func timelineRowsIntersecting(_ visible: ClosedRange<CGFloat>, offsets: [CGFloat],
+                              heights: [CGFloat], top: CGFloat) -> Range<Int> {
+    var low = 0, high = offsets.count
+    while low < high {
+        let mid = low + (high - low) / 2
+        if top + offsets[mid] + heights[mid] < visible.lowerBound { low = mid + 1 }
+        else { high = mid }
+    }
+    let first = low
+    high = offsets.count
+    while low < high {
+        let mid = low + (high - low) / 2
+        if top + offsets[mid] <= visible.upperBound { low = mid + 1 }
+        else { high = mid }
+    }
+    return first..<low
+}

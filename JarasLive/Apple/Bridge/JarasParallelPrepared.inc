@@ -31,7 +31,7 @@ struct PreparedRenderSources {
     PreparedRenderSources() {
 #if TARGET_OS_OSX
         const char *option = getenv("CATLIVE_PARALLEL_STRETCH");
-        enabled = option && strcmp(option, "1") == 0;
+        enabled = !option || strcmp(option, "1") == 0;
 #endif
         if (!enabled) return;
         semaphore_create(mach_task_self(), &done, SYNC_POLICY_FIFO, 0);
@@ -82,7 +82,7 @@ struct PreparedRenderSources {
     }
     void prepare(unsigned frames) {
         // Manual offline rendering and the iPad callback do not join workers.
-        if (!enabled || !jaras::realtimeClock.host || jaras::realtimeClock.rate <= 0) return;
+        if (!enabled || workers.empty() || !jaras::realtimeClock.host || jaras::realtimeClock.rate <= 0) return;
         assert(!activeCount && !activeLease);
         activeLease.emplace(snapshots);
         const auto *current = activeLease->get(0);

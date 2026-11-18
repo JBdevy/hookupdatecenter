@@ -133,6 +133,7 @@ struct DAWRemoteCommand: Codable {
         case togglePreview, selectPreviewPage, toggleRecord, browseRegion
         case vinhetasDown, vinhetasUp, vinhetasPreset, vinhetasVolume, vinhetasGate, vinhetasPanic
         case editRegion, deleteRegion, duplicateRegion, renamePlaylist, duplicatePlaylist, deletePlaylist
+        case setOutputRoutes
     }
     var id = UUID()
     var project: UUID
@@ -147,6 +148,7 @@ struct DAWRemoteCommand: Codable {
     var playlist: UUID? = nil
     var pad: Int? = nil
     var preset: Int? = nil
+    var outputRoutes: [OutputPatch]? = nil
     var valid: Bool {
         guard value.isFinite else { return false }
         if let text {
@@ -159,7 +161,13 @@ struct DAWRemoteCommand: Codable {
         } else if pad != nil || preset != nil { return false }
         if enabled != nil && action != .noticeDestination && action != .noticePinStopped && action != .vinhetasGate && action != .transportFadeout { return false }
         if noticeReceiptRequested != nil && action != .noticeSend { return false }
+        if outputRoutes != nil && action != .setOutputRoutes { return false }
         switch action {
+        case .setOutputRoutes:
+            guard let outputRoutes, outputRoutes.count <= 64, value == 0 else { return false }
+            return outputRoutes.allSatisfy {
+                (try? $0.validate(allowMaster: target != nil, allowGroup: target != nil, allowNone: true)) != nil
+            }
         case .vinhetasDown: return target != nil && value == 0 && enabled == nil
         case .vinhetasUp: return target != nil && value == 0
         case .vinhetasPreset: return target == nil && (0..<6).contains(value) && value.rounded() == value
@@ -273,6 +281,7 @@ struct DAWRemoteState: Codable, Equatable {
         /// Presentation metadata owned by the host project, never a Remote edit.
         var instrumentIcon: String? = nil
         var role: String? = nil
+        var outputRoutes: [OutputPatch]? = nil
         /// Clip geometry belongs to the grid. Position packets or changes to
         /// clips must not rebuild the mixer's faders and native touch views.
         func hasSameMixerControls(as other: Self) -> Bool {
@@ -353,6 +362,8 @@ struct DAWRemoteState: Codable, Equatable {
     var playedLiveRegionIDs: [UUID]? = nil
     var masterPeakDB: Double? = nil
     var masterPan: Double? = nil
+    var patchOutputChannels: Int? = nil
+    var masterOutputRoutes: [OutputPatch]? = nil
     var pitchRegion: UUID? = nil
     var pitchSemitones: Int? = nil
     var setlistFontStyle: Int? = nil

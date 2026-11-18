@@ -341,18 +341,20 @@ struct FooterInformationDisplay: View {
     var embedded = false
     private var displayHeight: CGFloat { embedded ? 25 : 21 }
     private var hasMultiLoop: Bool {
-        guard let song = show.current else { return false }
+        guard let song = show.current, show.snapshot.transport.multiLoopsBypassed != true else { return false }
         let transport = show.snapshot.transport
         let region = transport.playing ? show.pitchRegion : song.parts.first { $0.id == (show.focusedRegion.map(show.playlistRegionSourceID) ?? transport.regionId) }
         guard let region else { return false }
-        if region.totalLoop == true || !(region.multiLoops ?? []).isEmpty { return true }
+        if region.totalLoop == true || (region.multiLoops ?? []).contains(where: { $0.enabled != false }) { return true }
         if let parent = region.parentRegionID {
-            return song.parts.contains { $0.id == parent && ($0.totalLoop == true || !($0.multiLoops ?? []).isEmpty) }
+            return song.parts.contains { $0.id == parent && ($0.totalLoop == true || ($0.multiLoops ?? []).contains(where: { $0.enabled != false })) }
         }
-        return song.parts.contains { $0.parentRegionID == region.id && ($0.totalLoop == true || !($0.multiLoops ?? []).isEmpty) }
+        return song.parts.contains { $0.parentRegionID == region.id && ($0.totalLoop == true || ($0.multiLoops ?? []).contains(where: { $0.enabled != false })) }
     }
     private var information: String {
+        if !show.capacityWarning.isEmpty { return JarasLocalization.string(show.capacityWarning) }
         if show.preparingAudio { return JarasLocalization.string("Preparing audio…") }
+        if let notice = show.snapshot.transport.automaticSectionNotice { return notice }
         if show.snapshot.transport.loop.enabled { return "Loop Ativo" }
         if show.snapshot.transport.ignoreNextAfter != nil { return "Ignore Next" }
         if hasMultiLoop { return JarasLocalization.string("This song has an active multiloop") }
@@ -783,7 +785,7 @@ private struct ProjectSaveButton: View {
                     if let exportToIPad {
                         Divider()
                         HStack {
-                            Button("Exportar para CatLive iPadOS") { showingOptions = false; exportToIPad() }
+                            Button("Export ziplive") { showingOptions = false; exportToIPad() }
                                 .fixedSize(horizontal: true, vertical: false)
                             if let reduceProject {
                                 Button { showingOptions = false; reduceProject() } label: {
@@ -930,7 +932,7 @@ private struct MetronomeControl: View {
             .accessibilityLabel("Metronome").accessibilityValue(settings.enabled ? "On" : "Off")
             .jarasHelp("Metronome · Right-click to configure")
             .immediateRightClick { configuring = true }
-            .workspaceEditor("Metronome", isPresented: $configuring) { MetronomeEditor() }
+            .workspaceEditor("Metronome", isPresented: $configuring, scrolls: false, size: CGSize(width: 400, height: 440)) { MetronomeEditor() }
     }
 }
 struct MetronomeEditor: View {
@@ -950,16 +952,20 @@ struct MetronomeEditor: View {
                 Text(verbatim: "User").tag("User")
             }
             HStack(spacing: 12) {
-                // A segmented picker's native label can renegotiate its width
-                // on every gain update. Keep the caption outside that layout.
-                Text("Click mode").fixedSize(horizontal: true, vertical: false)
-                Picker("Click mode", selection: $settings.mode) {
-                    Text(verbatim: "A–B").tag(0)
-                    Text("Only A").tag(1)
-                    Text("Only B").tag(2)
-                }.pickerStyle(.segmented).labelsHidden()
-                    .frame(maxWidth: .infinity)
-            }
+                Text("Click mode").lineLimit(1).frame(width: 104, alignment: .leading)
+                HStack(spacing: 1) {
+                    ForEach(0..<3, id: \.self) { mode in
+                        Button { settings.mode = mode } label: {
+                            Text(LocalizedStringKey(["A–B", "Only A", "Only B"][mode]))
+                                .font(.jarasSystem(size: 11, weight: .medium)).lineLimit(1).minimumScaleFactor(0.8)
+                                .frame(width: 80, height: 24)
+                                .foregroundStyle(settings.mode == mode ? Color.black : JarasTheme.text)
+                                .background(settings.mode == mode ? JarasTheme.green : Color.white.opacity(0.12))
+                        }.buttonStyle(.plain)
+                            .accessibilityAddTraits(settings.mode == mode ? .isSelected : [])
+                    }
+                }.clipShape(RoundedRectangle(cornerRadius: 5)).frame(width: 242, height: 24)
+            }.frame(width: 358, height: 24)
             Picker("Output", selection: $settings.output) {
                 let choices = OutputPatch.choices(channels: audio.channels, includeMaster: false)
                 if !choices.contains(settings.output) {
@@ -976,7 +982,7 @@ struct MetronomeEditor: View {
             Text("A: first beat · B: remaining beats").font(.jarasCaption).foregroundStyle(.secondary)
             if !settings.error.isEmpty { Text(verbatim: settings.error).foregroundStyle(.red).font(.jarasCaption) }
             HStack { Spacer(); Button("Close") { (closeEditor ?? { dismiss() })() }.keyboardShortcut(.defaultAction) }
-        }.padding(20).frame(width: 400)
+        }.padding(20).frame(width: 400, height: 440, alignment: .topLeading)
             .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
                 switch result {
                 case .success(let files): if let url = files.first { settings.importSound(url, a: importingA) }
@@ -995,11 +1001,11 @@ struct MetronomeEditor: View {
         }
     }
     private func volume(_ title: String, value: Binding<Double>) -> some View {
-        HStack {
-            Text(LocalizedStringKey(title)).frame(width: 48, alignment: .leading)
-            Slider(value: value, in: -60...6)
+        HStack(spacing: 8) {
+            Text(LocalizedStringKey(title)).lineLimit(1).frame(width: 48, alignment: .leading)
+            Slider(value: value, in: -60...6).frame(width: 216)
             Text(verbatim: value.wrappedValue <= -60 ? "−∞ dB" : String(format: "%+.2f dB", value.wrappedValue))
-                .monospacedDigit().frame(width: 80, alignment: .trailing)
+                .monospacedDigit().lineLimit(1).frame(width: 80, alignment: .trailing)
         }
     }
 }

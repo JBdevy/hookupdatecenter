@@ -62,7 +62,7 @@ class NormalizationPanel final : public Component, private Timer {
                    getWidth() - 64, 62, 46, 26, Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(11));
-        g.drawFittedText(String::fromUTF8("Ganho de normalização independente: até +24 dB"), 22,
+        g.drawFittedText(String::fromUTF8("Ganho de normalização independente"), 22,
                          101, getWidth() - 44, 30, Justification::topLeft, 2);
         g.setColour(failed ? Colour(0xffff5b5b) : theme::secondary);
         g.drawFittedText(status, 22, getHeight() - 100, getWidth() - 44, 42, Justification::topLeft, 3);

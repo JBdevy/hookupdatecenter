@@ -455,7 +455,7 @@ private struct LocalizedTeleprompterConfig: View {
         video.setProjectionEnabled(!preferences.settings.displaysPreview(previewActive))
         cachedRevision = nil
         update(show.snapshot,revision: show.projectRevision)
-        window.restorePlacement(key: "jaras.teleprompterWindow.\(index)"); window.makeKeyAndOrderFront(nil)
+        window.restorePlacement(key: "jaras.teleprompterWindow.\(index)"); ProjectionWindow.presentWorkspaceWindow(window)
         display.fullscreen = window.isProjectionFullscreen
     }
     func togglePreview() {
@@ -501,7 +501,7 @@ private struct LocalizedTeleprompterConfig: View {
         }
         if visible {
             video.setStretch(preferences.settings.stretchesMedia)
-            video.update(snapshot)
+            video.update(snapshot, revision: revision)
         }
         let transport = snapshot.transport
         let position = transport.playing ? transport.position : transport.editPosition ?? transport.position
@@ -572,19 +572,19 @@ private struct LocalizedTeleprompterConfig: View {
             let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak configuration] in configuration?.close() }).interfaceScaled())
             if #available(macOS 13, *) { host.sizingOptions = [] }
             configuration.contentView = host
-            configuration.makeKeyAndOrderFront(nil)
+            ProjectionWindow.presentWorkspaceWindow(configuration)
             return
         }
         let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 760,height: 700),styleMask: [.titled,.closable,.utilityWindow],backing: .buffered,defer: false)
         panel.title = JarasLocalization.string("Teleprompter settings")
         panel.contentMinSize = NSSize(width: 500,height: 520)
-        panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = true
+        panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = false
         panel.level = .normal; panel.delegate = self
         let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         panel.contentView = host
         InterfaceScaling.shared.register(panel)
-        configuration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
+        configuration = panel; panel.center(); ProjectionWindow.presentWorkspaceWindow(panel)
     }
     func configureRemote(show: ShowController, directory: URL?) {
         self.show = show
@@ -595,14 +595,14 @@ private struct LocalizedTeleprompterConfig: View {
     }
     func showRemote(show: ShowController, directory: URL?) {
         configureRemote(show: show, directory: directory)
-        if let remoteConfiguration { remoteConfiguration.makeKeyAndOrderFront(nil); return }
+        if let remoteConfiguration { ProjectionWindow.presentWorkspaceWindow(remoteConfiguration); return }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 420), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         panel.title = JarasLocalization.string("TP Remoto"); panel.isReleasedWhenClosed = false
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
-        panel.hidesOnDeactivate = true; panel.delegate = self
+        panel.level = .normal
+        panel.hidesOnDeactivate = false; panel.delegate = self
         panel.contentView = NSHostingView(rootView: TeleprompterRemoteView(close: { [weak panel] in panel?.close() }, remote: TeleprompterRemote.panel(index)).interfaceScaled())
         InterfaceScaling.shared.register(panel)
-        remoteConfiguration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
+        remoteConfiguration = panel; panel.center(); ProjectionWindow.presentWorkspaceWindow(panel)
     }
     func windowDidResize(_ notification: Notification) {
         guard let window, notification.object as? NSWindow === window else { return }
@@ -858,7 +858,7 @@ struct TPNoticeAppearance: Codable {
         }
     }
     func open() {
-        if let panel { panel.makeKeyAndOrderFront(nil); return }
+        if let panel { ProjectionWindow.presentWorkspaceWindow(panel); return }
         let window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 700,height: 430),styleMask: [.titled,.closable],backing: .buffered,defer: false)
         window.title = JarasLocalization.string("Messages"); window.isReleasedWhenClosed = false
         window.delegate = self
@@ -867,7 +867,7 @@ struct TPNoticeAppearance: Codable {
         if #available(macOS 13, *) { host.sizingOptions = [] }
         window.contentView = host
         InterfaceScaling.shared.register(window)
-        window.center(); window.makeKeyAndOrderFront(nil); panel = window
+        window.center(); ProjectionWindow.presentWorkspaceWindow(window); panel = window
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === panel else { return }

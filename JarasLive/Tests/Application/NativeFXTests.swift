@@ -1,6 +1,92 @@
 import XCTest
 @testable import JarasApplication
+@MainActor private final class PitchTestExecutor: CommandExecutor {
+    var project = Project.empty(name: "Pitch")
+    func load(_ value: Project) throws { project = value }
+    func snapshot() throws -> ShowSnapshot {
+        ShowSnapshot(project: project, transport: TransportState(playing: false, songId: project.songs[0].id, position: 0,
+            queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    }
+    func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: try snapshot().transport) }
+    func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {}
+    func addTrack(id: UUID, name: String, role: TrackRole) throws {}
+    func advance(_ elapsed: Double) {}
+    func finishCurrentSong(_ enabled: Bool) {}
+    func setClipFXBypass(_ id: UUID, bypassed: Bool) throws {
+        for s in project.songs.indices { for t in project.songs[s].tracks.indices {
+            if let c = project.songs[s].tracks[t].clips.firstIndex(where: { $0.id == id }) { project.songs[s].tracks[t].clips[c].fxBypassed = bypassed }
+        } }
+    }
+    func setClipFX(_ id: UUID, settings: NativeFXSettings) throws {
+        for s in project.songs.indices { for t in project.songs[s].tracks.indices {
+            if let c = project.songs[s].tracks[t].clips.firstIndex(where: { $0.id == id }) { project.songs[s].tracks[t].clips[c].fx = settings }
+        } }
+    }
+}
 final class NativeFXTests: XCTestCase {
+    @MainActor func testRemovingAllItemEffectsPreservesTrackEffectsAndTiming() throws {
+        var project = Project.empty(name: "Remove item FX")
+        var fx = NativeFXSettings(); fx.appendNative("EQ"); fx.appendNative("Reverb")
+        var track = Track(id: UUID(), name: "Track", role: .other); track.fx = fx
+        var clip = AudioClip(id: UUID(), name: "Item", startTime: 12, duration: 4, sourceOffset: 2)
+        clip.fx = fx; track.clips = [clip]; project.songs[0].tracks = [track]; project.songs[0].duration = 20
+        let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.removeAllClipFX(clip.id)
+        XCTAssertTrue(show.clipFXSettings(clip.id).inserted.isEmpty)
+        XCTAssertEqual(show.current?.tracks[0].fx, fx)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].startTime, 12)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].duration, 4)
+        XCTAssertEqual(show.current?.tracks[0].clips[0].sourceOffset, 2)
+    }
+
+    @MainActor func testSelectedItemFXInsertionBypassAndRemovalPreserveOtherChains() throws {
+        var project = Project.empty(name: "Selected FX")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        var items = (0..<3).map { AudioClip(id: UUID(), name: "Item \($0)", startTime: Double($0)*4, duration: 4) }
+        var original = NativeFXSettings(); original.appendNative("Delay"); original.delayTime = 0.375
+        items[0].fx = original; items[1].fx = original; items[2].fx = original
+        track.clips = items; track.fx = original; project.songs[0].tracks = [track]
+        let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.reportItemSelection([items[0].id,items[1].id,UUID()])
+        XCTAssertNotNil(show.insertClipFX(items[0].id,effect: "EQ"))
+        for item in items.prefix(2) {
+            let chain = show.clipFXSettings(item.id)
+            XCTAssertEqual(chain.clipEffectKeys.map { chain.kind(of: $0) }, ["Delay", "EQ"])
+        }
+        XCTAssertEqual(show.clipFXSettings(items[0].id).delayTime,0.375)
+        XCTAssertEqual(show.clipFXSettings(items[2].id),original)
+        show.toggleClipFXAllBypass(items[0].id)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.fxBypassed == true },[true,true,false])
+        show.toggleClipFXAllBypass(items[0].id)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.fxBypassed == true },[false,false,false])
+        show.removeAllClipFX(items[0].id)
+        XCTAssertTrue(show.clipFXSettings(items[0].id).inserted.isEmpty)
+        XCTAssertTrue(show.clipFXSettings(items[1].id).inserted.isEmpty)
+        XCTAssertEqual(show.clipFXSettings(items[2].id),original)
+        XCTAssertEqual(show.current?.tracks[0].fx,original)
+        XCTAssertEqual(show.current?.tracks[0].clips.map(\.startTime),items.map(\.startTime))
+        XCTAssertNotNil(show.insertClipFX(items[2].id,effect: "Reverb"))
+        XCTAssertTrue(show.clipFXSettings(items[0].id).inserted.isEmpty,"Clicking an unselected item must affect only that item")
+    }
+
+    @MainActor func testShiftItemTunerPreservesIntervalsAndSharesRangeLimit() throws {
+        var project = Project.empty(name: "Tuner")
+        var track = Track(id: UUID(), name: "Audio", role: .other)
+        var first = AudioClip(id: UUID(), name: "One", startTime: 0, duration: 5)
+        var second = AudioClip(id: UUID(), name: "Two", startTime: 0, duration: 5)
+        first.pitchSemitones = -3; second.pitchSemitones = 10
+        track.clips = [first, second]; project.songs[0].tracks = [track]
+        let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.adjustItemPitch([first.id, second.id], by: 1)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.pitchSemitones ?? 0 }, [-2, 11])
+        show.adjustItemPitch([first.id, second.id], by: 2)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.pitchSemitones ?? 0 }, [-1, 12])
+        show.adjustItemPitch([first.id, second.id], by: 1)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.pitchSemitones ?? 0 }, [-1, 12])
+        show.adjustItemPitch([second.id], by: -1)
+        XCTAssertEqual(show.current?.tracks[0].clips.map { $0.pitchSemitones ?? 0 }, [-1, 11])
+    }
+
     func testTriggerGatePersistenceInstancesAndSampleOwnership() throws {
         var project = Project.empty(name: "Trigger and gate")
         var fx = NativeFXSettings()
@@ -225,6 +311,29 @@ final class NativeFXTests: XCTestCase {
             project.songs[0].parts[0].pitchSemitones = invalid
             XCTAssertThrowsError(try project.validate())
         }
+    }
+
+    func testRegionTunerOwnershipUsesLargestOverlapInsteadOfItemOnset() throws {
+        var song = Project.empty(name: "Overlapping tuner").songs[0]
+        let track = Track(id: UUID(), name: "Keys", role: .keys)
+        let first = Part(id: UUID(), name: "First", startTime: 10, endTime: 20, pitchSemitones: 3)
+        let second = Part(id: UUID(), name: "Second", startTime: 20, endTime: 35, pitchSemitones: -2)
+        song.tracks = [track]; song.parts = [first, second]
+        func pitch(_ start: Double, _ end: Double, preferred: UUID? = nil) -> Int {
+            let owner = song.regionOwnerForMedia(at: start, end: end, preferred: preferred)
+            return song.pitch(for: track.id, region: song.parts.first { $0.id == owner })
+        }
+        XCTAssertEqual(pitch(8, 18), 3, "An item beginning before the region still receives its tuner")
+        XCTAssertEqual(pitch(18, 28, preferred: first.id), -2, "Largest overlap wins over an old attachment")
+        XCTAssertEqual(pitch(0, 10), 0, "An item merely touching the region is outside")
+        XCTAssertEqual(pitch(10, 10), 0, "Empty intervals do not acquire a tuner")
+        let group = Part(id: UUID(), name: "Unified", startTime: 10, endTime: 35)
+        var left = first, right = second
+        left.parentRegionID = group.id; right.parentRegionID = group.id
+        song.parts = [group, left, right]
+        XCTAssertEqual(pitch(18, 28, preferred: left.id), -2, "Unified children use their largest covered duration")
+        XCTAssertEqual(pitch(15, 25, preferred: left.id), 3, "Equal child spans preserve the existing attachment")
+        XCTAssertEqual(pitch(15, 25, preferred: right.id), -2)
     }
 
     func testSettingsPersistIndependentlyOfWhichEditorIsOpen() throws {

@@ -1,6 +1,6 @@
 import Foundation
 import AVFoundation
-#if os(macOS)
+
 
 /// Reads arrangement data without launching REAPER or modifying the source.
 public enum ReaperProjectImporter {
@@ -440,7 +440,7 @@ public enum ReaperProjectImporter {
         return root
     }
     public static func read(_ source: URL, resolveVST3: ((VST3Request) throws -> VST3Resolution?)? = nil,
-                            localizeWarning: @escaping (String) -> String = { $0 }) throws -> ProjectMigration.Result {
+                            localizeWarning: @escaping (String) -> String = { $0 }, includePlugins: Bool = true) throws -> ProjectMigration.Result {
         guard source.pathExtension.lowercased() == "rpp" else { throw invalid("Select a .rpp project.") }
         let size = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size > 0, size <= 256 * 1024 * 1024 else { throw invalid("Invalid project size.") }
@@ -496,7 +496,7 @@ public enum ReaperProjectImporter {
         project.masterVolume = limitedVolume(try recovered("REAPER project setting ignored", 1.0) { try root.number("MASTER_VOLUME", default: 1) })
         project.masterPan = try recovered("REAPER project setting ignored", 0.0) { try root.number("MASTER_VOLUME", 2) }
         project.masterMute = try recovered("REAPER project setting ignored", 0) { try root.integer("MASTERMUTESOLO") } & 1 != 0
-        let masterFX = try importFX(root.child("MASTERFXLIST") ?? root.child("MASTERFXCHAIN"), scope: "Master", resolve: resolveVST3, warnings: &warnings)
+        let masterFX = includePlugins ? try importFX(root.child("MASTERFXLIST") ?? root.child("MASTERFXCHAIN"), scope: "Master", resolve: resolveVST3, warnings: &warnings) : ImportedFX()
         project.masterFX = masterFX.settings
         do { project.masterAutomation = try importAutomation(root, fx: masterFX.envelopes, scope: "Master", warnings: &warnings) }
         catch { warnings.insert("Master automation ignored: %@", warnings.errorDescription(error)) }
@@ -561,7 +561,7 @@ public enum ReaperProjectImporter {
             }
             do { track.phaseInverted = try node.integer("IPHASE") != 0 }
             catch { track.phaseInverted = false; warnings.insert("%@: invalid mixer setting ignored: %@", track.name, warnings.errorDescription(error)) }
-            let importedFX = try importFX(node.child("FXCHAIN"), scope: track.name, resolve: resolveVST3, warnings: &warnings)
+            let importedFX = includePlugins ? try importFX(node.child("FXCHAIN"), scope: track.name, resolve: resolveVST3, warnings: &warnings) : ImportedFX()
             track.fx = importedFX.settings
             if node.value("FX") == "0", let plugins = track.fx?.externalPlugins {
                 track.fx?.externalPlugins = plugins.map { var plugin = $0; plugin.bypassed = true; return plugin }
@@ -649,7 +649,7 @@ public enum ReaperProjectImporter {
                 let mode = try take.integer("CHANMODE")
                 clip.channelMode = [0: 0, 2: 3, 3: 1, 4: 2][mode] ?? 0
                 if try ![0, 2, 3, 4].contains(mode) || !take.line("SM").isEmpty { warnings.insert(unsupported) }
-                let takeFX = try importFX(take.child("TAKEFX"), scope: track.name + " / " + clip.name, resolve: resolveVST3, warnings: &warnings)
+                let takeFX = includePlugins ? try importFX(take.child("TAKEFX"), scope: track.name + " / " + clip.name, resolve: resolveVST3, warnings: &warnings) : ImportedFX()
                 clip.fx = takeFX.settings
                 let hasTakeInstrument = clip.fxBypassed != true && (clip.fx?.externalPlugins ?? []).contains {
                     $0.category.contains("Instrument") && !$0.bypassed && clip.fx?.inserted.contains($0.effectKey) == true
@@ -1120,4 +1120,3 @@ public enum ReaperProjectImporter {
     }
 
 }
-#endif

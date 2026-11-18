@@ -1,5 +1,5 @@
 import Foundation
-#if os(macOS)
+
 
 /// Shared destination and media handling for DAW migrations.
 public enum ProjectMigration {
@@ -71,4 +71,3 @@ public enum ProjectMigration {
         }
     }
 }
-#endif

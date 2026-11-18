@@ -16,8 +16,8 @@ setbuf(stdout, nil)
     return Set(Mirror(reflecting: voices).children.compactMap { entry in
         let pair = Array(Mirror(reflecting: entry.value).children)
         guard pair.count == 2, field("head", of: pair[0].value) as? Int == head,
-              let player = field("player", of: pair[1].value) as? AVAudioPlayerNode else { return nil }
-        return ObjectIdentifier(player)
+              let gain = field("gain", of: pair[1].value) as? AVAudioUnitEffect else { return nil }
+        return ObjectIdentifier(gain)
     })
 }
 

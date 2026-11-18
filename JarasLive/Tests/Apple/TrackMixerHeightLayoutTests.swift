@@ -184,3 +184,28 @@ for width: CGFloat in [265,281,400,700] {
         if height >= 64 { precondition(frames[5].minX == 20, "Folder must keep its left anchor") }
     }
 }
+
+// SwiftUI can flatten conditional controls in a different order. Semantic slots
+// must still keep M/S in place and put Volume before FX only in compact rows.
+private struct ShuffledButtonsFixture: View {
+    let expanded: Bool
+    var body: some View {
+        TrackMixerButtonsLayout(showsFader: false, expanded: expanded) {
+            ForEach([6,2,5,7,1,4,0,3], id: \.self) { slot in
+                Probe(counts: Counts(), slot: slot).jarasPlaced(at: slot)
+            }
+        }.frame(width: 280, height: expanded ? 24 : 21).clipped()
+    }
+}
+for expanded in [false,true] {
+    let row = NSHostingView(rootView: ShuffledButtonsFixture(expanded: expanded))
+    row.frame = CGRect(x: 0, y: 0, width: 280, height: expanded ? 24 : 21)
+    window.contentView = row; row.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.02)); row.layoutSubtreeIfNeeded()
+    let frames = Dictionary(uniqueKeysWithValues: probes(row).map { ($0.slot,$0.convert($0.bounds,to:row)) })
+    precondition(frames[2]!.maxX < frames[3]!.minX && frames[3]!.maxX < frames[5]!.minX && frames[5]!.maxX < frames[6]!.minX,
+        "FX, record, mute and solo must keep their semantic order")
+    if expanded { precondition(frames[7]!.minX > 1000, "Volume knob must stay hidden whenever row height fits the fader") }
+    else { precondition(frames[7]!.maxX < frames[2]!.minX, "Compact volume knob belongs immediately before FX") }
+}
+print("MIXER_SHUFFLED_CONTROL_IDENTITY_ORDER_AND_HEIGHT_ONLY_VOLUME_KNOB_OK")

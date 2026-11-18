@@ -19,6 +19,23 @@ import XCTest
 }
 
 final class GridItemClipboardTests: XCTestCase {
+    func testTextPastePreservesColumnsAndPhraseColorsInNewDocument() throws {
+        var source = Project.empty(name: "Lyrics")
+        let verse = ItemTextColors.encode([.init(text: "Verse", color: 0xff4040)])
+        let chorus = ItemTextColors.encode([.init(text: "Chorus", color: 0x54ef86)])
+        let colored = ItemTextColors.encodeColumns([verse, chorus])
+        let clip = AudioClip(id: UUID(), name: "Lyrics", startTime: 10, duration: 8, text: colored)
+        var track = Track(id: UUID(), name: "Teleprompter 1", role: TrackRole(rawValue: "teleprompt"))
+        track.clips = [clip]; source.songs[0].tracks = [track]
+        let clipboard = try XCTUnwrap(GridItemClipboard(project: source, song: source.songs[0].id, selected: [clip.id]))
+        var destination = Project.empty(name: "Destination")
+        destination.songs[0].tracks = []
+        let plan = try clipboard.copyPlan(in: destination.songs[0], at: 40, selectedTracks: [])
+        try destination.pasteItems(plan.entries, song: destination.songs[0].id, moving: false, addingTracks: plan.newTracks)
+        XCTAssertEqual(destination.songs[0].tracks[0].kind, .teleprompt)
+        XCTAssertEqual(destination.songs[0].tracks[0].clips[0].text, colored)
+        XCTAssertEqual(destination.songs[0].tracks[0].clips[0].startTime, 40)
+    }
     @MainActor func testCopyAcrossProjectsPreservesEditsAndStagesIndependentMediaWithUndo() async throws {
         var source = fixture()
         source.songs[0].tracks.insert(Track(id: UUID(), name: "Gap", role: .other), at: 1)

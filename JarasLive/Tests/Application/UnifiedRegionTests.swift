@@ -2,6 +2,52 @@ import XCTest
 @testable import JarasApplication
 
 final class UnifiedRegionTests: XCTestCase {
+    func testUnifiedNamesAdvanceWithoutDuplicatingPrefixes() throws {
+        XCTAssertEqual(UnifiedRegionNaming.next("Group", existing: []), "001 - Group")
+        XCTAssertEqual(UnifiedRegionNaming.next("001 - 001 - Group", existing: ["001 - First"]), "002 - Group")
+        XCTAssertEqual(UnifiedRegionNaming.next("Group", existing: ["001 - First", "002 - Second"]), "003 - Group")
+        XCTAssertEqual(UnifiedRegionNaming.next("Group", existing: ["009 - Ninth"]), "010 - Group")
+    }
+    func testExistingUnifiedNameRemovesNestedPrefixesWithoutRenumberingTheSameGroup() {
+        XCTAssertEqual(UnifiedRegionNaming.normalized("001 - 001 - Group"),"001 - Group")
+        XCTAssertEqual(UnifiedRegionNaming.normalized("009 - 001 - Group"),"009 - Group")
+        XCTAssertEqual(UnifiedRegionNaming.normalized("Custom name"),"Custom name")
+    }
+    func testTunerUsesRegionContainingMostOfPickupInsteadOfItsOnset() throws {
+        let project = fixture()
+        var song = project.songs[0]
+        song.parts[1].pitchSemitones = 3
+        let clip = AudioClip(id: UUID(), name: "Pickup", startTime: 48, duration: 12,
+                             audioFile: AudioFile(path: "Stems/pickup.wav"))
+        let owner = song.regionOwnerForMedia(at: clip.startTime, end: clip.startTime + clip.duration)
+        XCTAssertEqual(owner, song.parts[1].id)
+        XCTAssertEqual(song.pitch(for: song.tracks[0].id, region: song.parts.first { $0.id == owner }), 3)
+        XCTAssertNil(song.regionOwnerForMedia(at: 10, end: 40))
+    }
+    func testIncomingSongOwnsMediaWhoseMajorityIsAfterItsUnifiedMarker() throws {
+        var project = fixture()
+        let first = project.songs[0].parts[0].id
+        let second = project.songs[0].parts[1].id
+        let media = AudioClip(id: UUID(), name: "Pickup", startTime: 48, duration: 12,
+                              audioFile: AudioFile(path: "Stems/pickup.wav"), regionOwnerID: first)
+        project.songs[0].regionOwnershipInitialized = true
+        project.songs[0].tracks[0].clips.append(media)
+        _ = try project.unifyRegions(containing: first, name: "Group")
+        let song = project.songs[0]
+        let assigned = try XCTUnwrap(song.tracks[0].clips.first { $0.id == media.id })
+        XCTAssertEqual(assigned.regionOwnerID, second)
+        XCTAssertEqual(assigned.startTime, 48, "ownership must not move or trim the audio")
+        XCTAssertEqual(song.playbackItemStart(assigned), 50)
+        var transport = TransportState(playing: true, songId: song.id, position: 49,
+            queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0))
+        transport.playbackStartRegionId = first
+        transport.ignoreNextAfter = 50
+        XCTAssertFalse(song.playbackScope(transport).allows(song.playbackItemStart(assigned)),
+                       "Ignore Next must exclude the incoming song even when its audio starts before the marker")
+        transport.playbackStartRegionId = second
+        transport.ignoreNextAfter = nil
+        XCTAssertTrue(song.playbackScope(transport).allows(song.playbackItemStart(assigned)))
+    }
     func testConflictingDrawerMarkersRejectUnificationWithoutChangingTheProject() throws {
         var project = fixture()
         let group = try project.unifyRegions(containing: project.songs[0].parts[0].id, name: "Group")
@@ -88,7 +134,7 @@ final class UnifiedRegionTests: XCTestCase {
         XCTAssertEqual(project.overlappingRegions(containing: second.id).map(\.id), [first.id, second.id])
         let groupID = try project.unifyRegions(containing: first.id, name: "  Special region  ")
         let group = try XCTUnwrap(project.songs[0].parts.first { $0.id == groupID })
-        XCTAssertEqual(group.name, "Special region"); XCTAssertEqual(group.startTime, 30); XCTAssertEqual(group.endTime, 80)
+        XCTAssertEqual(group.name, "001 - Special region"); XCTAssertEqual(group.startTime, 30); XCTAssertEqual(group.endTime, 80)
         XCTAssertEqual(project.songs[0].parts.filter { $0.parentRegionID == groupID }.map(\.id), [first.id, second.id])
         XCTAssertEqual(project.songs[0].parts.first { $0.id == first.id }?.startTime, 30)
         XCTAssertEqual(project.songs[0].tracks, unchanged.songs[0].tracks)
@@ -112,7 +158,7 @@ final class UnifiedRegionTests: XCTestCase {
         project.songs[0].parts.append(next)
         let group = try project.unifyRegions(containing: next.id, name: "")
         XCTAssertEqual(group, oldGroup, "adding a region preserves the special region identity without requiring a name")
-        XCTAssertEqual(project.songs[0].parts.first { $0.id == group }?.name, "First group")
+        XCTAssertEqual(project.songs[0].parts.first { $0.id == group }?.name, "001 - First group")
         XCTAssertEqual(project.songs[0].parts.filter { $0.parentRegionID == group }.count, 3)
         XCTAssertEqual(project.songs[0].markers?.count, 3)
         XCTAssertTrue(project.songs[0].markers!.allSatisfy { $0.unifiedRegionID == group })

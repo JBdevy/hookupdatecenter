@@ -10,9 +10,9 @@ inline String name(Mode mode) {
     return StringArray{"LUFS-I", "RMS-I", "Peak", "True Peak"}[(int)mode];
 }
 inline double gain(double measured, double target) {
-    return std::isfinite(measured) && measured > -150
-               ? std::pow(10., jlimit(-120., 24., target - measured) / 20.)
-               : 1;
+    if (!std::isfinite(measured) || !std::isfinite(target)) return 1;
+    const auto result = std::pow(10., (target - measured) / 20.);
+    return std::isfinite(result) ? result : 1;
 }
 inline double measure(const jaras::AudioClip &clip, const File &directory, Mode mode,
                       const std::function<bool()> &cancelled = {},
@@ -94,7 +94,7 @@ inline double measure(const jaras::AudioClip &clip, const File &directory, Mode 
     }
     check();
     if (mode == rms)
-        return 10 * std::log10(std::max(1e-20, squares / ((double)frames * channels)));
+        return 10 * std::log10(squares / ((double)frames * channels));
     if (mode == lufs) {
         if (frames / rate < .4) {
             const auto padding = (size_t)std::ceil(rate * .4) - (size_t)frames;
@@ -119,6 +119,6 @@ inline double measure(const jaras::AudioClip &clip, const File &directory, Mode 
             ebur128_true_peak(meter.value, (unsigned)ch, &level);
         maximum = std::max(maximum, level);
     }
-    return 20 * std::log10(std::max(1e-20, maximum));
+    return 20 * std::log10(maximum);
 }
 } // namespace catlive::normalization

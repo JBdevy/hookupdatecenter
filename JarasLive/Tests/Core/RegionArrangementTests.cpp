@@ -47,10 +47,10 @@ int main(){try {
     check(!regionEndAtLongestItem(original,"r4"),"Unified regions cannot have their end fitted independently");
     Song timing;timing.bpm=120;timing.timeSettings=ProjectTimeSettings{};timing.timeSettings->timebase=ProjectTimebase::relative;
     TimelineMarker faster{"faster","Tempo",5,0};faster.tempoBPM=240;faster.tempoTimebase="relative";faster.tempoReferenceBPM=120;timing.markers=std::vector<TimelineMarker>{faster};
-    AudioClip clip;clip.startTime=3;clip.duration=1;clip.sourceOffset=8;clip.loopLength=4;
+    AudioClip clip;clip.startTime=3;clip.duration=20;clip.sourceOffset=2;clip.loopLength=4;
     auto restored=restoringItemDuration(timing,clip,10);
-    near(restored.duration,6,"Full source duration ignored tempo changes");near(restored.startTime,3,"Restoring duration moved the item");
-    near(restored.sourceOffset,0,"Restoring duration did not reveal the source beginning");check(!restored.loopLength,"Restoring duration retained repeated source segments");
-    clip.renderedTempo=true;near(restoringItemDuration(timing,clip,10).duration,10,"Printed source was stretched twice");
+    near(restored.duration,5,"Removing expanded duration ignored tempo changes");near(restored.startTime,3,"Restoring duration moved the item");
+    near(restored.sourceOffset,2,"Restoring duration changed source offset");check(!restored.loopLength,"Restoring duration retained repeated source segments");
+    clip.renderedTempo=true;near(restoringItemDuration(timing,clip,10).duration,8,"Printed source was stretched twice");
     std::cout<<"REGION_CUMULATIVE_SPACING_UNSELECTED_FAMILIES_FARTHEST_END_AUTOMATION_AND_ORIGINAL_SOURCE_DURATION_OK\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

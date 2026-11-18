@@ -21,6 +21,7 @@
 struct FixtureStats {
     static inline bool disableHits = false;
     static inline std::atomic<uint64_t> lookups{0}, reads{0}, hits{0};
+    static inline std::atomic<uint64_t> backwardsReads{0};
     static void lookup() {
 #if CATLIVE_CACHE_DIAGNOSTICS
         ++lookups;
@@ -36,16 +37,21 @@ struct FixtureStats {
 @interface RequestTestFile : AVAudioFile {
 @public
     std::atomic<bool> denied;
+    AVAudioFramePosition previousReadEnd;
 }
 @end
 @implementation RequestTestFile
 - (BOOL)readIntoBuffer:(AVAudioPCMBuffer *)buffer frameCount:(AVAudioFrameCount)count error:(NSError **)error {
     ++FixtureStats::reads;
+    const auto first = self.framePosition;
+    if (first < previousReadEnd) ++FixtureStats::backwardsReads;
     if (denied.load()) {
         if (error) *error = [NSError errorWithDomain:@"CatLive.CacheRequestTest" code:1 userInfo:nil];
         return NO;
     }
-    return [super readIntoBuffer:buffer frameCount:count error:error];
+    const BOOL result = [super readIntoBuffer:buffer frameCount:count error:error];
+    if (result) previousReadEnd = self.framePosition;
+    return result;
 }
 @end
 
@@ -100,6 +106,45 @@ static void testRequests(NSURL *url) {
     std::cout << "PCM_REQUEST_UNCHANGED_FAST_CURSOR_LOOKAHEAD_LOOP_SEEK_OK\n";
 }
 
+static void testSequentialRefills(NSURL *url) {
+    auto cache = cacheAt(url);
+    const auto before = FixtureStats::backwardsReads.load();
+    assert(cache->prefetch(20) == Status::ready);
+    assert(cache->file.framePosition == page * 20);
+    for (int first = 8; first <= 80; first += 8) {
+        // Remove opportunistic reuse: the active window alone must preserve
+        // forward decoder progress when all the other stems evict recent PCM.
+        auto &recent = PreparedPCMReader::recentBlocks();
+        { std::lock_guard<std::mutex> lock(recent.mutex);
+          recent.blocks.clear(); recent.bytes = 0; }
+        cache->requested.store(page * first);
+        assert(cache->prefetch(20) == Status::ready);
+        assert(cache->file.framePosition == page * (first + 20));
+        checkPages(*cache, first, 20);
+    }
+    assert(FixtureStats::backwardsReads == before);
+    std::cout << "PCM_SLIDING_REFILLS_SEQUENTIAL_WITHOUT_DISCARDED_DECODER_TAIL_OK\n";
+}
+
+static void testOpenReaderAfterUnlink(NSURL *source) {
+    // Use a disposable copy. Reading far beyond the initial window proves
+    // continued disk streaming, rather than playback from preloaded PCM.
+    auto url = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:
+        [@"catlive-open-reader-" stringByAppendingFormat:@"%@.wav", NSUUID.UUID.UUIDString]];
+    NSError *error = nil;
+    assert([[NSFileManager defaultManager] copyItemAtURL:source toURL:url error:&error]);
+    auto cache = cacheAt(url);
+    assert(cache->prefetch(6) == Status::ready);
+    const auto reads = FixtureStats::reads.load();
+    assert([[NSFileManager defaultManager] removeItemAtURL:url error:&error]);
+    assert(![[NSFileManager defaultManager] fileExistsAtPath:url.path]);
+    cache->requested.store(page * 100);
+    assert(cache->prefetch(6) == Status::ready);
+    assert(FixtureStats::reads.load() > reads);
+    checkPages(*cache, 100, 6);
+    std::cout << "PCM_OPEN_READER_STREAMS_UNCACHED_PAGES_AFTER_UNLINK_OK\n";
+}
+
 static void testIncomplete(NSURL *url) {
     auto cache = cacheAt(url);
     assert(cache->prefetch(64) == Status::ready);
@@ -109,6 +154,13 @@ static void testIncomplete(NSURL *url) {
     // Seeking back must actually inspect/refill it, even if that read fails.
     cache->requested.store(0);
     cache->pages.collectRetired();
+    // Force a physical decoder miss; recent PCM may legitimately serve this
+    // seek without asking the failing file to read again.
+    {
+        auto &recent = PreparedPCMReader::recentBlocks();
+        std::lock_guard<std::mutex> lock(recent.mutex);
+        recent.blocks.clear(); recent.bytes = 0;
+    }
     auto file = (RequestTestFile *)cache->file;
     file->denied.store(true);
     const auto before = FixtureStats::reads.load();
@@ -120,14 +172,15 @@ static void testIncomplete(NSURL *url) {
 
     auto idle = cacheAt(url);
     idle->active.store(false);
-    assert(idle->prefetch(6, nullptr, true) == Status::ready);
+    assert(idle->prefetch(24, nullptr, true) == Status::ready);
     idle->active.store(true);
-    assert(idle->prefetch(6, nullptr, true) == Status::pending);
+    assert(idle->prefetch(24, nullptr, true) == Status::pending);
     idle->active.store(false);
-    assert(idle->prefetch(6, nullptr, true) == Status::ready);
+    assert(idle->prefetch(24, nullptr, true) == Status::ready);
     idle->active.store(true);
-    assert(idle->prefetch(6, nullptr, true) == Status::ready);
-    checkPages(*idle, 0, 6);
+    assert(idle->prefetch(24, nullptr, true) == Status::buffered);
+    assert(idle->prefetch(24) == Status::ready);
+    checkPages(*idle, 0, 24);
 
     std::atomic<bool> entered{false}, release{false};
     std::thread held([&] {
@@ -181,6 +234,68 @@ static double cpuSeconds() {
     return value.tv_sec + value.tv_nsec / 1e9;
 }
 
+static void testGlobalRecentBudget(NSURL *url) {
+    std::vector<std::shared_ptr<PreparedPCMReader>> readers;
+    std::shared_ptr<const PreparedPCMBlock> pinned;
+    std::weak_ptr<const PreparedPCMBlock> discarded;
+    // Independent readers must share the budget, just as different media do.
+    // Keep all readers alive so per-reader eviction cannot satisfy this test.
+    for (int fileIndex = 0; fileIndex < 16; ++fileIndex) {
+        auto file = [[RequestTestFile alloc] initForReading:url error:nil];
+        assert(file); file->denied.store(false);
+        auto reader = std::make_shared<PreparedPCMReader>(file);
+        readers.push_back(reader);
+        for (int blockIndex = 0; blockIndex < 12; ++blockIndex) {
+            bool busy = false;
+            auto blocks = reader->read(int64_t(blockIndex) * page * 4, page * 4, nullptr, false, busy);
+            assert(!blocks.empty() && !busy);
+            if (fileIndex == 0 && blockIndex == 0) pinned = blocks.front();
+            if (fileIndex == 0 && blockIndex == 1) discarded = blocks.front();
+            assert(PreparedPCMReader::recentBlocks().bytes <= PreparedPCMReader::RecentBlocks::limit);
+        }
+    }
+    assert(discarded.expired());
+    assert(pinned->samples[0][0] == 0.25f);
+    const auto reads = FixtureStats::reads.load();
+    bool busy = false;
+    auto reused = readers[0]->read(0, page * 4, nullptr, false, busy);
+    assert(!reused.empty() && reused.front() == pinned && !busy && FixtureStats::reads == reads);
+    std::cout << "PCM_GLOBAL_16_MIB_RECENT_BUDGET_PINNED_AUDIO_SHARED_WITHOUT_REREAD_OK\n";
+}
+
+static void testSlidingPageOwnership(NSURL *url) {
+    auto cache = cacheAt(url);
+    assert(cache->prefetch(3) == Status::ready);
+    auto inspect = [&] {
+        int count = 0;
+        for (int slot = 0; slot < PreparedPCMCache::pageCount; ++slot) {
+            if (auto data = cache->pages.producerView(slot)) {
+                ++count;
+                assert(data->block->count <= page);
+            }
+        }
+        assert(count == 3);
+    };
+    inspect();
+    cache->requested.store(page * 40);
+    assert(cache->prefetch(3) == Status::ready);
+    inspect(); checkPages(*cache, 40, 3);
+    {
+        auto lease = cache->pages.read();
+        auto first = cache->pageAt(page * 40, lease);
+        assert(first);
+        cache->releaseIdlePages();
+        assert(first->samples[0][0] == 0.25f && cache->pages.retiredCount() != 0);
+        assert(cache->releaseRequested.load());
+    }
+    assert(cache->collectIdlePages() && cache->pages.retiredCount() == 0);
+    for (int slot = 0; slot < PreparedPCMCache::pageCount; ++slot) assert(!cache->pages.producerView(slot));
+    cache->active.store(true);
+    assert(cache->prefetch(3) == Status::ready);
+    inspect(); checkPages(*cache, 40, 3);
+    std::cout << "PCM_SLIDING_THREE_PAGES_BATCH_OWNERSHIP_IDLE_RELEASE_PINNED_RESTART_OK\n";
+}
+
 static void testSharedMedia(NSURL *url) {
     rlimit original{}; assert(getrlimit(RLIMIT_NOFILE, &original) == 0);
     rlimit limited = original; limited.rlim_cur = std::min<rlim_t>(original.rlim_cur, 64);
@@ -210,7 +325,7 @@ static void testSharedMedia(NSURL *url) {
         if (!copies.empty()) assert(cache->pages.producerView(0)->block == copies[0]->pages.producerView(0)->block);
         copies.push_back(cache);
     }
-    assert(copies[0]->reader->blocks.size() == 2);
+    assert(copies[0]->reader->blocks.size() == 6);
     auto originalBlock = copies[0]->pages.producerView(0)->block;
     copies[1]->requested.store(page * 70); copies[1]->loopStart.store(page * 70 + 5); copies[1]->loopEnd.store(page * 73 + 17);
     assert(copies[1]->prefetch(6) == Status::ready);
@@ -228,7 +343,7 @@ static void testSharedMedia(NSURL *url) {
         }
     };
     std::thread first(work, 2), second(work, 3); first.join(); second.join();
-    assert(copies[0]->reader->recentBytes <= 8 * 1024 * 1024);
+    assert(PreparedPCMReader::recentBlocks().bytes <= PreparedPCMReader::RecentBlocks::limit);
     // Replacing a file at the same path cannot revive the former decoder.
     NSError *error = nil;
     assert([[NSFileManager defaultManager] removeItemAtURL:url error:&error]);
@@ -289,7 +404,7 @@ int main(int argc, const char **argv) {
         assert(file && [file writeFromBuffer:pcm error:&error] && !error);
         file = nil; pcm = nil;
         if (argc > 1) benchmark(url, std::string(argv[1]) == "baseline", argc > 2 ? std::atoi(argv[2]) : 256);
-        else { testRequests(url); testIncomplete(url); testRetirementAndWorkers(url); testSharedMedia(url); }
+        else { testRequests(url); testSequentialRefills(url); testOpenReaderAfterUnlink(url); testIncomplete(url); testRetirementAndWorkers(url); testGlobalRecentBudget(url); testSlidingPageOwnership(url); testSharedMedia(url); }
         [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
     }
     return 0;

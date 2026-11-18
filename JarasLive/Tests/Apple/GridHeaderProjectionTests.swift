@@ -9,6 +9,7 @@ grid.headerHeight = 64
 let id = UUID()
 var item = GridSelectionItem(id: id, rect: CGRect(x: 0, y: 100, width: 10_000, height: 70),
     name: "Voz principal – Coração 🎤", duration: 100)
+item.selectedBlackTitle = true
 grid.updateLayout(GridSelectionLayout(items: [item]), pixelsPerSecond: 30)
 func pixels(scale: Int = 1) -> Data {
     let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 700 * scale, pixelsHigh: 300 * scale,

@@ -8,12 +8,136 @@
 #include "MarkerRegionConversion.h"
 #include "ConversionReportPanel.h"
 #include "PlaylistEditor.h"
+#include "MP3Writer.h"
+#include "MediaCleanup.h"
 namespace catlive {
 namespace {
 const char *colourKeys[]{"jaras.setlist.allRegionsTextColor", "jaras.setlist.playlistTextColor",
                          "jaras.setlist.unifiedTextColor", "jaras.setlist.blockTextColor"};
 constexpr uint32 colourDefaults[]{0xffffff, 0x00ff9a, 0xffeb3b, 0x69ed91};
 } // namespace
+void AdvancedPanel::updateMP3ConversionControl() {
+    if (!mp3Button) return;
+    mp3Button->setEnabled(!mp3Conversion && !session.busy && !session.isSaving() &&
+        session.document.existsAsFile() && !session.audio.isRecording() && session.tempoInputAllowed());
+    mp3Button->setButtonText(mp3Conversion
+        ? String(mp3Conversion->completed.load())+"/"+String(mp3Conversion->total)
+        : String::fromUTF8("MP3 - 320 kbps"));
+}
+void AdvancedPanel::convertTimelineAudio() {
+    if (mp3Conversion || session.busy || session.isSaving() || !session.tempoInputAllowed() ||
+        !session.document.existsAsFile() || session.audio.isRecording() || jaras::projectSync::readOnly()) return;
+    const auto document = session.document;
+    const auto projectID = session.project().id;
+    const auto revision = session.revision;
+    std::set<std::string> paths;
+    auto collect = [&](const auto &file) {
+        if (!file || text(file->path).startsWith("Videos/")) return;
+        if (File(text(file->path)).hasFileExtension("wav;wave;aif;aiff;aifc;m4a;aac;flac;ogg;oga;opus;caf;alac;wma"))
+            paths.insert(file->path);
+    };
+    for (const auto &song : session.project().songs) for (const auto &track : song.tracks) {
+        collect(track.audioFile);
+        for (const auto &clip : track.clips) collect(clip.audioFile);
+    }
+    if (paths.empty()) {
+        AlertWindow::showMessageBoxAsync(MessageBoxIconType::InfoIcon, "MP3", String::fromUTF8("Nenhum áudio para converter."));
+        return;
+    }
+    auto state = std::make_shared<MP3Conversion>();
+    state->total = (int)paths.size();
+    mp3Conversion = state;
+    updateMP3ConversionControl();
+    auto safe = SafePointer<AdvancedPanel>(this);
+    Thread::launch([safe, state, paths = std::move(paths), document, projectID, revision] {
+        File folder;
+        bool created = false;
+        String failure;
+        std::map<std::string,jaras::AudioFile> replacements;
+        try {
+            const auto root = document.getParentDirectory();
+            const auto stems = root.getChildFile("Stems");
+            if (!mediaCleanup::plainPath(root, stems, true) || stems.createDirectory().failed())
+                throw std::runtime_error("Não foi possível preparar a pasta Stems.");
+            folder = stems.getChildFile("MP3 Max - "+Uuid().toString().substring(0,8));
+            if (folder.exists() || folder.createDirectory().failed())
+                throw std::runtime_error("Não foi possível criar a pasta de conversão.");
+            created = true;
+            AudioFormatManager formats;
+            registerAudioFormats(formats);
+            for (const auto &path : paths) {
+                const auto source = ProjectCodec::resolveMedia(root,path);
+                try {
+                    std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(source));
+                    if (!reader || reader->numChannels<1 || reader->numChannels>2 || reader->lengthInSamples<=0)
+                        throw std::runtime_error("É necessário um arquivo de áudio mono ou estéreo.");
+                    const int channels = (int)reader->numChannels;
+                    const int inputRate = roundToInt(reader->sampleRate);
+                    const int outputRate = inputRate==32000 || inputRate==44100 ? inputRate : 48000;
+                    const auto output = folder.getNonexistentChildFile(source.getFileNameWithoutExtension(), ".mp3");
+                    {
+                        MP3Writer writer(output,outputRate,channels,320,inputRate);
+                        AudioBuffer<float> pcm(channels,4096);
+                        for (int64 start=0; start<reader->lengthInSamples;) {
+                            const int count=(int)std::min<int64>(4096,reader->lengthInSamples-start);
+                            if (!reader->read(&pcm,0,count,start,true,true)) throw std::runtime_error("Falha ao ler o áudio de origem.");
+                            writer.write(pcm,count);
+                            start+=count;
+                        }
+                        writer.finish();
+                    }
+                    std::unique_ptr<AudioFormatReader> check(formats.createReaderFor(output));
+                    if (!check || check->lengthInSamples<=0) throw std::runtime_error("Não foi possível ler o MP3 convertido.");
+                    replacements.insert({path,jaras::AudioFile{utf8("Stems/"+folder.getFileName()+"/"+output.getFileName())}});
+                    ++state->completed;
+                } catch (const std::exception &e) {
+                    throw std::runtime_error(utf8(source.getFileName()+": "+String::fromUTF8(e.what())));
+                }
+            }
+        } catch (const std::exception &e) { failure=String::fromUTF8(e.what()); }
+        MessageManager::callAsync([safe, document, projectID, revision, folder, created,
+                                  replacements = std::move(replacements), failure = std::move(failure)]() mutable {
+            bool applied = false;
+            if (safe) {
+                auto &session = safe->session;
+                try {
+                    if (failure.isNotEmpty()) throw std::runtime_error(utf8(failure));
+                    if (session.project().id!=projectID || session.document!=document || session.revision!=revision || session.busy ||
+                            session.isSaving() || !session.tempoInputAllowed() || session.audio.isRecording() || jaras::projectSync::readOnly())
+                        throw std::runtime_error("O projeto mudou durante a conversão. Tente novamente.");
+                    session.edit([&](jaras::Project &project) {
+                        const auto replace = [&](std::optional<jaras::AudioFile> &file) {
+                            if (!file) return false;
+                            const auto converted=replacements.find(file->path);
+                            if (converted==replacements.end()) return false;
+                            file=converted->second;
+                            return true;
+                        };
+                        for (auto &song:project.songs) for (auto &track:song.tracks) {
+                            const bool trackConverted=replace(track.audioFile);
+                            for (auto &clip:track.clips) {
+                                if (clip.audioFile ? replace(clip.audioFile) : trackConverted) {
+                                    clip.waveform.clear();
+                                    clip.waveformChannels.clear();
+                                }
+                            }
+                        }
+                    });
+                    applied = true;
+                    session.saveAsync(document,[safe](String message) {
+                        if (!safe) return;
+                        if (message.isNotEmpty()) { if (safe->error) safe->error(message); }
+                        else AlertWindow::showMessageBoxAsync(MessageBoxIconType::InfoIcon, "MP3", String::fromUTF8("Áudio da timeline convertido para MP3."));
+                    });
+                } catch (const std::exception &e) { if (safe->error) safe->error(String::fromUTF8(e.what())); }
+                safe->mp3Conversion.reset();
+                safe->updateMP3ConversionControl();
+            }
+            if (!applied && created) Thread::launch([folder]{folder.deleteRecursively();});
+        });
+    });
+}
+
 AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function<void(String)> fail)
     : appearance(settings), session(value), error(std::move(fail)) {
     setName("Advanced");
@@ -58,6 +182,8 @@ void AdvancedPanel::save(const String &key, var value) {
     auto result = appearance.set(key, std::move(value));
     if (result.failed())
         error(result.getErrorMessage());
+    else if (key == "jaras.video.noAudio")
+        session.refreshProjectionAudio();
 }
 Label &AdvancedPanel::label(const String &name, int x, int y, int width, int height, bool bold) {
     auto *field = new Label();
@@ -249,6 +375,21 @@ void AdvancedPanel::select(int index) {
             appearance.invertWaveformColors()?2:1,436,139,148,
             [this](int id){save("jaras.timeline.invertWaveformColors",id==2);});
         waveformColors.getProperties().set("preserveNames", true);
+        auto *mp3 = new QuietButton(String::fromUTF8("MP3 - 320 kbps"));
+        fields.add(mp3);page.addAndMakeVisible(mp3);
+        mp3->setBounds(314,654,270,28);
+        mp3->setComponentID("timelineConvertAudioMP3Max");
+        mp3Button=mp3;
+        contentHeight=704;
+        mp3->onClick=[this] {
+            const auto safe=SafePointer<AdvancedPanel>(this);
+            ConfirmationPanel::show(MessageBoxIconType::QuestionIcon,String::fromUTF8("MP3 - 320 kbps"),
+                String::fromUTF8("Converter o áudio da timeline para MP3 a 320 kbps. Os arquivos originais e os MP3 existentes serão preservados."),
+                "Converter","Cancelar",this,ModalCallbackFunction::create([safe](int answer) {
+                    if (safe && answer==1) safe->convertTimelineAudio();
+                }));
+        };
+        updateMP3ConversionControl();
     } else if (index == 2 || index == 3) {
         const String prefix = String("jaras.media.") + (index == 2 ? "record." : "rerender.");
         const auto format = appearance.value(prefix + "format", "WAV").toString();

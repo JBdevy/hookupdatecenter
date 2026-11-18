@@ -29,6 +29,39 @@ import XCTest
     func applyProjectEdit(_ p: Project) throws { try p.validate(); project = p; fullEdits += 1 }
 }
 final class TrackRoutingTests: XCTestCase {
+    @MainActor func testCreateGroupUsesOnlySelectionAndClickedParent() throws {
+        var project = Project.empty(name: "Selected group")
+        let tracks = (0..<6).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setMixerTrackSelection(Set([tracks[0].id, tracks[3].id, tracks[5].id]), anchor: tracks[0].id)
+        XCTAssertTrue(show.canCreateTrackGroup(tracks[3].id))
+        show.createTrackGroup(tracks[3].id)
+        let result = try XCTUnwrap(show.current?.tracks)
+        XCTAssertEqual(result.map(\.id), [1,2,3,0,5,4].map { tracks[$0].id })
+        for index in [0,5] { XCTAssertEqual(result.first { $0.id == tracks[index].id }?.parentTrackID, tracks[3].id) }
+        for index in [1,2,4] { XCTAssertEqual(result.first { $0.id == tracks[index].id }, tracks[index]) }
+        try show.snapshot.project.validate()
+    }
+    @MainActor func testRoutingEditsUpdateBothEndpointsAndRemoveMirror() throws {
+        var project = Project.empty(name: "Reciprocal")
+        let tracks = (0..<3).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setTrackRouting([tracks[0].id], receive: false, slot: 0, other: tracks[1].id)
+        XCTAssertEqual(show.current?.tracks[1].routing?.receives.compactMap { $0 }, [tracks[0].id])
+        XCTAssertEqual(show.current?.trackConnections.count, 1)
+        show.setTrackRouting([tracks[1].id], receive: true, slot: 0, other: tracks[2].id)
+        XCTAssertTrue(show.current?.tracks[0].routing?.transmitters.compactMap { $0 }.isEmpty == true)
+        XCTAssertEqual(show.current?.tracks[2].routing?.transmitters.compactMap { $0 }, [tracks[1].id])
+        XCTAssertEqual(show.current?.trackConnections.count, 1)
+        show.removeTrackRoute([tracks[1].id], receive: true, slot: 0)
+        XCTAssertTrue(show.current?.tracks[2].routing?.transmitters.compactMap { $0 }.isEmpty == true)
+        XCTAssertEqual(show.current?.trackConnections.count, 0)
+    }
+
     @MainActor func testDisableRecordingInputAndRestoreLinkedPair() throws {
         var project = Project.empty(name: "No hardware input")
         let tracks = (0..<2).map { Track(id: UUID(), name: "Input \($0)", role: .keys) }
@@ -78,6 +111,7 @@ final class TrackRoutingTests: XCTestCase {
         let executor = RoutingExecutor()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
         XCTAssertTrue(show.current!.canCreateTrackGroup(tracks[1].id))
+        show.setMixerTrackSelection(Set(tracks.dropFirst().map(\.id)), anchor: tracks[1].id)
         show.createTrackGroup(tracks[1].id)
         let result = try XCTUnwrap(show.current?.tracks)
         XCTAssertEqual(result.map(\.id), tracks.map(\.id))
@@ -128,6 +162,7 @@ final class TrackRoutingTests: XCTestCase {
         XCTAssertEqual(project, original)
         let executor = RoutingExecutor()
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setMixerTrackSelection(Set([parent.id,child.id]), anchor: parent.id)
         show.createTrackGroup(parent.id)
         XCTAssertEqual(show.snapshot.project, original)
         XCTAssertEqual(executor.fullEdits, 0)
@@ -387,9 +422,9 @@ final class TrackRoutingTests: XCTestCase {
         var audioUpdates = 0
         show.audioUpdate = { _, _ in audioUpdates += 1 }
         show.setMixerTrackSelection([first.id, second.id, video.id, UUID()], anchor: second.id)
-        XCTAssertEqual(show.mixerTrackSelection, [first.id, second.id])
+        XCTAssertEqual(show.mixerTrackSelection, [first.id, second.id, video.id])
         XCTAssertEqual(show.selectedTrackForActions, second.id)
-        XCTAssertNotNil(show.current?.linkableTracks(show.mixerTrackSelection))
+        XCTAssertNotNil(show.current?.linkableTracks(show.mixerTrackSelection.subtracting([video.id])))
         show.setMixerTrackSelection([first.id], anchor: second.id)
         XCTAssertEqual(show.selectedTrackForActions, first.id)
         show.setMixerTrackSelection([], anchor: nil)

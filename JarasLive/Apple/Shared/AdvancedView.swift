@@ -310,6 +310,7 @@ private struct AdvancedTimelineSettings: View {
     }
     let documents: ProjectDocuments?
     @State private var confirmingCleanup = false
+    @State private var showingMP3Conversion = false
     @AppStorage("jaras.timeline.continuousScroll") private var continuousScroll = false
     @AppStorage("jaras.timeline.invertWaveformColors") private var invertWaveformColors = false
     @AppStorage("jaras.timeline.gridlines") private var gridlines = GlobalProjectTiming.load()?.settings.divisions != 0
@@ -379,6 +380,12 @@ private struct AdvancedTimelineSettings: View {
                         .disabled(!documents.canCleanTimelineMedia)
                 }
                 .sheet(isPresented: $confirmingCleanup) { TimelineMediaCleanupConfirmation(documents: documents) }
+                HStack {
+                    Spacer()
+                    Button("MP3 - 320 kbps") { showingMP3Conversion = true }
+                        .disabled(!documents.canConvertTimelineAudio)
+                }
+                .sheet(isPresented: $showingMP3Conversion) { TimelineMP3ConversionView(documents: documents) }
             }
         }
         .alert(deletion.map(title) ?? "Deletar", isPresented: Binding(get: { deletion != nil }, set: { if !$0 { deletion = nil } }), presenting: deletion) { kind in
@@ -389,6 +396,49 @@ private struct AdvancedTimelineSettings: View {
             }
         } message: { kind in
             Text(kind == .regions ? "Deletar todas as regiões desta timeline, incluindo as unificadas? Os itens de áudio, MIDI e vídeo serão mantidos. Você pode desfazer com Command+Z." : kind == .tempo ? "Deletar todos os marcadores de tempo desta timeline? Você pode desfazer com Command+Z." : "Deletar todos os marcadores comuns desta timeline? Os marcadores de tempo e das regiões unificadas serão mantidos. Você pode desfazer com Command+Z.")
+        }
+    }
+}
+
+private struct TimelineMP3ConversionView: View {
+    @Environment(\.dismiss) private var dismiss
+    let documents: ProjectDocuments
+    @State private var running = false
+    @State private var progress = 0
+    @State private var total = 0
+    @State private var result: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("MP3 - 320 kbps").font(.jarasHeadline)
+            if running {
+                ProgressView(value: Double(progress), total: Double(max(1, total)))
+                Text("\(progress)/\(total)").monospacedDigit()
+            } else if let result {
+                Text(LocalizedStringKey(result))
+            } else {
+                Text("Convert timeline audio to MP3 at 320 kbps. Existing MP3 files and source files are kept.")
+            }
+            HStack {
+                Spacer()
+                if result != nil { Button("OK") { dismiss() } }
+                else {
+                    Button("Cancelar") { dismiss() }.disabled(running)
+                    Button("Converter") { start() }.disabled(running)
+                }
+            }
+        }
+        .padding(20).frame(width: 450)
+        .interactiveDismissDisabled(running)
+    }
+    private func start() {
+        running = true
+        Task { @MainActor in
+            defer { running = false }
+            do {
+                let count = try await documents.convertTimelineAudioToMP3 { progress = $0; total = $1 }
+                result = count == 0 ? "No audio files to convert." : "Timeline audio converted to MP3."
+            } catch { result = error.localizedDescription }
         }
     }
 }

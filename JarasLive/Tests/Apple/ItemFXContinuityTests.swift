@@ -55,6 +55,15 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
     orderedFX.threshold = -30; orderedFX.ratio = 20; orderedFX.attack = 0.001
     let compressedBoost = try level(orderedFX)
     precondition(orderedFX.reorderClipEffect("EQ", before: nil) != nil)
+    var bridgeProject = Project.empty(name: "Item FX bridge")
+    let bridgeClip = AudioClip(id: UUID(), name: "Item", startTime: 0, duration: 1)
+    bridgeProject.songs[0].tracks = [Track(id: UUID(), name: "Audio", role: .other, clips: [bridgeClip])]
+    let bridge = JarasCoreBridge()
+    try bridge.load(projectData: JSONEncoder().encode(bridgeProject))
+    try bridge.setClipFX(bridgeClip.id.uuidString, data: JSONEncoder().encode(orderedFX))
+    let snapshot = try JSONDecoder().decode(ShowSnapshot.self, from: bridge.snapshot())
+    precondition(snapshot.project.songs[0].tracks[0].clips[0].fx == orderedFX,
+                 "The application bridge must accept and persist native instance IDs in the new order")
     let boostedCompression = try level(orderedFX)
     precondition(boostedCompression > compressedBoost * 2, "Moved EQ must process after the compressor")
     print("ITEM_FX_REORDER_CHANGES_ACTUAL_DSP_ORDER_OK rate=\(rate)")

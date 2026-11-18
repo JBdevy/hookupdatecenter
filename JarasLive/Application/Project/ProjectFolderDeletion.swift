@@ -19,7 +19,7 @@ public struct ProjectFolderDeletion: Identifiable, Sendable {
     private let availableAt: TimeInterval
     public var remainingSeconds: Int { max(0, Int(ceil(availableAt - ProcessInfo.processInfo.systemUptime))) }
 
-    public init(document: URL) throws {
+    public init(document: URL, availableAt: TimeInterval? = nil) throws {
         let document = document.standardizedFileURL
         guard document.isFileURL, document.pathExtension.lowercased() == "jl" else {
             throw ProjectError.invalid("Choose a CatLive project to delete.")
@@ -30,8 +30,8 @@ public struct ProjectFolderDeletion: Identifiable, Sendable {
         directoryIdentity = try Self.identity(directory)
         documentIdentity = try Self.identity(document, contents: true)
         deletesDirectory = try Self.isDedicatedDirectory(document)
-        files = try Self.inventory(document)
-        availableAt = ProcessInfo.processInfo.systemUptime + 3
+        files = deletesDirectory ? [:] : try Self.inventory(document)
+        self.availableAt = availableAt ?? ProcessInfo.processInfo.systemUptime + 3
     }
     public func contains(_ url: URL) -> Bool {
         let candidate = url.standardizedFileURL

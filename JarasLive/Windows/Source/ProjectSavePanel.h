@@ -53,7 +53,7 @@ public:
         title.setText(localization::translate("Project name"),dontSendNotification);
         name.setText(current,false); name.onReturnKey=[this]{saveName();};
         save.setButtonText(localization::translate("Save")); save.onClick=[this]{saveName();};
-        portable.setButtonText(localization::translate(String::fromUTF8("Exportar para CatLive iPadOS")));
+        portable.setButtonText(localization::translate(String::fromUTF8("Export ziplive")));
         portable.onClick=[this]{auto action=exportAction; dismiss(); MessageManager::callAsync(std::move(action));};
         reduce.setButtonText(localization::translate(String::fromUTF8("Reduzir projeto")));
         reduce.onClick=[this]{auto action=reduceAction;dismiss();MessageManager::callAsync(std::move(action));};

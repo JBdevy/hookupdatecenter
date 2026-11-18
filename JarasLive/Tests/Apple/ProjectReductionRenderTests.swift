@@ -23,6 +23,16 @@ a.clips = [AudioClip(id: UUID(), name: "A", startTime: 0, duration: 4, audioFile
 b.clips = [AudioClip(id: UUID(), name: "B", startTime: 0, duration: 4.000000000002, audioFile: AudioFile(path: "input.wav"))]
 project.songs[0].tracks = [a,b,unrelated]
 project.songs[0].parts = [Part(id: UUID(), name: "One", startTime: 0, endTime: 2), Part(id: UUID(), name: "Two", startTime: 2, endTime: 4)]
+var tempo = TimelineMarker(id: UUID(), name: "TEMPO", position: 2, color: 0)
+tempo.tempoBPM = 120
+let cue = TimelineMarker(id: UUID(), name: "Cue", position: 1, color: 0)
+project.songs[0].markers = [cue, tempo]
+project.songs[0].tracks[1].clips[0].muted = true
+precondition(ProjectReduction.hasMutedItems(project))
+var confirmed = project
+ProjectReduction.unmuteItems(in: &confirmed)
+precondition(!ProjectReduction.hasMutedItems(confirmed) && ProjectReduction.hasMutedItems(project))
+project = confirmed
 project.masterVolume = 0.7
 let group = ProjectReductionTrack(name: "Mixed", sources: [a.id,b.id])
 let target = root.appendingPathComponent("Reduced/Reduced.jl")
@@ -38,6 +48,9 @@ precondition(events.contains { $0.message.contains("Salvando projeto") })
 let result = try ProjectDocumentCodec.decode(Data(contentsOf: target))
 precondition(result.songs[0].tracks.count == 1)
 let clips = result.songs[0].tracks[0].clips
+precondition(Set(clips.compactMap { $0.audioFile?.path }) == Set(["Stems/Mixed - One.wav", "Stems/Mixed - Two.wav"]))
+precondition(result.songs[0].markers == [cue] && project.songs[0].markers == [cue, tempo])
+
 precondition(clips.count == 2 && clips.map(\.startTime) == [0,2] && clips.map(\.duration) == [2,2])
 precondition(result.masterVolume == 0.7 && result.id != project.id && result.projectSyncID != project.projectSyncID)
 for clip in clips {
@@ -141,3 +154,31 @@ do {
 precondition(rejectedBeforeRendering && !FileManager.default.fileExists(atPath: noSpaceTarget.deletingLastPathComponent().path))
 precondition(!noSpaceProgress.values.contains { $0.message.contains("Renderizando") })
 print("REDUCTION_FULL_DISK_REJECTED_BEFORE_RENDER_OK")
+
+
+// The Advanced Timeline conversion uses the same gapless CBR encoder for both PCM containers.
+for (ext, rate) in [("wav", 44_100.0), ("aiff", 96_000.0)] {
+    let source = root.appendingPathComponent("source." + ext)
+    let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1)!
+    let sourceFrames = AVAudioFrameCount(rate * 0.25)
+    let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: sourceFrames)!
+    pcm.frameLength = sourceFrames
+    for n in 0..<Int(sourceFrames) { pcm.floatChannelData![0][n] = Float(sin(Double(n) * 0.02) * 0.2) }
+    do {
+        let file = try AVAudioFile(forWriting: source, settings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate,
+            AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsBigEndianKey: ext == "aiff"
+        ])
+        try file.write(from: pcm)
+    }
+    let target = root.appendingPathComponent("converted-" + ext + ".mp3")
+    try JarasMP3Encoder.encodeWav(source, to: target)
+    let encoded = try AVAudioFile(forReading: target)
+    precondition(encoded.processingFormat.channelCount == 1)
+    precondition(abs(Double(encoded.length) / encoded.processingFormat.sampleRate - 0.25) < 0.001,
+                 "320 kbps conversion must preserve alignment and duration when resampling")
+    let bytes = try Data(contentsOf: target).count
+    precondition((10_000...13_000).contains(bytes), "MP3 must be encoded with 320 kbps CBR and at most a few framing blocks")
+}
+print("TIMELINE_MP3_MAX_WAV_AIFF_320_KBPS_GAPLESS_AND_SAMPLE_RATE_OK")

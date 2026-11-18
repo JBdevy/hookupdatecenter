@@ -17,7 +17,7 @@ template<class Test,class Fixture> void run(Test &&test,Fixture fixture) {
     auto failed=p;auto changed=clip;changed.duration+=1;bool rejected=false;
     try{audioSeparation::commit(failed,songID,source.id,changed,stems);}catch(...){rejected=true;}
     require(rejected&&JSON::toString(ProjectCodec::encode(failed),true)==original,"Changed source was partially modified");
-    auto incomplete=stems;incomplete.pop_back();rejected=false;
+    auto incomplete=stems;incomplete.clear();rejected=false;
     try{audioSeparation::commit(failed,songID,source.id,clip,incomplete);}catch(...){rejected=true;}
     require(rejected&&JSON::toString(ProjectCodec::encode(failed),true)==original,"Incomplete stems partially modified project");
     audioSeparation::commit(p,songID,source.id,clip,stems);const auto &tracks=p.songs[0].tracks;

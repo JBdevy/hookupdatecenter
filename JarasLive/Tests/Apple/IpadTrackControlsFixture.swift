@@ -68,7 +68,7 @@ func remoteColor(_ color:UInt32)->Color{.white}
 enum TrackNameContrast{static func components(_ color:UInt32,emphasized:Bool)->(red:Double,green:Double,blue:Double){(0.2,0.5,0.3)}}
 struct GroupTrackConnector:Shape {let last:Bool;func path(in r:CGRect)->Path{Path{p in p.move(to:.zero);p.addLine(to:CGPoint(x:0,y:r.height));p.addLine(to:CGPoint(x:r.width,y:r.height))}}}
 @MainActor final class StemAudioPlayback {static let shared=StemAudioPlayback();func meter(for id:UUID)->Int{0}}
-struct IpadMixerMeter:View {let meter:Int;var body:some View{Color.green.allowsHitTesting(false).accessibilityElement().accessibilityLabel("Audio meter").accessibilityIdentifier("audio-meter")}}
+struct IpadMixerMeter:View {let meter:Int;var preparesOffscreen=false;var body:some View{Color.green.allowsHitTesting(false).accessibilityElement().accessibilityLabel("Audio meter").accessibilityIdentifier("audio-meter")}}
 enum DAWRemoteFaderScale {static func decibels(_ gain:Double)->Double{gain>0 ? 20*log10(gain) : -60};static func gain(_ db:Double)->Double{pow(10,db/20)}}
 enum JarasLocalization {static func string(_ key:String)->String{key}}
 
@@ -133,9 +133,13 @@ struct TouchFixtureView:View {
  }
 }
 
-struct StepFixtureState {var tempoNeedsRender:Bool?=nil;var bpm=120.0;var pitchSemitones:Int?=0;var pitchRegion:UUID?=UUID()}
+struct NativeTunerTargets: ViewModifier { var show: ShowController?; func body(content: Content) -> some View { content } }
+struct StepFixtureState {var playing=false;var subPlaying=false;var tempoNeedsRender:Bool?=nil;var bpm=120.0;var pitchSemitones:Int?=0;var pitchRegion:UUID?=UUID()}
 struct RemoteStepFixture:View {
  @State private var state=StepFixtureState()
+ let localShow: ShowController? = nil
+ @State private var tempoStepRequest = UUID()
+ @State private var tempoStepGate = LiveTempoEditGate()
  @State private var tempoStepPending=false
  @State private var pitchStepPending=false
  @State private var tempoRequests=0

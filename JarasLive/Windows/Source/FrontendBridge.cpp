@@ -45,7 +45,7 @@ struct FrontendBridge::RTAState {
     ~RTAState() { for (auto &source : sources) if (source) source->removeReader(); }
 };
 FrontendBridge::FrontendBridge(Session &s, Auth &a, Emit output, bool compact)
-    : session(s), auth(a), emit(std::move(output)), compactPresentation(compact), waveforms(std::make_unique<NativeFrontendWaveforms>(s)) {
+    : session(s), auth(a), emit(std::move(output)), compactPresentation(compact), waveforms(std::make_unique<NativeFrontendWaveforms>(s)), audioPreferences(std::make_unique<Appearance>()) {
     previousCanPlay = session.canPlay;
     previousIsPlaying = auth.isPlaying;
     previousAudioWarning = session.audioOutputWarning;
@@ -588,9 +588,9 @@ void FrontendBridge::receive(const String &json) {
         } else if(action=="tempo") {requireEditable();session.setTempo(finiteNumber(payload,"value"));}
         else if(action=="metronome") {
             requireEditable();if(!get(payload,"enabled").isBool())throw std::invalid_argument("Metronome state is required.");
-            const auto result=Appearance{}.set("jaras.metronome.enabled",flag(payload,"enabled"));
-            if(result.failed())throw std::runtime_error(utf8(result.getErrorMessage()));
             session.audio.metronomeEnabled=flag(payload,"enabled");
+            audioPreferences->setMetronome("jaras.metronome.enabled",flag(payload,"enabled"),
+                [this,weak=std::weak_ptr<int>(lifetime)](String error){if(!weak.expired()&&error.isNotEmpty())notice("Metronome",error);});
         } else if(action=="record") {
             requireEditable();if(!session.audio.isRecording()&&(!auth.allowed()||auth.pendingRevocation))throw std::runtime_error(utf8(localized("Sign in to record.","Faça login para gravar.")));
             session.toggleRecording();

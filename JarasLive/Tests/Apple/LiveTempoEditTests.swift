@@ -18,9 +18,13 @@ final class Capture: @unchecked Sendable {
  var result=Set<ObjectIdentifier>()
  for entry in Mirror(reflecting:voices).children {
   guard let voice=Mirror(reflecting:entry.value).children.first(where:{$0.label=="value"})?.value ?? Mirror(reflecting:entry.value).children.dropFirst().first?.value,
-        let clip=field("clip",voice) as? AudioClip,let player=field("player",voice) as? AVAudioPlayerNode,
-        clip.startTime<=position, (position<clip.startTime+clip.duration || (field("continuousSource",voice) as? Bool == true && player.isPlaying)) else{continue}
-  result.insert(ObjectIdentifier(player))
+        let clip=field("clip",voice) as? AudioClip else { continue }
+  let prepared=field("prepared",voice).flatMap { Mirror(reflecting:$0).children.first?.value as? JarasPreparedClip }
+  let handle=field("player",voice)
+  let player=handle.flatMap { field("node",$0) }.flatMap { Mirror(reflecting:$0).children.first?.value as? AVAudioPlayerNode }
+  guard let node=prepared?.node as AVAudioNode? ?? player,
+        clip.startTime<=position, (position<clip.startTime+clip.duration || (field("continuousSource",voice) as? Bool == true && (prepared?.playing ?? player?.isPlaying ?? false))) else{continue}
+  result.insert(ObjectIdentifier(node))
  }
  return result
 }

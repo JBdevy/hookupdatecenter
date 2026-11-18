@@ -2,7 +2,12 @@
 #include <thread>
 #include <iostream>
 
-struct State { int value = 0; explicit State(int initial) : value(initial) {} };
+struct State {
+    static inline std::atomic<unsigned> alive{0};
+    int value = 0;
+    explicit State(int initial) : value(initial) { ++alive; }
+    ~State() { --alive; }
+};
 int main() {
     using Pool = catlive::audio::SharedRenderPool<State, 64>;
     Pool pool;
@@ -35,5 +40,27 @@ int main() {
     std::array<Pool::Lease, 64> held;
     for (auto &value : held) { value = pool.acquire(); assert(value); }
     assert(!pool.acquire());
+    for (auto &value : held) value.reset();
+    auto sounding = pool.acquire(); sounding->value = 71;
+    auto shared = pool.retain(sounding.handle());
+    pool.trimUnusedIfUnshared(false);
+    assert(State::alive == 64); // A shared converter may need to fork on render.
+    shared.reset();
+    auto spare = pool.acquire(); const auto stale = spare.handle(); spare.reset();
+    pool.trimUnusedIfUnshared(false);
+    assert(State::alive == 1 && !pool.acquire() && sounding->value == 71);
+    pool.restoreUnused(64, 9);
+    assert(State::alive == 64 && !pool.retain(stale));
+    for (size_t index = 0; index < held.size() - 1; ++index) {
+        held[index] = pool.acquire(); assert(held[index] && held[index]->value == 9);
+    }
+    assert(!pool.acquire() && sounding->value == 71);
+    for (auto &value : held) value.reset();
+    sounding.reset(); pool.trimUnusedIfUnshared(true);
+    assert(State::alive == 0 && !pool.acquire());
+    pool.restoreUnused(2, 23);
+    assert(State::alive == 2);
+    auto restored = pool.acquire(); assert(restored && restored->value == 23 && !pool.retain(stale));
     std::cout << "SHARED_RENDER_POOL_GENERATIONS_EXCLUSIVE_WEAK_CACHE_CONCURRENCY_OK\n";
+    std::cout << "SHARED_RENDER_POOL_IDLE_DSP_TRIM_RESTORE_NO_STALE_HANDLES_OK\n";
 }

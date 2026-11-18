@@ -23,6 +23,8 @@ func require(_ value: @autoclosure () -> Bool, _ message: @autoclosure () -> Str
     if CommandLine.arguments.contains("--legacy") { setenv("CATLIVE_PREPARED_SOURCE", "0", 1) }
     let voiceCount = Int(ProcessInfo.processInfo.environment["CATLIVE_TEST_VOICES"] ?? "200") ?? 200
     let sourceRate = Double(ProcessInfo.processInfo.environment["CATLIVE_TEST_SOURCE_RATE"] ?? "48000") ?? 48000
+    let distinctFiles = ProcessInfo.processInfo.environment["CATLIVE_TEST_DISTINCT_FILES"] == "1"
+    let initialRate = Double(ProcessInfo.processInfo.environment["CATLIVE_TEST_INITIAL_RATE"] ?? "1.12") ?? 1.12
     let format = AVAudioFormat(standardFormatWithSampleRate: sourceRate, channels: 2)!
     let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(sourceRate * 30))!
     pcm.frameLength = pcm.frameCapacity
@@ -38,7 +40,14 @@ func require(_ value: @autoclosure () -> Bool, _ message: @autoclosure () -> Str
     track.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 30, audioFile: AudioFile(path: "tone.wav"))]
     project.songs[0].tracks = (0..<voiceCount).map { index in
         var copy = track; if index > 0 { copy.id = UUID(); copy.clips[0].id = UUID() }
-        copy.clips[0].playbackRate = 1.12
+        if distinctFiles {
+            let path = "source-\(index).wav"
+            // Independent readers/DSP without duplicating gigabytes of test
+            // media. Registry keys include the path, even for hard links.
+            try! FileManager.default.linkItem(at: folder.appendingPathComponent("tone.wav"), to: folder.appendingPathComponent(path))
+            copy.clips[0].audioFile = AudioFile(path: path)
+        }
+        copy.clips[0].playbackRate = initialRate
         return copy
     }; project.songs[0].duration = 30; project.songs[0].timeSettings = ProjectTimeSettings()
     var state = ShowSnapshot(project: project, transport: TransportState(playing: false,
@@ -46,18 +55,40 @@ func require(_ value: @autoclosure () -> Bool, _ message: @autoclosure () -> Str
         subPlay: SubPlayState(playing: false, position: 0)))
     try audio.update(state, revision: 1)
     if let preparation = try audio.pendingPlaybackPreparation(state, revision: 1) { await preparation.value }
+    let graph = Mirror(reflecting: audio).children.first { $0.label == "engine" }!.value as! AVAudioEngine
+    if ProcessInfo.processInfo.environment["CATLIVE_PREPARED_SOURCE"] != "0",
+       ProcessInfo.processInfo.environment["CATLIVE_PREPARED_PLAYER_BASELINE"] != "1" {
+        require(graph.attachedNodes.allSatisfy { !($0 is AVAudioPlayerNode) }, "Prepared voices must not allocate or attach unused legacy player nodes")
+    }
     try await Task.sleep(nanoseconds: 250_000_000)
     for track in project.songs[0].tracks { _ = audio.meter(for: track.id) }
     if ProcessInfo.processInfo.environment["CATLIVE_BUFFERED_MAC_AUDIO"] != "0" {
         require(audio.bufferedAudioDiagnostics() != nil, "Normal hardware playback must use the buffered output without a test opt-in")
     }
-    print("STRESS_PREPARED", voiceCount, audio.bufferedAudioDiagnostics() ?? [:])
+    print("STRESS_PREPARED", voiceCount, "nodes", graph.attachedNodes.count,
+          "memory", JarasPreparedClip.memoryDiagnostics(), audio.bufferedAudioDiagnostics() ?? [:])
     let ring = JarasCaptureRing(channels: 2, capacity: 262144); ring.beginCapture()
     _ = try audio.attachOutputCapture(track.id, postFX: true, postFader: true, ring: ring)
+    let masterRing = JarasCaptureRing(channels: 2, capacity: 262144); masterRing.beginCapture()
+    let masterBus = Mirror(reflecting: audio).children.first { $0.label == "masterBus" }!.value as! AVAudioMixerNode
+    masterBus.installTap(onBus: 0, bufferSize: 512, format: masterBus.outputFormat(forBus: 0)) { buffer, _ in masterRing.push(buffer) }
+    defer { if masterBus.engine != nil { masterBus.removeTap(onBus: 0) } }
     var buffer = [Float](repeating: 0, count: 65536)
     func drain() -> [Float] {
         let count = buffer.withUnsafeMutableBufferPointer { ring.readFrames($0.baseAddress!, maximum: 32768) }
         return stride(from: 0, to: Int(count) * 2, by: 2).map { buffer[$0] }
+    }
+    func capturedPeak(_ source: JarasCaptureRing) -> Double {
+        var peak: Float = 0
+        while true {
+            let count = buffer.withUnsafeMutableBufferPointer { source.readFrames($0.baseAddress!, maximum: 32768) }
+            if count == 0 { break }
+            // Compare the settled tail, matching the original one-second
+            // steady-state check rather than unrelated seek/edit transients.
+            peak = 0
+            for n in max(0, Int(count) - 4096) * 2..<Int(count) * 2 { peak = max(peak, abs(buffer[n])) }
+        }
+        return Double(peak)
     }
     _ = drain()
     let began = ProcessInfo.processInfo.systemUptime
@@ -143,6 +174,7 @@ func require(_ value: @autoclosure () -> Bool, _ message: @autoclosure () -> Str
                  "SubPlay visual promotion must retain its audible position")
     var revision: UInt64 = 1
     for bpm in [135.0, 90, 156, 120] {
+        _ = capturedPeak(ring); _ = capturedPeak(masterRing)
         let scale = state.project.songs[0].bpm / bpm
         state.project.songs[0].followTempo(bpm)
         state.transport.position *= scale
@@ -160,8 +192,31 @@ func require(_ value: @autoclosure () -> Bool, _ message: @autoclosure () -> Str
         let levels = state.project.songs[0].tracks.map { audio.meter(for: $0.id).level }
         let audible = levels.filter { $0 > 0.005 }.count
         print("STRESS_LIVE_BPM", bpm, "edit_ms", editMS, "audible", audible, "min", levels.min() ?? 0, "max", levels.max() ?? 0, "sum", levels.reduce(0,+), "master", audio.masterMeter.level)
+        if audible != voiceCount {
+            print("STRESS_BUFFER_STATE", audio.bufferedAudioDiagnostics() ?? [:], JarasPreparedClip.memoryDiagnostics())
+            let live = Mirror(reflecting: audio).children.first { $0.label == "voices" }!.value
+            var quiet = 0, sounding = 0
+            for entry in Mirror(reflecting: live).children {
+                let pair = Array(Mirror(reflecting: entry.value).children)
+                let fields = Dictionary(uniqueKeysWithValues: Mirror(reflecting: pair[1].value).children.compactMap { field in
+                    field.label.map { ($0, field.value) }
+                })
+                guard let track = fields["track"] as? UUID, let prepared = fields["prepared"],
+                      let source = Mirror(reflecting: prepared).children.first?.value as? JarasPreparedClip else { continue }
+                let level = audio.meter(for: track).level
+                if level > 0.005 { sounding += 1; if sounding > 3 { continue } }
+                else { quiet += 1; if quiet > 3 { continue } }
+                print("STRESS_SOURCE_STATE", "level", level, "playing", source.playing,
+                      "position", source.sourcePosition, "misses", source.underruns, source.processingDiagnostics)
+            }
+        }
         require(audible == voiceCount, "Every track must remain audible after BPM changes")
-        require(abs(audio.masterMeter.level - levels.reduce(0,+)) < max(0.002, levels.reduce(0,+) * 0.08), "Duplicated tracks must sum independently after BPM changes")
+        // Display envelopes are drained at different instants within a 2048-
+        // frame graph pull. Compare captured PCM, not asynchronous meter decay.
+        let trackPCM = capturedPeak(ring), masterPCM = capturedPeak(masterRing)
+        let expectedMaster = trackPCM * Double(voiceCount)
+        print("STRESS_PCM_SUM", bpm, "track", trackPCM, "master", masterPCM, "expected", expectedMaster)
+        require(trackPCM > 0.005 && abs(masterPCM - expectedMaster) < max(0.002, expectedMaster * 0.08), "Duplicated tracks must sum independently after BPM changes")
     }
     // Repeated + presses while the render thread is pulling 200 sources.
     // A whole-project edit must become audible on one common render boundary.

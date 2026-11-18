@@ -14,8 +14,8 @@ namespace catlive::audio {
 // chain of old audio. Generations reject recycled slots, including ABA races.
 template<class State, uint32_t Capacity = 4096> class SharedRenderPool {
     struct Slot {
-        template<class... Args> explicit Slot(Args&&... args) : state(std::forward<Args>(args)...) {}
-        State state;
+        template<class... Args> explicit Slot(Args&&... args) : state(std::make_unique<State>(std::forward<Args>(args)...)) {}
+        std::unique_ptr<State> state;
         std::atomic<uint64_t> life{0}, successor{0};
         std::atomic<uint32_t> freeNext{0};
         uint32_t index = 0;
@@ -33,7 +33,7 @@ template<class State, uint32_t Capacity = 4096> class SharedRenderPool {
                                                std::memory_order_release, std::memory_order_relaxed));
     }
     void release(Slot *slot) {
-        if (uint32_t(slot->life.fetch_sub(1, std::memory_order_acq_rel)) == 1) recycle(slot);
+        if (uint32_t(slot->life.fetch_sub(1, std::memory_order_acq_rel)) == 1 && slot->state) recycle(slot);
     }
 public:
     class Lease {
@@ -57,9 +57,9 @@ public:
         ~Lease() { reset(); }
         void reset() { if (slot) pool->release(slot); slot = nullptr; }
         explicit operator bool() const { return slot != nullptr; }
-        State *operator->() { return &slot->state; }
-        const State *operator->() const { return &slot->state; }
-        State &operator*() { return slot->state; }
+        State *operator->() { return slot->state.get(); }
+        const State *operator->() const { return slot->state.get(); }
+        State &operator*() { return *slot->state; }
         uint64_t handle() const { return token; }
         Lease cachedSuccessor() const { return slot ? pool->retain(slot->successor.load(std::memory_order_acquire)) : Lease{}; }
         void publishSuccessor(const Lease &next) { slot->successor.store(next.handle(), std::memory_order_release); }
@@ -75,6 +75,40 @@ public:
             recycle(slot);
         }
         return true;
+    }
+    // Control side only. Dormant slots keep their generation/identity, but
+    // release their DSP allocation. Restore storage before scheduling any
+    // additional voice; acquire() itself still never allocates.
+    template<class... Args> void restoreUnused(uint32_t count, Args&&... args) {
+        std::lock_guard<std::mutex> lock(reservation);
+        assert(count <= storage.size());
+        uint32_t ready = 0;
+        for (const auto &slot : storage) if (slot->state) ++ready;
+        for (const auto &slot : storage) {
+            if (ready >= count) break;
+            if (slot->state) continue;
+            assert(uint32_t(slot->life.load(std::memory_order_acquire)) == 0);
+            slot->state = std::make_unique<State>(args...);
+            recycle(slot.get()); ++ready;
+        }
+    }
+    void trimUnusedIfUnshared(bool stopped) {
+        std::lock_guard<std::mutex> lock(reservation);
+        if (!stopped) {
+            // A sole exclusive history advances in place. Shared histories
+            // and partially consumed forks retain all their reserved spares.
+            unsigned held = 0;
+            for (const auto &slot : storage) {
+                const auto refs = uint32_t(slot->life.load(std::memory_order_acquire));
+                if (refs > 1 || (refs && ++held > 1)) return;
+            }
+        }
+        while (auto unused = acquire()) {
+            // Claim through the free list first: neither the render thread
+            // nor a cached weak successor can observe storage being freed.
+            unused.slot->state.reset();
+            unused.reset();
+        }
     }
     Lease acquire() {
         auto head = freeHead.load(std::memory_order_acquire);

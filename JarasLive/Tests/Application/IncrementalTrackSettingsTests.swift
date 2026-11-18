@@ -631,7 +631,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         controller.sendMixerControl(.mute, target: c.id)
         XCTAssertTrue(controller.current!.tracks.allSatisfy(\.mute))
         XCTAssertEqual(controller.mixerTrackSelection, [a.id,b.id])
-        XCTAssertEqual(revisions.count, 1, "Scalar changes retain the same audio project revision")
+        XCTAssertTrue(revisions.isEmpty, "Scalar controls use direct callbacks without refreshing the complete audio project")
         XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
     }
     @MainActor func testSelectedVolumePreviewMaintainsRatiosAndSilenceEqualizesWithinGesture() throws {
@@ -872,7 +872,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         show.send(.mute,target: track)
         XCTAssertEqual(callbacks,[.volume(track,0.4),.pan(track,1),.mute(track,true),.solo(track,true),.clipMute(clip,true),.volume(nil,0.65),.mute(nil,true),.mute(track,false)])
         XCTAssertEqual(executor.mixerCommands,[.volume,.pan,.mute,.solo,.clipMute,.volume,.mute,.mute])
-        XCTAssertEqual(revisions,Array(repeating: 0,count: 8)); XCTAssertEqual(show.projectRevision,8)
+        XCTAssertTrue(revisions.isEmpty, "The exact scalar callbacks above replace full audio updates"); XCTAssertEqual(show.projectRevision,8)
         XCTAssertEqual(executor.snapshotReads,0); XCTAssertEqual(executor.playbackReads,0); XCTAssertEqual(executor.fullEdits,0)
         XCTAssertEqual(show.snapshot.transport,originalTransport); XCTAssertEqual(show.snapshot.project,executor.project)
         XCTAssertEqual(show.current?.tracks[1].clips[0].waveform,project.songs[0].tracks[1].clips[0].waveform)
@@ -891,7 +891,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertNotEqual(show.snapshot.project.masterPhaseInverted, true)
         XCTAssertEqual(show.snapshot.transport, transport)
         XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
-        XCTAssertEqual(show.projectRevision, 1); XCTAssertEqual(revisions, [0])
+        XCTAssertEqual(show.projectRevision, 1); XCTAssertTrue(revisions.isEmpty, "Phase reaches audio through its direct callback")
         show.undo(); show.undo()
         XCTAssertEqual(show.snapshot.project, project)
         show.redo(); show.redo()
@@ -936,12 +936,11 @@ final class IncrementalTrackSettingsTests: XCTestCase {
     @MainActor func testNormalizationCommitsScalarBatchOnceAndUndoRestoresWholeBatch() throws {
         let project = fixture(), (show,executor) = try show(project)
         let clips = project.songs[0].tracks[1].clips
-        let capped = pow(10,24.0 / 20)
         var gains: [IncrementalSettingsExecutor.GainCommand] = [], revisions: [UInt64] = []
         show.audioItemNormalization = { gains.append(.init(item: $0,value: $1)) }
         show.audioUpdate = { _,revision in revisions.append(revision) }
         XCTAssertTrue(show.normalizeItems([clips[0].id: 100,clips[1].id: 0.25],project: project.id))
-        let expected: [IncrementalSettingsExecutor.GainCommand] = [.init(item: clips[0].id,value: capped),.init(item: clips[1].id,value: 0.25)]
+        let expected: [IncrementalSettingsExecutor.GainCommand] = [.init(item: clips[0].id,value: 100),.init(item: clips[1].id,value: 0.25)]
         XCTAssertEqual(executor.gainCommands,expected); XCTAssertEqual(gains,expected)
         XCTAssertEqual(executor.snapshotReads,0); XCTAssertEqual(executor.playbackReads,0); XCTAssertEqual(executor.fullEdits,0)
         XCTAssertEqual(revisions,[0]); XCTAssertEqual(show.projectRevision,1); XCTAssertTrue(show.canUndo)
@@ -951,7 +950,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         show.undo()
         XCTAssertEqual(show.snapshot.project,project); XCTAssertFalse(show.canUndo); XCTAssertTrue(show.canRedo)
         show.redo()
-        XCTAssertEqual(show.current?.tracks[1].clips.map { $0.normalizationGain ?? 1 },[capped,0.25])
+        XCTAssertEqual(show.current?.tracks[1].clips.map { $0.normalizationGain ?? 1 },[100,0.25])
         XCTAssertEqual(executor.fullEdits,2)
     }
     @MainActor func testFailedNormalizationRollsBackAppliedScalarsWithoutPublishingOrUndo() throws {
@@ -1016,7 +1015,7 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(show.current!.tracks[1].pan, 0)
         XCTAssertEqual(executor.snapshotReads, 0)
         XCTAssertEqual(executor.fullEdits, 0)
-        XCTAssertEqual(Set(audioRefreshes), [0])
+        XCTAssertTrue(audioRefreshes.isEmpty, "Mapped mixer actions must not refresh the entire audio project")
         XCTAssertEqual(show.snapshot.transport, transport)
         show.performAction(.addTrack)
         XCTAssertEqual(show.addTrackRequest, 1)

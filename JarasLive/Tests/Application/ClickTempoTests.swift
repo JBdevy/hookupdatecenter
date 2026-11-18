@@ -591,6 +591,19 @@ final class ClickTempoTests: XCTestCase {
         let restored = try JSONDecoder().decode(Song.self, from: JSONEncoder().encode(song))
         XCTAssertEqual(restored.projectTime.timebase, .free)
     }
+    func testRepeatedItemUnificationUsesOneIncreasingSuffix() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["Guitar-001.wav","guitar-004.wav","808 Bass-001.wav"] { try Data([1]).write(to:root.appendingPathComponent(name)) }
+        var names = MediaFileNames(directory: root)
+        XCTAssertEqual(names.allocateUnification("Guitar-001.wav"),"Guitar-005.wav")
+        XCTAssertEqual(names.allocateUnification("Guitar-001-001.wav"),"Guitar-006.wav")
+        XCTAssertEqual(names.allocateUnification("Guitar-006.wav"),"Guitar-007.wav")
+        XCTAssertEqual(names.allocateUnification("808 Bass-001.wav"),"808 Bass-002.wav")
+        XCTAssertEqual(names.allocateUnification("Organ B3.wav"),"Organ B3-001.wav")
+        XCTAssertEqual(names.allocateUnification("Strings - 001 - 001.wav"),"Strings-002.wav")
+    }
     func testSuffixesIncludeAllExistingFilesAndRetainedUndoMedia() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let nested = root.appendingPathComponent("old")

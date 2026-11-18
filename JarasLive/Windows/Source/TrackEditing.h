@@ -23,6 +23,30 @@ inline void createGroup(jaras::Song &song, const ID &id) {
             trackDrop::setParent(track, id);
     }
 }
+inline bool canCreateGroup(const jaras::Song &song, const ID &id, const std::set<ID> &selection) {
+    const auto at=trackTree::index(song,id);if(at==song.tracks.size()||!selection.count(id))return false;
+    const auto &parent=song.tracks[at];
+    if(!jaras::fixedTrackName(parent.role).empty()||parent.role.id=="vinhetas"||parent.stereoLinkPartner)return false;
+    for(const auto &track:song.tracks)if(track.id!=id&&selection.count(track.id)&&jaras::fixedTrackName(track.role).empty()&&track.role.id!="vinhetas"&&(!track.stereoLinkPartner||selection.count(*track.stereoLinkPartner))) {
+        bool ancestor=false;auto next=parent.parentTrackID;std::set<ID> seen;
+        while(next&&seen.insert(*next).second){if(*next==track.id){ancestor=true;break;}auto i=trackTree::index(song,*next);if(i==song.tracks.size())break;next=song.tracks[i].parentTrackID;}
+        if(!ancestor)return true;
+    }
+    return false;
+}
+inline void createGroup(jaras::Song &song, const ID &id, const std::set<ID> &selection) {
+    if(!canCreateGroup(song,id,selection))return;
+    std::set<ID> roots,moving;
+    for(size_t i=0;i<song.tracks.size();++i){const auto &t=song.tracks[i];
+        if(t.id==id||!selection.count(t.id)||!jaras::fixedTrackName(t.role).empty()||t.role.id=="vinhetas"||(t.stereoLinkPartner&&!selection.count(*t.stereoLinkPartner)))continue;
+        const auto end=trackTree::end(song,i);bool containsParent=false;for(size_t n=i;n<end;++n)containsParent|=song.tracks[n].id==id;
+        if(containsParent)continue;roots.insert(t.id);for(size_t n=i;n<end;++n)moving.insert(song.tracks[n].id);
+    }
+    std::vector<jaras::Track> members,remaining;
+    for(auto track:song.tracks){if(moving.count(track.id)){if(roots.count(track.id)&&(!track.parentTrackID||!moving.count(*track.parentTrackID)))trackDrop::setParent(track,id);members.push_back(std::move(track));}else remaining.push_back(std::move(track));}
+    auto parent=std::find_if(remaining.begin(),remaining.end(),[&](const auto &t){return t.id==id;});
+    remaining.insert(parent+1,members.begin(),members.end());song.tracks=std::move(remaining);
+}
 inline bool linkable(const jaras::Song &song, const std::set<ID> &ids) {
     if(ids.size()!=2)return false;
     std::vector<size_t> selected;

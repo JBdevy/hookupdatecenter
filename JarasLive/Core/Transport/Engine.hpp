@@ -1,7 +1,10 @@
+#include <unordered_set>
 #pragma once
 #include "../Project/Models.hpp"
 #include "../ProjectSync/ProjectSync.hpp"
+#include "PlaybackCapacity.hpp"
 #include <utility>
+#include <unordered_map>
 namespace jaras {
 enum class CommandKind { toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipPhase, clipPan, clipChannelMode, clipNormalization, clipPitch, clipFadeInCurve, clipFadeInSCurve, clipFadeOutCurve, clipFadeOutSCurve };
 struct Command { CommandKind kind = CommandKind::stop; ID target; double value = 0; };
@@ -26,6 +29,10 @@ public:
     const Project& project() const noexcept { return project_; }
     const TransportState& transport() const noexcept { return transport_; }
     const Song* currentSong() const noexcept;
+    std::size_t activeAudioFileCount() const { const auto* song = currentSong(); return song ? playbackCapacity::active(*song, transport_, project_.regionSetlist && project_.regionSetlist->subplayExclusiveTrackIDs ? *project_.regionSetlist->subplayExclusiveTrackIDs : std::vector<ID>{}) : 0; }
+    bool liveCapacityExceeded() const { const auto* song = currentSong(); return song && playbackCapacity::exceeded(*song, transport_, project_.regionSetlist && project_.regionSetlist->subplayExclusiveTrackIDs ? *project_.regionSetlist->subplayExclusiveTrackIDs : std::vector<ID>{}); }
+    bool liveCapacityExceededDuring(double elapsed, double secondaryAdvance = 0) const { const auto* song = currentSong(); if (!song) return false; auto before = transport_; if (before.subPlay.playing) before.subPlay.position -= secondaryAdvance; return playbackCapacity::exceededDuring(*song, before, elapsed, project_.regionSetlist && project_.regionSetlist->subplayExclusiveTrackIDs ? *project_.regionSetlist->subplayExclusiveTrackIDs : std::vector<ID>{}); }
+    double subplayPreparationPosition() const;
     std::optional<ID> nextSongId() const;
     void execute(const Command& command);
     void configureRegionSetlist(RegionSetlist state);
@@ -74,6 +81,9 @@ private:
     void commitProjectEdit(Project project);
     void advanceWithoutLiveTracking(double elapsed);
     std::vector<ID> automaticSectionHandled_;
+    std::unordered_map<ID, int> automaticSectionJumpCounts_;
+    std::unordered_set<ID> cancelledAutomaticSections_;
+    double automaticSectionNoticeRemaining_ = 0;
     double automaticSectionLastPosition_ = -1;
     std::optional<ID> automaticSectionSong_;
     void recordLivePlayback(const TransportState& before, double elapsed);
@@ -84,7 +94,7 @@ private:
     std::optional<TimelineMarker> sectionDestination(const ID& id) const;
     void resetMultiLoop();
     void refreshMultiLoop();
-    bool advanceMultiLoop(double elapsed);
+    bool advanceMultiLoop(double elapsed, double secondaryAdvance);
     std::uint64_t syncRevision_ = 0, receivedSyncRevision_ = 0;
     Project project_;
     TransportState transport_;
@@ -109,6 +119,7 @@ private:
     void stopQueuedSubplay();
     void clearWaitingQueue();
     double startAutomaticSubplay(double elapsed);
+    void refreshSubplayExclusivity();
     void autoQueueRegion();
     void clearIgnoreNext();
     void toggleIgnoreNext();

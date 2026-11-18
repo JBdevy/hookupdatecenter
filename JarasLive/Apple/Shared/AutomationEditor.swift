@@ -211,6 +211,7 @@ private struct AutomationCurveEditor: NSViewRepresentable {
         isHidden = entries.isEmpty
     }
     func project(viewport: CGRect, scale: CGFloat, movesFrame: Bool = true) {
+        guard !entries.isEmpty else { return }
         if self.viewport != viewport || self.scale != scale {
             self.viewport = viewport; self.scale = max(0.000001, scale)
             if movesFrame { frame = viewport }

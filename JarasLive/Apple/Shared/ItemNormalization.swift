@@ -75,7 +75,7 @@ enum ItemNormalization {
         guard frames > 0 else { throw ProjectError.invalid("Could not analyze this audio item.") }
         progress(1)
         switch mode {
-        case .rms: return 10 * log10(max(1e-20, squareSum / Double(max(1, frames * channels))))
+        case .rms: return 10 * log10(squareSum / Double(max(1, frames * channels)))
         case .lufs:
             // A short item still needs one complete 400 ms integration block.
             if Double(frames) / rate < 0.4 {
@@ -98,12 +98,13 @@ enum ItemNormalization {
                 else { _ = ebur128_true_peak(meter, UInt32(channel), &value) }
                 peak = max(peak, value)
             }
-            return 20 * log10(max(1e-20, peak))
+            return 20 * log10(peak)
         }
     }
     static func gain(measured: Double, target: Double) -> Double {
-        guard measured.isFinite, measured > -150 else { return 1 }
-        return pow(10, min(24, max(-120, target - measured)) / 20)
+        guard measured.isFinite, target.isFinite else { return 1 }
+        let gain = pow(10, (target - measured) / 20)
+        return gain.isFinite ? gain : 1
     }
 }
 
@@ -135,7 +136,7 @@ struct ItemNormalizationEditor: View {
                     .modifier(NormalizeShake(value: shake)).disabled(worker != nil)
                 Text(mode == .lufs ? "LUFS" : mode == .truePeak ? "dBTP" : "dB")
             }
-            Text("Independent normalization gain: up to +24 dB").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+            Text("Independent normalization gain").font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
             if !progressItems.isEmpty {
                 ScrollViewReader { reader in
                     ScrollView {

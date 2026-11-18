@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 NS_ASSUME_NONNULL_BEGIN
 @interface JarasCoreBridge : NSObject
+- (double)subplayPreparationPosition;
 + (void)setProjectSyncFollowing:(BOOL)following;
 - (void)setProjectSyncID:(NSString *)identifier;
 - (nullable NSData *)projectSyncFrameWithError:(NSError **)error NS_SWIFT_NAME(projectSyncFrame());

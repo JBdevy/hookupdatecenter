@@ -269,8 +269,11 @@ import AVFoundation
             case .stop(let id): (releaseVoice ?? stopVoice)?(id); finished(id)
             case .start(let voice):
                 guard let path = library.presets[voice.preset].pads[voice.pad].audioFile else { continue }
-                voices[voice.id] = voice
                 startVoice?(voice, directory.appendingPathComponent(path), library.presets[voice.preset].pads[voice.pad].volume)
+                // Publish the visual state only after the audio source has
+                // accepted the press. SwiftUI may synchronously refresh every
+                // pad when this property changes.
+                if voiceEngines[voice.id] != nil { voices[voice.id] = voice }
             }
         }
     }

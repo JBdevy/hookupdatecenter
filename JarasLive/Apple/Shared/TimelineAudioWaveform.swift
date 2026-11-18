@@ -13,7 +13,7 @@ enum WaveformAmplitude {
     }
     static func gain(item: Double?, normalization: Double?, inverted: Bool = false) -> Double {
         let limit = pow(10.0, 24.0 / 20)
-        return min(limit, max(0, item ?? 1)) * min(limit, max(0, normalization ?? 1)) * (inverted ? -1 : 1)
+        return min(limit, max(0, item ?? 1)) * max(0, normalization ?? 1) * (inverted ? -1 : 1)
     }
 }
 
@@ -1768,7 +1768,9 @@ private final class WaveformSource: NSObject {
         func u64(_ offset: Int) -> UInt64 { UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt64.self)) }
         func u32(_ offset: Int) -> UInt32 { UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) }
         guard Array(raw.prefix(8)) == magic, u64(8) == UInt64(bitPattern: size),
-              u64(16) == modified.bitPattern, u64(24) == header.rate.bitPattern,
+              Double(bitPattern: u64(16)).isFinite,
+              abs(Double(bitPattern: u64(16)) - modified) <= 0.002,
+              u64(24) == header.rate.bitPattern,
               u64(32) == UInt64(bitPattern: header.frames),
               u32(40) == header.channels + (header.channels > 1 ? 1 : 0) else { return nil }
         let count = Int(u32(44)), channels = Int(u32(40))
@@ -1819,7 +1821,7 @@ private final class WaveformSource: NSObject {
         // Ignoring old coarser levels also avoids allocating their duplicate data.
         if let data = try? Data(contentsOf: destination, options: .mappedIfSafe),
            let saved = try? PropertyListDecoder().decode(Stored.self, from: data),
-           (saved.version == 2 || saved.version == 3), saved.size == size, saved.modified == modified,
+           (saved.version == 2 || saved.version == 3), saved.size == size, abs(saved.modified - modified) <= 0.002,
            saved.frames == header.frames, saved.rate == header.rate, saved.channels == storedChannels,
            saved.samples.count == count * storedChannels * 20 {
             var packed = Data(count: expectedBytes)
