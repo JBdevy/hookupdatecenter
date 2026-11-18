@@ -122,7 +122,7 @@ enum ProjectError: Error { case invalid(String) }
         show.snapshot.project.songs = [MappingTestSong(tracks: [MappingTestTrack(id: track, name: "Piano")])]
         mappings.show = show
         mappings.migrateActionMappings()
-        precondition(mappings.mappings.isEmpty && mappings.actions.binding(.muteTrack).trackNumber == 1)
+        precondition(mappings.mappings.isEmpty && mappings.actions.binding(.muteTrack, trackNumber: 1).trackNumber == 1)
         precondition(mappings.actions.binding(.muteMaster).midi?.number == 90, "legacy master mappings migrate without a project dependency")
         mappings.sources[100] = (123, "Test MIDI")
         var recorded: [(Int32, UInt8, UInt8, UInt8, Double)] = []
@@ -156,7 +156,7 @@ enum ProjectError: Error { case invalid(String) }
         mappings.begin(track: nil, command: "volume")
         cc(7, 100); mappings.save()
         precondition(mappings.editing != nil && mappings.transferRequest != nil, "A shared CC requires confirmation")
-        precondition(mappings.actions.binding(.volumeTrack).midi?.number == 7, "the old mapping remains until confirmation")
+        precondition(mappings.actions.binding(.volumeTrack, trackNumber: 1).midi?.number == 7, "the old mapping remains until confirmation")
         mappings.cancelTransfer()
         cc(11, 10); mappings.save()
         cc(11, 127)
@@ -179,7 +179,7 @@ enum ProjectError: Error { case invalid(String) }
         let stored = defaults.data(forKey: "jaras.controlMappings")!
         let decoded = try! JSONDecoder().decode([MappedControl].self, from: stored)
         precondition(decoded.filter { $0.command == "volume" }.isEmpty, "quick mappings have no duplicate per-project store")
-        precondition(mappings.actions.binding(.volumeTrack).midi?.number == 7 && mappings.actions.binding(.volumeTrack).trackNumber == 1)
+        precondition(mappings.actions.binding(.volumeTrack, trackNumber: 1).midi?.number == 7 && mappings.actions.binding(.volumeTrack, trackNumber: 1).trackNumber == 1)
         precondition(mappings.actions.binding(.volumeMaster).midi?.number == 11)
         mappings.beginAction(.panTrack, kind: "midi")
         mappings.receive(endpoint: 100, status: 0x90, number: 61, value: 100)
@@ -209,8 +209,8 @@ enum ProjectError: Error { case invalid(String) }
         mappings.mode = "keyboard"
         let shortcut = ControlInput(kind: "keyboard", label: "F", key: 3, modifiers: 0)
         mappings.candidate = shortcut; mappings.save()
-        precondition(mappings.actions.binding(.muteTrack).keyboard == shortcut && mappings.actions.binding(.muteTrack).midi?.number == 20)
-        mappings.beginAction(.muteTrack, kind: "keyboard")
+        precondition(mappings.actions.binding(.muteTrack, trackNumber: 1).keyboard == shortcut && mappings.actions.binding(.muteTrack, trackNumber: 1).midi?.number == 20)
+        mappings.beginAction(.muteTrack, kind: "keyboard", trackNumber: 1)
         precondition(mappings.candidate == shortcut, "Actions reads the shortcut saved through the quick editor")
         mappings.editing = nil
         mappings.execute(shortcut)
@@ -218,7 +218,7 @@ enum ProjectError: Error { case invalid(String) }
         mappings.begin(track: otherTrack, command: "volume")
         precondition(mappings.candidate?.number == 7 && mappings.editing?.action == .volumeTrack)
         mappings.editing = nil
-        mappings.beginAction(.volumeTrack, kind: "midi")
+        mappings.beginAction(.volumeTrack, kind: "midi", trackNumber: 1)
         cc(12, 0); mappings.save()
         mappings.begin(track: otherTrack, command: "volume")
         precondition(mappings.candidate?.number == 12, "the quick editor reads the same action after remapping in Actions")
@@ -226,9 +226,19 @@ enum ProjectError: Error { case invalid(String) }
         let extraTrack = UUID(), beforeCancel = mappings.actions
         other.snapshot.project.songs[0].tracks.append(MappingTestTrack(id: extraTrack, name: "Second piano"))
         mappings.begin(track: extraTrack, command: "volume")
-        precondition(mappings.editing?.trackNumber == 2 && mappings.actions == beforeCancel, "opening quick mapping cannot change the global track target")
+        precondition(mappings.editing?.trackNumber == 2 && mappings.candidate == nil && mappings.actions == beforeCancel, "opening quick mapping cannot change the global track target")
         mappings.editing = nil
         precondition(mappings.actions == beforeCancel, "cancelling the quick editor preserves the entire global binding")
+        mappings.beginAction(.soloTrack, kind: "midi")
+        cc(92, 127); mappings.save()
+        mappings.beginAction(.soloTrack, kind: "midi", trackNumber: 2)
+        precondition(mappings.candidate == nil, "Numbered solo must not inherit selected-track MIDI")
+        cc(93, 127); mappings.save()
+        cc(92, 0); cc(92, 127)
+        precondition(other.commands.last?.0 == .solo && other.commands.last?.1 == otherTrack)
+        cc(93, 0); cc(93, 127)
+        precondition(other.commands.last?.0 == .solo && other.commands.last?.1 == extraTrack)
+
         cc(90, 0); cc(90, 127)
         precondition(other.commands.last?.0 == .mute && other.commands.last?.1 == nil)
         cc(11, 64)
@@ -573,4 +583,4 @@ enum ProjectError: Error { case invalid(String) }
  func claims(device: Int32, status: UInt8, number: UInt8) -> Bool { false }
 }
 
-public enum SMK37Navigation { public enum Panel: Equatable { case setlist, left } }
+public enum SMK37Navigation { public enum Panel: Equatable, Sendable { case setlist, left } }

@@ -17,6 +17,34 @@ void addActionBindingsTests(const File &directory, Register &&test) {
     const auto require = [](bool okay, const char *message) {
         if (!okay) throw std::runtime_error(message);
     };
+    test("Numbered and selected mixer actions have independent persisted MIDI controls", [&, require] {
+        const auto file = directory.getNonexistentChildFile("track-actions", ".json");
+        Appearance settings(file);
+        auto values = object(), legacy = object(), midi = object();
+        put(legacy, "track", 2);
+        put(legacy, "keyboard", "F8");
+        put(values, "soloTrack", legacy);
+        require(settings.set("catlive.actions", values).wasOk(), "Could not store legacy track mapping");
+        AudioDeviceManager devices;
+        ActionBindings bindings(settings, devices);
+        require(bindings.inputLabel("soloTrack:2", "keyboard") == "F8", "Legacy numbered keyboard mapping was lost");
+        require(bindings.inputLabel("soloTrack:3", "keyboard").isEmpty(), "Unmapped numbered track inherited a key");
+        put(midi, "status", 0x90); put(midi, "channel", 1); put(midi, "number", 60);
+        require(bindings.assign("soloTrack", "midi", midi.clone()), "Selected-track MIDI did not save");
+        put(midi, "number", 61);
+        require(bindings.assign("soloTrack:2", "midi", midi), "Numbered-track MIDI did not save");
+        Appearance reloaded(file);
+        ActionBindings restored(reloaded, devices);
+        std::vector<int> invokedTracks;
+        restored.invoke = [&](const String &id, float, int number) {
+            require(id == "soloTrack", "Wrong action dispatched");
+            invokedTracks.push_back(number);
+        };
+        ActionBindingsTestAccess::receive(restored, MidiMessage::noteOn(1, 60, (uint8)100));
+        ActionBindingsTestAccess::receive(restored, MidiMessage::noteOn(1, 61, (uint8)100));
+        restored.key(KeyPress(KeyPress::F8Key));
+        require(invokedTracks == std::vector<int>{0, 2, 2}, "MIDI or keyboard dispatched to the wrong track target");
+    });
     test("Region creation exposes Shift R and respects remapping and held keys", [&, require] {
         const auto file = directory.getNonexistentChildFile("region-action", ".json");
         Appearance settings(file); AudioDeviceManager devices; ActionBindings bindings(settings, devices);

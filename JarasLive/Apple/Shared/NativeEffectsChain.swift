@@ -139,7 +139,7 @@ final class NativeEffectsChain {
             case "Pitch":
                 let pitch = node as! AVAudioUnitTimePitch
                 pitch.pitch = value.pitchEnabled == true ? Float(value.semitones * 100) : 0
-                pitch.bypass = reorderable && pitch.pitch == 0
+                pitch.bypass = pitch.pitch == 0
             case "Delay":
                 let delay = node as! AVAudioUnitDelay
                 delay.bypass = !value.delayEnabled; delay.delayTime = value.delayTime
@@ -406,8 +406,9 @@ final class NativeEffectsChain {
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
         var includedNodes = Set<ObjectIdentifier>()
         let ordered: [AVAudioNode] = keys.compactMap { key in
-            // Item Pitch keeps the same path and latency at 0 st and in
-            // bypass. Track and master chains retain their dry path at 0 st.
+            // Keep item Pitch connected through bypass and zero semitones
+            // so editing the effect does not disconnect the scheduled source.
+            // Track and master chains retain their direct path at 0 st.
             if reorderable, next.kind(of: key) == "Pitch" {
                 let value = next.settings(for: key)
                 guard next.effectKeys.contains(key), value.pitchEnabled == true, value.semitones != 0 else { return nil }
@@ -518,7 +519,7 @@ final class NativeEffectsChain {
         }
         if let pitch {
             pitch.pitch = next.inserted.contains("Pitch") && next.pitchEnabled == true ? Float(next.semitones * 100) : 0
-            pitch.bypass = reorderable && pitch.pitch == 0
+            pitch.bypass = pitch.pitch == 0
         }
         if next.inserted.contains("Limiter"), limiter == nil {
             let node = JarasDynamics.makeLimiter(); limiter = node; engine?.attach(node)

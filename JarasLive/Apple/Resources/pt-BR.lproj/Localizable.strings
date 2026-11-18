@@ -2734,3 +2734,8 @@
 
 "Update CatLive on the connected computer to edit outputs." = "Atualize o CatLive no computador conectado para editar as saídas.";
 "Hoz-Parts height" = "Altura do Hoz-Parts";
+
+"Track volume down" = "Diminuir volume da pista";
+"Track volume up" = "Aumentar volume da pista";
+"Track pan left" = "Pan da pista para a esquerda";
+"Track pan right" = "Pan da pista para a direita";

@@ -109,74 +109,71 @@ class ActionsPage final : public Component, private ChangeListener {
 
   private:
     String selectedAction;
+    NamedValueSet trackNumbers;
     class Card final : public Component {
       public:
-        Card(ActionsPage &owner, const ActionDefinition &definition, String inputKind)
-            : page(owner), action(definition), kind(std::move(inputKind)) {
+        Card(ActionsPage &owner, const ActionDefinition &definition, String inputKind, int number, bool editNumber)
+            : page(owner), action(definition), kind(std::move(inputKind)), trackNumber(number), numberedEditor(editNumber) {
             for (auto *component : std::initializer_list<Component *>{&name, &reset, &input,
                                                                       &remove, &track, &target})
                 addAndMakeVisible(component);
-            name.setText(String::fromUTF8(action.title), dontSendNotification);
+            name.setText(localization::translate(action.title) + (action.track && !numberedEditor ? " · " + (number > 0 ? "#" + String(number) : localization::translate("Selected track")) : String()), dontSendNotification);
             name.setFont(theme::semiboldFont(13));
             reset.getProperties().set("flat", true);
             reset.getProperties().set("fontSize", 12);
             reset.setColour(TextButton::buttonColourId, Colour(0xff505050));
-            const auto current = page.actions.binding(action);
-            auto label = page.actions.inputLabel(action, kind);
-            const bool listening =
-                page.actions.learning == action.id && page.actions.learningKind == kind;
-            input.setName(listening         ? String::fromUTF8("Aguardando controle…")
-                          : label.isEmpty() ? "Mapear controle"
-                                            : label);
             input.kind = kind;
-            input.listening = listening;
             input.locked = kind == "keyboard" && action.fixedKeyboard();
             input.setTooltip(String::fromUTF8(action.title) + " " + kind);
             input.onClick = [this] {
-                page.actions.begin(action.id, kind);
+                page.actions.begin(bindingID(), kind);
                 page.grabKeyboardFocus();
             };
-            remove.setVisible(label.isNotEmpty() && !input.locked);
             remove.getProperties().set("plain", true);
             remove.getProperties().set("icon", "close");
-            remove.onClick = [this] { page.actions.assign(action.id, kind, {}); };
+            remove.onClick = [this] { page.actions.assign(bindingID(), kind, {}); };
             reset.onClick = [this] {
-                page.actions.assign(action.id, kind,
-                                    kind == "keyboard" ? var(String(action.defaultKey).isEmpty()
+                page.actions.assign(bindingID(), kind,
+                                    kind == "keyboard" ? var((trackNumber > 0 || String(action.defaultKey).isEmpty())
                                                                  ? String()
                                                                  : KeyPress::createFromDescription(
                                                                        action.defaultKey)
                                                                        .getTextDescription())
                                                        : var());
             };
-            track.setVisible(action.track);
-            target.setVisible(action.track);
+            track.setVisible(numberedEditor);
+            target.setVisible(numberedEditor);
             target.setFont(theme::font(11));
-            const int number = (int)num(current, "track");
-            auto updateTarget = [this](int number) {
-                target.setText(page.describeTrack ? page.describeTrack(number)
-                               : number > 0       ? "Pista " + String(number)
-                                                  : "Pista selecionada",
-                               dontSendNotification);
+            track.setInputRestrictions(6, "0123456789");
+            track.setText(trackNumber > 0 ? String(trackNumber) : String(), false);
+            track.setTextToShowWhenEmpty(localization::translate("Track"), theme::secondary);
+            track.onTextChange = [this] {
+                trackNumber = track.getText().getIntValue();
+                page.trackNumbers.set(Identifier(action.id), trackNumber);
+                refresh();
             };
-            updateTarget(number);
-            track.setInputRestrictions(4, "0123456789");
-            track.setText(number > 0 ? String(number) : String());
-            track.setTextToShowWhenEmpty(localization::translate("Selecionada"), theme::secondary);
-            track.onTextChange = [this, updateTarget] {
-                updateTarget(track.getText().getIntValue());
-            };
-            track.onFocusLost = [this] {
-                page.actions.setTrack(action.id, track.getText().getIntValue());
-            };
-            input.setEnabled(!input.locked && !(kind == "keyboard" && action.continuous));
-            reset.setEnabled(!input.locked);
+            refresh();
         }
-        int height() const { return action.track ? 126 : 96; }
+        int height() const { return numberedEditor ? 126 : 96; }
+        String bindingID() const { return ActionBindings::targetID(action.id, trackNumber); }
+        void refresh() {
+            const auto label = page.actions.inputLabel(action, kind, trackNumber);
+            const bool enabled = !numberedEditor || trackNumber > 0;
+            const bool listening = enabled && page.actions.learning == bindingID() && page.actions.learningKind == kind;
+            input.setName(listening ? String::fromUTF8("Aguardando controle…")
+                         : enabled && label.isNotEmpty() ? label : "Mapear controle");
+            input.listening = listening;
+            input.setEnabled(enabled && !input.locked && !(kind == "keyboard" && action.continuous));
+            remove.setVisible(enabled && label.isNotEmpty() && !input.locked);
+            reset.setEnabled(enabled && !input.locked);
+            if (numberedEditor) target.setText(trackNumber <= 0 ? String() :
+                page.describeTrack ? page.describeTrack(trackNumber) : "Pista " + String(trackNumber), dontSendNotification);
+            input.repaint();
+        }
         void paint(Graphics &g) override {
             g.setColour(theme::panel);
             g.fillRoundedRectangle(getLocalBounds().toFloat(), 6);
-            if (action.track) {
+            if (numberedEditor) {
                 g.setColour(Colours::white);
                 g.setFont(theme::font(13));
                 g.drawText("Track", 12, 36, 36, 24, Justification::centredLeft);
@@ -187,7 +184,7 @@ class ActionsPage final : public Component, private ChangeListener {
             reset.setBounds(getWidth() - 94, 12, 82, 24);
             track.setBounds(48, 36, 92, 24);
             target.setBounds(146, 36, getWidth() - 162, 24);
-            input.setBounds(12, action.track ? 74 : 44, input.locked ? 140 : getWidth() - 42, 40);
+            input.setBounds(12, numberedEditor ? 74 : 44, input.locked ? 140 : getWidth() - 42, 40);
             remove.setBounds(getWidth() - 30, input.getY() + 8, 24, 24);
         }
 
@@ -216,6 +213,8 @@ class ActionsPage final : public Component, private ChangeListener {
         } input;
         TextButton reset{localization::translate(String::fromUTF8("Restaurar"))}, remove{String::fromUTF8("×")};
         TextEditor track;
+        int trackNumber;
+        bool numberedEditor;
     };
     ActionBindings &actions;
     std::function<String(int)> describeTrack;
@@ -238,17 +237,20 @@ class ActionsPage final : public Component, private ChangeListener {
         keyboard.setToggleState(kind == "keyboard", dontSendNotification);
         midi.setToggleState(kind == "midi", dontSendNotification);
         contentHeight = 0;
-        auto add = [&](const ActionDefinition &definition, const String &inputKind) {
-            auto *card = cards.add(new Card(*this, definition, inputKind));
+        auto add = [&](const ActionDefinition &definition, const String &inputKind, int number = 0, bool editNumber = false) {
+            auto *card = cards.add(new Card(*this, definition, inputKind, number, editNumber));
             rows.addAndMakeVisible(card);
             contentHeight += card->height() + 14;
         };
         for (const auto &definition : actionDefinitions()) {
             if (selectedAction.isNotEmpty() && selectedAction != definition.id) continue;
             if (onlyMappings) {
-                for (auto inputKind : {String("keyboard"), String("midi")})
-                    if (actions.hasCustomInput(definition, inputKind))
-                        add(definition, inputKind);
+                auto targets = actions.mappedTracks(definition);
+                targets.insert(targets.begin(), 0);
+                for (const int number : targets)
+                    for (const auto &inputKind : {String("keyboard"), String("midi")})
+                        if (actions.hasCustomInput(definition, inputKind, number))
+                            add(definition, inputKind, number);
                 continue;
             }
             if (query.isEmpty() && selectedAction.isEmpty() && definition.category != category)
@@ -266,7 +268,10 @@ class ActionsPage final : public Component, private ChangeListener {
                 continue;
             if (kind == "midi" && !definition.supportsMIDI())
                 continue;
-            add(definition, kind);
+            if (definition.track) {
+                add(definition, kind, (int)trackNumbers[Identifier(definition.id)], true);
+                if (String(definition.id) != "selectTrack") add(definition, kind);
+            } else add(definition, kind);
         }
         information.setText(actions.error.isNotEmpty() ? actions.error
                             : query.isNotEmpty() && cards.isEmpty() ? localization::translate("No actions found")

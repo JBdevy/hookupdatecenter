@@ -16,10 +16,9 @@ final class ShowController: ObservableObject {
 final class ControlMappings: ObservableObject {
     static let shared = ControlMappings()
     var actions = DAWActionBindings(), error = ""
-    func setActionTrack(_ action: DAWAction, number: Int?) {}
-    func resetAction(_ action: DAWAction, kind: String) {}
-    func beginAction(_ action: DAWAction, kind: String) {}
-    func removeActionInput(_ action: DAWAction, kind: String) {}
+    func resetAction(_ action: DAWAction, kind: String, trackNumber: Int? = nil) {}
+    func beginAction(_ action: DAWAction, kind: String, trackNumber: Int? = nil) {}
+    func removeActionInput(_ action: DAWAction, kind: String, trackNumber: Int? = nil) {}
 }
 enum JarasLocalization { static func string(_ key: String) -> String { key } }
 enum JarasTheme {
@@ -87,3 +86,5 @@ Task { @MainActor in
     exit(0)
 }
 RunLoop.main.run()
+
+public enum SMK37Navigation { public enum Panel: Equatable, Sendable { case setlist, left } }

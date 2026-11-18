@@ -829,7 +829,7 @@ public struct ShowTimelinePresentationState: Equatable {
             guard tracks.indices.contains(number - 1), tracks[number - 1].kind == .standard else { return nil }
             return tracks[number - 1]
         }
-        return tracks.first { $0.id == selectedTrackForActions && $0.kind == .standard } ?? tracks.first { $0.kind == .standard }
+        return tracks.first { $0.id == selectedTrackForActions && $0.kind == .standard }
     }
     public func performAction(_ action: DAWAction, trackNumber: Int? = nil, midiValue: UInt8? = nil) {
         guard canControl(), !finishing else { return }
@@ -853,6 +853,16 @@ public struct ShowTimelinePresentationState: Equatable {
             if let midiValue { send(.volume, target: track?.id, value: MIDIFaderValue.gain(midiValue)) }
         case .panTrack:
             if let midiValue { send(.pan, target: track?.id, value: DAWActionValue.pan(midiValue)) }
+        case .trackVolumeDown, .trackVolumeUp:
+            if let track {
+                let decibels = 20 * log10(max(0.000001, track.volume))
+                let gain = pow(10, min(12, decibels + (action == .trackVolumeUp ? 1 : -1)) / 20)
+                send(.volume, target: track.id, value: gain)
+            }
+        case .trackPanLeft, .trackPanRight:
+            if let track {
+                send(.pan, target: track.id, value: min(1, max(-1, track.pan + (action == .trackPanRight ? 0.05 : -0.05))))
+            }
         case .tempoDown: adjustTempo(-1)
         case .tempoUp: adjustTempo(1)
         case .tapTempo: tapTempo()

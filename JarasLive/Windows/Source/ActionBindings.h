@@ -28,9 +28,6 @@ inline const jaras::Track *actionTrack(const jaras::Song &song, const ID &select
     for (const auto &track : song.tracks)
         if (track.id == selected && standard(track))
             return &track;
-    for (const auto &track : song.tracks)
-        if (standard(track))
-            return &track;
     return nullptr;
 }
 inline double midiFaderGain(float value) {
@@ -43,15 +40,20 @@ struct ActionDefinition {
     int category;
     const char *defaultKey;
     bool track = false, continuous = false;
+    bool keyboardTrackAdjustment() const {
+        const String action(id);
+        return action == "trackVolumeDown" || action == "trackVolumeUp" ||
+               action == "trackPanLeft" || action == "trackPanRight";
+    }
     bool supportsMIDI() const {
         const String action(id);
-        return action != "normalizeItems" && action != "reRenderItems" &&
+        return !keyboardTrackAdjustment() && action != "normalizeItems" && action != "reRenderItems" &&
                action != "unifyAudioItems" && action != "createRegionsFromItems" && action != "createTempoMarker" && action != "toggleFullscreen";
     }
     bool fixedKeyboard() const { return String(id) == "setlistUp" || String(id) == "setlistDown"; }
     bool repeats() const {
         const String action(id);
-        return action == "tempoDown" || action == "tempoUp" || action == "nextRegion" ||
+        return keyboardTrackAdjustment() || action == "tempoDown" || action == "tempoUp" || action == "nextRegion" ||
                action == "previousRegion" || action == "nextTimelinePoint" ||
                action == "previousTimelinePoint" || fixedKeyboard();
     }
@@ -70,6 +72,10 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"tunerUp", "Tuner +", 0, ""},
         {"volumeTrack", "Volume Track", 1, "", true, true},
         {"panTrack", "Pan Track", 1, "", true, true},
+        {"trackVolumeDown", "Track volume down", 1, "", true},
+        {"trackVolumeUp", "Track volume up", 1, "", true},
+        {"trackPanLeft", "Track pan left", 1, "", true},
+        {"trackPanRight", "Track pan right", 1, "", true},
         {"volumeMaster", "Volume Master", 1, "", false, true},
         {"muteTrack", "Mute Track", 2, "M", true},
         {"muteMaster", "Mute Master", 2, ""},
@@ -169,10 +175,56 @@ class ActionBindings final : public ChangeBroadcaster,
         }
         if (changed) settings.set("catlive.actions", values);
     }
+    static String targetID(const String &action, int number) {
+        return number > 0 ? action + ":" + String(number) : action;
+    }
+    static int targetNumber(const String &id) {
+        return id.fromFirstOccurrenceOf(":", false, false).getIntValue();
+    }
+    static String baseAction(const String &id) { return id.upToFirstOccurrenceOf(":", false, false); }
+    std::vector<int> mappedTracks(const ActionDefinition &definition) const {
+        std::vector<int> result;
+        if (!definition.track) return result;
+        const auto saved = settings.value("catlive.actions", object());
+        if (const auto *values = saved.getDynamicObject()) {
+            for (const auto &entry : values->getProperties()) {
+                const auto id = entry.name.toString();
+                if (baseAction(id) != definition.id || targetNumber(id) <= 0) continue;
+                if (str(entry.value, "keyboard").isNotEmpty() || get(entry.value, "midi").isObject())
+                    result.push_back(targetNumber(id));
+            }
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+    void migrateTrackMappings() {
+        auto values = settings.value("catlive.actions", object()).clone();
+        bool changed = false;
+        for (const auto &definition : actionDefinitions()) {
+            if (!definition.track) continue;
+            const auto legacy = get(values, Identifier(definition.id), object());
+            const int number = (int)num(legacy, "track");
+            if (number <= 0) continue;
+            const auto id = Identifier(targetID(definition.id, number));
+            auto numbered = get(values, id, object()).clone();
+            for (const auto &kind : {"keyboard", "midi"})
+                if (!numbered.hasProperty(Identifier(kind)) && legacy.hasProperty(Identifier(kind)))
+                    put(numbered, Identifier(kind), get(legacy, Identifier(kind)));
+            if (!numbered.hasProperty("keyboard")) {
+                const auto inherited = str(binding(definition), "keyboard");
+                if (inherited.isNotEmpty()) put(numbered, "keyboard", inherited);
+            }
+            put(values, id, numbered);
+            values.getDynamicObject()->removeProperty(Identifier(definition.id));
+            changed = true;
+        }
+        if (changed) settings.set("catlive.actions", values);
+    }
     std::atomic<bool> inputEnabled{true};
     ActionBindings(Appearance &preferences, AudioDeviceManager &manager)
         : settings(preferences), devices(manager) {
         migrateTransportMappings();
+        migrateTrackMappings();
         devices.addMidiInputDeviceCallback({}, this);
     }
     ~ActionBindings() override {
@@ -185,19 +237,19 @@ class ActionBindings final : public ChangeBroadcaster,
     std::function<String(const var &)> externalMIDIConflict;
     std::function<Result(const var &)> transferExternalMIDI;
     String learning, learningKind, error;
-    bool hasCustomInput(const ActionDefinition &definition, const String &kind) const {
+    bool hasCustomInput(const ActionDefinition &definition, const String &kind, int number = 0) const {
         if ((kind == "keyboard" && (definition.fixedKeyboard() || definition.continuous)) ||
             (kind == "midi" && !definition.supportsMIDI()))
             return false;
         const auto saved =
-            get(settings.value("catlive.actions", object()), Identifier(definition.id), object());
+            get(settings.value("catlive.actions", object()), Identifier(targetID(definition.id, number)), object());
         return saved.hasProperty(Identifier(kind)) &&
                (kind == "midi" ? get(saved, "midi").isObject()
                                : str(saved, "keyboard").isNotEmpty());
     }
-    var binding(const ActionDefinition &definition) const {
+    var binding(const ActionDefinition &definition, int number = 0) const {
         auto value =
-            get(settings.value("catlive.actions", object()), Identifier(definition.id), object())
+            get(settings.value("catlive.actions", object()), Identifier(targetID(definition.id, number)), object())
                 .clone();
         const String action(definition.id);
         const auto legacy = action == "toggleTracks" ? KeyPress(KeyPress::F1Key)
@@ -214,15 +266,16 @@ class ActionBindings final : public ChangeBroadcaster,
             }
             if (!conflict) put(value, "keyboard", replacement.getTextDescription());
         }
-        if (!value.hasProperty("keyboard") && String(definition.defaultKey).isNotEmpty()) {
+        if (number == 0 && !value.hasProperty("keyboard") && String(definition.defaultKey).isNotEmpty()) {
             const auto replacement = KeyPress::createFromDescription(definition.defaultKey);
             const auto saved = settings.value("catlive.actions", object());
             bool conflict = false;
-            for (const auto &other : actionDefinitions()) {
-                if (action == other.id) continue;
-                const auto key = str(get(saved, Identifier(other.id), object()), "keyboard");
-                if (key.isNotEmpty() && KeyPress::createFromDescription(key) == replacement) { conflict = true; break; }
-            }
+            if (const auto *entries = saved.getDynamicObject())
+                for (const auto &entry : entries->getProperties()) {
+                    if (entry.name.toString() == action) continue;
+                    const auto key = str(entry.value, "keyboard");
+                    if (key.isNotEmpty() && KeyPress::createFromDescription(key) == replacement) { conflict = true; break; }
+                }
             if (!conflict) put(value, "keyboard", replacement.getTextDescription());
         }
         if (definition.fixedKeyboard())
@@ -234,8 +287,8 @@ class ActionBindings final : public ChangeBroadcaster,
             put(value, "midi", {});
         return value;
     }
-    String inputLabel(const ActionDefinition &definition, const String &kind) const {
-        const auto value = binding(definition);
+    String inputLabel(const ActionDefinition &definition, const String &kind, int number = 0) const {
+        const auto value = binding(definition, number);
         if (kind == "keyboard")
             return str(value, "keyboard");
         auto midi = get(value, "midi");
@@ -249,7 +302,7 @@ class ActionBindings final : public ChangeBroadcaster,
             return midiLabel(midiInput(id));
         }
         for (const auto &definition : actionDefinitions())
-            if (id == definition.id) return inputLabel(definition, kind);
+            if (baseAction(id) == definition.id) return inputLabel(definition, kind, targetNumber(id));
         return {};
     }
     var midiInput(const String &id) const {
@@ -266,7 +319,7 @@ class ActionBindings final : public ChangeBroadcaster,
             const auto other = entry.name.toString();
             if (id == other || !sameMIDI(get(entry.value, "midi"), input)) continue;
             if (const int number = setlistBlockActionNumber(other); number > 0) { conflicts.add(setlistBlockActionTitle(number)); continue; }
-            for (const auto &definition : actionDefinitions()) if (other == definition.id)
+            for (const auto &definition : actionDefinitions()) if (baseAction(other) == definition.id)
                 conflicts.add(localization::translate(String::fromUTF8(definition.title)));
         }
         if (setlistBlockActionNumber(id) > 0 && externalMIDIConflict)
@@ -306,13 +359,14 @@ class ActionBindings final : public ChangeBroadcaster,
         if (captureKey(pressed))
             return true;
         for (const auto &definition : actionDefinitions()) {
-            const auto b = binding(definition);
-            const auto description = str(b, "keyboard");
-            if (description.isNotEmpty() &&
-                KeyPress::createFromDescription(description) == pressed) {
-                if (invoke && (!isRepeat || definition.repeats()))
-                    invoke(definition.id, 1.f, (int)num(b, "track"));
-                return true;
+            auto targets = mappedTracks(definition);
+            targets.push_back(0);
+            for (const int number : targets) {
+                const auto description = str(binding(definition, number), "keyboard");
+                if (description.isNotEmpty() && KeyPress::createFromDescription(description) == pressed) {
+                    if (invoke && (!isRepeat || definition.repeats())) invoke(definition.id, 1.f, number);
+                    return true;
+                }
             }
         }
         // A removed/reassigned default must not fall through to a legacy shortcut.
@@ -327,7 +381,7 @@ class ActionBindings final : public ChangeBroadcaster,
         const bool block = setlistBlockActionNumber(id) > 0;
         replaceMIDIConflicts = replaceMIDIConflicts && block && kind == "midi";
         const auto definition = std::find_if(actionDefinitions().begin(), actionDefinitions().end(),
-                                             [&](const auto &entry) { return id == entry.id; });
+                                             [&](const auto &entry) { const int number = targetNumber(id); return id == targetID(entry.id, number) && (number == 0 || entry.track); });
         if ((block && (kind != "midi" || (!input.isVoid() && (!input.isObject() ||
                  ((int)num(input,"status") != 0x90 && (int)num(input,"status") != 0xb0) ||
                  num(input,"number",-1) < 0 || num(input,"number") > 127 ||
@@ -364,19 +418,23 @@ class ActionBindings final : public ChangeBroadcaster,
             input = key.getTextDescription();
         }
         for (const auto &definition : actionDefinitions()) {
-            if (id == definition.id)
-                continue;
-            const auto b = binding(definition);
-            const auto existing = get(b, Identifier(kind));
-            const bool same = kind == "keyboard" && existing.isString() && input.isString()
-                ? normalizedActionKey(KeyPress::createFromDescription(existing.toString())) ==
-                    normalizedActionKey(KeyPress::createFromDescription(input.toString()))
-                : kind == "midi" ? sameMIDI(existing, input) : JSON::toString(existing) == JSON::toString(input);
-            if (!input.isVoid() && input.toString().isNotEmpty() && same) {
-                if (replaceMIDIConflicts) continue;
-                error = String::fromUTF8("Já está atribuído a ") + definition.title;
-                sendChangeMessage();
-                return false;
+            auto targets = mappedTracks(definition);
+            targets.push_back(0);
+            for (const int number : targets) {
+                if (id == targetID(definition.id, number)) continue;
+                const auto existing = get(binding(definition, number), Identifier(kind));
+                const bool same = kind == "keyboard" && existing.isString() && input.isString()
+                    ? normalizedActionKey(KeyPress::createFromDescription(existing.toString())) ==
+                        normalizedActionKey(KeyPress::createFromDescription(input.toString()))
+                    : kind == "midi" && sameMIDI(existing, input);
+                if (!input.isVoid() && input.toString().isNotEmpty() && same && !replaceMIDIConflicts) {
+                    auto title = localization::translate(definition.title);
+                    if (definition.track)
+                        title += number > 0 ? " #" + String(number) : " · " + localization::translate("Selected track");
+                    error = String::fromUTF8("Já está atribuído a ") + title;
+                    sendChangeMessage();
+                    return false;
+                }
             }
         }
         if (kind == "midi" && input.isObject()) {
@@ -420,17 +478,6 @@ class ActionBindings final : public ChangeBroadcaster,
         sendChangeMessage();
         return result.wasOk();
     }
-    void setTrack(const String &id, int number) {
-        auto values = settings.value("catlive.actions", object()).clone();
-        auto entry = get(values, Identifier(id), object()).clone();
-        if ((int)num(entry, "track") == std::max(0, number))
-            return;
-        put(entry, "track", std::max(0, number));
-        put(values, Identifier(id), entry);
-        error = settings.set("catlive.actions", values).getErrorMessage();
-        sendChangeMessage();
-    }
-
   private:
     friend struct ActionBindingsTestAccess;
     Appearance &settings;
@@ -491,7 +538,7 @@ class ActionBindings final : public ChangeBroadcaster,
             if (learningKind == "midi" && learning.isNotEmpty()) {
                 if (setlistBlockActionNumber(learning) > 0 && release) continue;
                 auto def = std::find_if(actionDefinitions().begin(), actionDefinitions().end(),
-                                        [&](const auto &d) { return learning == d.id; });
+                                        [&](const auto &d) { return baseAction(learning) == d.id; });
                 if (def != actionDefinitions().end() && def->continuous && input.status != 0xb0) {
                     error = "Use um controle CC para volume ou pan.";
                     sendChangeMessage();
@@ -514,19 +561,25 @@ class ActionBindings final : public ChangeBroadcaster,
                 if (!wasHeld && invoke) invoke(blockAction, input.value / 127.f, 0);
                 continue;
             }
+            bool handled = false;
             for (const auto &definition : actionDefinitions()) {
-                const auto b = binding(definition), midi = get(b, "midi");
-                if (midi.isObject() && (int)num(midi, "status") == input.status &&
-                    (int)num(midi, "number") == input.number &&
-                    (int)num(midi, "channel") == input.channel) {
+                auto targets = mappedTracks(definition);
+                targets.push_back(0);
+                for (const int number : targets) {
+                    const auto midi = get(binding(definition, number), "midi");
+                    if (!midi.isObject() || (int)num(midi, "status") != input.status ||
+                        (int)num(midi, "number") != input.number ||
+                        (int)num(midi, "channel") != input.channel) continue;
                     const String action(definition.id);
                     const bool oncePerPress = action == "cancelSection" || action == "togglePreview" ||
                                               action == "playStop" || action == "subPlayStop";
                     if (invoke && (definition.continuous || input.value > 0) &&
                         (!oncePerPress || !wasHeld))
-                        invoke(definition.id, input.value / 127.f, (int)num(b, "track"));
+                        invoke(definition.id, input.value / 127.f, number);
+                    handled = true;
                     break;
                 }
+                if (handled) break;
             }
         }
     }

@@ -44,12 +44,11 @@ final class RecordingArmStateTests: XCTestCase {
         let key = ControlInput(kind: "keyboard", label: "F8", key: 100, modifiers: 0)
         let midi = ControlInput(kind: "midi", label: "CC42", device: 2, channel: 0, status: 0xb0, number: 42)
         XCTAssertTrue(DAWAction.visible.contains(.selectTrack))
-        XCTAssertTrue(bindings.setInput(key, action: .selectTrack, kind: "keyboard"))
-        XCTAssertTrue(bindings.setInput(midi, action: .selectTrack, kind: "midi"))
-        bindings.setTrack(3, action: .selectTrack)
+        XCTAssertTrue(bindings.setInput(key, action: .selectTrack, kind: "keyboard", trackNumber: 3))
+        XCTAssertTrue(bindings.setInput(midi, action: .selectTrack, kind: "midi", trackNumber: 3))
         let restored = DAWActionBindings(stored: try JSONDecoder().decode([DAWActionBinding].self, from: JSONEncoder().encode(bindings.entries)))
         XCTAssertEqual(restored.matching(key), .selectTrack)
         XCTAssertEqual(restored.matching(midi), .selectTrack)
-        XCTAssertEqual(restored.binding(.selectTrack).trackNumber, 3)
+        XCTAssertEqual(restored.matchingBinding(midi)?.trackNumber, 3)
     }
 }

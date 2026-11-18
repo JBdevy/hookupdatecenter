@@ -35,7 +35,6 @@ struct MappingEdit: Identifiable {
     var action: DAWAction? = nil
     var fxParameter: FXParameterMapping? = nil
     var chooseInputKind = false
-    var replacesTrackTarget = false
     var trackNumber: Int? = nil
     var presentedInline = false
 }
@@ -200,13 +199,13 @@ struct MappingTransferRequest: Identifiable {
         candidate = current.first { $0.track == track && $0.fxParameter?.sameControl(as: parameter) == true }?.input
         editing = MappingEdit(track: track, command: "fxParameter", fxParameter: parameter)
     }
-    func beginAction(_ action: DAWAction, kind: String) {
+    func beginAction(_ action: DAWAction, kind: String, trackNumber: Int? = nil) {
         guard kind != "midi" || action.supportsMIDI else { return }
         guard kind != "keyboard" || (!action.fixedKeyboard && !action.continuous) else { return }
         mode = kind; error = ""
-        let binding = actions.binding(action)
+        let binding = actions.binding(action, trackNumber: trackNumber)
         candidate = kind == "keyboard" ? binding.keyboard : binding.midi
-        editing = MappingEdit(track: nil, command: action.rawValue, action: action)
+        editing = MappingEdit(track: nil, command: action.rawValue, action: action, trackNumber: trackNumber)
     }
     func beginSetlistBlock(_ number: Int) {
         guard number > 0, show != nil else { return }
@@ -227,30 +226,30 @@ struct MappingTransferRequest: Identifiable {
         mappings.removeAll { $0.globalSetlistBlockNumber == number }
         persist(); candidate = nil; error = ""; editing = nil
     }
-    func setActionTrack(_ action: DAWAction, number: Int?) {
-        actions.setTrack(number, action: action); persistActions()
+    func removeActionInput(_ action: DAWAction, kind: String, trackNumber: Int? = nil) {
+        actions.setInput(nil, action: action, kind: kind, trackNumber: trackNumber); persistActions()
     }
-    func removeActionInput(_ action: DAWAction, kind: String) {
-        actions.setInput(nil, action: action, kind: kind); persistActions()
-    }
-    func resetAction(_ action: DAWAction, kind: String? = nil) {
-        if kind != "midi", let input = action.defaultKeyboard, let conflict = actions.conflict(input, excluding: action) {
+    func resetAction(_ action: DAWAction, kind: String? = nil, trackNumber: Int? = nil) {
+        if trackNumber == nil, kind != "midi", let input = action.defaultKeyboard, let conflict = actions.conflict(input, excluding: action) {
             error = JarasLocalization.string(conflict.title) + " — " + JarasLocalization.string("This control is already mapped."); return
         }
-        actions.reset(action, kind: kind); error = ""; persistActions()
+        actions.reset(action, kind: kind, trackNumber: trackNumber); error = ""; persistActions()
     }
     private func persistActions() {
         if let data = try? JSONEncoder().encode(actions.entries) { UserDefaults.standard.set(data, forKey: "jaras.actions") }
     }
     var learningContinuous: Bool { editing?.fxParameter != nil || editing?.action?.continuous == true || editing?.command == "volume" }
+    func actionTitle(_ action: DAWAction, trackNumber: Int?) -> String {
+        let title = JarasLocalization.string(action.title)
+        guard action.needsTrack else { return title }
+        guard let trackNumber else { return title + " · " + JarasLocalization.string("Selected track") }
+        let name = show?.actionTrack(number: trackNumber)?.name
+        return title + " · #" + String(trackNumber) + (name.map { " " + $0 } ?? "")
+    }
     func editTitle(_ edit: MappingEdit) -> String {
         if let fx = edit.fxParameter { return fx.parameter.effect + " · " + JarasLocalization.string(fx.parameter.name) }
         guard let action = edit.action else { return title(track: edit.track, command: edit.command) }
-        let title = JarasLocalization.string(action.title)
-        if edit.replacesTrackTarget, let number = edit.trackNumber, let track = show?.actionTrack(number: number) {
-            return title + " · " + track.name
-        }
-        return title
+        return actionTitle(action, trackNumber: edit.trackNumber)
     }
     func shortcutHelp(_ action: DAWAction) -> String {
         let label = actions.binding(action).keyboard?.label
@@ -265,9 +264,9 @@ struct MappingTransferRequest: Identifiable {
             guard !action.needsTrack || number != nil else { return }
             if action.continuous { mode = "midi" }
             error = ""
-            let binding = actions.binding(action)
+            let binding = actions.binding(action, trackNumber: number)
             candidate = mode == "keyboard" ? binding.keyboard : binding.midi
-            editing = MappingEdit(track: track, command: command, action: action, chooseInputKind: !action.continuous, replacesTrackTarget: action.needsTrack, trackNumber: number)
+            editing = MappingEdit(track: track, command: command, action: action, chooseInputKind: !action.continuous, trackNumber: number)
             return
         }
         error = ""; candidate = nil
@@ -279,7 +278,8 @@ struct MappingTransferRequest: Identifiable {
         guard let editing, let candidate, let show, candidate.kind == mode else { return }
         if learningContinuous && (candidate.kind != "midi" || candidate.status != 0xb0) { return }
         if learningSetlistBlock && (candidate.kind != "midi" || (candidate.status != 0x90 && candidate.status != 0xb0)) { return }
-        let actionConflicts = actions.entries.filter { $0.action != editing.action && $0.matches(candidate) }
+        let editingActionID = editing.action.map { actions.binding($0, trackNumber: editing.trackNumber).id }
+        let actionConflicts = actions.entries.filter { $0.id != editingActionID && $0.matches(candidate) }
         let vinhetasConflicts = learningSetlistBlock ? VinhetasController.shared.setlistBlockConflicts(candidate) : []
         // A global block shortcut must also resolve collisions with FX controls
         // saved in another project, where it will remain active after switching.
@@ -297,7 +297,7 @@ struct MappingTransferRequest: Identifiable {
             error = JarasLocalization.string("The arrow keys are fixed to setlist navigation."); return
         }
         if !replacingConflicts && (!actionConflicts.isEmpty || !controlConflicts.isEmpty || !vinhetasConflicts.isEmpty) {
-            let titles = actionConflicts.map { JarasLocalization.string($0.action.title) } + controlConflicts.map {
+            let titles = actionConflicts.map { actionTitle($0.action, trackNumber: $0.trackNumber) } + controlConflicts.map {
                 $0.fxParameter.map { $0.parameter.effect + " · " + JarasLocalization.string($0.parameter.name) } ?? title(track: $0.track, command: $0.command)
             }
             let conflictTitles = titles + vinhetasConflicts
@@ -308,11 +308,10 @@ struct MappingTransferRequest: Identifiable {
         }
         var nextActions = actions
         if let action = editing.action {
-            let accepted = replacingConflicts ? nextActions.transferInput(candidate, action: action, kind: mode) : nextActions.setInput(candidate, action: action, kind: mode)
+            let accepted = replacingConflicts ? nextActions.transferInput(candidate, action: action, kind: mode, trackNumber: editing.trackNumber) : nextActions.setInput(candidate, action: action, kind: mode, trackNumber: editing.trackNumber)
             guard accepted else { return }
-            if editing.replacesTrackTarget { nextActions.setTrack(editing.trackNumber, action: action) }
         } else {
-            for conflict in actionConflicts { nextActions.setInput(nil, action: conflict.action, kind: mode) }
+            for conflict in actionConflicts { nextActions.setInput(nil, action: conflict.action, kind: mode, trackNumber: conflict.trackNumber) }
         }
         let conflictingIDs = Set(controlConflicts.map(\.id))
         var nextControls = mappings.filter { !conflictingIDs.contains($0.id) }
@@ -340,13 +339,12 @@ struct MappingTransferRequest: Identifiable {
             guard let action = DAWAction.quickMapping(command: entry.command, master: entry.track == nil) else { continue }
             let number = entry.track.flatMap { id in show.current?.tracks.firstIndex(where: { $0.id == id }).map { $0 + 1 } }
             guard !action.needsTrack || (entry.project == show.snapshot.project.id && number != nil) else { continue }
-            let binding = actions.binding(action)
+            let binding = actions.binding(action, trackNumber: number)
             let existing = entry.input.kind == "keyboard" ? binding.keyboard : binding.midi
             if existing == nil || existing == action.defaultKeyboard {
                 guard (!action.continuous || (entry.input.kind == "midi" && entry.input.status == 0xb0)),
-                      actions.conflict(entry.input, excluding: action) == nil else { continue }
-                actions.setInput(entry.input, action: action, kind: entry.input.kind)
-                if action.needsTrack { actions.setTrack(number, action: action) }
+                      actions.conflict(entry.input, excluding: action, trackNumber: number) == nil else { continue }
+                actions.setInput(entry.input, action: action, kind: entry.input.kind, trackNumber: number)
             }
             converted.insert(entry.id)
         }
@@ -363,8 +361,8 @@ struct MappingTransferRequest: Identifiable {
             if let action = ShowCommand(rawValue: entry.command), [.mute, .solo].contains(action) { show.send(action, target: entry.track) }
             return
         }
-        if let action = actions.matching(input) {
-            show.performAction(action, trackNumber: actions.binding(action).trackNumber)
+        if let binding = actions.matchingBinding(input) {
+            show.performAction(binding.action, trackNumber: binding.trackNumber)
         }
     }
     private func continuous(track: UUID?, command: ShowCommand, value: Double, id: String) {
@@ -448,11 +446,12 @@ struct MappingTransferRequest: Identifiable {
             return
         }
         if editing == nil, status & 0xf0 == 0xb0,
-           let action = actions.matching(input), action.continuous {
-            let track = action == .volumeMaster ? nil : show?.actionTrack(number: actions.binding(action).trackNumber)?.id
+           let binding = actions.matchingBinding(input), binding.action.continuous {
+            let action = binding.action
+            let track = action == .volumeMaster ? nil : show?.actionTrack(number: binding.trackNumber)?.id
             guard action == .volumeMaster || track != nil else { return }
             continuous(track: track, command: action == .panTrack ? .pan : .volume,
-                       value: action == .panTrack ? DAWActionValue.pan(value) : MIDIFaderValue.gain(value), id: action.rawValue)
+                       value: action == .panTrack ? DAWActionValue.pan(value) : MIDIFaderValue.gain(value), id: binding.id)
             return
         }
         if editing == nil {
@@ -553,7 +552,7 @@ struct ControlMappingEditor: View {
                 Picker("Input", selection: $mappings.mode) { Text("Keyboard").tag("keyboard"); Text("MIDI").tag("midi") }.pickerStyle(.segmented)
                     .onChange(of: mappings.mode) { kind in
                         if let action = edit.action {
-                            let binding = mappings.actions.binding(action)
+                            let binding = mappings.actions.binding(action, trackNumber: edit.trackNumber)
                             mappings.candidate = kind == "keyboard" ? binding.keyboard : binding.midi
                         } else { mappings.candidate = nil }
                         mappings.error = ""
@@ -588,7 +587,25 @@ struct ControlMappingEditor: View {
 struct ControlMappingsList: View {
     @ObservedObject private var mappings = ControlMappings.shared
     var body: some View {
-        if mappings.current.isEmpty { Text("No mappings yet.").foregroundStyle(JarasTheme.secondary) }
+        let actionBindings = mappings.actions.entries.filter {
+            $0.midi != nil || ($0.keyboard != nil && $0.keyboard != $0.action.defaultKeyboard)
+        }
+        if mappings.current.isEmpty && actionBindings.isEmpty { Text("No mappings yet.").foregroundStyle(JarasTheme.secondary) }
+        ForEach(actionBindings) { binding in
+            ForEach(["keyboard", "midi"], id: \.self) { kind in
+                if let input = kind == "keyboard" ? binding.keyboard : binding.midi {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(mappings.actionTitle(binding.action, trackNumber: binding.trackNumber))
+                            Text(input.label).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
+                        }
+                        Spacer()
+                        Button("Edit") { mappings.beginAction(binding.action, kind: kind, trackNumber: binding.trackNumber) }
+                        Button { mappings.removeActionInput(binding.action, kind: kind, trackNumber: binding.trackNumber) } label: { Image(systemName: "trash") }.accessibilityLabel("Remove mapping")
+                    }.padding(10).background(JarasTheme.panel).cornerRadius(6)
+                }
+            }
+        }
         ForEach(mappings.current) { item in
             HStack {
                 VStack(alignment: .leading, spacing: 5) {

@@ -5,6 +5,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case previousProjectTab, nextProjectTab
     case transportFadeout
     case selectTrack, muteTrack, soloTrack, volumeTrack, panTrack
+    case trackVolumeDown, trackVolumeUp, trackPanLeft, trackPanRight
     case muteMaster, soloMaster, volumeMaster
     case tempoDown, tempoUp, tapTempo, playStop, play, stop, pause, repeatPlayback, subPlayStop, subPlay, addTrack
     case tunerDown, tunerUp, partsUp, partsDown, parts1, parts2, toggleParts, cancelSection
@@ -21,11 +22,12 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         return allCases.filter { !$0.legacyTransportMapping }
         #endif
     }
-    public var needsTrack: Bool { [.selectTrack, .muteTrack, .soloTrack, .volumeTrack, .panTrack].contains(self) }
+    public var needsTrack: Bool { [.selectTrack, .muteTrack, .soloTrack, .volumeTrack, .panTrack, .trackVolumeDown, .trackVolumeUp, .trackPanLeft, .trackPanRight].contains(self) }
     public var continuous: Bool { self == .volumeTrack || self == .panTrack || self == .volumeMaster }
-    public var supportsMIDI: Bool { ![.normalizeItems, .reRenderItems, .unifyAudioItems, .createRegionsFromItems, .createTempoMarker, .toggleFullscreen].contains(self) }
+    public var keyboardTrackAdjustment: Bool { [.trackVolumeDown, .trackVolumeUp, .trackPanLeft, .trackPanRight].contains(self) }
+    public var supportsMIDI: Bool { !keyboardTrackAdjustment && ![.normalizeItems, .reRenderItems, .unifyAudioItems, .createRegionsFromItems, .createTempoMarker, .toggleFullscreen].contains(self) }
     public var fixedKeyboard: Bool { self == .setlistUp || self == .setlistDown }
-    public var repeats: Bool { [.tempoDown, .tempoUp, .nextRegion, .previousRegion, .nextTimelinePoint, .previousTimelinePoint].contains(self) }
+    public var repeats: Bool { keyboardTrackAdjustment || [.tempoDown, .tempoUp, .nextRegion, .previousRegion, .nextTimelinePoint, .previousTimelinePoint].contains(self) }
     public var title: String {
         switch self {
         case .saveProject: return "Salvar projeto"
@@ -38,6 +40,10 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .soloTrack: return "Solo Track"
         case .volumeTrack: return "Volume Track"
         case .panTrack: return "Pan Track"
+        case .trackVolumeDown: return "Track volume down"
+        case .trackVolumeUp: return "Track volume up"
+        case .trackPanLeft: return "Track pan left"
+        case .trackPanRight: return "Track pan right"
         case .muteMaster: return "Mute Master"
         case .soloMaster: return "Solo Master"
         case .volumeMaster: return "Volume Master"
@@ -121,7 +127,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .toggleTracks: (key, modifiers, label) = (17, option, "⌥T")
         case .toggleBarMixer: (key, modifiers, label) = (4, option, "⌥H")
         case .toggleSetlist: (key, modifiers, label) = (1, option, "⌥S")
-        case .volumeTrack, .panTrack, .muteMaster, .soloMaster, .volumeMaster: return nil
+        case .volumeTrack, .panTrack, .trackVolumeDown, .trackVolumeUp, .trackPanLeft, .trackPanRight, .muteMaster, .soloMaster, .volumeMaster: return nil
         }
         return ControlInput(kind: "keyboard", label: label, key: key, modifiers: modifiers)
     }
@@ -149,15 +155,18 @@ public struct PartsTabSelectionRequest: Equatable, Sendable {
 
 public struct DAWActionBinding: Codable, Equatable, Identifiable {
     public var action: DAWAction
-    /// nil uses the selected audio track, falling back to the first audio track.
+    /// A nil target uses the selected track. A number targets a mixer position.
     public var trackNumber: Int?
     public var keyboard: ControlInput?
     public var midi: ControlInput?
-    public var id: String { action.rawValue }
-    public init(action: DAWAction) { self.action = action; keyboard = action.defaultKeyboard }
+    public var id: String { trackNumber.map { action.rawValue + ":" + String($0) } ?? action.rawValue }
+    public init(action: DAWAction, trackNumber: Int? = nil) {
+        self.action = action; self.trackNumber = trackNumber
+        keyboard = trackNumber == nil ? action.defaultKeyboard : nil
+    }
     public func matches(_ input: ControlInput) -> Bool {
         if keyboard?.matches(input) == true || midi?.matches(input) == true { return true }
-        guard input.kind == "keyboard", keyboard == action.defaultKeyboard else { return false }
+        guard trackNumber == nil, input.kind == "keyboard", keyboard == action.defaultKeyboard else { return false }
         // Default aliases stop working as soon as the user changes that shortcut.
         switch action {
         case .addTrack: return input.key == 17 && input.modifiers == 1 << 18
@@ -210,17 +219,21 @@ public struct DAWActionBindings: Codable, Equatable {
             }
         }
         entries = DAWAction.allCases.map { action in
-            var binding = stored.first { $0.action == action } ?? DAWActionBinding(action: action)
+            var binding = stored.first { $0.action == action && (!action.needsTrack || $0.trackNumber == nil) } ?? DAWActionBinding(action: action)
             if action.fixedKeyboard { binding.keyboard = action.defaultKeyboard }
             if action.continuous { binding.keyboard = nil }
             if !action.supportsMIDI { binding.midi = nil }
             // Existing global shortcuts take precedence over defaults introduced
             // in a later version of the action list.
-            if !stored.contains(where: { $0.action == action }), let input = binding.keyboard,
-               stored.contains(where: { $0.action != action && $0.matches(input) }) {
+            if !stored.contains(where: { $0.action == action && (!action.needsTrack || $0.trackNumber == nil) }), let input = binding.keyboard,
+               stored.contains(where: { $0.id != binding.id && $0.matches(input) }) {
                 binding.keyboard = nil
             }
             return binding
+        }
+        for var binding in stored where binding.action.needsTrack && (binding.trackNumber ?? 0) > 0 {
+            if binding.action.continuous { binding.keyboard = nil }
+            if !entries.contains(where: { $0.id == binding.id }) { entries.append(binding) }
         }
         if let index = entries.firstIndex(where: { $0.action == .transportFadeout }), let input = entries[index].keyboard,
            Self.reservedForFadeout(input) || entries.contains(where: { $0.action != .transportFadeout && $0.matches(input) }) {
@@ -244,41 +257,50 @@ public struct DAWActionBindings: Codable, Equatable {
         if key == 4 && flags == command | option { return true }
         return false
     }
-    public func binding(_ action: DAWAction) -> DAWActionBinding { entries.first { $0.action == action }! }
-    public func matching(_ input: ControlInput) -> DAWAction? { entries.first { $0.matches(input) }?.action }
-    @discardableResult public mutating func setInput(_ input: ControlInput?, action: DAWAction, kind: String) -> Bool {
-        guard !action.legacyTransportMapping, let index = entries.firstIndex(where: { $0.action == action }), input == nil || conflict(input!, excluding: action) == nil else { return false }
+    public func binding(_ action: DAWAction, trackNumber: Int? = nil) -> DAWActionBinding {
+        let target = DAWActionBinding(action: action, trackNumber: trackNumber)
+        return entries.first { $0.action == action && (!action.needsTrack || $0.trackNumber == trackNumber) } ?? target
+    }
+    public func matchingBinding(_ input: ControlInput) -> DAWActionBinding? { entries.first { $0.matches(input) } }
+    public func matching(_ input: ControlInput) -> DAWAction? { matchingBinding(input)?.action }
+    @discardableResult public mutating func setInput(_ input: ControlInput?, action: DAWAction, kind: String, trackNumber: Int? = nil) -> Bool {
+        guard !action.legacyTransportMapping, trackNumber.map({ action.needsTrack && $0 > 0 }) ?? true,
+              input == nil || conflict(input!, excluding: action, trackNumber: trackNumber) == nil else { return false }
         if action == .transportFadeout, let input, Self.reservedForFadeout(input) { return false }
-        if kind == "keyboard" { guard !action.fixedKeyboard && !action.continuous else { return false }; entries[index].keyboard = input } else {
+        var binding = binding(action, trackNumber: trackNumber)
+        if kind == "keyboard" {
+            guard !action.fixedKeyboard && !action.continuous else { return false }
+            binding.keyboard = input
+        } else {
             guard action.supportsMIDI, !action.continuous || input == nil || (input?.kind == "midi" && input?.status == 0xb0) else { return false }
-            entries[index].midi = input
+            binding.midi = input
         }
+        if let index = entries.firstIndex(where: { $0.id == binding.id }) {
+            if trackNumber != nil && binding.keyboard == nil && binding.midi == nil { entries.remove(at: index) }
+            else { entries[index] = binding }
+        } else if input != nil { entries.append(binding) }
         return true
     }
-    @discardableResult public mutating func transferInput(_ input: ControlInput, action: DAWAction, kind: String) -> Bool {
+    @discardableResult public mutating func transferInput(_ input: ControlInput, action: DAWAction, kind: String, trackNumber: Int? = nil) -> Bool {
         guard input.kind == kind,
               kind != "keyboard" || (!action.fixedKeyboard && !action.continuous),
               kind != "midi" || (action.supportsMIDI && (!action.continuous || input.status == 0xb0)) else { return false }
-        let conflicts = entries.filter { $0.action != action && $0.matches(input) }
+        let id = binding(action, trackNumber: trackNumber).id
+        let conflicts = entries.filter { $0.id != id && $0.matches(input) }
         if action == .transportFadeout, kind == "keyboard", Self.reservedForFadeout(input) || !conflicts.isEmpty { return false }
         guard kind != "keyboard" || !conflicts.contains(where: { $0.action.fixedKeyboard }) else { return false }
-        for conflict in conflicts { setInput(nil, action: conflict.action, kind: kind) }
-        return setInput(input, action: action, kind: kind)
+        for conflict in conflicts { setInput(nil, action: conflict.action, kind: kind, trackNumber: conflict.trackNumber) }
+        return setInput(input, action: action, kind: kind, trackNumber: trackNumber)
     }
-    public mutating func setTrack(_ number: Int?, action: DAWAction) {
-        guard let index = entries.firstIndex(where: { $0.action == action }) else { return }
-        entries[index].trackNumber = number.map { max(1, $0) }
+    public mutating func reset(_ action: DAWAction, kind: String? = nil, trackNumber: Int? = nil) {
+        if kind != "midi" { setInput(trackNumber == nil ? action.defaultKeyboard : nil, action: action, kind: "keyboard", trackNumber: trackNumber) }
+        if kind != "keyboard" { setInput(nil, action: action, kind: "midi", trackNumber: trackNumber) }
     }
-    public mutating func reset(_ action: DAWAction, kind: String? = nil) {
-        guard let index = entries.firstIndex(where: { $0.action == action }) else { return }
-        if kind != "midi", let input = action.defaultKeyboard, conflict(input, excluding: action) != nil { return }
-        if kind == "keyboard" { entries[index].keyboard = action.defaultKeyboard }
-        else if kind == "midi" { entries[index].midi = nil }
-        else { entries[index] = DAWActionBinding(action: action) }
+    public func conflict(_ input: ControlInput, excluding action: DAWAction, trackNumber: Int? = nil) -> DAWAction? {
+        let id = binding(action, trackNumber: trackNumber).id
+        return entries.first { $0.id != id && $0.matches(input) }?.action
     }
-    public func conflict(_ input: ControlInput, excluding action: DAWAction) -> DAWAction? {
-        entries.first { $0.action != action && $0.matches(input) }?.action
-    }
+
 }
 public enum DAWActionValue {
     public static func pan(_ value: UInt8) -> Double {
@@ -298,7 +320,7 @@ extension DAWAction {
     public var category: DAWActionCategory {
         switch self {
         case .transportFadeout, .playStop, .play, .stop, .pause, .subPlay, .subPlayStop, .repeatPlayback, .tempoDown, .tempoUp, .tapTempo, .tunerDown, .tunerUp: return .transport
-        case .volumeMaster, .volumeTrack, .panTrack: return .volume
+        case .volumeMaster, .volumeTrack, .panTrack, .trackVolumeDown, .trackVolumeUp, .trackPanLeft, .trackPanRight: return .volume
         case .muteMaster, .muteTrack: return .mute
         case .soloMaster, .soloTrack: return .solo
         case .setlistUp, .setlistDown, .toggleAuto, .ignoreNext, .toggleSetlist, .toggleMultiLoopBypass, .partsUp, .partsDown, .parts1, .parts2, .toggleParts, .cancelSection: return .setlist

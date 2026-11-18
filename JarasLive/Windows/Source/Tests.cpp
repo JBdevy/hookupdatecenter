@@ -4373,7 +4373,8 @@ int runTests(const File &directory) {
         state.subPlaying = false;
         engine.transport(state);
         render();
-        expect(output.getMagnitude(0, 480) == 0, "Stopped transport emitted audio");
+        expect(output.getMagnitude(stopFadeFrames, 480 - stopFadeFrames) == 0,
+               "Stopped transport emitted audio after its fade");
         p.masterVolume = .5;
         trace("master output patch");
         p.masterOutputs = std::vector<jaras::OutputPatch>{{3, 2}};
@@ -5704,6 +5705,15 @@ int runTests(const File &directory) {
                "Mac Shift+Space shortcut did not target Sub Play");
         expect(!bindings.assign("setlistUp", "keyboard", "F7"),
                "Fixed setlist keyboard navigation was reassigned");
+        int actionTrackNumber = -1;
+        bindings.invoke = [&](const String &id, float, int number) { invoked = id; actionTrackNumber = number; };
+        expect(bindings.assign("soloTrack:3", "keyboard", "F7"), "Numbered solo could not be mapped");
+        expect(bindings.inputLabel("soloTrack:4", "keyboard").isEmpty(), "Numbered track inherited another shortcut");
+        expect(!bindings.assign("soloTrack:4", "keyboard", "F7"), "Duplicate numbered action was accepted");
+        expect(bindings.key(KeyPress(KeyPress::F7Key)) && invoked == "soloTrack" && actionTrackNumber == 3,
+               "Numbered solo used the selected track");
+        expect(bindings.key(KeyPress('S', ModifierKeys::shiftModifier, 0)) && invoked == "soloTrack" && actionTrackNumber == 0,
+               "Numbered solo replaced the selected-track shortcut");
         auto midiInput = object();
         put(midiInput, "status", 0x90);
         put(midiInput, "number", 60);

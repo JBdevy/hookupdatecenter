@@ -4,10 +4,11 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     const auto *song = session.song();
     if (!song)
         return;
+    const jaras::Track *target = nullptr;
     ID track;
     for (const auto &definition : actionDefinitions())
         if (action == definition.id && definition.track) {
-            const auto *target = actionTrack(*song, selectedTrack, trackNumber);
+            target = actionTrack(*song, selectedTrack, trackNumber);
             if (!target)
                 throw std::runtime_error("Pista indisponível para esta ação.");
             track = target->id;
@@ -43,6 +44,12 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         command(jaras::CommandKind::volume, {}, midiFaderGain(value));
     else if (action == "panTrack")
         command(jaras::CommandKind::pan, track, value * 2 - 1);
+    else if (action == "trackVolumeDown" || action == "trackVolumeUp") {
+        const auto decibels = 20.0 * std::log10(std::max(0.000001, (double)target->volume));
+        const auto gain = std::pow(10.0, std::min(12.0, decibels + (action == "trackVolumeUp" ? 1 : -1)) / 20.0);
+        command(jaras::CommandKind::volume, track, gain);
+    } else if (action == "trackPanLeft" || action == "trackPanRight")
+        command(jaras::CommandKind::pan, track, std::clamp(target->pan + (action == "trackPanRight" ? 0.05 : -0.05), -1.0, 1.0));
     else if (action == "playStop")
         command(session.transport().playing ? jaras::CommandKind::stop : jaras::CommandKind::play);
     else if (action == "play")
