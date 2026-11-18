@@ -120,21 +120,30 @@ final class PlaybackCapacityTests: XCTestCase {
         executor.transport.playing = true
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project(1))
         executor.transport.playing = true; show.tick()
-        var ready = false
+        var releasePreparation: AsyncStream<Void>.Continuation?
         show.pendingSubplayPreparation = { _, _ in
-            if ready { return nil }
-            return Task { @MainActor in try? await Task.sleep(nanoseconds: 30_000_000); ready = true }
+            guard releasePreparation == nil else { return nil }
+            let (stream, continuation) = AsyncStream<Void>.makeStream()
+            releasePreparation = continuation
+            return Task { @MainActor in for await _ in stream {} }
         }
         show.send(.subPlay)
         XCTAssertTrue(show.preparingAudio)
         XCTAssertTrue(show.snapshot.transport.playing)
         XCTAssertFalse(show.snapshot.transport.subPlay.playing)
-        try await Task.sleep(nanoseconds: 80_000_000)
+        releasePreparation?.finish()
+        for _ in 0..<200 where !show.snapshot.transport.subPlay.playing {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertTrue(show.snapshot.transport.subPlay.playing)
         show.send(.stopAll)
-        show.send(.play); ready = false
-        show.send(.subPlay); show.send(.stopAll)
-        try await Task.sleep(nanoseconds: 80_000_000)
+        show.send(.play)
+        releasePreparation = nil
+        show.send(.subPlay)
+        XCTAssertNotNil(releasePreparation)
+        show.send(.stopAll)
+        releasePreparation?.finish()
+        await Task.yield()
         XCTAssertFalse(show.isPlaying)
         XCTAssertFalse(show.preparingAudio)
         XCTAssertEqual(executor.writes.filter { $0 == .subPlay }.count, 1)

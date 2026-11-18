@@ -20,6 +20,7 @@ import AVFoundation
     try AVAudioFile(forWriting: folder.appendingPathComponent("tone.wav"), settings: format.settings).write(from: pcm)
 
     for target in ["track", "group", "master", "item"] {
+    if let selected = ProcessInfo.processInfo.environment["JARAS_TEST_FX_TARGET"], selected != target { continue }
     for kind in ["EQ", "Compressor", "Limiter", "Delay", "Reverb", "Pitch"] {
         if let selected = ProcessInfo.processInfo.environment["JARAS_TEST_EFFECT"], selected != kind { continue }
         var project = Project.empty(name: "Native FX live playback")
@@ -27,6 +28,15 @@ import AVFoundation
         var track = Track(id: UUID(), name: "Track", role: .other)
         track.parentTrackID = group.id; track.outputs = [.masterGroup]
         track.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 30, audioFile: AudioFile(path: "tone.wav"))]
+        // Item Pitch stays connected through zero and bypass. Prepare its
+        // transform before measuring the baseline so later stages compare
+        // output at the same latency. The item transition suite checks
+        // continuity while changing zero, nonzero, and bypass during play.
+        var settings = NativeFXSettings()
+        if target == "item" && kind == "Pitch" {
+            settings.appendNative(kind)
+            track.clips[0].fx = settings
+        }
         project.songs[0].tracks = [group, track]
         var time = project.songs[0].projectTime; time.timebase = .free; project.songs[0].timeSettings = time
         let engine = AVAudioEngine()
@@ -72,7 +82,7 @@ import AVFoundation
         let referenceStatus = try engine.renderOffline(512, to: buffer)
         precondition(referenceStatus == .success)
         var latency = 0, referenceError = Double.infinity
-        for candidate in 0...1024 {
+        for candidate in 0...(target == "item" && kind == "Pitch" ? 8192 : 1024) {
             var error = 0.0
             for ch in 0..<2 { for n in 0..<64 {
                 let difference = Double(buffer.floatChannelData![ch][n] - sample(ch, referenceFrame + n - candidate))
@@ -84,10 +94,9 @@ import AVFoundation
         print("NATIVE_FX_BASELINE_LATENCY rate=\(rate) target=\(target) effect=\(kind) frames=\(latency)")
         try tick()
         let targetID: UUID? = target == "master" ? nil : target == "group" ? group.id : target == "item" ? track.clips[0].id : track.id
-        var settings = NativeFXSettings()
         for stage in 0..<9 {
             switch stage {
-            case 1: settings.appendNative(kind)
+            case 1: if settings.inserted.isEmpty { settings.appendNative(kind) }
             case 2, 5: settings.setEnabled(kind, enabled: false)
             case 3, 6: settings.setEnabled(kind, enabled: true)
             case 4:
@@ -110,14 +119,15 @@ import AVFoundation
             case "item": state.project.songs[0].tracks[1].clips[0].fx = settings
             default: state.project.songs[0].tracks[1].fx = settings
             }
-            audio.previewFX(targetID, settings: settings)
+            if target == "item" { audio.previewClipFX(track.clips[0].id, settings: settings) }
+            else { audio.previewFX(targetID, settings: settings) }
             revision += 1; try tick()
             var rendered = 0, sumSquares = 0.0, sampleCount = 0, largestPeak: Float = 0, dryError: Float = 0
             var dropouts: [String] = []
             let dry = [0, 2, 5, 7].contains(stage)
             // TimePitch legitimately primes its transform when enabling a
             // nonzero shift. It must then sustain every variable-sized block.
-            let pitchPriming = kind == "Pitch" && [4, 6].contains(stage) ? Int(rate * 0.15) : 0
+            let pitchPriming = kind == "Pitch" && ([4, 6].contains(stage) || (target == "item" && stage == 8)) ? Int(rate * 0.15) : 0
             for block in 0..<72 {
                 let count = [64, 128, 256, 512, 1024, 2048][block % 6]
                 let firstFrame = Int(engine.manualRenderingSampleTime)

@@ -21,7 +21,9 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
 
     test("Project browser keeps project actions enabled while playback runs", [&] {
         using floatingControlTests::require;
-        ProjectBrowser browser;browser.setSize(560,424);browser.setProjectOpen(true);browser.setPlaybackRunning(true);
+        ProjectBrowser browser;
+        browser.openMultiple = [](std::vector<File>) {};
+        browser.setSize(560,424);browser.setProjectOpen(true);browser.setPlaybackRunning(true);
         for(auto *child:browser.getChildren())if(dynamic_cast<Button*>(child)&&child->getComponentID()!="cancelProjectLoading")
             require(child->isEnabled(),"Playback disabled a project browser action");
         browser.beginLoading(directory.getChildFile("Another.jl"));
