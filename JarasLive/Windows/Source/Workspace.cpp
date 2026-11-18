@@ -1454,9 +1454,9 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         const bool audioButtons=standard||(t&&(t->role.id=="timecode"||t->role.id=="generatedClick"||t->role.id=="programChange"));
         mute.setVisible(audioButtons);solo.setVisible(audioButtons);
         if (solo.isVisible()) place(solo, 22);
+        if (mute.isVisible()) place(mute, 22);
         pan.setVisible(standard && t->role.id != "vinhetas");
         if (pan.isVisible()) place(pan, 22);
-        if (mute.isVisible()) place(mute, 22);
         if(special){special->setVisible(!standard);special->setBounds(std::max(22,x-(t&&t->role.id=="timecode"?116:t&&t->role.id=="generatedClick"?100:t&&t->role.id=="programChange"?159:108)),y,t&&t->role.id=="timecode"?116:t&&t->role.id=="generatedClick"?100:t&&t->role.id=="programChange"?159:108,textTrack?48:h);}
         if(teleprompter) {
             x = special ? special->getX() - 3 : x;

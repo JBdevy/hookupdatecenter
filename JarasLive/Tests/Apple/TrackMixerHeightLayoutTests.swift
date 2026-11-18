@@ -203,8 +203,8 @@ for expanded in [false,true] {
     window.contentView = row; row.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.02)); row.layoutSubtreeIfNeeded()
     let frames = Dictionary(uniqueKeysWithValues: probes(row).map { ($0.slot,$0.convert($0.bounds,to:row)) })
-    precondition(frames[2]!.maxX < frames[3]!.minX && frames[3]!.maxX < frames[5]!.minX && frames[5]!.maxX < frames[6]!.minX,
-        "FX, record, mute and solo must keep their semantic order")
+    precondition(frames[2]!.maxX < frames[3]!.minX && frames[3]!.maxX < frames[4]!.minX && frames[4]!.maxX < frames[5]!.minX && frames[5]!.maxX < frames[6]!.minX,
+        "FX, record, pan, mute and solo must keep their semantic order")
     if expanded { precondition(frames[7]!.minX > 1000, "Volume knob must stay hidden whenever row height fits the fader") }
     else { precondition(frames[7]!.maxX < frames[2]!.minX, "Compact volume knob belongs immediately before FX") }
 }

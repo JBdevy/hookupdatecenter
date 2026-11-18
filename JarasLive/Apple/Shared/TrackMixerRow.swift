@@ -238,7 +238,7 @@ private struct TrackMixerButtonsContainer<Content: View>: View {
             let widths: [CGFloat] = [expanded ? 34 : 0, expanded && !vinhetas ? 28 : 0, 22, 22, vinhetas ? 0 : 22, 22, 22, expanded ? 0 : 22]
             let visibleCount = widths.filter { $0 > 0 }.count
             let width = widths.reduce(0, +) + CGFloat(max(0, visibleCount - 1)) * 3
-            let order = [0,1,7,2,3,5,4,6]
+            let order = [0,1,7,2,3,4,5,6]
             let frames: [CGRect] = {
                 var frames = Array(repeating: CGRect.zero, count: 8), x: CGFloat = 0
                 for index in order where widths[index] > 0 {
@@ -287,7 +287,7 @@ struct TrackMixerButtonsLayout: Layout {
     var vinhetas = false
     var expanded = true
     private static let controlWidths: [CGFloat] = [34,28,22,22,22,22,22,22]
-    private var order: [Int] { [0,1,7,2,3,5,4,6] }
+    private var order: [Int] { [0,1,7,2,3,4,5,6] }
     private func visible(_ i: Int) -> Bool {
         if i == 7 { return !expanded }
         return !(!expanded && i < 2) && !(vinhetas && (i == 1 || i == 4))
@@ -1341,8 +1341,8 @@ struct TrackMixerRow: View, Equatable {
                         TrackFXButton(show: show, track: track.id, settings: track.fx ?? NativeFXSettings()).jarasHelp("Insert effect")
                     }
                     TrackRecordButton(show: show, track: track).buttonStyle(CompactTrackButtonStyle())
-                    Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
                     TrackPanKnob(show: show, track: track.id, pan: track.pan).frame(width: 22, height: compactHeight ? 21 : 24)
+                    Button("M") { show.sendTrackMixerButton(.mute, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: track.mute ? .red : nil)).jarasHelp("Mute")
                     Button("S") { show.sendTrackMixerButton(.solo, target: track.id) }.modifier(MappingRightClick(track: track.id, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: track.solo ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                     } else if track.kind == .click {
                         Button("Patch") { patchTarget = editorTarget(project: project) }
