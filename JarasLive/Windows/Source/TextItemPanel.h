@@ -90,7 +90,7 @@ class TextItemPanel final : public Component {
             for (const auto &range : ItemTextColors::stanzaRanges(getText())) {
                 const auto box = getTextBounds(range).getBounds();
                 if (!box.isEmpty())
-                    g.drawRoundedRectangle(Rectangle<float>(4.f, float(box.getY()) - 2.f, float(getWidth() - 20), float(box.getHeight()) + 4.f), 4.f, 1.f);
+                    g.drawRoundedRectangle(juce::Rectangle<float>(4.f, float(box.getY()) - 2.f, float(getWidth() - 20), float(box.getHeight()) + 4.f), 4.f, 1.f);
             }
         }
         void insertTextAtCaret(const String &text) override {

@@ -370,7 +370,7 @@ class PartsPanel final : public Component, private Timer {
                     g.fillRect(0.f, (float)getHeight() - 5, (float)(getWidth() * progress), 5.f);
                 }
                 if (loop) {
-                    const auto badge = Rectangle<float>(getWidth()-31.f, 3.f, 27.f, 12.f);
+                    const auto badge = juce::Rectangle<float>(getWidth()-31.f, 3.f, 27.f, 12.f);
                     g.setColour(theme::yellow); g.fillRoundedRectangle(badge, 3.f);
                     g.setColour(Colours::black); g.setFont(theme::font(7).boldened());
                     g.drawText("LOOP", badge, Justification::centred);

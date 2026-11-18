@@ -44,7 +44,14 @@ UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forN
         let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
         func peak(_ label: String, expected: Double, tolerance: Double = 0.005) throws {
             var peak = 0.0
+            let start = ProcessInfo.processInfo.systemUptime
             for block in 0..<64 {
+                // The live source uses a bounded streaming window. Drive its
+                // callback at device cadence while the decoder fills that window.
+                if realtime {
+                    let wait = start + Double(block * 512) / rate - ProcessInfo.processInfo.systemUptime
+                    if wait > 0 { RunLoop.main.run(until: Date(timeIntervalSinceNow: wait)) }
+                }
                 let status = try engine.renderOffline(512, to: output)
                 precondition(status == .success)
                 if block >= 32 { for ch in 0..<2 { for n in 0..<512 {

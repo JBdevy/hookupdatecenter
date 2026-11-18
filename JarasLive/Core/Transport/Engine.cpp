@@ -9,14 +9,27 @@
 #include <set>
 #include <limits>
 #include <map>
+#include <unordered_map>
 #include <unordered_set>
 namespace jaras {
+const Engine::AutomaticSectionRun* Engine::automaticSectionRun(const ID& id) const {
+    const auto run = std::find_if(automaticSectionRuns_.begin(), automaticSectionRuns_.end(),
+        [&](const auto& value) { return value.trigger == id; });
+    return run == automaticSectionRuns_.end() ? nullptr : &*run;
+}
+Engine::AutomaticSectionRun& Engine::editAutomaticSectionRun(const ID& id) {
+    const auto run = std::find_if(automaticSectionRuns_.begin(), automaticSectionRuns_.end(),
+        [&](const auto& value) { return value.trigger == id; });
+    if (run != automaticSectionRuns_.end()) return *run;
+    automaticSectionRuns_.push_back({id});
+    return automaticSectionRuns_.back();
+}
 void Engine::loadProject(Project project) {
     orderSpecialTracks(project); synchronizeTimecode(project); synchronizeRegionOwnership(project); validate(project);
     if (transport_.playing || transport_.subPlay.playing) throw std::logic_error("Stop before loading another project");
     const bool bypassed = transport_.multiLoopsBypassed;
     project_ = std::move(project); transport_ = {}; manualSubCursor_ = false; transport_.multiLoopsBypassed = bypassed; automaticSubplayQueue_.reset(); automaticSubplayActive_ = false; finishCurrent_ = false; resumeSub_ = false; playStart_.reset(); subPlayStart_.reset();
-    automaticSectionHandled_.clear(); automaticSectionJumpCounts_.clear(); cancelledAutomaticSections_.clear(); automaticSectionSong_.reset(); automaticSectionLastPosition_ = -1;
+    automaticSectionHandled_.clear(); automaticSectionRuns_.clear(); automaticSectionSong_.reset(); automaticSectionLastPosition_ = -1;
     liveElapsedByRegion_.clear(); normalizeLiveMarks();
     auto ids = order(); if (!ids.empty()) transport_.songId = ids.front();
 }
@@ -1129,14 +1142,14 @@ void Engine::execute(const Command& c) {
     if (projectSync::internalDepth == 0 && !mixerControl) ++syncRevision_;
     if (!std::isfinite(c.value)) throw std::invalid_argument("Non-finite control value");
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll) {
-        automaticSectionJumpCounts_.clear(); cancelledAutomaticSections_.clear(); transport_.automaticSectionNotice.reset(); automaticSectionNoticeRemaining_ = 0;
+        automaticSectionRuns_.clear(); transport_.automaticSectionNotice.reset(); automaticSectionNoticeRemaining_ = 0;
     }
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll || c.kind == CommandKind::seek || c.kind == CommandKind::select || c.kind == CommandKind::selectRegion || c.kind == CommandKind::next || c.kind == CommandKind::previous) resetMultiLoop();
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll || c.kind == CommandKind::seek || c.kind == CommandKind::select || c.kind == CommandKind::selectRegion || c.kind == CommandKind::next || c.kind == CommandKind::previous) { transport_.queuedSectionMarkerId.reset(); transport_.automaticSectionTriggerId.reset(); }
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll || c.kind == CommandKind::seek || c.kind == CommandKind::select || c.kind == CommandKind::selectRegion) { automaticSectionHandled_.clear(); automaticSectionLastPosition_ = -1; }
     const auto cancelQueuedSection = [&] {
         if (!transport_.queuedSectionMarkerId) return;
-        if (transport_.automaticSectionTriggerId) cancelledAutomaticSections_.insert(*transport_.automaticSectionTriggerId);
+        if (transport_.automaticSectionTriggerId) editAutomaticSectionRun(*transport_.automaticSectionTriggerId).cancelled = true;
         if (transport_.automaticSectionNotice) automaticSectionNoticeRemaining_ = 2;
         transport_.queuedSectionMarkerId.reset(); transport_.automaticSectionTriggerId.reset();
         transport_.sectionQueueStartedAt = 0;
@@ -1176,7 +1189,7 @@ void Engine::execute(const Command& c) {
         const auto* part = sectionPlaybackRegion();
         if (!part) throw std::invalid_argument("Choose a section while a song is playing.");
         if (transport_.automaticSectionTriggerId) {
-            ++automaticSectionJumpCounts_[*transport_.automaticSectionTriggerId];
+            ++editAutomaticSectionRun(*transport_.automaticSectionTriggerId).count;
             if (transport_.automaticSectionNotice) automaticSectionNoticeRemaining_ = 2;
         }
         transport_.automaticSectionTriggerId.reset();
@@ -1694,10 +1707,9 @@ void Engine::advanceWithoutLiveTracking(double elapsed) {
         const auto* song = currentSong(); const auto* part = sectionPlaybackRegion();
         const TimelineMarker* candidate = nullptr;
         if (song && song->markers && part) for (const auto& marker : *song->markers) {
-            if (cancelledAutomaticSections_.count(marker.id)) continue;
-            const auto count = automaticSectionJumpCounts_.find(marker.id);
-            if (marker.automaticSectionRepeatCount && count != automaticSectionJumpCounts_.end() &&
-                count->second >= *marker.automaticSectionRepeatCount) continue;
+            const auto* run = automaticSectionRun(marker.id);
+            if (run && (run->cancelled || (marker.automaticSectionRepeatCount &&
+                run->count >= *marker.automaticSectionRepeatCount))) continue;
             if (!marker.section.value_or(false) || marker.tempoBPM || !marker.automaticSectionTargetID || marker.automaticSectionTargetID == marker.id ||
                 marker.position <= transport_.position + 1e-9 || marker.position > part->endTime ||
                 marker.position > transport_.ignoreNextEnd.value_or(part->endTime) || std::find(automaticSectionHandled_.begin(), automaticSectionHandled_.end(), marker.id) != automaticSectionHandled_.end()) continue;
@@ -1721,7 +1733,7 @@ void Engine::advanceWithoutLiveTracking(double elapsed) {
                     const auto source = candidate->id, destination = *candidate->automaticSectionTargetID;
                     execute({CommandKind::queueSection, destination});
                     transport_.automaticSectionTriggerId = source;
-                    transport_.automaticSectionNotice = std::to_string(automaticSectionJumpCounts_[source] + 1) + "/" +
+                    transport_.automaticSectionNotice = std::to_string(editAutomaticSectionRun(source).count + 1) + "/" +
                         (candidate->automaticSectionRepeatCount ? std::to_string(*candidate->automaticSectionRepeatCount) : "Infinite") + " saltos";
                     automaticSectionNoticeRemaining_ = 0;
                 }
@@ -1839,7 +1851,7 @@ void Engine::advanceContinuous(double elapsed, const TimelineMarker* sectionDest
     if (!transport_.playing) return;
     if (sectionDestination) {
         const double destination = sectionDestination->position;
-        if (transport_.automaticSectionTriggerId) ++automaticSectionJumpCounts_[*transport_.automaticSectionTriggerId];
+        if (transport_.automaticSectionTriggerId) ++editAutomaticSectionRun(*transport_.automaticSectionTriggerId).count;
         if (transport_.automaticSectionNotice) automaticSectionNoticeRemaining_ = 2;
         if(transport_.exclusivePlaybackRegionId) {
             const auto* target=region(sectionDestination->regionOwnerID);

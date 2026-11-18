@@ -45,7 +45,8 @@ public:
         close.onClick = [this] { if (started && session.busy) session.cancelExport(); else ModalSheet::dismiss(*this); };
         exportButton.onClick = [this] {
             try {
-                session.exportMultitrack(projects, [safe = SafePointer<MultitrackExportPanel>(this)] {
+                const SafePointer<MultitrackExportPanel> safe(this);
+                session.exportMultitrack(projects, [safe] {
                     if (!safe) return;
                     ModalSheet::blockDismiss(*safe, false);
                     ModalSheet::dismiss(*safe);

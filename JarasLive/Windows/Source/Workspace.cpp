@@ -4449,7 +4449,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         [this] {
             const bool active = !session.audio.metronomeEnabled.load();
             session.audio.metronomeEnabled = active;
-            appearance.setMetronome("jaras.metronome.enabled", active, [safe=SafePointer<Workspace>(this)](String error) {
+            const SafePointer<Workspace> safe(this);
+            appearance.setMetronome("jaras.metronome.enabled", active, [safe](String error) {
                 if(safe&&error.isNotEmpty())safe->session.message=error;
             });
         },

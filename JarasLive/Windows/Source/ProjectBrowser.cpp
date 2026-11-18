@@ -175,7 +175,10 @@ ProjectBrowser::ProjectBrowser() {
         DialogWindow::LaunchOptions options;
         options.dialogTitle=localization::translate("Open multiple projects");options.dialogBackgroundColour=theme::background;
         options.useNativeTitleBar=true;options.resizable=false;
-        options.content.setOwned(new MultipleProjectPicker(std::move(files),[safe=SafePointer<ProjectBrowser>(this)](auto values){if(safe&&safe->openMultiple)safe->openMultiple(std::move(values));}));
+        const SafePointer<ProjectBrowser> safe(this);
+        options.content.setOwned(new MultipleProjectPicker(std::move(files), [safe](std::vector<File> values) {
+            if (safe && safe->openMultiple) safe->openMultiple(std::move(values));
+        }));
         options.componentToCentreAround=getTopLevelComponent();options.launchAsync();
     };
     back.onClick = [this] {

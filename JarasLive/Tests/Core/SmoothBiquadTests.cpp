@@ -10,6 +10,8 @@ int main(){
     for(double rate:{44100.,48000.,96000.}){
         auto coefficients=bell(rate,120,0,.707);
         jaras::audio::SmoothBiquad filter(coefficients.data(),rate);
+        // Establish the constant signal before the first parameter change.
+        for(int n=0;n<512;++n) filter.processSample(.05f);
         double maximum=0;
         for(int n=0;n<int(rate*5);++n){
             if(n%512==0){const int i=n/512;coefficients=bell(rate,i%2?55:700,i%2?18:-12,i%2?.3:8);filter.setTarget(coefficients.data());}
