@@ -27,6 +27,7 @@ enum JarasLocalization { static func string(_ key: String) -> String { key } }
 enum ProjectError: Error { case invalid(String) }
 enum CloseTestCommand { case stopAll }
 @MainActor final class CloseTestShow {
+    var modalNotice: String?
     var hasUnsavedChanges = true, saving = false, saves = 0, stops = 0
     var isPlaying = false
     var failSave = false

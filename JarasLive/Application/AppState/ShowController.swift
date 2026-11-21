@@ -789,8 +789,13 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public func setMixerTrackSelection(_ ids: Set<UUID>, anchor: UUID?) {
         let valid = ids.intersection((current?.tracks ?? []).map(\.id))
-        selectedTrackForActions = anchor.flatMap { valid.contains($0) ? $0 : nil } ?? valid.first
-        if mixerTrackSelection != valid { mixerTrackSelection = valid }
+        let nextAnchor = anchor.flatMap { valid.contains($0) ? $0 : nil } ?? valid.first
+        if mixerTrackSelection == valid {
+            reportTrackSelection(nextAnchor)
+        } else {
+            selectedTrackForActions = nextAnchor
+            mixerTrackSelection = valid
+        }
     }
 
     public func revealSelectedMixerTrack(_ track: UUID) {
@@ -825,11 +830,13 @@ public struct ShowTimelinePresentationState: Equatable {
     @Published public var detectBPMRegions: [UUID] = []
     @Published public private(set) var tempoMarkerRequest: UInt64 = 0
     @Published public private(set) var addTrackRequest: UInt64 = 0
-    public private(set) var selectedTrackForActions: UUID? {
-        didSet { if oldValue != selectedTrackForActions { projectPresentation.objectWillChange.send() } }
-    }
+    public private(set) var selectedTrackForActions: UUID?
     private var tempoTaps = TapTempo()
-    public func reportTrackSelection(_ track: UUID?) { selectedTrackForActions = track }
+    public func reportTrackSelection(_ track: UUID?) {
+        guard selectedTrackForActions != track else { return }
+        selectedTrackForActions = track
+        projectPresentation.objectWillChange.send()
+    }
     @discardableResult public func stepMixerTrack(_ direction: Int, visible tracks: [UUID]) -> UUID? {
         guard !tracks.isEmpty else { return nil }
         let current = selectedTrackForActions.flatMap { tracks.firstIndex(of: $0) }
