@@ -52,7 +52,7 @@ extension RegionRightClickView {
 Path(sys.argv[1], 'RegionEditor.swift').write_text(editor)
 PY
 swiftc -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
-  Apple/Shared/TimelineVisibleClipIndex.swift Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
+  Apple/Shared/TimelineVisibleClipIndex.swift Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
   Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift \
   Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift \

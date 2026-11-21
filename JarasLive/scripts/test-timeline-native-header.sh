@@ -68,7 +68,7 @@ if os.environ.get('CATLIVE_ZOOM_BENCHMARK') == '1':
 Path(sys.argv[1], 'main.swift').write_text('import AppKit\nimport SwiftUI\nimport CoreText\n'+'\n'.join(parts)+probes+tests)
 PY
 swiftc ${CATLIVE_ZOOM_BENCHMARK:+-O} -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
-  Apple/Shared/TimelineGridInk.swift Apple/Shared/TimelineVisibleClipIndex.swift Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
+  Apple/Shared/TimelineGridInk.swift Apple/Shared/TimelineVisibleClipIndex.swift Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
   Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift \
   Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift \

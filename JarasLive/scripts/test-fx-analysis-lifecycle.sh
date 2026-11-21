@@ -9,7 +9,7 @@ clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasStemSeparator.mm -o "$build_d
 bash scripts/compile-vst3.sh "$build_dir"
 cp "${JARAS_FX_ANALYSIS_TEST_SOURCE:-Tests/Apple/FXAnalysisLifecycleTests.swift}" "$build_dir/main.swift"
 swiftc -swift-version 5 -import-objc-header Apple/Bridge/JarasLive-Bridging-Header.h \
-    Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
+    Application/Project/OutputPatch.swift Application/Project/DrummerPadKit.swift Application/Project/NativeFXSettings.swift \
     Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
     Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift \
     Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift \
