@@ -2,6 +2,11 @@ name: CatLive Desktop - installable test packages
 on:
   workflow_dispatch:
     inputs:
+      platform:
+        description: Desktop package to build
+        default: both
+        type: choice
+        options: [both, macos, windows]
       version:
         description: Public version
         required: true
@@ -9,10 +14,11 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: catlive-desktop-test-packages
+  group: catlive-desktop-test-packages-${{ inputs.platform }}
   cancel-in-progress: false
 jobs:
   windows:
+    if: inputs.platform != 'macos'
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -47,6 +53,7 @@ jobs:
           if-no-files-found: error
 
   macos-pkg:
+    if: inputs.platform != 'windows'
     runs-on: macos-26
     timeout-minutes: 180
     env:
