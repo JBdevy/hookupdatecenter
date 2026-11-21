@@ -6055,7 +6055,10 @@ struct VerticalTrackMeter: NSViewRepresentable {
         super.init(frame: frameRect)
         let actions = Dictionary(uniqueKeysWithValues:
             ["position", "bounds", "hidden", "string", "contentsScale", "colors", "locations", "opacity", "backgroundColor", "borderColor"].map { ($0, NSNull()) })
-        for content in backgrounds + levelClips + gradients + barClippingTips + scaleLabels + [compactRail.layer, peakLabel] { content.actions = actions }
+        let layerGroups: [[CALayer]] = [backgrounds, levelClips, gradients, barClippingTips, scaleLabels, [compactRail.layer, peakLabel]]
+        for group in layerGroups {
+            for content in group { content.actions = actions }
+        }
         wantsLayer = true
         layer?.masksToBounds = true
         // All visible content belongs to retained sublayers; the NSView itself
