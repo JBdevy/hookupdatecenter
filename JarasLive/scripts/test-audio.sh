@@ -25,13 +25,7 @@ clang++ -O3 -std=c++17 -fobjc-arc -c Apple/Bridge/JarasEffects.mm -o "$build_dir
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasStemSeparator.mm -o "$build_dir/stemseparator.o"
 bash scripts/compile-vst3.sh "$build_dir"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasSoundFont.mm -o "$build_dir/soundfont.o"
-clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasDrummerPad.mm -o "$build_dir/drummer-pad.o"
-# These two helpers live beside their UI, but the engine uses them without a window.
-{
-    echo 'import AVFoundation'
-    sed -n '/^enum PadAudioBuffer {/,/^}/p' Apple/Shared/VinhetasPanel.swift
-    sed -n '/^@MainActor enum DrummerMIDILearn {/,/^}/p' Apple/Shared/DrummerPadEditor.swift
-} > "$build_dir/DrummerPadSupport.swift"
+bash scripts/prepare-drummer-test-support.sh "$build_dir"
 clang++ -std=c++17 -fobjc-arc -c Apple/Bridge/JarasTimecode.mm -o "$build_dir/timecode.o"
 mkdir "$build_dir/lame"
 for source in Core/ThirdParty/Lame/*.c; do
