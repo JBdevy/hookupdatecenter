@@ -4242,7 +4242,7 @@ private final class NativeTimelineBaseMountView: NSView {
         let firstOffset = clip.documentRect.minX
         let offset = min(max(firstOffset, fraction * width - screenX), max(firstOffset, width - clip.bounds.width))
         grid.prioritizeZoom()
-        grid.zoomAnchor = (fraction, screenX, width)
+        grid.zoomAnchor = (fraction, screenX, CGFloat(width))
         wheel.changeZoom?(next, offset)
         TimelineViewportPreferences.saveZoom(next)
     }
