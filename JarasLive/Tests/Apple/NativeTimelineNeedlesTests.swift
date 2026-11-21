@@ -75,6 +75,15 @@ MainActor.assumeIsolated {
     }
     show.publish(main: 700, sub: 120, subPlaying: true); unchangedProjection(); pump(0.12); expectOrigin(120)
     precondition(!needles.layer!.sublayers![2].isHidden, "Sub Play is visible")
+    for root in needles.layer!.sublayers!.prefix(3) {
+        let head = (root.sublayers![2] as! CAShapeLayer).path!
+        precondition(head.boundingBoxOfPath.minY == 32 && head.boundingBoxOfPath.maxY == 48,
+                     "Each head fills the tick lane through the start of its stem")
+        var roundedCorners = 0
+        head.applyWithBlock { if $0.pointee.type == .addQuadCurveToPoint { roundedCorners += 1 } }
+        precondition(roundedCorners == 4, "Each triangular head rounds its shoulders and tip")
+    }
+    print("NATIVE_NEEDLE_HEADS_FILL_RULER_TICK_LANE_WITH_ROUNDED_CORNERS_OK")
     show.publish(main: 800, sub: 130, subPlaying: true); unchangedProjection(); pump(0.12); expectOrigin(130)
     show.publish(main: 300, sub: 130, subPlaying: false); unchangedProjection(); pump(0.12); expectOrigin(300)
     show.publish(main: 500, playing: false); unchangedProjection(); pump(0.12)

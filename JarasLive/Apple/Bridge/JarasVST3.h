@@ -23,6 +23,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary * _Nullable)state:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (void)rememberCapturedState:(AVAudioUnitEffect *)node identifier:(NSString *)identifier component:(NSString * _Nullable)component controller:(NSString * _Nullable)controller;
 + (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)identifier action:(void (^)(unsigned int, double, BOOL))action;
++ (float)gainReduction:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (NSArray<NSDictionary *> *)parameters:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;
 + (void)setParameter:(AVAudioUnitEffect *)node identifier:(NSString *)identifier parameter:(unsigned int)parameter value:(double)value;
 + (NSView * _Nullable)editor:(AVAudioUnitEffect *)node identifier:(NSString *)identifier;

@@ -23,12 +23,12 @@ class TransportButtons final {
         float scale = 1, dimming = 0, fontSize = 9;
         bool active = false, enabled = true, visible = true, blocked = false, savePulse = false, recordPulse = false;
         unsigned background = 0xff252525, foreground = 0xffffffff, activeBackground = 0xff6cbd4b, surface = 0xff1d1d1d;
-        unsigned accent = 0;
+        unsigned accent = 0, surfaceBottom = 0, iconForeground = 0;
         // `tooltip` is retained as the native accessibility/window description;
         // CatLive does not create hover tooltip windows.
         std::wstring text, icon, tooltip;
         bool operator==(const State &b) const {
-            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && savePulse==b.savePulse && recordPulse==b.recordPulse && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && surface==b.surface && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
+            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && savePulse==b.savePulse && recordPulse==b.recordPulse && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && surface==b.surface && surfaceBottom==b.surfaceBottom && iconForeground==b.iconForeground && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
         }
     };
     using Click = std::function<void(bool)>;
@@ -177,6 +177,15 @@ class TransportButtons final {
         auto *t=b.target.Get();t->SetDpi(96.f*scale,96.f*scale);t->BeginDraw();t->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);t->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
         t->Clear(colour(s.surface));
         const float width=r.right/scale,height=r.bottom/scale;
+        if (s.surfaceBottom && s.surfaceBottom != s.surface) {
+            const D2D1_GRADIENT_STOP stops[]{{0.f, colour(s.surface)}, {1.f, colour(s.surfaceBottom)}};
+            Ptr<ID2D1GradientStopCollection> colours;
+            Ptr<ID2D1LinearGradientBrush> gradient;
+            if (SUCCEEDED(t->CreateGradientStopCollection(stops, 2, D2D1_GAMMA_1_0, D2D1_EXTEND_MODE_CLAMP, &colours)) &&
+                SUCCEEDED(t->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(
+                    D2D1::Point2F(0, 0), D2D1::Point2F(0, height)), colours.Get(), &gradient)))
+                t->FillRectangle(D2D1::RectF(0, 0, width, height), gradient.Get());
+        }
         auto bg=colour(s.active?s.activeBackground:s.background);
         if(s.accent){bg=colour(s.accent);bg.a=s.active?1.f:b.pressed?.7f:.45f;}
         if(b.recordingPulse) {
@@ -185,7 +194,7 @@ class TransportButtons final {
             bg = D2D1::ColorF(grey.r+(armed.r-grey.r)*red, grey.g+(armed.g-grey.g)*red,
                              grey.b+(armed.b-grey.b)*red, 1.f);
         }
-        if(!s.enabled&&!s.accent)bg.a*=.35f;
+        if (!s.enabled && !s.accent && !(s.active && s.icon == L"pause")) bg.a *= .35f;
         Ptr<ID2D1SolidColorBrush> brush;t->CreateSolidColorBrush(bg,&brush);if(!brush){t->EndDraw();return;}
         const auto bounds=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,width-.5f,height-.5f),6,6);
         t->FillRoundedRectangle(bounds,brush.Get());
@@ -225,6 +234,11 @@ class TransportButtons final {
             if(c==e)c=e=snapY(c);
             t->DrawLine(D2D1::Point2F(a,c),D2D1::Point2F(d,e),brush.Get(),stroke,iconStroke.Get());
         };
+        if (s.iconForeground) {
+            auto iconInk = colour(s.iconForeground);
+            if (!s.enabled) iconInk.a *= .35f;
+            brush->SetColor(iconInk);
+        }
         if(s.icon==L"play"){
             Ptr<ID2D1PathGeometry> path;factory->CreatePathGeometry(&path);Ptr<ID2D1GeometrySink> sink;if(path&&SUCCEEDED(path->Open(&sink))){sink->BeginFigure(D2D1::Point2F(2,1),D2D1_FIGURE_BEGIN_FILLED);sink->AddLine(D2D1::Point2F(11,6));sink->AddLine(D2D1::Point2F(2,11));sink->EndFigure(D2D1_FIGURE_END_CLOSED);sink->Close();t->FillGeometry(path.Get(),brush.Get());}
         }else if(s.icon==L"pause"){rect(2,1,4.5f,11);rect(7.5f,1,10,11);}
@@ -255,9 +269,24 @@ class TransportButtons final {
             line(8,0.5f,10,2.5f);line(8,4.5f,10,2.5f);line(4,7.5f,2,9.5f);line(4,11.5f,2,9.5f);
         }
         else if(s.icon==L"metronome") {
-            line(4,1,1,11); line(1,11,11,11); line(11,11,8,1); line(8,1,4,1);
-            line(3,8.5f,9,8.5f); line(6,9,9.5f,.5f);
-            t->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(7.4f,2,10.2f,4.2f),.5f,.5f),brush.Get());
+            Ptr<ID2D1PathGeometry> path; factory->CreatePathGeometry(&path);
+            Ptr<ID2D1GeometrySink> sink;
+            if(path && SUCCEEDED(path->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(3.8f, 4.1f), D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddLine(D2D1::Point2F(5.3f, 1.55f));
+                sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(D2D1::Point2F(6.f, .35f), D2D1::Point2F(6.7f, 1.55f)));
+                sink->AddLine(D2D1::Point2F(10.9f, 9.25f));
+                sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(D2D1::Point2F(11.75f, 10.95f), D2D1::Point2F(10.1f, 10.95f)));
+                sink->AddLine(D2D1::Point2F(1.9f, 10.95f));
+                sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(D2D1::Point2F(.25f, 10.95f), D2D1::Point2F(1.1f, 9.25f)));
+                sink->AddLine(D2D1::Point2F(2.55f, 6.65f));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                t->DrawGeometry(path.Get(), brush.Get(), stroke, iconStroke.Get());
+            }
+            line(1.35f, 4.05f, 6.05f, 8.55f);
+            line(1.65f, 8.55f, 10.35f, 8.55f);
+            line(6.f, 4.15f, 6.f, 6.3f);
         }
         else if(s.icon==L"teleprompter") {
             t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(1,1,11,10),1,1),brush.Get(),stroke,iconStroke.Get());
@@ -273,6 +302,7 @@ class TransportButtons final {
             line(3,1,3,5);line(3,5,9,5);line(9,5,9,1);line(3,11,3,8);line(3,8,9,8);line(9,8,9,11);
         } else if(s.icon==L"check") {line(1,6,5,10);line(5,10,11,2);}
         t->SetTransform(D2D1::Matrix3x2F::Identity());
+        brush->SetColor(fg);
         if(layout)t->DrawTextLayout(D2D1::Point2F(x+iconSize+gap,0),layout.Get(),brush.Get(),D2D1_DRAW_TEXT_OPTIONS_CLIP);
         float dimming=s.dimming;
         if(b.fallbackPulse) {

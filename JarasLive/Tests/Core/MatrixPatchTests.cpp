@@ -3,6 +3,14 @@
 #include <cassert>
 using namespace jaras;
 int main() {
+    using matrixPatch::Cell;
+    const matrixPatch::Stroke down{{2, 1}, {3, 3}}, up{{5, 1}, {2, 3}}, reverse{{3, 3}, {2, 1}};
+    assert(down.steps() == 2 && down.contains({2, 1}) && down.contains({3, 2}) && down.contains({3, 3}));
+    assert(!down.contains({2, 2}) && !down.contains({3, 1}));
+    assert(up.steps() == 3 && up.contains({5, 1}) && up.contains({4, 2}) && up.contains({3, 2}) && up.contains({2, 3}));
+    for (int step = 0; step <= down.steps(); ++step) assert(reverse.cellAt(step) == down.cellAt(down.steps() - step));
+    const matrixPatch::Stroke point{{2, 1}, {2, 1}};
+    assert(point.steps() == 0 && point.cellAt(0) == (Cell{2, 1}) && !point.contains({2, 2}));
     Project project; project.id="project";project.name="Matrix";
     Song song;song.id="song";song.name="Song";song.duration=100;
     Track a;a.id="a";a.name="A";

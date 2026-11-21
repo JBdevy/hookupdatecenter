@@ -1,18 +1,44 @@
 import XCTest
 final class TrackTouchTests:XCTestCase {
- func testTeleprompterRowsKeepTextAndMediaWithoutMuteSolo() {
-  let app=XCUIApplication();app.launch()
-  XCTAssertTrue(app.buttons["Show Remote rows"].waitForExistence(timeout:10))
-  XCTAssertTrue(app.staticTexts["04  TP 1"].exists);XCTAssertTrue(app.staticTexts["05  TP 2"].exists)
-  XCTAssertEqual(app.buttons.matching(identifier:"M").count,3,"Only normal, Click and Chords keep mute")
-  XCTAssertEqual(app.buttons.matching(identifier:"S").count,3,"Only normal, Click and Chords keep solo")
-  XCTAssertEqual(app.buttons.matching(identifier:"Add text").count,3,"Both TP tracks and Chords retain Add text")
-  XCTAssertEqual(app.buttons.matching(identifier:"Add media").count,2,"Both TP tracks retain Add media")
-  app.buttons.matching(identifier:"Add media").firstMatch.tap()
-  XCTAssertEqual(app.staticTexts["event"].label,"tp-media")
+ func testTeleprompterControlsFitAtMinimumTrackHeight() {
+  let app = XCUIApplication()
+  app.launch()
+  XCTAssertTrue(app.buttons["Show Remote rows"].waitForExistence(timeout: 10))
+  XCTAssertEqual(app.buttons.matching(identifier: "M").count, 3)
+  XCTAssertEqual(app.buttons.matching(identifier: "S").count, 3)
+  XCTAssertFalse(app.buttons["Add media"].exists)
+  for name in ["04  TP 1", "05  TP 2"] {
+   let title = app.staticTexts[name]
+   XCTAssertTrue(title.exists)
+   guard let lyrics = app.buttons.matching(identifier: "Full lyrics").allElementsBoundByIndex.last(where: {
+    $0.frame.maxY <= title.frame.minY + 1
+   }), let addText = app.buttons.matching(identifier: "Add text").allElementsBoundByIndex.last(where: {
+    $0.frame.maxY <= lyrics.frame.minY + 1
+   }), let patch = app.buttons.matching(identifier: "Patch").allElementsBoundByIndex.min(by: {
+    abs($0.frame.midY - addText.frame.midY) < abs($1.frame.midY - addText.frame.midY)
+   }), let knob = app.descendants(matching: .any).matching(identifier: "Track volume").allElementsBoundByIndex.min(by: {
+    abs($0.frame.midY - addText.frame.midY) < abs($1.frame.midY - addText.frame.midY)
+   }) else {
+    XCTFail("Missing a Teleprompter control on " + name)
+    continue
+   }
+   XCTAssertEqual(knob.frame.midY, addText.frame.midY, accuracy: 1, "The volume knob aligns with Add text")
+   XCTAssertLessThan(knob.frame.midX, addText.frame.minX)
+   XCTAssertEqual(patch.frame.midY, addText.frame.midY, accuracy: 1, "Patch aligns with Add text")
+   XCTAssertEqual(addText.frame.minX, lyrics.frame.minX, accuracy: 1, "Text actions share one column")
+   XCTAssertLessThanOrEqual(lyrics.frame.minY - addText.frame.maxY, 4)
+   XCTAssertGreaterThanOrEqual(title.frame.height, 13)
+   XCTAssertGreaterThanOrEqual(title.frame.minY + 1, lyrics.frame.maxY)
+  }
+  app.buttons["Full lyrics"].firstMatch.tap()
+  XCTAssertEqual(app.staticTexts["event"].label, "tp-lyrics")
+  app.staticTexts["04  TP 1"].press(forDuration: 0.8)
+  XCTAssertTrue(app.buttons["Add media"].waitForExistence(timeout: 3))
+  app.buttons["Add media"].tap()
+  XCTAssertEqual(app.staticTexts["event"].label, "tp-media")
   app.buttons["Show Remote rows"].tap()
-  XCTAssertEqual(app.buttons.matching(identifier:"M").count,5,"Remote controls must stay unchanged")
-  XCTAssertEqual(app.buttons.matching(identifier:"S").count,5,"Remote controls must stay unchanged")
+  XCTAssertEqual(app.buttons.matching(identifier: "M").count, 5)
+  XCTAssertEqual(app.buttons.matching(identifier: "S").count, 5)
  }
 
  func testRecordHoldOpensSettingsWithoutArmingAndKeepsMIDIChannelInAudioMode() {
@@ -57,11 +83,12 @@ final class TrackTouchTests:XCTestCase {
   let app=XCUIApplication();app.launch()
   XCTAssertTrue(app.buttons["Compact 285"].waitForExistence(timeout:10))
   let midi = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "MIDI activity")).firstMatch
-  XCTAssertTrue(midi.exists, "Standard track must show MIDI activity separately from audio")
+  XCTAssertFalse(midi.exists, "The mixer no longer shows MIDI activity")
   let audio = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Audio meter")).firstMatch
-  if midi.exists && audio.exists { XCTAssertGreaterThanOrEqual(midi.frame.minX - audio.frame.maxX, 3.5) }
+  XCTAssertTrue(audio.exists)
   app.buttons["Compact 285"].tap()
-  XCTAssertFalse(midi.exists, "Compact tracks hide MIDI activity while keeping the audio meter")
+  XCTAssertFalse(midi.exists, "Compact tracks hide MIDI activity")
+  XCTAssertTrue(audio.exists, "Compact tracks still show audio activity")
   XCTAssertTrue(app.buttons["Patch"].exists);XCTAssertTrue(app.buttons["FX"].exists)
   app.buttons["Patch"].tap();XCTAssertEqual(app.staticTexts["event"].label,"patch")
   app.buttons["Compact 235"].tap()
@@ -108,6 +135,17 @@ final class TrackTouchTests:XCTestCase {
   tempo.tap();pitch.tap()
   XCTAssertEqual(app.staticTexts["tempo-requests"].label,"Tempo requests: 2")
   XCTAssertEqual(app.staticTexts["pitch-requests"].label,"Pitch requests: 2")
+ }
+
+ func testNativeVolumeFaderKeepsControlDuringDiagonalDrag() {
+  let app = XCUIApplication()
+  app.launch()
+  let fader = app.descendants(matching: .any)["Volume Normal track"].firstMatch
+  XCTAssertTrue(fader.waitForExistence(timeout: 10))
+  let start = fader.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.5))
+  let end = start.withOffset(CGVector(dx: 45, dy: 70))
+  start.press(forDuration: 0.08, thenDragTo: end)
+  XCTAssertEqual(app.staticTexts["event"].label, "volume")
  }
 
  func testControlsAndSelection() {

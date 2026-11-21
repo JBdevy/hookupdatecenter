@@ -113,7 +113,8 @@ inline void run(const std::vector<MultitrackExportProject> &projects, std::atomi
                     std::map<File, String> copiedAssets;
                     std::vector<multitrackData::RenderedStem> renderedStems;
                     StringArray lyricFiles;
-                    std::set<ID> unbakedItemPitch;
+                    bool printedRateChange = false;
+                    jaras::TempoEditMap::PlaybackRates playbackRates(song);
                     for (size_t row = 0; row < song.tracks.size(); ++row) {
                         const auto &track = song.tracks[row];
                         if (track.mute) continue;
@@ -163,8 +164,14 @@ inline void run(const std::vector<MultitrackExportProject> &projects, std::atomi
                                 return "mp3";
                             };
                             auto stemItem = [&](const jaras::AudioClip &clip) -> multitrackData::RenderedStem::Item {
-                                return {clip.startTime - part->startTime, clip.duration,
-                                    jaras::TempoEditMap::playbackRate(song, clip, clip.startTime), clip.pitchSemitones};
+                                const auto rate = playbackRates.playbackRate(clip, clip.startTime);
+                                const auto &points = playbackRates.points(clip);
+                                if (std::abs(clip.playbackRate - 1.) > 1e-7 || std::abs(rate - 1.) > 1e-7 ||
+                                    std::any_of(points.begin(), points.end(), [&](const auto &point) {
+                                        return point.time > clip.startTime && point.time < clip.startTime + clip.duration &&
+                                            std::abs(playbackRates.playbackRate(clip, point.time) - 1.) > 1e-7;
+                                    })) printedRateChange = true;
+                                return {clip.startTime - part->startTime, clip.duration, rate, {}};
                             };
                             const auto label = safeName(text(track.name) + String::fromUTF8(" – ") + timelineRegionLabels::displayName(*part));
                             if (fullItems) {
@@ -174,7 +181,6 @@ inline void run(const std::vector<MultitrackExportProject> &projects, std::atomi
                                     const auto filename = allocate(label.substring(0, 150) + String::formatted(" %03d", int(i + 1)), "." + format);
                                     jobsFor(format).push_back({filename, clip->startTime, clip->startTime + clip->duration, track.id, clip->id});
                                     renderedStems.push_back({filename, track.id, {stemItem(*clip)}});
-                                    unbakedItemPitch.insert(clip->id);
                                 }
                             } else {
                                 std::map<String, std::vector<const jaras::AudioClip *>> formats;
@@ -184,7 +190,6 @@ inline void run(const std::vector<MultitrackExportProject> &projects, std::atomi
                                     auto &ids = sourceItems[format];
                                     std::vector<multitrackData::RenderedStem::Item> items;
                                     for (const auto *clip : matching) { ids.insert(clip->id); items.push_back(stemItem(*clip)); }
-                                    if (matching.size() == 1) unbakedItemPitch.insert(matching.front()->id);
                                     const auto filename = allocate(label, "." + format);
                                     jobsFor(format).push_back({filename, part->startTime, part->endTime, track.id, {}});
                                     renderedStems.push_back({filename, track.id, std::move(items)});
@@ -203,7 +208,7 @@ inline void run(const std::vector<MultitrackExportProject> &projects, std::atomi
                     std::vector<jaras::Track> ordered;
                     for (const auto &track : config.song.tracks) if (const auto found = storedTracks.find(track.id); found != storedTracks.end())
                         ordered.push_back(std::move(found->second));
-                    const auto data = multitrackData::encode(config.song, *part, std::move(ordered), renderedStems, lyricFiles, fullItems);
+                    const auto data = multitrackData::encode(config.song, *part, std::move(ordered), renderedStems, lyricFiles, fullItems, printedRateChange);
                     if (fullItems) {
                         auto entry = object();
                         put(entry, "folder", folder.getFileName()); put(entry, "offset", part->startTime - root->startTime);
@@ -233,8 +238,6 @@ inline void run(const std::vector<MultitrackExportProject> &projects, std::atomi
                                     return !audioSeparation::eligible(track, clip) || (split && !regionItems.count(clip.id));
                                 }), track.clips.end());
                             if (track.clips.empty()) track.audioFile.reset();
-                            for (auto &clip : track.clips)
-                                if (unbakedItemPitch.count(clip.id)) clip.pitchSemitones.reset();
                         }
                         const auto batchSize = request.jobs.size();
                         audioExport::render(project, audio, config.mediaDirectory, request, cancel,

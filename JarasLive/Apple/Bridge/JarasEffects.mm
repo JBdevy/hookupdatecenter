@@ -2,6 +2,9 @@
 #include "JarasOutputChannelMap.hpp"
 #include "JarasRealtimeClock.hpp"
 #include "../../Core/Include/CatDynamicsDSP.hpp"
+#include "CatMIDISequenceBridge.h"
+#include "../../Core/Audio/CreativeEffects.hpp"
+#include "../../Core/Transport/PluginTransportClock.hpp"
 #include "../../Core/Audio/PadGateRelease.hpp"
 #include <TargetConditionals.h>
 #import <Accelerate/Accelerate.h>
@@ -410,6 +413,7 @@ struct EQKernel {
     unsigned activeSections=0;
     unsigned consumedGeneration=~0u;
     bool coefficientsSettled=false;
+    std::atomic<unsigned> effectChannels{3};
     std::atomic<bool> enabled{false}, resetRequested{false};
     std::atomic<double> inputGain{1};
     // Item fader precedes every insert, independently of normalization. Keep
@@ -527,6 +531,7 @@ struct EQKernel {
                 }
             }
         }
+        const unsigned channels=effectChannels.load(std::memory_order_relaxed);
         const auto sections=activeSections;
         if(on && mix==0) for(unsigned ch=0;ch<2;ch++) for(unsigned n=0;n<sections;n++) x1[ch][n]=x2[ch][n]=y1[ch][n]=y2[ch][n]=0;
         for(unsigned frame=0;frame<frames;frame++) {
@@ -543,6 +548,7 @@ struct EQKernel {
             }
             for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);ch++) {
                 auto data=static_cast<float*>(buffers->mBuffers[ch].mData); if(!data) continue;
+                if (!(channels & (1u << ch))) continue;
                 const double dry=data[frame];
                 if(!std::isfinite(dry)) {
                     // An invalid upstream sample must not poison the recursive
@@ -643,6 +649,9 @@ struct EQKernel {
     unit->kernel.count.store((unsigned)count,std::memory_order_release);
     unit->kernel.enabled.store(enabled,std::memory_order_relaxed);
     unit->kernel.generation.fetch_add(1,std::memory_order_release);
+}
++ (void)setEffectChannels:(AVAudioUnitEffect *)node mask:(NSUInteger)mask {
+    ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.effectChannels.store(unsigned(mask) & 3u, std::memory_order_relaxed);
 }
 + (void)setPlaybackBoundary:(AVAudioUnitEffect *)node hostTime:(uint64_t)hostTime {
     ((JarasEQAudioUnit *)node.AUAudioUnit)->kernel.fade.boundaryHost.store(hostTime,std::memory_order_relaxed);
@@ -788,11 +797,15 @@ struct CatDynamicsKernel {
 struct DynamicsKernel {
     std::unique_ptr<EffectAnalysis> inputStorage, outputStorage;
     std::atomic<EffectAnalysis*> inputAnalysis{nullptr}, outputAnalysis{nullptr};
+    std::atomic<unsigned> effectChannels{3};
+    bool channelDelay = false;
+    unsigned delayWrite = 0;
     bool reverb = false, limiter = false;
     std::unique_ptr<CatDynamicsKernel> catDynamics;
     double rate = 48000, envelope = 0, gain = 1, mix = 0;
     std::atomic<bool> enabled{false}, resetRequested{false};
     std::atomic<bool> meteringEnabled{false};
+    std::atomic<float> reductionDB{0};
     std::array<std::atomic<double>,6> params;
     std::array<std::atomic<float>,4> peaks;
     std::array<std::vector<float>,8> delays;
@@ -815,6 +828,8 @@ struct DynamicsKernel {
         for(auto &v:peaks) v.store(0);
         for(unsigned ch=0;ch<2;ch++) lowState[ch]=highState[ch]=0;
         if(reverb) for(auto &line:delays) line.assign(unsigned(rate*.18)+1,0);
+        if(channelDelay) for(unsigned ch=0; ch<2; ++ch) delays[ch].assign(unsigned(rate*2)+1,0);
+        delayWrite=0;
         reverbConfiguration.fill(-1);
     }
     void prepareReverbCoefficients(unsigned space,double decay,double lowCut,double highCut) noexcept {
@@ -834,7 +849,7 @@ struct DynamicsKernel {
     }
     void process(AudioBufferList *buffers, unsigned frames) {
         if (resetRequested.exchange(false, std::memory_order_acq_rel)) {
-            envelope=0; gain=1; positions.fill(0); damping.fill(0);
+            envelope=0; gain=1; positions.fill(0); damping.fill(0); delayWrite=0;
             if(catDynamics) catDynamics->reset();
             for (auto& line : delays) std::fill(line.begin(), line.end(), 0);
             for (unsigned ch=0; ch<2; ++ch) lowState[ch]=highState[ch]=0;
@@ -843,6 +858,25 @@ struct DynamicsKernel {
 
         const bool on=enabled.load(std::memory_order_relaxed);
         if(catDynamics) { catDynamics->process(buffers,frames,rate,on); return; }
+        const unsigned channels=effectChannels.load(std::memory_order_relaxed);
+        if(channelDelay) {
+            if(!on || channels==0 || delays[0].empty()) return;
+            const unsigned size=unsigned(delays[0].size());
+            const unsigned lag=std::clamp(unsigned(std::round(params[0].load()*rate)),1u,size-1);
+            const double feedback=params[1].load()*.01, wet=params[2].load()*.01;
+            for(unsigned frame=0;frame<frames;++frame) {
+                for(unsigned ch=0;ch<std::min(2u,buffers->mNumberBuffers);++ch) {
+                    auto* data=static_cast<float*>(buffers->mBuffers[ch].mData);
+                    if(!data) continue;
+                    const bool selected=(channels & (1u<<ch)) != 0;
+                    const float delayed=delays[ch][(delayWrite+size-lag)%size];
+                    delays[ch][delayWrite]=selected?finitePCM(data[frame]+delayed*feedback):0;
+                    if(selected) data[frame]=finitePCM(data[frame]*(1-wet)+delayed*wet);
+                }
+                delayWrite=(delayWrite+1)%size;
+            }
+            return;
+        }
         // Most per-item chains are prepared but bypassed. Preserve the ramp
         // when switching off, and read peaks only while an editor needs them.
         if (!reverb && !on && !meteringEnabled.load(std::memory_order_relaxed) && fabs(gain-1)<1e-7) {
@@ -856,6 +890,7 @@ struct DynamicsKernel {
             // Zero-latency, stereo-linked sample-peak limiter. No allocations,
             // locks or look-ahead delay in render. Fast attack catches even a
             // single-sample transient; exponential release restores the gain.
+            double minimumGain = 1;
             const double inputGain=pow(10,params[0].load(std::memory_order_relaxed)/20);
             const double ceiling=pow(10,params[1].load(std::memory_order_relaxed)/20);
             const double release=exp(-1/(rate*std::max(.01,params[2].load(std::memory_order_relaxed))));
@@ -866,9 +901,11 @@ struct DynamicsKernel {
                 const double peak=std::max(fabs(left),fabs(right))*inputGain;
                 const double target=on?inputGain*std::min(1.0,ceiling/std::max(1e-20,peak)):1;
                 gain=on && target<gain?target:target+(gain-target)*release;
+                minimumGain = std::min(minimumGain, double(gain) / inputGain);
                 l[i]=finitePCM(left*gain); r[i]=finitePCM(right*gain);
                 if(metering) { observed[2]=std::max(observed[2],fabsf(l[i])); observed[3]=std::max(observed[3],fabsf(r[i])); }
             }
+            reductionDB.store(on ? float(-20 * log10(std::max(1e-6, minimumGain))) : 0.f, std::memory_order_relaxed);
             if(metering) for(unsigned ch=0;ch<4;ch++) {
                 float previous=peaks[ch].load(std::memory_order_relaxed);
                 peaks[ch].store(std::max(previous,observed[ch]),std::memory_order_relaxed);
@@ -881,9 +918,11 @@ struct DynamicsKernel {
             const bool metering=meteringEnabled.load(std::memory_order_relaxed);
             const double attack=exp(-1/(rate*std::max(.0001,params[2].load()))), release=exp(-1/(rate*std::max(.01,params[3].load())));
             const double makeup=pow(10,params[4].load()/20), smoothing=1-exp(-1/(rate*.002));
+            double blockReduction = 0;
             for(unsigned i=0;i<frames;i++) {
-                l[i]=finitePCM(l[i]); r[i]=finitePCM(r[i]);
-                const double peak=std::max(fabs(l[i]),fabs(r[i]));
+                if(channels & 1u) l[i]=finitePCM(l[i]);
+                if(channels & 2u) r[i]=finitePCM(r[i]);
+                const double peak=std::max(channels & 1u ? fabs(l[i]) : 0.,channels & 2u ? fabs(r[i]) : 0.);
                 if(metering) { observed[0]=std::max(observed[0],fabsf(l[i])); observed[1]=std::max(observed[1],fabsf(r[i])); }
                 if(!on && fabs(gain-1)<1e-7) {
                     gain=1; envelope=0;
@@ -897,9 +936,12 @@ struct DynamicsKernel {
                 envelope=coefficient*envelope+(1-coefficient)*reduction;
                 const double target=on?(envelope==0?makeup:pow(10,-envelope/20)*makeup):1;
                 gain+=(target-gain)*smoothing;
-                l[i]=finitePCM(l[i]*gain); r[i]=finitePCM(r[i]*gain);
+                blockReduction = std::max(blockReduction, envelope);
+                if(channels & 1u) l[i]=finitePCM(l[i]*gain);
+                if(channels & 2u) r[i]=finitePCM(r[i]*gain);
                 if(metering) { observed[2]=std::max(observed[2],fabsf(l[i])); observed[3]=std::max(observed[3],fabsf(r[i])); }
             }
+            reductionDB.store(on && channels ? float(blockReduction) : 0.f, std::memory_order_relaxed);
             if(metering) for(unsigned ch=0;ch<4;ch++) {
                 // Only the renderer writes peaks; UI exchange clears the window.
                 float previous=peaks[ch].load(std::memory_order_relaxed);
@@ -922,7 +964,7 @@ struct DynamicsKernel {
             double values[8],sum=0,wetL=0,wetR=0;
             for(unsigned n=0;n<8;n++) { double v=delays[n][positions[n]]; damping[n]+=reverbDamping*(v-damping[n]); values[n]=damping[n]; sum+=values[n]; }
             for(unsigned n=0;n<8;n++) {
-                double input=(n&1?dryRight:dryLeft)*.24;
+                double input=(channels & (1u << (n&1)))?(n&1?dryRight:dryLeft)*.24:0.;
                 // I - 2/N * ones is energy-preserving before RT60 attenuation.
                 double value=input+(values[n]-.25*sum)*reverbFeedback[n];
                 delays[n][positions[n]]=finitePCM(value);
@@ -936,7 +978,7 @@ struct DynamicsKernel {
                 lowState[ch]=(1-reverbHP)*wet[ch]+reverbHP*lowState[ch];
                 highState[ch]+=reverbLP*((wet[ch]-lowState[ch])-highState[ch]);
                 auto data=ch?r:l;
-                data[frame]=finitePCM((ch?dryRight:dryLeft)*(1-mix)+highState[ch]*mix);
+                if(channels & (1u<<ch)) data[frame]=finitePCM((ch?dryRight:dryLeft)*(1-mix)+highState[ch]*mix);
             }
         }
     }
@@ -951,6 +993,7 @@ struct DynamicsKernel {
 - (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {
     if((self=[super initWithComponentDescription:d options:o error:e])) {
         kernel.reverb=d.componentSubType=='JLRV';
+        kernel.channelDelay=d.componentSubType=='JLD2';
         kernel.limiter=d.componentSubType=='JLLM';
         if(d.componentSubType=='JLTG' || d.componentSubType=='JLG2') {
             kernel.catDynamics=std::make_unique<CatDynamicsKernel>();
@@ -1039,9 +1082,9 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 + (AVAudioUnitEffect *)make:(OSType)subtype {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        for(NSNumber *type in @[@((unsigned)'JLCP'),@((unsigned)'JLRV'),@((unsigned)'JLLM'),@((unsigned)'JLTG'),@((unsigned)'JLG2')]) {
+        for(NSNumber *type in @[@((unsigned)'JLCP'),@((unsigned)'JLRV'),@((unsigned)'JLLM'),@((unsigned)'JLTG'),@((unsigned)'JLG2'),@((unsigned)'JLD2')]) {
             AudioComponentDescription d={kAudioUnitType_Effect,type.unsignedIntValue,'Jara',0,0};
-            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"CatLive Compressor":(type.unsignedIntValue=='JLLM'?@"CatLive Limiter":(type.unsignedIntValue=='JLTG'?@"CatLive Trigger":(type.unsignedIntValue=='JLG2'?@"Cat Gate":@"CatLive Reverb"))) version:1];
+            [AUAudioUnit registerSubclass:JarasDynamicsAudioUnit.class asComponentDescription:d name:type.unsignedIntValue=='JLCP'?@"CatLive Compressor":(type.unsignedIntValue=='JLLM'?@"CatLive Limiter":(type.unsignedIntValue=='JLTG'?@"CatLive Trigger":(type.unsignedIntValue=='JLG2'?@"Cat Gate":(type.unsignedIntValue=='JLD2'?@"CatLive Channel Delay":@"CatLive Reverb")))) version:1];
         }
     });
     AudioComponentDescription d={kAudioUnitType_Effect,subtype,'Jara',0,0};
@@ -1052,6 +1095,15 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
 + (AVAudioUnitEffect *)makeLimiter { return [self make:'JLLM']; }
 + (AVAudioUnitEffect *)makeTrigger { return [self make:'JLTG']; }
 + (AVAudioUnitEffect *)makeGate { return [self make:'JLG2']; }
++ (AVAudioUnitEffect *)makeChannelDelay { return [self make:'JLD2']; }
++ (void)setEffectChannels:(AVAudioUnitEffect *)node mask:(NSUInteger)mask {
+    dynamicsKernel(node).effectChannels.store(unsigned(mask)&3u,std::memory_order_relaxed);
+}
++ (void)configureChannelDelay:(AVAudioUnitEffect *)node enabled:(BOOL)enabled delay:(double)delay feedback:(double)feedback mix:(double)mix {
+    auto &k=dynamicsKernel(node);
+    k.params[0].store(delay); k.params[1].store(feedback); k.params[2].store(mix);
+    k.enabled.store(enabled);
+}
 + (double)triggerSampleDuration:(AVAudioUnitEffect *)node {
     auto &k=dynamicsKernel(node); return k.catDynamics?k.catDynamics->sampleDuration.load():0;
 }
@@ -1148,6 +1200,9 @@ static DynamicsKernel& dynamicsKernel(AVAudioUnitEffect *node) {
     auto &k=dynamicsKernel(node);
     auto analysis=(input?k.inputAnalysis:k.outputAnalysis).load(std::memory_order_acquire);
     return analysis?@[@(analysis->left.exchange(0)),@(analysis->right.exchange(0))]:@[@0,@0];
+}
++ (float)compressorReduction:(AVAudioUnitEffect *)node {
+    return dynamicsKernel(node).reductionDB.load(std::memory_order_relaxed);
 }
 + (NSArray<NSNumber *> *)takeCompressorPeaks:(AVAudioUnitEffect *)node {
     auto &k=dynamicsKernel(node);
@@ -1447,5 +1502,240 @@ struct ChannelRouteKernel {
         }
     }
     return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
+@end
+
+namespace {
+struct CreativeKernel {
+    std::atomic<float> reductionDB{0};
+    std::unique_ptr<jaras::audio::CreativeEffectDSP> dsp;
+    std::array<std::atomic<double>,4> pending{};
+    std::array<double,4> values{};
+    std::atomic<unsigned> revision{0};
+    unsigned consumed=0;
+    std::atomic<bool> enabled{false}, resetRequested{false};
+    double rate=48000;
+    jaras::PluginTransportClock clock;
+    std::atomic<const jaras::PluginTempoMap*> tempo{nullptr};
+    std::vector<std::unique_ptr<jaras::PluginTempoMap>> tempos;
+    bool rhythmic=false;
+
+    void process(AudioBufferList* buffers,const AudioTimeStamp* timestamp,unsigned frames) {
+        if(resetRequested.exchange(false,std::memory_order_acq_rel)) dsp->reset();
+        if(!enabled.load(std::memory_order_relaxed) || buffers->mNumberBuffers < 1) return;
+        auto serial=revision.load(std::memory_order_acquire);
+        if (!(serial&1u) && serial!=consumed) {
+            std::array<double,4> next{};
+            for(unsigned n=0;n<next.size();++n) next[n]=pending[n].load(std::memory_order_relaxed);
+            if(serial==revision.load(std::memory_order_acquire)) { values=next; consumed=serial; }
+        }
+        auto* left=static_cast<float*>(buffers->mBuffers[0].mData);
+        auto* right=buffers->mNumberBuffers>1?static_cast<float*>(buffers->mBuffers[1].mData):nullptr;
+        auto transport=rhythmic?clock.render(catMIDIClock(timestamp,rate),rate,frames,tempo.load(std::memory_order_acquire)):jaras::PluginTransport{};
+        dsp->process(left,right,frames,values,transport);
+        reductionDB.store(dsp->gainReductionDB(), std::memory_order_relaxed);
+    }
+};
+}
+
+// The normal Pitch insert keeps its original processor at neutral formant.
+// This stage owns both spectral transformations whenever the envelope is shifted.
+namespace {
+struct PitchFormantKernel {
+    signalsmith::stretch::SignalsmithStretch<float> stretch{0};
+    std::atomic<uint32_t> controls{0};
+    std::atomic<bool> resetRequested{true};
+    std::atomic<double> latency{0};
+    uint32_t applied = 0;
+    unsigned capacity = 0;
+    std::vector<float> samples;
+    std::vector<const float *> input;
+    std::vector<float *> output;
+
+    void prepare(unsigned channels, unsigned frames, double rate) {
+        capacity = frames;
+        samples.resize(size_t(channels) * frames);
+        input.resize(channels);
+        output.resize(channels);
+        for (unsigned channel = 0; channel < channels; ++channel)
+            input[channel] = samples.data() + size_t(channel) * frames;
+        stretch.presetDefault(int(channels), float(rate));
+        latency.store((stretch.inputLatency() + stretch.outputLatency()) / rate);
+        resetRequested.store(true);
+        applied = 0;
+    }
+    static uint32_t pack(float pitch, float formant) {
+        if (!std::isfinite(formant) || std::abs(formant) < .005f) return 0;
+        const auto field = [](float value) {
+            return uint32_t(std::lround((std::clamp(std::isfinite(value) ? value : 0.f, -12.f, 12.f) + 12.f) * 100));
+        };
+        return 1u + (field(pitch) << 12) + field(formant);
+    }
+    OSStatus process(AudioBufferList *buffers, unsigned frames) {
+        const auto next = controls.load(std::memory_order_acquire);
+        if (next == 0) { applied = 0; return noErr; }
+        if (frames > capacity) return kAudioUnitErr_TooManyFramesToProcess;
+        if (buffers->mNumberBuffers != input.size()) return kAudioUnitErr_FormatNotSupported;
+        for (unsigned ch = 0; ch < input.size(); ++ch) {
+            auto &buffer = buffers->mBuffers[ch];
+            if (buffer.mNumberChannels != 1 || !buffer.mData || buffer.mDataByteSize < frames * sizeof(float))
+                return kAudioUnitErr_FormatNotSupported;
+            output[ch] = static_cast<float *>(buffer.mData);
+            std::copy_n(output[ch], frames, samples.data() + size_t(ch) * capacity);
+        }
+        const bool reset = resetRequested.exchange(false, std::memory_order_acq_rel);
+        if (!applied || reset) stretch.reset();
+        if (applied != next || reset) {
+            const auto fields = next - 1;
+            stretch.setTransposeSemitones(float(fields >> 12) * .01f - 12.f);
+            stretch.setFormantSemitones(float(fields & 0xfffu) * .01f - 12.f);
+            applied = next;
+        }
+        stretch.process(input.data(), int(frames), output.data(), int(frames));
+        return noErr;
+    }
+};
+}
+
+@interface JarasPitchFormantUnit : AUAudioUnit {
+@public PitchFormantKernel kernel;
+    AUAudioUnitBus *_input, *_output;
+    AUAudioUnitBusArray *_inputs, *_outputs;
+}
+@end
+@implementation JarasPitchFormantUnit
+- (instancetype)initWithComponentDescription:(AudioComponentDescription)description options:(AudioComponentInstantiationOptions)options error:(NSError **)error {
+    if ((self = [super initWithComponentDescription:description options:options error:error])) {
+        AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+        _input = [[AUAudioUnitBus alloc] initWithFormat:format error:error];
+        _output = [[AUAudioUnitBus alloc] initWithFormat:format error:error];
+        if (!_input || !_output) return nil;
+        _inputs = [[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
+        _outputs = [[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[_output]];
+        self.maximumFramesToRender = 8192;
+    }
+    return self;
+}
+- (AUAudioUnitBusArray *)inputBusses { return _inputs; }
+- (AUAudioUnitBusArray *)outputBusses { return _outputs; }
+- (NSTimeInterval)latency { return kernel.controls.load() ? kernel.latency.load() : 0; }
+- (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
+    if (![_input.format isEqual:_output.format] || _output.format.interleaved ||
+        _output.format.commonFormat != AVAudioPCMFormatFloat32) {
+        if (error) *error = [NSError errorWithDomain:NSOSStatusErrorDomain code:kAudioUnitErr_FormatNotSupported userInfo:nil];
+        return NO;
+    }
+    if (![super allocateRenderResourcesAndReturnError:error]) return NO;
+    kernel.prepare(_output.format.channelCount, self.maximumFramesToRender, _output.format.sampleRate);
+    return YES;
+}
+- (void)reset { [super reset]; kernel.resetRequested.store(true, std::memory_order_release); }
+- (AUInternalRenderBlock)internalRenderBlock {
+    auto *state = &kernel;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time, AVAudioFrameCount frames,
+                              NSInteger bus, AudioBufferList *output, const AURenderEvent *events, AURenderPullInputBlock pull) {
+        if (!pull) return kAudioUnitErr_NoConnection;
+        const OSStatus inputStatus = pull(flags, time, frames, 0, output);
+        if (inputStatus != noErr) return inputStatus;
+        const auto status = state->process(output, frames);
+        if (status == noErr && state->applied != 0) updateEffectSilenceFlag(flags, output, frames);
+        return status;
+    };
+}
+@end
+@implementation JarasPitchFormant
++ (AVAudioUnitEffect *)makeNode {
+    static dispatch_once_t once;
+    AudioComponentDescription description = {kAudioUnitType_Effect, 'JLpf', 'Jara', 0, 0};
+    dispatch_once(&once, ^{
+        [AUAudioUnit registerSubclass:JarasPitchFormantUnit.class asComponentDescription:description name:@"CatLive Pitch Formant" version:1];
+    });
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:description];
+}
++ (void)configure:(AVAudioUnitEffect *)node pitch:(float)pitch formant:(float)formant {
+    auto &kernel = ((JarasPitchFormantUnit *)node.AUAudioUnit)->kernel;
+    kernel.controls.store(PitchFormantKernel::pack(pitch, formant), std::memory_order_release);
+}
+@end
+
+@interface JarasCreativeAudioUnit : AUAudioUnit {
+@public CreativeKernel kernel;
+    AUAudioUnitBus *_input, *_output;
+    AUAudioUnitBusArray *_inputs, *_outputs;
+}
+@end
+
+@implementation JarasCreativeAudioUnit
+- (instancetype)initWithComponentDescription:(AudioComponentDescription)d options:(AudioComponentInstantiationOptions)o error:(NSError **)e {
+    if((self=[super initWithComponentDescription:d options:o error:e])) {
+        auto kind=static_cast<jaras::audio::CreativeEffect>(d.componentSubType-'CLF0');
+        kernel.dsp=std::make_unique<jaras::audio::CreativeEffectDSP>(kind);
+        kernel.rhythmic=kind==jaras::audio::CreativeEffect::divisionGate;
+        AVAudioFormat *format=[[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+        _input=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _output=[[AUAudioUnitBus alloc] initWithFormat:format error:e];
+        _inputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeInput busses:@[_input]];
+        _outputs=[[AUAudioUnitBusArray alloc] initWithAudioUnit:self busType:AUAudioUnitBusTypeOutput busses:@[_output]];
+    }
+    return self;
+}
+- (AUAudioUnitBusArray *)inputBusses { return _inputs; }
+- (AUAudioUnitBusArray *)outputBusses { return _outputs; }
+- (void)reset { [super reset]; kernel.resetRequested.store(true,std::memory_order_release); }
+- (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
+    if(![super allocateRenderResourcesAndReturnError:error]) return NO;
+    kernel.rate=_output.format.sampleRate;
+    kernel.dsp->prepare(kernel.rate);
+    return YES;
+}
+- (AUInternalRenderBlock)internalRenderBlock {
+    auto* state=&kernel;
+    return ^AUAudioUnitStatus(AudioUnitRenderActionFlags *flags,const AudioTimeStamp *time,AVAudioFrameCount frames,NSInteger bus,AudioBufferList *output,const AURenderEvent *events,AURenderPullInputBlock pull) {
+        ScopedAudioDenormals denormals;
+        if(!pull) return kAudioUnitErr_NoConnection;
+        const auto result=pull(flags,time,frames,0,output);
+        if(result==noErr) {
+            state->process(output,time,frames);
+            updateEffectSilenceFlag(flags,output,frames);
+        }
+        return result;
+    };
+}
+@end
+
+@implementation JarasCreativeEffects
++ (float)gainReduction:(AVAudioUnitEffect *)node {
+    return ((JarasCreativeAudioUnit *)node.AUAudioUnit)->kernel.reductionDB.load(std::memory_order_relaxed);
+}
++ (AVAudioUnitEffect *)makeEffect:(NSInteger)kind {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        for (const auto& effect:jaras::audio::creativeEffects) {
+            AudioComponentDescription d={kAudioUnitType_Effect,OSType('CLF0'+int(effect.kind)),'Jara',0,0};
+            NSString *name=[NSString stringWithUTF8String:effect.name.data()];
+            [AUAudioUnit registerSubclass:JarasCreativeAudioUnit.class asComponentDescription:d name:name version:1];
+        }
+    });
+    AudioComponentDescription d={kAudioUnitType_Effect,OSType('CLF0'+kind),'Jara',0,0};
+    return [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:d];
+}
++ (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled parameters:(NSArray<NSNumber *> *)parameters {
+    auto &k=((JarasCreativeAudioUnit *)node.AUAudioUnit)->kernel;
+    k.revision.fetch_add(1,std::memory_order_acq_rel);
+    for(unsigned n=0;n<k.pending.size();++n) k.pending[n].store(n<parameters.count?parameters[n].doubleValue:0,std::memory_order_relaxed);
+    k.revision.fetch_add(1,std::memory_order_release);
+    k.enabled.store(enabled,std::memory_order_release);
+}
++ (void)setTempoMap:(AVAudioUnitEffect *)node points:(NSArray<NSDictionary<NSString *, NSNumber *> *> *)points {
+    auto &k=((JarasCreativeAudioUnit *)node.AUAudioUnit)->kernel;
+    std::vector<jaras::PluginTempoMap::Point> sections;
+    sections.reserve(points.count);
+    for(NSDictionary<NSString *,NSNumber *> *point in points)
+        sections.push_back({point[@"seconds"].doubleValue,point[@"bpm"].doubleValue,point[@"beats"].intValue,point[@"unit"].intValue});
+    k.tempos.push_back(std::make_unique<jaras::PluginTempoMap>(std::move(sections)));
+    k.tempo.store(k.tempos.back().get(),std::memory_order_release);
+}
++ (void)transport:(AVAudioUnitEffect *)node position:(double)position clock:(double)clock playing:(BOOL)playing loopStart:(double)start loopEnd:(double)end tempo:(double)tempo {
+    ((JarasCreativeAudioUnit *)node.AUAudioUnit)->kernel.clock.publish(position,clock,playing,start,end,tempo);
 }
 @end

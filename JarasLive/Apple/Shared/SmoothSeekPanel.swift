@@ -708,7 +708,7 @@ struct SectionListDock<Primary: View, Sections: View>: View {
         }
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        ProjectionWindow.followWorkspaceWindow(panel)
+        ProjectionWindow.followWorkspaceWindow(panel, independent: true)
         panel.title = "CatLive · Parts"; panel.minSize = NSSize(width: 240, height: 240)
         panel.isReleasedWhenClosed = false; panel.delegate = self
         let host = NSHostingView(rootView: DetachedPartsContent(show: show).interfaceScaled())

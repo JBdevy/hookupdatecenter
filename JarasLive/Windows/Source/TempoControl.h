@@ -11,7 +11,7 @@ class TempoControl final : public Component {
         for (auto *b : {&up, &down}) {
             addAndMakeVisible(b);
             b->getProperties().set("plain", true);
-            b->getProperties().set("fontSize", 10);
+            b->getProperties().set("fontSize", 15);
             b->setWantsKeyboardFocus(false);
         }
         up.onClick = [this] { change(1); };
@@ -37,7 +37,10 @@ class TempoControl final : public Component {
             field->setPopupMenuEnabled(false);
             field->onReturnKey = [this, field] { commitMeter(); field->giveAwayKeyboardFocus(); };
             field->onEscapeKey = [this, field] { refreshMeter(); field->giveAwayKeyboardFocus(); };
-            field->onFocusLost = [this] { commitMeter(); };
+            field->onFocusLost = [this, field] {
+                auto &other = field == &beats ? unit : beats;
+                if (!other.hasKeyboardFocus(false)) commitMeter();
+            };
         }
         beats.setName("Beats per bar");
         unit.setName("Beat unit");
@@ -59,35 +62,35 @@ class TempoControl final : public Component {
         const auto colour = tempoNeedsRender ? theme::yellow : Colours::white;
         bpm.setColour(TextButton::textColourOffId, colour);
         bpm.setColour(TextButton::textColourOnId, colour);
-        if (!beats.hasKeyboardFocus(false) && !unit.hasKeyboardFocus(false)) refreshMeter();
+        const bool meterAllowed = session.meterInputAllowed();
+        beats.setReadOnly(!meterAllowed); unit.setReadOnly(!meterAllowed);
+        if (!meterAllowed || (!beats.hasKeyboardFocus(false) && !unit.hasKeyboardFocus(false))) refreshMeter();
         const bool hasSong = song != nullptr;
         if (!shownSong || *shownSong != hasSong) { shownSong = hasSong; repaint(); }
     }
     void paint(Graphics &g) override {
-        g.setColour(Colour(0xff121212));
-        const auto bounds=getLocalBounds().toFloat().reduced(.5f);
-        g.fillRoundedRectangle(bounds, 6);
-        g.setColour(theme::line);
-        g.drawRoundedRectangle(bounds, 6, 1);
-        if (const auto *song = session.song()) {
-            const float scale = getWidth() / 171.f;
+        if (session.song()) {
+            const float scale = getWidth() / 179.f;
             g.setFont(theme::font(13));
             g.setColour(Colours::white);
-            g.drawText("/", roundToInt(37 * scale), 0, roundToInt(8 * scale), getHeight(),
+            g.drawText("/", roundToInt(27 * scale), 0, roundToInt(8 * scale), getHeight(),
                        Justification::centred);
         }
         g.setColour(theme::secondary);
         g.setFont(theme::font(8));
-        g.drawText("BPM", signatureWidth(), getHeight() / 2 + 3, roundToInt(58 * getWidth() / 171.f),
-                   10, Justification::centred);
+        g.drawText("BPM", bpm.getX(), bpm.getBottom() - 1, bpm.getWidth(),
+                   9, Justification::centred);
     }
     void resized() override {
-        const float scale = getWidth() / 171.f;
-        beats.setBounds(roundToInt(4 * scale), (getHeight() - 23) / 2, roundToInt(30 * scale), 23);
-        unit.setBounds(roundToInt(48 * scale), (getHeight() - 23) / 2, roundToInt(30 * scale), 23);
-        bpm.setBounds(signatureWidth(), getHeight() / 2 - 15, roundToInt(58 * scale), 20);
-        up.setBounds(roundToInt(142 * scale), 2, roundToInt(25 * scale), 14);
-        down.setBounds(roundToInt(142 * scale), getHeight() - 16, roundToInt(25 * scale), 14);
+        constexpr int stepWidth = 28, stepHeight = 28;
+        const float scale = getWidth() / 179.f;
+        const int centerY = (getHeight() - 23) / 2;
+        const int stepY = (getHeight() - stepHeight) / 2;
+        beats.setBounds(roundToInt(1 * scale), centerY, roundToInt(24 * scale), 23);
+        unit.setBounds(roundToInt(37 * scale), centerY, roundToInt(24 * scale), 23);
+        down.setBounds(roundToInt(65 * scale), stepY, roundToInt(stepWidth * scale), stepHeight);
+        bpm.setBounds(roundToInt(94 * scale), std::max(0, (getHeight() - 26) / 2), roundToInt(55 * scale), 18);
+        up.setBounds(roundToInt(150 * scale), stepY, roundToInt(stepWidth * scale), stepHeight);
     }
 
   private:
@@ -101,18 +104,18 @@ class TempoControl final : public Component {
     bool tempoNeedsRender = false;
     std::optional<bool> shownSong;
     void refreshMeter() {
-        const auto *song = session.song();
-        beats.setText(String(song ? song->beatsPerBar : 4), false);
-        unit.setText(String(song ? song->beatUnit : 4), false);
+        const auto [numerator, denominator] = session.transportMeter();
+        beats.setText(String(numerator), false);
+        unit.setText(String(denominator), false);
     }
     void commitMeter() {
-        const auto *song = session.song();
-        if (!song) { refreshMeter(); return; }
+        if (!session.meterInputAllowed()) { refreshMeter(); return; }
+        const auto [activeBeats, activeUnit] = session.transportMeter();
         const int numerator = beats.getText().getIntValue(), denominator = unit.getText().getIntValue();
         const bool validUnit = denominator > 0 && denominator <= 64 && (denominator & (denominator - 1)) == 0;
-        const int nextBeats = numerator >= 1 && numerator <= 32 ? numerator : song->beatsPerBar;
-        const int nextUnit = validUnit ? denominator : song->beatUnit;
-        if (nextBeats != song->beatsPerBar || nextUnit != song->beatUnit)
+        const int nextBeats = numerator >= 1 && numerator <= 32 ? numerator : activeBeats;
+        const int nextUnit = validUnit ? denominator : activeUnit;
+        if (nextBeats != activeBeats || nextUnit != activeUnit)
             apply(session.tempoBPM(), nextBeats, nextUnit);
         refreshMeter();
     }
@@ -123,7 +126,6 @@ class TempoControl final : public Component {
             [safe=SafePointer<TempoControl>(this)](double value){if(safe && safe->session.tempoInputAllowed())safe->apply(value,0,0);},error),390,188);
     }
 
-    int signatureWidth() const { return roundToInt(81 * getWidth() / 171.f); }
     void change(int delta) {
         if (const auto *song = session.song())
             apply(jlimit(60., 300., session.tempoBPM() + delta), 0, 0);

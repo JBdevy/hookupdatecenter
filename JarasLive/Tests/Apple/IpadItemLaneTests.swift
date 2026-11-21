@@ -9,13 +9,17 @@ let json = """
 {"id":"\(UUID())","name":"Test","color":3355443,"volume":1,"pan":0,"mute":false,"solo":false,"clips":[],"laneCount":2}
 """
 var remote = try JSONDecoder().decode(DAWRemoteState.Track.self, from: Data(json.utf8))
-for scale in [0.35, 1, 3] {
-    let geometry = IpadNativeItemGeometry(track: track, remoteTrack: remote, scale: scale)
-    precondition(geometry.height(isolated.id) == geometry.rowHeight - 6)
-    precondition(geometry.height(adjacent.id) == geometry.rowHeight - 6)
-    precondition(geometry.offset(isolated.id) == 3 && geometry.offset(adjacent.id) == 3)
-    precondition(geometry.height(first.id) == geometry.rowHeight / 2 - 6)
-    precondition(geometry.height(second.id) == geometry.rowHeight / 2 - 6)
+private let minimum = TrackHeightGeometry.minimumLaneHeight
+private let inset = IpadNativeItemGeometry.itemInset
+for scale in [0.1, 0.35, 1, 3] {
+    let geometry = IpadNativeItemGeometry(track: track, remoteTrack: remote, scale: scale, minimumRowHeight: minimum)
+    precondition(geometry.rowHeight == DAWRemoteItemLayout.rowHeight(remote, scale: scale, minimum: minimum))
+    if scale < 1 { precondition(geometry.rowHeight == minimum) }
+    precondition(geometry.height(isolated.id) == geometry.rowHeight - 2 * inset)
+    precondition(geometry.height(adjacent.id) == geometry.rowHeight - 2 * inset)
+    precondition(geometry.offset(isolated.id) == inset && geometry.offset(adjacent.id) == inset)
+    precondition(geometry.height(first.id) == geometry.rowHeight / 2 - 2 * inset)
+    precondition(geometry.height(second.id) == geometry.rowHeight / 2 - 2 * inset)
     precondition(geometry.offset(first.id) != geometry.offset(second.id))
     for clip in track.clips {
         precondition(geometry.offset(clip.id) + geometry.height(clip.id) <= geometry.rowHeight)
@@ -23,7 +27,7 @@ for scale in [0.35, 1, 3] {
 }
 remote.laneCount = 3
 private let recording = IpadNativeItemGeometry(track: track, remoteTrack: remote, scale: 1)
-precondition(recording.height(isolated.id) == recording.rowHeight / 3 - 6)
+precondition(recording.height(isolated.id) == recording.rowHeight / 3 - 2 * inset)
 private let observer = IpadNativeItemGeometry(track: nil, remoteTrack: remote, scale: 1)
-precondition(observer.offset(first.id, fallbackLane: 2) == observer.fallbackLaneHeight * 2 + 3)
+precondition(observer.offset(first.id, fallbackLane: 2) == observer.fallbackLaneHeight * 2 + inset)
 print("IPAD_ITEM_LANES_ISOLATED_OVERLAPPING_ADJACENT_RECORDING_AND_REMOTE_OK")

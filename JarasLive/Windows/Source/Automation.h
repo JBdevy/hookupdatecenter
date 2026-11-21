@@ -127,6 +127,9 @@ struct AutomationProgram {
     }
 };
 namespace automation {
+inline bool trackSupportsLanes(const jaras::Track &track) {
+    return jaras::fixedTrackName(track.role).empty();
+}
 inline var settings(const jaras::Track &track) {
     return track.automationJSON ? JSON::parse(text(*track.automationJSON)) : object();
 }
@@ -139,6 +142,14 @@ inline Array<var> visible(const jaras::Track &track) {
         if (flag(curve, "visible", true))
             result.add(curve);
     return result;
+}
+inline bool allTrackLanesVisible(const jaras::Song &song) {
+    bool hasTrack = false;
+    for (const auto &track : song.tracks) if (trackSupportsLanes(track)) {
+        if (visible(track).isEmpty()) return false;
+        hasTrack = true;
+    }
+    return hasTrack;
 }
 inline var envelope(String kind, double value) {
     auto curve = object(), target = object();

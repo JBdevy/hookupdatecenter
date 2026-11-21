@@ -83,7 +83,7 @@ class ExportPanel final : public Component, private ListBoxModel, private Timer 
             area = std::make_pair(*session.transport().loop.start, *session.transport().loop.end);
         for (auto *box : {&source, &bounds, &format, &quality, &rate, &channels})
             addAndMakeVisible(box);
-        source.addItemList({"Master", "Tracks", "Master + Tracks", "Stems"}, 1);
+        source.addItemList({"Main", "Tracks", localization::translate("Master + Tracks"), "Stems"}, 1);
         source.setComponentID("exportSource");
         source.setSelectedId(stems ? 4 : 1, dontSendNotification);
         bounds.addItemList({"Projeto completo", String::fromUTF8("Área selecionada"),

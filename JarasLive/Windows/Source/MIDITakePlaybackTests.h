@@ -23,6 +23,27 @@ inline int noteOns(const MidiBuffer &messages, int pitch=-1) {
     return count;
 }
 template <typename Test> void registerTests(Test &test) {
+    test("Native MIDI Arpeggiator follows project tempo and bypass", [] {
+        jaras::Song song;
+        song.bpm = 120;
+        jaras::Track track;
+        track.role.id = "keys";
+        auto clip = item(60);
+        clip.startTime = 0;
+        clip.duration = 1;
+        clip.midi->notes = {{uuid(), 0, 2, 67, 90, 1}, {uuid(), 0, 2, 60, 90, 1}, {uuid(), 0, 2, 64, 90, 1}};
+        track.clips = {clip};
+        track.fxJSON = R"({"inserted":["Arpeggiator"],"arpeggiatorEnabled":true})";
+        const auto rendered = playbackNotes(track, &song);
+        std::vector<int> pitches;
+        for (const auto &note : rendered) pitches.push_back(note.pitch);
+        require(pitches == std::vector<int>{60, 64, 67, 60, 64, 67, 60, 64}, "The arpeggio lost its ascending pattern");
+        require(std::abs(rendered[1].start - .125) < 1e-9 && std::abs(rendered[1].end - rendered[1].start - .09375) < 1e-9,
+                "The arpeggio lost its 1/16 timing or 75 percent gate");
+        track.fxJSON = R"({"inserted":["Arpeggiator"],"arpeggiatorEnabled":false})";
+        require(playbackNotes(track, &song).size() == 3, "Bypass did not restore the original chord");
+    });
+
     test("Virtual Keyboard routes Omni and fixed channels only to armed tracks and releases original voices", [] {
         VirtualKeyboardRoute a,b,c;
         MidiBuffer source,first,second,third;

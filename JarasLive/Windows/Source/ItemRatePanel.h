@@ -10,7 +10,7 @@ class ItemRatePanel final : public Component {
     Label rateLabel,bpmLabel,base;
     TextButton reset{"Reset"},rateMinus{String::charToString(0x2212)},ratePlus{"+"},
         bpmMinus{String::charToString(0x2212)},bpmPlus{"+"};
-    TextButton cancel{localization::translate("Cancel")},save{localization::translate("Save")};
+    TextButton save{localization::translate("Save")};
     std::function<void(double,bool)> commit;
     std::function<void()> close;
     bool inputValid=true,resetTempo=false;
@@ -30,7 +30,7 @@ class ItemRatePanel final : public Component {
 public:
     ItemRatePanel(double initial,double baseBPM,std::function<void(double,bool)> apply,std::function<void()> dismiss)
         :settings(baseBPM,initial),commit(std::move(apply)),close(std::move(dismiss)) {
-        for(Component* c:std::initializer_list<Component*>{&rate,&bpm,&rateLabel,&bpmLabel,&base,&reset,&rateMinus,&ratePlus,&bpmMinus,&bpmPlus,&cancel,&save})addAndMakeVisible(c);
+        for(Component* c:std::initializer_list<Component*>{&rate,&bpm,&rateLabel,&bpmLabel,&base,&reset,&rateMinus,&ratePlus,&bpmMinus,&bpmPlus,&save})addAndMakeVisible(c);
         rateLabel.setText("Rate",dontSendNotification);bpmLabel.setText(localization::translate("BPM offset"),dontSendNotification);
         base.setText("Base: "+String(baseBPM,2)+" BPM",dontSendNotification);
         rate.setComponentID("itemRate");bpm.setComponentID("itemRateBPM");
@@ -40,13 +40,13 @@ public:
         reset.onClick=[this]{settings.reset();resetTempo=true;refresh();};
         rateMinus.onClick=[this]{settings.stepRate(-1);refresh();};ratePlus.onClick=[this]{settings.stepRate(1);refresh();};
         bpmMinus.onClick=[this]{settings.stepBPM(-1);refresh();};bpmPlus.onClick=[this]{settings.stepBPM(1);refresh();};
-        cancel.onClick=close;save.onClick=[this]{if(inputValid&&settings.valid())commit(settings.rate,resetTempo);};refresh();
+        save.onClick=[this]{if(inputValid&&settings.valid())commit(settings.rate,resetTempo);};refresh();
     }
     void resized() override {
         auto area=getLocalBounds().reduced(16);reset.setBounds(area.removeFromTop(28).removeFromRight(80));area.removeFromTop(8);
         auto row=area.removeFromTop(32);rateLabel.setBounds(row.removeFromLeft(80));rateMinus.setBounds(row.removeFromLeft(32));ratePlus.setBounds(row.removeFromRight(32));rate.setBounds(row.reduced(4,0));area.removeFromTop(10);
         row=area.removeFromTop(32);bpmLabel.setBounds(row.removeFromLeft(80));bpmMinus.setBounds(row.removeFromLeft(32));bpmPlus.setBounds(row.removeFromRight(32));bpm.setBounds(row.reduced(4,0));
-        base.setBounds(area.removeFromTop(28));auto bottom=area.removeFromBottom(30);cancel.setBounds(bottom.removeFromLeft(90));save.setBounds(bottom.removeFromRight(90));
+        base.setBounds(area.removeFromTop(28));auto bottom=area.removeFromBottom(30);save.setBounds(bottom.removeFromRight(90));
     }
 };
 }

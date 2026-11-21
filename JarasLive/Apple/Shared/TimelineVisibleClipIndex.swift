@@ -82,3 +82,15 @@ func timelineRowsIntersecting(_ visible: ClosedRange<CGFloat>, offsets: [CGFloat
     }
     return first..<low
 }
+
+func timelineTrackSeparators(in visible: ClosedRange<CGFloat>, offsets: [CGFloat],
+                             heights: [CGFloat], top: CGFloat) -> [CGFloat] {
+    var boundaries: [CGFloat] = []
+    for row in timelineRowsIntersecting(visible, offsets: offsets, heights: heights, top: top) where heights[row] > 0 {
+        let start = top + offsets[row]
+        for boundary in [start, start + heights[row]] where visible.contains(boundary) && boundaries.last != boundary {
+            boundaries.append(boundary)
+        }
+    }
+    return boundaries
+}

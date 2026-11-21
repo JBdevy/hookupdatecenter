@@ -10,11 +10,11 @@ struct InstrumentParameterEditor: View {
         Binding(get: { parameters[keyPath: key] }, set: { parameters[keyPath: key] = $0 })
     }
     private var pagePicker: some View {
-        Picker("Parameters", selection: $page) {
-            Text("Envelope").tag("Envelope")
-            Text("Velocity").tag("Velocity")
-            Text("Cutoff").tag("Cutoff")
-            Text("Controller").tag("Controller")
+        Picker(String("Parameters"), selection: $page) {
+            Text(verbatim: "Envelope").tag("Envelope")
+            Text(verbatim: "Velocity").tag("Velocity")
+            Text(verbatim: "Cutoff").tag("Cutoff")
+            Text(verbatim: "Controller").tag("Controller")
         }.pickerStyle(.segmented).labelsHidden()
     }
     @ViewBuilder private func knobs<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -65,7 +65,7 @@ struct InstrumentParameterEditor: View {
                 FXKnob("Sustain", value: envelope(\.sustain), range: 0...1, unit: "%", multiplier: 100, reset: 1, parameter: .instrumentSustain)
                 FXKnob("Release", value: envelope(\.release), range: 0.001...20, unit: "ms", multiplier: 1000, logarithmic: true, reset: drums ? 20 : 0.3, parameter: .instrumentRelease)
                 FXKnob("Gain", value: $parameters.gain, range: -24...12, unit: "dB", reset: 0, parameter: .instrumentGain)
-            }.padding(12).background(Color.black.opacity(0.76)).cornerRadius(10)
+            }.padding(12).nativeFXRack()
             } else if page == "Velocity" { velocityPage } else if page == "Cutoff" { cutoffPage } else { controllerPage }
         }
         .environment(\.fxKnobDiameter, 52)
@@ -109,10 +109,10 @@ struct InstrumentParameterEditor: View {
     }
     private var velocityPage: some View {
         VStack(spacing: 20) {
-            Picker("Curve", selection: Binding(get: { velocity.curve }, set: { var value = velocity; value.curve = $0; parameters.velocity = value })) {
-                Text("Soft").tag(InstrumentVelocityCurve.soft)
-                Text("Medium").tag(InstrumentVelocityCurve.medium)
-                Text("Hard").tag(InstrumentVelocityCurve.hard)
+            Picker(String("Curve"), selection: Binding(get: { velocity.curve }, set: { var value = velocity; value.curve = $0; parameters.velocity = value })) {
+                Text(verbatim: "Soft").tag(InstrumentVelocityCurve.soft)
+                Text(verbatim: "Medium").tag(InstrumentVelocityCurve.medium)
+                Text(verbatim: "Hard").tag(InstrumentVelocityCurve.hard)
             }.pickerStyle(.segmented).mapFXMIDI(.velocityCurve, name: "Curve", range: 0...2)
             Canvas { context, size in
                 let rect = CGRect(x: 18, y: 18, width: size.width - 36, height: size.height - 36)
@@ -134,7 +134,7 @@ struct InstrumentParameterEditor: View {
             HStack(spacing: 24) {
                 FXKnob("Cutoff", value: Binding(get: { velocity.cutoffMinimum }, set: { var value = velocity; value.cutoffMinimum = $0; parameters.velocity = value }), range: 20...20000, unit: "Hz", logarithmic: true, reset: 20000, parameter: .velocityCutoff)
                 Text("Minimum cutoff for soft notes. Stronger notes open their own filter.").font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
-            }.padding(12).background(Color.black.opacity(0.76)).cornerRadius(10)
+            }.padding(12).nativeFXRack()
         }
     }
     private var cutoffPage: some View {
@@ -142,16 +142,16 @@ struct InstrumentParameterEditor: View {
             HStack(spacing: 24) {
                 FXKnob("Cutoff", value: filter(\.frequency), range: 20...20000, unit: "Hz", logarithmic: true, reset: 20000, parameter: .cutoffFrequency)
                 FXKnob("Depth", value: filter(\.depth), range: 0...10, unit: "oct", reset: 0, parameter: .cutoffDepth)
-                Text("Cutoff envelope").font(.jarasTitle3.weight(.semibold))
+                Text(verbatim: "Cutoff envelope").font(.jarasTitle3.weight(.semibold))
                 Spacer()
-            }.padding(12).background(Color.black.opacity(0.76)).cornerRadius(10)
+            }.padding(12).nativeFXRack()
             knobs {
                 FXKnob("Attack", value: filter(\.attack), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .cutoffAttack)
                 FXKnob("Hold", value: filter(\.hold), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0, parameter: .cutoffHold)
                 FXKnob("Decay", value: filter(\.decay), range: 0.001...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.3, parameter: .cutoffDecay)
                 FXKnob("Sustain", value: filter(\.sustain), range: 0...1, unit: "%", multiplier: 100, reset: 1, parameter: .cutoffSustain)
                 FXKnob("Release", value: filter(\.release), range: 0.001...20, unit: "ms", multiplier: 1000, logarithmic: true, reset: 0.3, parameter: .cutoffRelease)
-            }.padding(12).background(Color.black.opacity(0.76)).cornerRadius(10)
+            }.padding(12).nativeFXRack()
         }
     }
 
@@ -165,23 +165,23 @@ struct InstrumentParameterEditor: View {
                 value.volume = min(0, max(-96, volume)); parameters.controllers = value
             }), range: -96...0, unit: "dB", reset: 0, parameter: .instrumentVolume).frame(width: 90)
             VStack(alignment: .leading, spacing: 10) {
-            Picker("Voice mode", selection: Binding(get: {
+            Picker(String("Voice mode"), selection: Binding(get: {
                 parameters.controllers?.monophonic ?? (category == .lead)
             }, set: { mono in
                 var value = parameters.controllers ?? InstrumentLibrary.controllers(category)
                 value.monophonic = mono; parameters.controllers = value
             })) {
-                Text("Monophonic").tag(true)
-                Text("Polyphonic").tag(false)
+                Text(verbatim: "Monophonic").tag(true)
+                Text(verbatim: "Polyphonic").tag(false)
             }.pickerStyle(.segmented)
             Divider()
-            Toggle("Modulation", isOn: controller(\.modulation)).mapFXMIDI(.modulation, name: "Modulation", range: 0...1)
+            Toggle(String("Modulation"), isOn: controller(\.modulation)).mapFXMIDI(.modulation, name: "Modulation", range: 0...1)
             Text("Modulation wheel controls the cutoff.").foregroundStyle(JarasTheme.secondary)
             Divider()
-            Toggle("Pitch Bend", isOn: controller(\.pitchBend)).mapFXMIDI(.pitchBend, name: "Pitch Bend", range: 0...1)
+            Toggle(String("Pitch Bend"), isOn: controller(\.pitchBend)).mapFXMIDI(.pitchBend, name: "Pitch Bend", range: 0...1)
             Text("Pitch Bend controls vibrato depth at 6.85 Hz.").foregroundStyle(JarasTheme.secondary)
             }.font(.jarasCallout)
-        }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Color.black.opacity(0.76)).cornerRadius(10)
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading).nativeFXRack()
     }
 
 }

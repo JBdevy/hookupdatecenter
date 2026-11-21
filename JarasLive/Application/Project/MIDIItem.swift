@@ -149,6 +149,14 @@ public extension AudioClip {
 }
 
 public extension Song {
+    func instrumentPlaybackNotes(in clip: AudioClip, track: Track?) -> [MIDIPlaybackNote] {
+        let notes = midiPlaybackNotes(in: clip)
+        guard track?.fx?.arpeggiatesMIDI == true || (clip.fxBypassed != true && clip.fx?.arpeggiatesMIDI == true) else {
+            return notes
+        }
+        return MIDIArpeggiator.notes(notes) { tempoSection(at: $0).bpm }
+    }
+
     func midiPlaybackNotes(in clip: AudioClip) -> [MIDIPlaybackNote] {
         var result: [MIDIPlaybackNote] = [], last: [UUID: Int] = [:]
         var source = clip.sourceOffset
@@ -167,6 +175,46 @@ public extension Song {
             faded.velocity = Int((Double(note.velocity) * clip.fadeGain(at: note.start)).rounded())
             return faded.velocity > 0 ? faded : nil
         }.sorted { $0.start < $1.start }
+    }
+}
+
+enum MIDIArpeggiator {
+    static let gate = 0.75
+    static func interval(bpm: Double) -> Double { 15 / max(20, bpm) }
+
+    static func notes(_ ordered: [MIDIPlaybackNote], bpm: (Double) -> Double) -> [MIDIPlaybackNote] {
+        guard let first = ordered.first else { return [] }
+        var pending = 0, position = first.start
+        var active: [MIDIPlaybackNote] = [], result: [MIDIPlaybackNote] = []
+        var previousPitch = -1
+        while pending < ordered.count || !active.isEmpty {
+            while pending < ordered.count && ordered[pending].start <= position + 1e-8 {
+                active.append(ordered[pending]); pending += 1
+            }
+            active.removeAll { $0.end <= position + 1e-8 }
+            guard !active.isEmpty else {
+                guard pending < ordered.count else { break }
+                position = ordered[pending].start; previousPitch = -1
+                continue
+            }
+            let ascending = active.min { $0.pitch < $1.pitch }!
+            var note = active.lazy.filter { $0.pitch > previousPitch }.min { $0.pitch < $1.pitch } ?? ascending
+            let step = interval(bpm: bpm(position))
+            previousPitch = note.pitch
+            note.start = position; note.end = min(note.end, position + step * gate)
+            // A repeated pitch may derive from one sustained source note. Give
+            // each trigger a stable scheduling identity for the MIDI bridge.
+            var bytes = note.sourceID.uuid
+            withUnsafeMutableBytes(of: &bytes) { words in
+                let count = UInt32(result.count)
+                for i in 0..<4 { words[12 + i] ^= UInt8(truncatingIfNeeded: count >> (8 * i)) }
+            }
+            if result.count >= 1_000_000 { return ordered }
+            note.sourceID = UUID(uuid: bytes)
+            result.append(note)
+            position += step
+        }
+        return result
     }
 }
 

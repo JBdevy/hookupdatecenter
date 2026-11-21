@@ -141,6 +141,28 @@ require(onlyMixer.resizingTrack(by: -0.2).grid > 0.19 && onlySetlist.resizingSet
 require(panelStart.resizingTrack(by: .nan) == panelStart && panelStart.resizingSetlist(by: .infinity) == panelStart,
         "invalid drag values cannot corrupt panel layout")
 print("REMOTE_FULL_RANGE_PANEL_WIDTHS_COLLAPSE_RESTORE_AND_REVERSALS_OK")
+let nativeWidths = DAWRemotePanelWidths(track: 0.30, setlist: 0.25)
+func nativePaneWidths(available: Double, preferred: DAWRemotePanelWidths = nativeWidths) -> NativeWorkspacePanelWidths {
+    NativeWorkspacePanelWidths(preferred: preferred, reference: 1_000, available: available,
+                               minimumTrack: 338, iconWidth: 40)
+}
+let undockedPanes = nativePaneWidths(available: 1_000)
+let withFocus = nativePaneWidths(available: 760)
+let withFocusAndLibrary = nativePaneWidths(available: 455)
+require(undockedPanes.track == 338 && withFocus.track == undockedPanes.track &&
+        withFocus.setlist == undockedPanes.setlist && withFocus.grid < undockedPanes.grid,
+        "Opening a Native dock consumes only the grid while there is room")
+require(withFocusAndLibrary.track == withFocus.track && withFocusAndLibrary.grid == 0 &&
+        withFocusAndLibrary.setlist == 77, "Setlist gives up width before the Track Mixer")
+require(nativePaneWidths(available: 250).track == 250 &&
+        nativePaneWidths(available: 760, preferred: .init(track: 0, setlist: 0.25)).track == 0,
+        "Minimum width yields only to the available space and a hidden Track Mixer stays hidden")
+require(NativeRegionDrawerSwipe.expansion(x: -45, y: 5) == true &&
+        NativeRegionDrawerSwipe.expansion(x: 45, y: 5) == false &&
+        NativeRegionDrawerSwipe.expansion(x: -20, y: 0) == nil &&
+        NativeRegionDrawerSwipe.expansion(x: -50, y: 80) == nil,
+        "Left opens, right closes, and vertical scrolling or a small movement does neither")
+print("NATIVE_PANE_WIDTH_PRIORITY_AND_DIRECTIONAL_DRAWER_OK")
 let autoCommand = DAWRemoteCommand(project: project, song: song, action: .toggleRegionAuto)
 if case .command(let decodedAuto) = try DAWRemoteWire.decode(DAWRemoteWire.command(autoCommand)) {
     require(decodedAuto.action == .toggleRegionAuto && decodedAuto.valid, "AUTO typed command roundtrip")

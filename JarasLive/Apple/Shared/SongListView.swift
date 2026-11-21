@@ -27,7 +27,7 @@ import Combine
         }
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        ProjectionWindow.followWorkspaceWindow(panel)
+        ProjectionWindow.followWorkspaceWindow(panel, independent: true)
         panel.title = "CatLive · Setlist"
         panel.minSize = NSSize(width: 224, height: 300)
         panel.isReleasedWhenClosed = false
@@ -121,6 +121,7 @@ private func setlistQueuedRegionID(_ region: UUID?, occurrence: UUID?, parent: U
     }
 }
 struct SongListView: View {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage("jaras.language") private var language = "en"
     @Environment(\.multitrackAction) private var multitrackAction
     var mediaDirectory: URL?
@@ -460,7 +461,7 @@ struct SongListView: View {
                                     let targets = selectedEntries.contains(region.id) ? selectedEntries : [region.id]
                                     let sourceID = show.playlistRegionSourceID(region.id)
                                     let source = song?.parts.first { $0.id == sourceID } ?? region
-                                    Button(JarasLocalization.string("Edit song")) { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: sourceID, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: Set(targets.map(show.playlistRegionSourceID))) }
+                                    Button(JarasLocalization.string("Editar região")) { editingUppercaseName = region.usesUppercase; editingEntry = EntryEdit(id: sourceID, name: region.name, color: region.color ?? 0x705264, block: false, regionTargets: Set(targets.map(show.playlistRegionSourceID))) }
                                     Button(JarasLocalization.string("Detect BPM…")) { show.detectBPMRegions = visible.compactMap { entry in
                                         if case .region(let part, _) = entry, targets.contains(part.id) { return show.playlistRegionSourceID(part.id) }; return nil
                                     } }
@@ -579,7 +580,7 @@ struct SongListView: View {
             guard !creatingPlaylist && !choosingPlaylist else { return }
             show.stepRegion(request.direction, entries: visible)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(JarasTheme.background)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(interfaceTheme.background)
         .alert(Text(verbatim: JarasLocalization.string(playlistCopySucceeded ? "Playlist copied successfully" : "Could not copy playlist")), isPresented: $showingPlaylistCopyResult) {
             Button(JarasLocalization.string("OK"), role: .cancel) { }
         } message: {
@@ -661,7 +662,7 @@ struct SongListView: View {
                     show.editRegion(part.id, name: name, color: color, uppercaseName: uppercase)
                 }.background(JarasTheme.panel)
             } else {
-            NameColorEditor(title: edit.block ? "Edit block" : "Edit song", initialName: edit.name, initialColor: edit.color, save: { name, color in
+            NameColorEditor(title: edit.block ? "Edit block" : "Editar região", initialName: edit.name, initialColor: edit.color, save: { name, color in
                 if edit.block { show.editSetlistBlock(edit.id, name: name, color: color) }
                 else if edit.regionTargets.count > 1 { show.editRegionColors(edit.regionTargets, color: color) }
                 else { show.editRegion(edit.id, name: name, color: color, uppercaseName: state.uppercaseName) }
@@ -1069,18 +1070,24 @@ private struct PlaylistSelectionPanel: View {
 // A legacy scroller remains visible while idle, including when the system
 // preference normally hides scrollbars. Its full native hit area stays usable.
 private struct PlaylistPersistentScrollbar: NSViewRepresentable {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     var visible: Bool
     func makeNSView(context: Context) -> PlaylistScrollbarView {
         let view = PlaylistScrollbarView(); view.visible = visible; return view
     }
     func updateNSView(_ view: PlaylistScrollbarView, context: Context) {
-        view.visible = visible; view.configure()
+        view.visible = visible
+        view.slotColor = NSColor(Color(hex: interfaceTheme.scrollRailHex))
+        view.configure()
         DispatchQueue.main.async { [weak view] in view?.configure() }
     }
 }
 private final class PlaylistGreenScroller: NSScroller {
+    var slotColor = NSColor(white: 0.12, alpha: 1) {
+        didSet { if oldValue != slotColor { needsDisplay = true } }
+    }
     override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
-        NSColor(white: 0.12, alpha: 1).setFill()
+        slotColor.setFill()
         NSBezierPath(roundedRect: NSRect(x: bounds.midX - 3, y: slotRect.minY, width: 6, height: slotRect.height), xRadius: 3, yRadius: 3).fill()
     }
     override func drawKnob() {
@@ -1091,6 +1098,7 @@ private final class PlaylistGreenScroller: NSScroller {
 }
 private final class PlaylistScrollbarView: NSView {
     var visible = false
+    var slotColor = NSColor(white: 0.12, alpha: 1)
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow(); configure()
@@ -1104,6 +1112,9 @@ private final class PlaylistScrollbarView: NSView {
         if scroll.hasHorizontalScroller { scroll.hasHorizontalScroller = false }
         if visible && !(scroll.verticalScroller is PlaylistGreenScroller) {
             scroll.verticalScroller = PlaylistGreenScroller(frame: NSRect(x: 0, y: 0, width: 14, height: 100))
+        }
+        if let bar = scroll.verticalScroller as? PlaylistGreenScroller, bar.slotColor != slotColor {
+            bar.slotColor = slotColor
         }
         if scroll.hasVerticalScroller != visible { scroll.hasVerticalScroller = visible }
     }
@@ -1214,18 +1225,21 @@ private struct RegionSetlistRow: View, Equatable {
                 .frame(height: 34).frame(maxWidth: .infinity).contentShape(Rectangle())
             #else
             HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 2).fill(active ? Color.red : queued ? (prepareOnly ? JarasTheme.green : .orange) : color).frame(width: 3)
+                RoundedRectangle(cornerRadius: 2).fill(active ? Color.red : queued ? (prepareOnly ? JarasTheme.green : JarasTheme.yellow) : color).frame(width: 3)
                 Text(String(format: "%02d", number)).font(.jarasSystem(size: 9, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
                     .frame(width: numberWidth, alignment: .leading)
-                Text(region.displayName).font(fontStyle == 2 ? .jarasSystem(size: 13, weight: .bold).italic() : .jarasSystem(size: 13, weight: fontStyle == 0 ? .regular : .bold)).foregroundStyle(Color(hex: nameColor)).strikethrough(playedLive).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                Text(region.displayName).font(SetlistTypeface.font(fontStyle)).foregroundStyle(Color(hex: nameColor)).strikethrough(playedLive).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 Text(regionDurationText(Double(remaining))).font(.jarasSystem(size: 9, weight: .medium, design: .monospaced)).monospacedDigit().fixedSize()
             }.padding(.horizontal, 8).padding(.vertical, 7).frame(height: 34).frame(maxWidth: .infinity)
                 .background {
-                    if active || queued {
-                        LinearGradient(colors: active ? [Color(hex: 0x8b2026), Color(hex: 0x4c171c)] : prepareOnly ? [Color(hex: 0x19633a), Color(hex: 0x123b27)] : [Color(hex: 0xa84b13), Color(hex: 0x572808)], startPoint: .leading, endPoint: .trailing)
+                    if active {
+                        JarasTheme.liveOffRed
+                    } else if queued {
+                        LinearGradient(colors: prepareOnly ? [Color(hex: 0x19633a), Color(hex: 0x123b27)] : JarasTheme.setlistQueuedGradient,
+                                       startPoint: .leading, endPoint: .trailing)
                     } else if selected {
                         LinearGradient(colors: [Color(hex: 0x2457a9), Color(hex: 0x152b58)], startPoint: .leading, endPoint: .trailing)
-                    } else { playedLive ? Color(hex: 0x451010) : JarasTheme.panel }
+                    } else { playedLive ? Color(hex: 0x451010) : JarasTheme.display }
                 }
                 .overlay(alignment: .bottomLeading) {
                     if active || queued {
@@ -1272,6 +1286,7 @@ import CoreText
 /// The native label keeps text shaping and drawing local while the surrounding
 /// SwiftUI Button continues to own selection, menus and drag interactions.
 private struct NativeRegionSetlistLabel: NSViewRepresentable {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     let number: Int
     let name: String
     let duration: String
@@ -1288,6 +1303,7 @@ private struct NativeRegionSetlistLabel: NSViewRepresentable {
     var playback: SetlistPlaybackBinding? = nil
     func makeNSView(context: Context) -> NativeRegionSetlistLabelView { NativeRegionSetlistLabelView() }
     func updateNSView(_ view: NativeRegionSetlistLabelView, context: Context) {
+        view.applyPalette(interfaceTheme)
         view.configure(number: number, name: name, duration: duration, color: color, selected: selected,
                        active: active, queued: queued, prepareOnly: prepareOnly, progress: progress, queueProgress: queueProgress, fontStyle: fontStyle, nameColor: nameColor, playedLive: playedLive)
         view.bindPlayback(playback)
@@ -1298,6 +1314,7 @@ private struct NativeRegionSetlistLabel: NSViewRepresentable {
     }
 }
 private final class NativeRegionSetlistLabelView: NSView {
+    private let screenDrawing = NativeScreenDrawing()
     private static let nameFont = NSFont.jarasSystemFont(ofSize: 13, weight: .semibold)
     private static let numberFont = NSFont.jarasMonospacedSystemFont(ofSize: 9, weight: .regular)
     private static let durationFont: NSFont = {
@@ -1307,14 +1324,18 @@ private final class NativeRegionSetlistLabelView: NSView {
     }()
     private static let green = NSColor(JarasTheme.green).cgColor
     private static let yellow = NSColor(JarasTheme.yellow).cgColor
-    private static let panel = NSColor(JarasTheme.panel).cgColor
+    private var cardBackground = NSColor(JarasTheme.display).cgColor
+    private static let playingBackground = NSColor(JarasTheme.liveOffRed).cgColor
     private static let playedBackground = NSColor(Color(hex: 0x451010)).cgColor
     private static let red = NSColor(Color.red).cgColor
-    private static let orange = NSColor(Color.orange).cgColor
-    private static let secondary = NSColor(JarasTheme.secondary)
-    private static let gradients: [CGGradient] = [(0x8b2026,0x4c171c),(0x19633a,0x123b27),(0xa84b13,0x572808),(0x2457a9,0x152b58)].map {
+    private var numberColor = NSColor(JarasTheme.secondary)
+    private static let gradients: [CGGradient] = [
+        [Color(hex: 0x19633a), Color(hex: 0x123b27)],
+        JarasTheme.setlistQueuedGradient,
+        [Color(hex: 0x2457a9), Color(hex: 0x152b58)]
+    ].map { colors in
         CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
-                   colors: [NSColor(Color(hex: UInt32($0.0))).cgColor, NSColor(Color(hex: UInt32($0.1))).cgColor] as CFArray,
+                   colors: colors.map { NSColor($0).cgColor } as CFArray,
                    locations: [0,1])!
     }
     private var ellipsis = NativeRegionSetlistLabelView.line("…", font: NativeRegionSetlistLabelView.nameFont)
@@ -1409,6 +1430,15 @@ private final class NativeRegionSetlistLabelView: NSView {
             width: bounds.width * min(1, max(0, active ? progress : queueProgress)), height: 2)
         if progressBar.frame != frame { progressBar.frame = frame }
     }
+    func applyPalette(_ theme: JarasInterfaceTheme) {
+        let background = NSColor(theme.display).cgColor
+        let secondary = NSColor(theme.secondary)
+        guard cardBackground != background || numberColor != secondary else { return }
+        cardBackground = background
+        numberColor = secondary
+        numberLine = Self.line(numberText, font: Self.numberFont, color: numberColor)
+        needsDisplay = true
+    }
     func configure(number: Int, name: String, duration: String, color: UInt32, selected: Bool, active: Bool,
                    queued: Bool, prepareOnly: Bool, progress: Double, queueProgress: Double, fontStyle: Int = 0, nameColor: UInt32 = 0xffffff, playedLive: Bool = false) {
         let numberString = String(format: "%02d", number)
@@ -1417,12 +1447,13 @@ private final class NativeRegionSetlistLabelView: NSView {
         guard textChanged || styleChanged || progress != self.progress || queueProgress != self.queueProgress else { return }
         if numberString != numberText {
             numberText = numberString; numberWidth = CGFloat(max(2,String(number).count)) * 6
-            numberLine = Self.line(numberString, font: Self.numberFont, color: Self.secondary)
+            numberLine = Self.line(numberString, font: Self.numberFont, color: numberColor)
         }
         if name != nameText || nameColor != nameColorValue || fontStyle != fontStyleValue {
             fontStyleValue = fontStyle
-            let baseFont = NSFont.jarasSystemFont(ofSize: 13, weight: fontStyle == 0 ? .regular : .bold)
-            let font = fontStyle == 2 ? NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask) : baseFont
+            _ = CatLiveTypeface.register
+            let face = (SetlistTypeface(rawValue: fontStyle) ?? .regular).face
+            let font = NSFont(name: face, size: 13) ?? Self.nameFont
             nameColorValue = nameColor
             let ink = NSColor(Color(hex: nameColor))
             ellipsis = Self.line("…", font: font, color: ink)
@@ -1439,7 +1470,7 @@ private final class NativeRegionSetlistLabelView: NSView {
         colorValue = color; self.selected = selected; self.active = active; self.queued = queued; self.prepareOnly = prepareOnly
         self.playedLive = playedLive
         self.progress = progress; self.queueProgress = queueProgress
-        if styleChanged { stripe = active ? Self.red : queued ? (prepareOnly ? Self.green : Self.orange) : NSColor(Color(hex: color)).cgColor }
+        if styleChanged { stripe = active ? Self.red : queued ? (prepareOnly ? Self.green : Self.yellow) : NSColor(Color(hex: color)).cgColor }
         if textChanged { setAccessibilityLabel(numberString + ", " + name + ", " + duration) }
         updateProgressLayer()
         if textChanged || styleChanged { needsDisplay = true }
@@ -1455,10 +1486,13 @@ private final class NativeRegionSetlistLabelView: NSView {
         }
         guard let rounded = roundedPath else { return }
         context.saveGState(); context.addPath(rounded); context.clip()
-        if active || queued || selected {
-            let index = active ? 0 : queued ? (prepareOnly ? 1 : 2) : 3
+        if active {
+            context.setFillColor(Self.playingBackground)
+            context.fill(bounds)
+        } else if queued || selected {
+            let index = queued ? (prepareOnly ? 0 : 1) : 2
             context.drawLinearGradient(Self.gradients[index], start: CGPoint(x: bounds.minX,y:0), end: CGPoint(x:bounds.maxX,y:0), options: [])
-        } else { context.setFillColor(playedLive ? Self.playedBackground : Self.panel); context.fill(bounds) }
+        } else { context.setFillColor(playedLive ? Self.playedBackground : cardBackground); context.fill(bounds) }
         context.setFillColor(stripe)
         context.addPath(CGPath(roundedRect: CGRect(x:8,y:7,width:3,height:20), cornerWidth:2,cornerHeight:2,transform:nil));context.fillPath()
         let nameX: CGFloat = 8 + 3 + 6 + numberWidth + 6
@@ -1469,8 +1503,12 @@ private final class NativeRegionSetlistLabelView: NSView {
             truncationWidth = available
             truncatedName = nameWidth <= available ? nameLine : nameLine.flatMap { CTLineCreateTruncatedLine($0,Double(available),.end,ellipsis) }
         }
-        draw(numberLine,x:17,in:context)
-        if available > 0 { draw(truncatedName,x:nameX,in:context) }
+        screenDrawing.draw(in: self) {
+            guard let textContext = NSGraphicsContext.current?.cgContext else { return }
+            draw(numberLine,x:17,in:textContext)
+            if available > 0 { draw(truncatedName,x:nameX,in:textContext) }
+            draw(durationLine,x:durationX,in:textContext)
+        }
         if playedLive, let truncatedName, available > 0 {
             let width = min(available, CGFloat(CTLineGetTypographicBounds(truncatedName, nil, nil, nil)))
             context.setStrokeColor(NSColor(Color(hex: nameColorValue)).cgColor)
@@ -1479,7 +1517,6 @@ private final class NativeRegionSetlistLabelView: NSView {
             context.addLine(to: CGPoint(x: nameX + width, y: bounds.midY))
             context.strokePath()
         }
-        draw(durationLine,x:durationX,in:context)
         context.restoreGState()
         if selected && !active && !queued { context.setStrokeColor(Self.green);context.setLineWidth(1.5);context.addPath(rounded);context.strokePath() }
     }
@@ -1739,7 +1776,7 @@ private struct SetlistBlockRow: View {
                 }.stroke(Color.yellow, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                     .frame(width: 62, height: 12).accessibilityHidden(true)
             }
-            Text(block.name).font(fontStyle == 2 ? .jarasSystem(size: 13, weight: .bold).italic() : .jarasSystem(size: 13, weight: fontStyle == 0 ? .regular : .bold)).lineLimit(1)
+            Text(block.name).font(SetlistTypeface.font(fontStyle)).lineLimit(1)
                 .foregroundStyle(Color(hex: nameColor))
         }.padding(.horizontal, 10)
             .frame(maxWidth: .infinity, alignment: .leading).frame(height: 24)

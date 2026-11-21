@@ -47,7 +47,7 @@ public:
             tabs[i].setButtonText(names[i]); tabs[i].setComponentID("instrumentTab" + names[i]);
             tabs[i].onClick = [this, i] { selectPage(i); }; addAndMakeVisible(tabs[i]);
         }
-        const std::array<String, 3> curves{"Soft", localization::translate("Medium"), "Hard"};
+        const std::array<String, 3> curves{"Soft", "Medium", "Hard"};
         for (int i = 0; i < 3; ++i) {
             curveButtons[i].setButtonText(curves[i]); curveButtons[i].setComponentID("instrumentCurve" + String(i));
             curveButtons[i].onClick = [this, i] {
@@ -55,7 +55,7 @@ public:
             }; body.addChildComponent(curveButtons[i]);
         }
         for (int i = 0; i < 2; ++i) {
-            voices[i].setButtonText(localization::translate(i == 0 ? "Monophonic" : "Polyphonic"));
+            voices[i].setButtonText(i == 0 ? "Monophonic" : "Polyphonic");
             voices[i].setComponentID(i == 0 ? "instrumentMonophonic" : "instrumentPolyphonic");
             voices[i].onClick = [this, i] { edit("controllers", "monophonic", i == 0); refreshSegments(); };
             body.addChildComponent(voices[i]);
@@ -179,7 +179,7 @@ private:
     }
     void knob(const char *title, String name, String key, double low, double high, double reset,
               String suffix, double multiplier = 1, bool logarithmic = false) {
-        auto *control = knobs.add(new fxui::Knob(localization::translate(title), low * multiplier, high * multiplier,
+        auto *control = knobs.add(new fxui::Knob(title, low * multiplier, high * multiplier,
             .1, num(group(name), Identifier(key), reset) * multiplier, suffix,
             [this, name, key, multiplier](double value) { edit(name, key, value / multiplier, false); },
             [this] { if (commit) commit(); }));
@@ -254,7 +254,7 @@ private:
     }
     static void label(Graphics &g, const char *text, juce::Rectangle<int> area, float size, bool secondary = false) {
         g.setColour(secondary ? theme::secondary : Colours::white); g.setFont(theme::font(size));
-        g.drawFittedText(localization::translate(text), area, Justification::centredLeft, 3, 1.f);
+        g.drawFittedText(secondary ? localization::translate(text) : String(text), area, Justification::centredLeft, 3, 1.f);
     }
 };
 } // namespace catlive

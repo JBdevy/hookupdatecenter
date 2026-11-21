@@ -175,7 +175,19 @@ class ProjectReductionPanel final : public Component, public DragAndDropContaine
         const auto media=session.document.getParentDirectory();const auto definitions=reductionGroups();
         work=std::make_shared<Work>();auto state=work;auto safe=SafePointer<ProjectReductionPanel>(this);ModalSheet::blockDismiss(*this,true);timerCallback();
         Thread::launch([safe,state,original,definitions,media,target,encoding]{String error;try{projectReduction::write(original,definitions,media,target,state->cancel,[state](const projectReduction::Progress &p){std::lock_guard<std::mutex> lock(state->mutex);state->progress=p.fraction;state->message=p.message;},encoding.format,std::nullopt,encoding.bits,encoding.rate,encoding.bitrate);}catch(const std::exception &e){error=String::fromUTF8(e.what());}
-            MessageManager::callAsync([safe,error,target]{if(!safe)return;safe->work.reset();ModalSheet::blockDismiss(*safe,false);safe->status.setText(error.isEmpty()?String::fromUTF8("Projeto reduzido salvo: ")+target.getFullPathName():error,dontSendNotification);safe->timerCallback();});
+            MessageManager::callAsync([safe, error, target] {
+                if (!safe) return;
+                safe->work.reset();
+                ModalSheet::blockDismiss(*safe, false);
+                if (error.isEmpty()) {
+                    safe->session.message = String::fromUTF8("Projeto reduzido salvo: ") + target.getFileName();
+                    safe->session.notify();
+                    ModalSheet::dismiss(*safe);
+                    return;
+                }
+                safe->status.setText(error, dontSendNotification);
+                safe->timerCallback();
+            });
         });
     }
     static ExportEncoding readEncoding(AlertWindow &dialog){
@@ -202,6 +214,7 @@ class ProjectReductionPanel final : public Component, public DragAndDropContaine
         edit.setEnabled(editable&&editing>=0);remove.setEnabled(editable&&editing>=0);reduce.setEnabled(editable&&(!groups.empty()||!selectedSpecial.empty()));
         saveButton.setVisible(!ready);saveButton.setEnabled(!session.busy&&!session.isSaving());
         saveButton.setButtonText(localization::translate(session.isSaving()?"Salvando…":"Salvar"));
+        cancel.setVisible(work != nullptr);
         progressBar.setVisible(work!=nullptr);
         if(work){std::lock_guard<std::mutex> lock(work->mutex);displayedProgress=work->progress.load();status.setText(work->message,dontSendNotification);}
         else if(!ready){status.setText(localization::translate("Salve o projeto antes de reduzir."),dontSendNotification);saveWarning=true;}
@@ -227,7 +240,7 @@ public:
         left.setComponentID("reductionDestinations");right.setComponentID("reductionSources");
         create.setComponentID("reductionCreate");edit.setComponentID("reductionEdit");remove.setComponentID("reductionRemove");saveButton.setComponentID("reductionSave");reduce.setComponentID("reductionApply");
         status.setColour(Label::textColourId,theme::secondary);status.setJustificationType(Justification::topLeft);progressBar.setColour(ProgressBar::foregroundColourId,theme::green);
-        create.onClick=[this]{nameTrack(false);};addSpecial.onClick=[this]{chooseSpecialTracks();};edit.onClick=[this]{nameTrack(true);};remove.onClick=[this]{if(editing<0)return;groups.erase(groups.begin()+editing);refreshing=true;editing=-1;left.deselectAllRows();right.deselectAllRows();refreshing=false;left.updateContent();right.repaint();persistDraft();timerCallback();};cancel.onClick=[this]{if(work)work->cancel=true;else ModalSheet::dismiss(*this);};
+        create.onClick=[this]{nameTrack(false);};addSpecial.onClick=[this]{chooseSpecialTracks();};edit.onClick=[this]{nameTrack(true);};remove.onClick=[this]{if(editing<0)return;groups.erase(groups.begin()+editing);refreshing=true;editing=-1;left.deselectAllRows();right.deselectAllRows();refreshing=false;left.updateContent();right.repaint();persistDraft();timerCallback();};cancel.onClick=[this]{if(work)work->cancel=true;};
         auto safe=SafePointer<ProjectReductionPanel>(this);saveButton.onClick=[safe]{if(safe)safe->save([safe]{if(safe)safe->timerCallback();});};
         reduce.onClick=[this,safe]{
             const auto size=projectReduction::estimate(session.project(),reductionGroups(),session.document.getParentDirectory());

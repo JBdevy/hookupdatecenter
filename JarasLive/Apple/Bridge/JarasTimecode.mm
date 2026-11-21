@@ -204,6 +204,7 @@ struct MetronomeSignal {
     }
     uint64_t renderedGeneration = ~uint64_t(0);
     uint64_t renderedTimingRevision = 0, nextTimingRevision = 0, configuredTimingRevision = 0;
+    bool renderedRunning=false, renderedEnabled=false, waitForNextBeat=false;
     double sampleRate, ticksPerSecond, anchorSample=0, anchorPosition=0;
     double previousPosition=-1, previousSample=-1; int64_t previousBeat=-1; size_t previousSection=~size_t(0);
     struct Voice { size_t frame=0; bool a=true; MetronomeProgram* sound=nullptr; };
@@ -283,7 +284,15 @@ struct MetronomeSignal {
             Jump next{jumpSerial,jumpHost.load(),jumpPosition.load(),jumpSample.load(),jumpFirst.load(),jumpLast.load()};
             if(jumpVersion.load(std::memory_order_acquire)==jumpSerial) renderJump=next;
         }
-        const bool active=running.load() && enabled.load(std::memory_order_acquire);
+        const bool nowRunning=running.load(), nowEnabled=enabled.load(std::memory_order_acquire);
+        const bool active=nowRunning && nowEnabled;
+        if (active && renderedRunning && !renderedEnabled) {
+            waitForNextBeat=true;
+            clearVoices();
+        }
+        if (!active) waitForNextBeat=false;
+        renderedRunning=nowRunning;
+        renderedEnabled=nowEnabled;
         if(!active && gain==0) {
             for(unsigned b=0;b<list->mNumberBuffers;++b) if(list->mBuffers[b].mData) std::memset(list->mBuffers[b].mData,0,list->mBuffers[b].mDataByteSize);
             return;
@@ -344,7 +353,11 @@ struct MetronomeSignal {
                 // A tempo edit changes the mapping of the current sample, not
                 // the musical event being heard. Adopt its new beat identity
                 // once, then trigger only the following real beat crossings.
-                if(rebaseBeat) {
+                if (waitForNextBeat) {
+                    previousBeat=beat; previousSection=section;
+                    waitForNextBeat=false;
+                    rebaseBeat=false;
+                } else if(rebaseBeat) {
                     const bool exactCrossing=preservingPulse && beat!=beatBeforeRetime && phase>=-0.5/sampleRate && phase<=1.0/sampleRate;
                     if(!exactCrossing) { previousBeat=beat; previousSection=section; }
                     rebaseBeat=false;

@@ -17,5 +17,6 @@ target=wheel[wheel.index('private final class TimelineDisplayLinkTarget'):wheel.
 (out/'motion.swift').write_text('import SwiftUI\nimport AppKit\nimport QuartzCore\n'+diagnostics+'\n'+limits+motion.replace('private struct TimelineTrackHeightWheelTransition', 'struct TimelineTrackHeightWheelTransition')+target)
 (out/'main.swift').write_text(Path('Tests/Apple/TimelineTrackHeightMotionTests.swift').read_text())
 PY
-swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift "$test_dir/motion.swift" "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/geometry.swift"
+swiftc -swift-version 5 "$test_dir/geometry.swift" Apple/Shared/NativeTimelineInputGate.swift "$test_dir/motion.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

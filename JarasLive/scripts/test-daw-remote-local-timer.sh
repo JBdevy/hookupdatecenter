@@ -10,6 +10,7 @@ source = Path('Apple/Shared/DAWRemoteView.swift').read_text()
 source = source[source.index('// MARK: - Local Remote timer\n'):]
 tests = Path('Tests/Apple/DAWRemoteLocalTimerTests.swift').read_text()
 theme = '''enum JarasTheme {
+    static let displayHex: UInt32 = 0x090909, lightDarkBackgroundHex: UInt32 = 0x242424
     static let green = Color.green, secondary = Color.gray, display = Color.black
     static let panel = Color.gray, text = Color.white, line = Color.gray, background = Color.black
 }\n'''

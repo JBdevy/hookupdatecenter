@@ -210,6 +210,22 @@ inline StringArray pluginTypes(const var &plugin) {
     auto types=StringArray::fromTokens(str(plugin,"category"),"|",""); types.trim(); types.removeEmptyStrings();
     if (types.isEmpty()) types.add("Uncategorized"); return types;
 }
+inline const std::vector<std::pair<String, String>> &libraryNativePlugins() {
+    static const std::vector<std::pair<String, String>> plugins{
+        {"EQ", "EQ"}, {"Compressor", "Dynamics"}, {"Pitch", "Pitch Shift"}, {"Delay", "Delay"},
+        {"Reverb", "Reverb"}, {"Limiter", "Dynamics"}, {"CatLive Trigger", "Trigger"}, {"Cat Gate", "Dynamics"},
+        {"Chorus", "Modulation"}, {"Phaser", "Modulation"}, {"Amp", "Distortion"}, {"Soft Clipper", "Dynamics"}, {"Gate Divisor", "Dynamics"}, {"Arpeggiator", "MIDI"}, {"Drummer Pad 16", "Instrument"}, {"Drummer Pad 48", "Instrument"}
+    };
+    return plugins;
+}
+inline StringArray libraryPluginCategories(const VST3Catalog &catalog) {
+    StringArray categories;
+    for (const auto &item : libraryNativePlugins()) categories.addIfNotAlreadyThere(item.second);
+    for (const auto &plugin : catalog.plugins)
+        for (const auto &type : pluginTypes(plugin)) categories.addIfNotAlreadyThere(type);
+    categories.sortNatural();
+    return categories;
+}
 inline bool pluginMatches(const var &plugin,const String &query,const String &type,const String &vendor,bool instrumentsAllowed) {
     if (!instrumentsAllowed && str(plugin,"category").containsIgnoreCase("Instrument")) return false;
     if (query.trim().isNotEmpty()) return (str(plugin,"name")+" "+str(plugin,"vendor")+" "+str(plugin,"category")).containsIgnoreCase(query.trim());

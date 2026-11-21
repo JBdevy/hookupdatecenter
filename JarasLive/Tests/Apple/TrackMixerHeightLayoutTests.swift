@@ -42,8 +42,8 @@ for lowerTitle in [false,true] {
         precondition(frames.allSatisfy { $0.width >= 0 && $0.height >= 0 })
         precondition(frames[0].width >= 10 && frames[0].height > 0 && frames[0].maxY <= height,
             "Audio meters remain inside the track at every height, including its minimum")
-        precondition(min(10, frames[0].width) < frames[2].minX && frames[1].maxX < frames[2].minX, "The small meter cannot cover the name")
-        if height < 64 { precondition(frames[1].width == 0, "Only MIDI activity disappears in a collapsed row") }
+        precondition(frames[2].minX == 4, "The track name starts beside the track color")
+        precondition(frames[1].isEmpty, "Mixer rows reserve no space for MIDI activity")
         precondition(frames[2].minY >= 0 && frames[2].maxY <= height, "Track name must fit at every intermediate/stacked-lane height")
         if lowerTitle {
             precondition(frames[4].height == 0 || frames[4].maxY <= frames[2].minY + 0.001, "volume cannot cover the moving title")
@@ -51,22 +51,22 @@ for lowerTitle in [false,true] {
     }
 }
 
-// The minimum is the width chosen by the user. The group action belongs to
-// the Patch row, with independent hit areas even after group indentation.
-precondition(SidebarWidthLimits.trackMixer == 280.7578125)
-for width: CGFloat in [SidebarWidthLimits.trackMixer - 16, SidebarWidthLimits.trackMixer, 400] {
+// Keep the group action and the full button row in reach at the mixer minimum.
+precondition(SidebarWidthLimits.trackMixer < SidebarWidthLimits.trackMixerDefault)
+for width: CGFloat in [SidebarWidthLimits.trackMixer, SidebarWidthLimits.trackMixerDefault, 400] {
     for meterWidth: CGFloat in [12, 40, 52] {
         for height: CGFloat in [64, 64.1, 80, 240] {
+            let buttonsWidth = TrackMixerHeightGeometry.fittedButtonsWidth(215, in: width, folder: true)
             let frames = TrackMixerHeightGeometry.frames(width: width, height: height,
-                meterWidth: meterWidth, standard: true, lowerTitle: true, controlsWidth: 210, folder: true)
+                meterWidth: meterWidth, standard: true, lowerTitle: true, controlsWidth: buttonsWidth, folder: true)
             let folder = frames[5]
             precondition(folder.width == 28 && folder.height == 20 && folder.maxY <= height && folder.minX >= 0)
             precondition(!folder.intersects(frames[3]), "folder action must not cover Patch or another top-row control")
             precondition(!folder.intersects(frames[4]), "folder action must not cover volume controls")
             precondition(folder.minX == 20 && folder.maxX + 3 <= frames[3].minX && folder.midY == frames[3].midY,
                 "folder action must remain anchored left when the sidebar width changes")
+            precondition(frames[3].maxX <= width - 4, "the last mixer button stays inside the track")
             precondition(!folder.intersects(frames[2]), "folder action must not cover the group name")
-            precondition(!folder.intersects(frames[1]), "the folder cannot cover the MIDI meter")
             precondition(frames[2].maxX <= width && frames[2].width > 0)
         }
     }
@@ -74,20 +74,45 @@ for width: CGFloat in [SidebarWidthLimits.trackMixer - 16, SidebarWidthLimits.tr
 for height: CGFloat in [64, 80, 160] {
     let frames = TrackMixerHeightGeometry.frames(width: 248, height: height, meterWidth: 52,
         standard: true, lowerTitle: true, controlsWidth: 210)
-    precondition(frames[0].width == 52 && frames[1].minX == 14 && frames[1].width == 4,
-        "Four points separate MIDI from the ten-point stereo bars")
-    precondition(frames[1].minY == frames[0].minY && frames[1].maxY == frames[0].maxY,
-        "Audio and MIDI keep matching full-height bars")
+    precondition(frames[0].width == 52 && frames[1].isEmpty, "Peak readouts need no MIDI gutter")
     precondition(frames[4].minX == 56, "Volume does not overlap the peak readout")
 }
-print("MIXER_AUDIO_MIDI_GAP_AND_SIDE_PEAK_OK")
+let narrowMixer = SidebarWidthLimits.trackMixer
+for hasPhase in [true, false] {
+    func controls(width: CGFloat) -> (fader: CGRect, gain: CGRect, reclaimsPeakSpace: Bool) {
+        let frames = TrackMixerHeightGeometry.frames(width: width, height: 66, meterWidth: 52,
+            standard: true, lowerTitle: true, controlsWidth: 215)
+        return TrackMixerHeightGeometry.volumeControls(frames[4], hasPhase: hasPhase)
+    }
+    let wide = controls(width: SidebarWidthLimits.trackMixerDefault)
+    // Deep groups and the color stripe reduce the width available inside a row.
+    let nestedWidth = narrowMixer - 53
+    let middle = controls(width: nestedWidth + 12)
+    let narrow = controls(width: nestedWidth)
+    precondition(!wide.reclaimsPeakSpace && narrow.reclaimsPeakSpace)
+    precondition(narrow.fader.minX < middle.fader.minX && middle.fader.minX < wide.fader.minX)
+    precondition(narrow.fader.width == middle.fader.width && narrow.fader.maxX + 3 == narrow.gain.minX)
+    precondition(controls(width: narrowMixer).fader.width < controls(width: 360).fader.width)
+}
+for height: CGFloat in [38, 63, 64, 80, 160] {
+    let stripeWidth: CGFloat = 5
+    let standard = TrackMixerHeightGeometry.frames(width: 330, height: height,
+        meterWidth: 52, standard: true, lowerTitle: true, controlsWidth: 210)
+    let striped = TrackMixerHeightGeometry.frames(width: 330 - stripeWidth, height: height,
+        meterWidth: 52, standard: true, lowerTitle: true, controlsWidth: 210)
+    precondition(striped[0].offsetBy(dx: stripeWidth, dy: 0).minX == stripeWidth)
+    precondition(striped[4].height == standard[4].height, "The left stripe preserves the expanded fader")
+    precondition(striped[2].minY == standard[2].minY, "An inset on the left leaves the title at the same height")
+}
+print("MIXER_AUDIO_SIDE_PEAK_OK")
 private struct FolderFixture: View {
     let counts: Counts
     var body: some View {
         TrackMixerContinuousLayout(meterWidth: 40, standard: true, lowerTitle: true, folder: true) {
             ForEach(0..<7) { slot in
                 Probe(counts: counts, slot: slot)
-                    .frame(width: slot == 3 ? 210 : nil, height: slot == 5 ? 20 : nil)
+                    .frame(width: slot == 3 ? TrackMixerHeightGeometry.fittedButtonsWidth(215,
+                        in: SidebarWidthLimits.trackMixer, folder: true) : nil, height: slot == 5 ? 20 : nil)
             }
         }.frame(width: SidebarWidthLimits.trackMixer, height: 64)
     }
@@ -180,7 +205,7 @@ for width: CGFloat in [265,281,400,700] {
     for height: CGFloat in [24,40,63.9,64,80,240] {
         let frames = TrackMixerHeightGeometry.frames(width: width,height: height,meterWidth: 52,
             standard: true,lowerTitle: true,controlsWidth: 210,folder: true)
-        precondition(frames[2].minX == 22, "Track number must keep its left anchor across sizes")
+        precondition(frames[2].minX == 4, "Track number must keep its left anchor across sizes")
         if height >= 64 { precondition(frames[5].minX == 20, "Folder must keep its left anchor") }
     }
 }
@@ -209,3 +234,42 @@ for expanded in [false,true] {
     else { precondition(frames[7]!.maxX < frames[2]!.minX, "Compact volume knob belongs immediately before FX") }
 }
 print("MIXER_SHUFFLED_CONTROL_IDENTITY_ORDER_AND_HEIGHT_ONLY_VOLUME_KNOB_OK")
+
+let editableTitle = TrackDragTitleView(frame: NSRect(x: 0, y: 0, width: 234, height: 18))
+editableTitle.title = "01  Piano"
+editableTitle.editableName = "Piano"
+var renamed: String?
+editableTitle.rename = { renamed = $0 }
+let renameWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 234, height: 96), styleMask: [.titled], backing: .buffered, defer: false)
+renameWindow.isReleasedWhenClosed = false
+renameWindow.contentView?.addSubview(editableTitle)
+let doubleClick = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 40, y: 9), modifierFlags: [],
+    timestamp: 0, windowNumber: renameWindow.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 1)!
+precondition(editableTitle.window === renameWindow)
+precondition(doubleClick.clickCount == 2)
+editableTitle.mouseDown(with: doubleClick)
+guard let field = editableTitle.subviews.compactMap({ $0 as? NSTextField }).first else {
+    preconditionFailure("Double-clicking the title must open an inline field")
+}
+precondition(field.frame == editableTitle.bounds && field.stringValue == "Piano")
+field.stringValue = "Piano Lead"
+field.currentEditor()?.string = "Piano Lead"
+editableTitle.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))
+precondition(renamed == "Piano Lead" && editableTitle.subviews.isEmpty)
+editableTitle.mouseDown(with: doubleClick)
+guard let outsideField = editableTitle.subviews.compactMap({ $0 as? NSTextField }).first else {
+    preconditionFailure("Renaming should work again after committing")
+}
+outsideField.stringValue = "Grand Piano"
+outsideField.currentEditor()?.string = "Grand Piano"
+func click(at location: NSPoint) -> NSEvent {
+    NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 0,
+        windowNumber: renameWindow.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+}
+editableTitle.finishRenameIfOutside(click(at: outsideField.convert(NSPoint(x: 40, y: 8), to: nil)))
+precondition(renamed == "Piano Lead" && !editableTitle.subviews.isEmpty)
+editableTitle.finishRenameIfOutside(click(at: outsideField.convert(NSPoint(x: 40, y: outsideField.bounds.maxY + 30), to: nil)))
+precondition(renamed == "Grand Piano" && editableTitle.subviews.isEmpty,
+             "Outside click result: \(renamed ?? "nil"), subviews: \(editableTitle.subviews.count)")
+renameWindow.close()
+print("MIXER_TITLE_INLINE_EDITOR_COMMITS_ON_OUTSIDE_CLICK_OK")

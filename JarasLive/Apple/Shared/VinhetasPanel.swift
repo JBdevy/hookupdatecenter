@@ -7,13 +7,57 @@ import UIKit
 import UniformTypeIdentifiers
 import AVFoundation
 
+enum LibrarySamplerTransfer {
+    static let type = UTType(exportedAs: "com.catlive.library-sampler", conformingTo: .data)
+    static func provider(_ url: URL) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: type.identifier, visibility: .ownProcess) { completion in
+            completion(Data(url.absoluteString.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+    static func url(_ data: Data?) -> URL? {
+        guard let data, let path = String(data: data, encoding: .utf8),
+              let url = URL(string: path), url.isFileURL else { return nil }
+        return url
+    }
+}
+
+enum PadAudioBuffer {
+    static func read(_ file: AVAudioFile, frames: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
+        let format = file.processingFormat
+        guard frames > 0,
+              let audio = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
+              let chunk = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 8192),
+              let destination = audio.floatChannelData, let source = chunk.floatChannelData else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var written = 0
+        while written < Int(frames), file.framePosition < file.length {
+            guard try AudioFileRead.read(file, into: chunk) else { break }
+            let count = min(Int(chunk.frameLength), Int(frames) - written)
+            for channel in 0..<Int(format.channelCount) {
+                destination[channel].advanced(by: written).update(from: source[channel], count: count)
+            }
+            written += count
+        }
+        guard written > 0 else { throw CocoaError(.fileReadCorruptFile) }
+        audio.frameLength = AVAudioFrameCount(written)
+        return audio
+    }
+}
+
 @MainActor final class VinhetasController: ObservableObject {
     static let shared = VinhetasController()
+    static let padSamplesChanged = Notification.Name("CatLive.PadSamplesChanged")
+    enum AudioOrigin { case picker, fileDrop, library }
     @Published private(set) var library = VinhetasLibrary()
     @Published private(set) var voices: [UUID: VinhetasTriggers.Voice] = [:]
     @Published var learningPad: Int?
     @Published var learningPreset: Int?
     @Published var error = ""
+    @Published var droppedAudioError: String?
     @Published private(set) var transferring = false
     var startVoice: ((VinhetasTriggers.Voice, URL, Double) -> Void)?
     var stopVoice: ((UUID) -> Void)?
@@ -27,6 +71,8 @@ import AVFoundation
     private var loadingGeneration = 0
     private let persistence = DispatchQueue(label: "CatLive.Vinhetas.persistence", qos: .utility)
     private var voiceEngines: [UUID: StemAudioPlayback] = [:]
+    private var audioImports: [Int: UUID] = [:]
+    private var padSampleGeneration = 0
     func bind(show: ShowController) {
         self.show = show
         #if os(macOS)
@@ -39,7 +85,8 @@ import AVFoundation
             guard let track = self.show?.current?.tracks.first(where: { $0.role.rawValue == "vinhetas" }) else {
                 self.finished(voice.id); return
             }
-            guard let buffer = self.buffers[url.lastPathComponent], let audio = self.audio else {
+            guard let path = self.library.presets[voice.preset].pads[voice.pad].audioFile,
+                  let buffer = self.buffers[path], let audio = self.audio else {
                 self.error = "Aguarde o carregamento do áudio do pad."; self.finished(voice.id); return
             }
             do {
@@ -84,9 +131,8 @@ import AVFoundation
                         guard VinhetasPad.acceptsDuration(frames: file.length, sampleRate: file.processingFormat.sampleRate) else {
                             throw ProjectError.invalid("Os pads aceitam áudios de até 60 segundos.")
                         }
-                        guard file.length > 0, file.length <= Int64(UInt32.max),
-                              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)) else { throw CocoaError(.fileReadCorruptFile) }
-                        try file.read(into: buffer); result[path] = buffer
+                        guard file.length <= Int64(UInt32.max) else { throw CocoaError(.fileReadCorruptFile) }
+                        result[path] = try PadAudioBuffer.read(file, frames: AVAudioFrameCount(file.length))
                     } catch { failures.append(error.localizedDescription) }
                 }
                 return (result, failures)
@@ -97,6 +143,7 @@ import AVFoundation
         }
     }
     let directory: URL
+    var padSampleDirectory: URL { directory.appendingPathComponent(VinhetasPad.sampleFolder, isDirectory: true) }
     private var file: URL { directory.appendingPathComponent("Vinhetas.json") }
     private init() {
         directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -277,23 +324,132 @@ import AVFoundation
             }
         }
     }
-    func importAudio(_ source: URL, preset: Int, pad: Int) {
-        guard VinhetasPad.accepts(source), library.presets.indices.contains(preset),
+    func importAudio(_ source: URL, preset: Int, pad: Int, origin: AudioOrigin = .picker) {
+        guard !transferring, source.isFileURL, library.presets.indices.contains(preset),
               library.presets[preset].pads.indices.contains(pad) else { return }
+        let key = preset * 16 + pad, request = UUID(), directory = directory
+        let item = library.presets[preset].pads[pad]
+        let name = source.deletingPathExtension().lastPathComponent
+        let previous = item.audioFile
+        if let previous, item.name.caseInsensitiveCompare(name) == .orderedSame ||
+            previous.hasPrefix(VinhetasPad.sampleFolder + "/") &&
+            URL(fileURLWithPath: previous).deletingPathExtension().lastPathComponent.caseInsensitiveCompare(name) == .orderedSame { return }
+        let managed = origin != .library || source.deletingLastPathComponent().standardizedFileURL == padSampleDirectory.standardizedFileURL
+        let existing = managed ? padSample(named: name) : nil
+        let generation = padSampleGeneration
+        audioImports[key] = request
+        Task {
+            defer { if audioImports[key] == request { audioImports[key] = nil } }
+            do {
+                let (prepared, buffer) = try await Task.detached(priority: .userInitiated) {
+                    if let existing { return (existing, try Self.readPadAudio(existing)) }
+                    return try Self.prepareAudio(source, directory: directory)
+                }.value
+                var keepPrepared = false
+                defer {
+                    if existing == nil && !keepPrepared { try? FileManager.default.removeItem(at: prepared) }
+                }
+                guard audioImports[key] == request, !transferring, library.presets[preset].pads[pad].audioFile == previous else {
+                    return
+                }
+                let path: String
+                if managed {
+                    guard generation == padSampleGeneration else { return }
+                    let destination: URL
+                    if let shared = padSample(named: name) { destination = shared }
+                    else {
+                        try FileManager.default.createDirectory(at: padSampleDirectory, withIntermediateDirectories: true)
+                        destination = padSampleDirectory.appendingPathComponent(name).appendingPathExtension(prepared.pathExtension)
+                        try FileManager.default.moveItem(at: prepared, to: destination)
+                    }
+                    path = VinhetasPad.sampleFolder + "/" + destination.lastPathComponent
+                    if existing == destination || !FileManager.default.fileExists(atPath: prepared.path) { buffers[path] = buffer }
+                } else {
+                    path = prepared.lastPathComponent
+                    buffers[path] = buffer
+                    keepPrepared = true
+                }
+                error = ""
+                update {
+                    $0.presets[preset].pads[pad].audioFile = path
+                    $0.presets[preset].pads[pad].name = name
+                }
+                if managed { NotificationCenter.default.post(name: Self.padSamplesChanged, object: nil) }
+                preload()
+            } catch {
+                if audioImports[key] == request {
+                    if origin != .picker { droppedAudioError = error.localizedDescription }
+                    else { self.error = error.localizedDescription }
+                }
+            }
+        }
+    }
+    private func padSample(named name: String) -> URL? {
+        (try? FileManager.default.contentsOfDirectory(at: padSampleDirectory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]))?
+            .first { VinhetasPad.accepts($0) && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true &&
+                $0.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    func deletePadSamples() throws {
+        guard !transferring else { throw ProjectError.invalid("Aguarde a transferência atual.") }
+        let folder = padSampleDirectory
+        if FileManager.default.fileExists(atPath: folder.path) {
+            #if os(macOS)
+            try FileManager.default.trashItem(at: folder, resultingItemURL: nil)
+            #else
+            try FileManager.default.removeItem(at: folder)
+            #endif
+        }
+        padSampleGeneration += 1
+        let prefix = VinhetasPad.sampleFolder + "/"
+        let affectedVoices = voices.values.filter {
+            library.presets[$0.preset].pads[$0.pad].audioFile?.hasPrefix(prefix) == true
+        }
+        for voice in affectedVoices { stopVoice?(voice.id); finished(voice.id) }
+        buffers = buffers.filter { !$0.key.hasPrefix(prefix) }
+        update { next in
+            for p in next.presets.indices {
+                for n in next.presets[p].pads.indices where next.presets[p].pads[n].audioFile?.hasPrefix(prefix) == true {
+                    next.presets[p].pads[n].audioFile = nil
+                }
+            }
+        }
+        preload()
+        NotificationCenter.default.post(name: Self.padSamplesChanged, object: nil)
+    }
+
+    nonisolated private static func readPadAudio(_ source: URL) throws -> AVAudioPCMBuffer {
+        let file = try AVAudioFile(forReading: source)
+        guard VinhetasPad.acceptsDuration(frames: file.length, sampleRate: file.processingFormat.sampleRate) else {
+            throw ProjectError.invalid(JarasLocalization.string("Pads accept audio up to 60 seconds."))
+        }
+        guard file.length <= Int64(UInt32.max) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return try PadAudioBuffer.read(file, frames: AVAudioFrameCount(file.length))
+    }
+
+    nonisolated private static func prepareAudio(_ source: URL, directory: URL) throws -> (URL, AVAudioPCMBuffer) {
         let access = source.startAccessingSecurityScopedResource()
         defer { if access { source.stopAccessingSecurityScopedResource() } }
+        let buffer = try readPadAudio(source)
+        let direct = VinhetasPad.accepts(source)
+        let destination = directory.appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(direct ? source.pathExtension.lowercased() : "wav")
         do {
-            let file = try AVAudioFile(forReading: source)
-            guard VinhetasPad.acceptsDuration(frames: file.length, sampleRate: file.processingFormat.sampleRate) else {
-                throw ProjectError.invalid("Os pads aceitam áudios de até 60 segundos.")
+            if direct {
+                try FileManager.default.copyItem(at: source, to: destination)
+            } else {
+                let format = buffer.format
+                let output = try AVAudioFile(forWriting: destination, settings: format.settings,
+                    commonFormat: format.commonFormat, interleaved: format.isInterleaved)
+                try output.write(from: buffer)
             }
-            let name = UUID().uuidString + "." + source.pathExtension.lowercased()
-            let destination = directory.appendingPathComponent(name)
-            try FileManager.default.copyItem(at: source, to: destination)
-            do { _ = try AVAudioFile(forReading: destination) }
-            catch { try? FileManager.default.removeItem(at: destination); throw error }
-            update { $0.presets[preset].pads[pad].audioFile = name }; preload()
-        } catch { self.error = error.localizedDescription }
+            return (destination, buffer)
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
     }
     #if os(macOS)
     func insert(preset: Int, pad: Int) {
@@ -312,6 +468,7 @@ struct VinhetasPanel: View {
     let createTrack: () -> Void
     var touchMenusEnabled = false
     @State private var edit: Edit?
+    @State private var samplerDropTarget: Int?
     #if os(iOS)
     @State private var importing = false
     @State private var importTarget: (preset: Int, pad: Int)?
@@ -357,6 +514,13 @@ struct VinhetasPanel: View {
             }
             if !model.error.isEmpty { Text(verbatim: model.error).foregroundStyle(.red).font(.caption) }
         }.padding(10).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+            .alert("Pads", isPresented: Binding(get: { model.droppedAudioError != nil }, set: {
+                if !$0 { model.droppedAudioError = nil }
+            })) {
+                Button("OK") { model.droppedAudioError = nil }
+            } message: {
+                Text(verbatim: model.droppedAudioError ?? "")
+            }
             #if os(macOS)
             .sheet(item: $edit) { editor($0) }
             #else
@@ -387,8 +551,7 @@ struct VinhetasPanel: View {
     private func pad(_ index: Int) -> some View {
         let preset = selected, item = model.library.presets[preset].pads[index]
         let active = model.voices.values.contains { $0.preset == preset && $0.pad == index }
-        let mappingLabel = model.library.padMappingLabel(index)
-        let unlearnTitle = mappingLabel.hasPrefix("CC ") ? "Unlearn CC" : "Unlearn MIDI"
+        let unlearnTitle = "Unlearn " + model.library.padMappingLabel(index)
         return VStack(spacing: 4) {
             HStack(spacing: 4) {
                 Button { model.gate(preset: preset, pad: index, enabled: !item.gate) } label: {
@@ -399,14 +562,15 @@ struct VinhetasPanel: View {
                     .background(item.gate ? JarasTheme.yellow : Color.clear).cornerRadius(4)
                 #if os(macOS)
                 VinhetasPadSurface(name: item.name, color: item.color, active: active,
-                    down: { model.down(index) }, up: { model.up(index) }, mappingLabel: mappingLabel)
+                    down: { model.down(index) }, up: { model.up(index) },
+                    importSample: { url, origin in model.importAudio(url, preset: preset, pad: index, origin: origin) })
                     .frame(maxWidth: .infinity, minHeight: 58)
                     .contextMenu {
                         Button("Edit") { edit = Edit(preset: preset, pad: index) }
                         Button("Insert audio") { model.insert(preset: preset, pad: index) }
                         Button("Learn MIDI") { model.learningPreset = nil; model.learningPad = index }
                         if model.library.padMappings[index] != nil {
-                            Button(unlearnTitle) { model.unlearnPad(index) }
+                            Button { model.unlearnPad(index) } label: { Text(verbatim: unlearnTitle) }
                         }
                     }
                 #else
@@ -415,9 +579,26 @@ struct VinhetasPanel: View {
                     edit: { edit = Edit(preset: preset, pad: index) },
                     insert: { importTarget = (preset, index); importing = true },
                     learn: { model.learningPreset = nil; model.learningPad = index },
-                    mappingLabel: mappingLabel, unlearnTitle: unlearnTitle,
+                    unlearnTitle: unlearnTitle,
                     unlearn: model.library.padMappings[index] == nil ? nil : { model.unlearnPad(index) })
                     .frame(maxWidth: .infinity, minHeight: 44)
+                    .onDrop(of: [LibrarySamplerTransfer.type], isTargeted: Binding(
+                        get: { samplerDropTarget == index }, set: { active in
+                            if active { samplerDropTarget = index }
+                            else if samplerDropTarget == index { samplerDropTarget = nil }
+                        })) { providers in
+                            guard let provider = providers.first else { return false }
+                            _ = provider.loadDataRepresentation(forTypeIdentifier: LibrarySamplerTransfer.type.identifier) { data, _ in
+                                guard let url = LibrarySamplerTransfer.url(data) else { return }
+                                Task { @MainActor in model.importAudio(url, preset: preset, pad: index, origin: .library) }
+                            }
+                            return true
+                        }
+                    .overlay {
+                        if samplerDropTarget == index {
+                            RoundedRectangle(cornerRadius: 5).strokeBorder(JarasTheme.green, lineWidth: 2).allowsHitTesting(false)
+                        }
+                    }
                 #endif
             }
             HStack(spacing: 6) {
@@ -466,16 +647,46 @@ private struct VinhetasFader: NSViewRepresentable {
 private struct VinhetasPadSurface: NSViewRepresentable {
     let name: String; let color: UInt32; let active: Bool
     let down: () -> Void; let up: () -> Void
-    var mappingLabel = ""
+    let importSample: (URL, VinhetasController.AudioOrigin) -> Void
     func makeNSView(context: Context) -> Pad { Pad() }
     func updateNSView(_ view: Pad, context: Context) {
-        view.name = name; view.mappingLabel = mappingLabel; view.color = NSColor(Color(hex: color)); view.active = active
-        view.down = down; view.up = up; view.needsDisplay = true
+        view.name = name; view.color = NSColor(Color(hex: color)); view.active = active
+        view.down = down; view.up = up; view.importSample = importSample; view.needsDisplay = true
     }
     final class Pad: NSView {
-        var name = "", mappingLabel = "", color = NSColor.gray
+        var name = "", color = NSColor.gray
         var active = false, pressed = false
         var down: (() -> Void)?, up: (() -> Void)?
+        var importSample: ((URL, VinhetasController.AudioOrigin) -> Void)?
+        private var receiving = false
+        private static let sampleType = NSPasteboard.PasteboardType(LibrarySamplerTransfer.type.identifier)
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            registerForDraggedTypes([Self.sampleType, .fileURL])
+        }
+        convenience init() { self.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+            receiving = dropAudio(sender.draggingPasteboard) != nil && sender.draggingSourceOperationMask.contains(.copy)
+            needsDisplay = true
+            return receiving ? .copy : []
+        }
+        override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+        override func draggingExited(_ sender: NSDraggingInfo?) { receiving = false; needsDisplay = true }
+        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+            receiving = false; needsDisplay = true
+            guard let (url, origin) = dropAudio(sender.draggingPasteboard) else { return false }
+            importSample?(url, origin)
+            return true
+        }
+        private func dropAudio(_ pasteboard: NSPasteboard) -> (URL, VinhetasController.AudioOrigin)? {
+            if let url = LibrarySamplerTransfer.url(pasteboard.data(forType: Self.sampleType)) { return (url, .library) }
+            guard let files = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+                  files.count == 1, let url = files.first,
+                  UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true,
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+            return (url, .fileDrop)
+        }
         override func mouseDown(with event: NSEvent) { pressed = true; needsDisplay = true; down?() }
         override func mouseUp(with event: NSEvent) { pressed = false; needsDisplay = true; up?() }
         override func draw(_ dirtyRect: NSRect) {
@@ -487,11 +698,13 @@ private struct VinhetasPadSurface: NSViewRepresentable {
                 let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 5, yRadius: 5)
                 edge.lineWidth = 2; edge.stroke()
             }
-            let style = NSMutableParagraphStyle(); style.alignment = .center
-            (name as NSString).draw(in: NSRect(x: 3, y: (bounds.height - 16 + (mappingLabel.isEmpty ? 0 : 14)) / 2, width: bounds.width - 6, height: 18), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.white, .paragraphStyle: style])
-            if !mappingLabel.isEmpty {
-                (mappingLabel as NSString).draw(in: NSRect(x: 3, y: 3, width: bounds.width - 6, height: 14), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 10), .foregroundColor: NSColor.white, .paragraphStyle: style])
+            if receiving {
+                NSColor(JarasTheme.green).setStroke()
+                let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 5, yRadius: 5)
+                edge.lineWidth = 2; edge.stroke()
             }
+            let style = NSMutableParagraphStyle(); style.alignment = .center
+            (name as NSString).draw(in: NSRect(x: 3, y: (bounds.height - 16) / 2, width: bounds.width - 6, height: 18), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.white, .paragraphStyle: style])
         }
     }
 }
@@ -534,12 +747,11 @@ struct VinhetasPadSurface: UIViewRepresentable {
     let touchMenusEnabled: Bool
     var contextMenusEnabled = true
     let edit: () -> Void; let insert: () -> Void; let learn: () -> Void
-    var mappingLabel = ""
     var unlearnTitle = "Unlearn CC"
     var unlearn: (() -> Void)? = nil
     func makeUIView(context: Context) -> Pad { Pad() }
     func updateUIView(_ view: Pad, context: Context) {
-        view.name = name; view.mappingLabel = mappingLabel; view.unlearnTitle = unlearnTitle; view.unlearn = unlearn; view.color = UIColor(Color(hex: color)); view.active = active
+        view.name = name; view.unlearnTitle = unlearnTitle; view.unlearn = unlearn; view.color = UIColor(Color(hex: color)); view.active = active
         view.down = down; view.up = up; view.accessibilityLabel = name
         view.touchMenusEnabled = touchMenusEnabled; view.contextMenusEnabled = contextMenusEnabled
         view.edit = edit; view.insert = insert; view.learn = learn
@@ -547,7 +759,7 @@ struct VinhetasPadSurface: UIViewRepresentable {
     }
     static func dismantleUIView(_ view: Pad, coordinator: ()) { view.release() }
     final class Pad: UIView, UIContextMenuInteractionDelegate {
-        var name = "", mappingLabel = "", unlearnTitle = "Unlearn CC", color = UIColor.gray, active = false, pressed = false
+        var name = "", unlearnTitle = "Unlearn CC", color = UIColor.gray, active = false, pressed = false
         var unlearn: (() -> Void)?
         var down: (() -> Void)?, up: (() -> Void)?
         var touchMenusEnabled = false, secondaryMenu = false, contextMenusEnabled = true
@@ -600,11 +812,8 @@ struct VinhetasPadSurface: UIViewRepresentable {
                 border.lineWidth = 2; border.stroke()
             }
             let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
-            (name as NSString).draw(in: CGRect(x: 3, y: (bounds.height - 18 - (mappingLabel.isEmpty ? 0 : 14)) / 2, width: bounds.width - 6, height: 18),
+            (name as NSString).draw(in: CGRect(x: 3, y: (bounds.height - 18) / 2, width: bounds.width - 6, height: 18),
                 withAttributes: [.font: UIFont.boldSystemFont(ofSize: 11), .foregroundColor: UIColor.white, .paragraphStyle: style])
-            if !mappingLabel.isEmpty {
-                (mappingLabel as NSString).draw(in: CGRect(x: 3, y: bounds.height - 17, width: bounds.width - 6, height: 14), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 10), .foregroundColor: UIColor.white, .paragraphStyle: style])
-            }
         }
     }
 }

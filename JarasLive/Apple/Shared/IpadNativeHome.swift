@@ -96,9 +96,6 @@ extension UTType {
         StemAudioPlayback.shared = next.projectAudio
         TrackRecording.shared = next.projectRecorder
         next.projectRecorder.bind(next.show)
-        let instruments = Set(next.show.snapshot.project.songs.flatMap(\.tracks).filter { $0.fx?.instrumentKeys.isEmpty == false }.map(\.id))
-        next.projectAudio.setArmedInstrumentTracks(next.projectRecorder.armed.intersection(instruments))
-        next.projectAudio.armedMIDIRecordingTracks = next.projectRecorder.armed.intersection(Set(next.show.snapshot.project.songs.flatMap(\.tracks).filter { $0.recordingMode == .midi }.map(\.id)))
         let directory = next.documents.currentURL?.deletingLastPathComponent()
         InstrumentLibrary.shared.setProjectDirectory(directory)
         if let directory {
@@ -263,7 +260,10 @@ extension UTType {
                         .id(ObjectIdentifier(container))
                 }
                 .modifier(NativeTrialSession(show: container.show, purchases: purchases) { showingPurchase = true })
-                .disabled(tabs.transitioning)
+                .disabled(entering || tabs.transitioning)
+                .overlay {
+                    if entering { StartupView(progress: nil, stage: "Closing…") }
+                }
                 // Native controls commit their visual state in the same frame.
                 // Keep Remote transitions and the playback/display clocks separate.
                 .transaction { transaction in

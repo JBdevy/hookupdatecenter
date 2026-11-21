@@ -9,7 +9,13 @@ struct TimecodeSettings { std::string mode="ltc"; };
 struct Track { ID id; struct Role { std::string id="other"; } role; std::optional<TimecodeSettings> timecode; };
 struct Song { std::vector<Track> tracks; };
 inline std::string fixedTrackName(const Track::Role &role){return role.id=="other"?"":role.id;}
-inline bool isTeleprompterRole(const Track::Role &role){return role.id=="teleprompter";}
+inline bool isTeleprompterRole(const Track::Role &role){return role.id=="teleprompt"||role.id=="teleprompt2";}
+}
+namespace trackTree {
+size_t index(const jaras::Song &song, const ID &id) {
+    const auto track = std::find_if(song.tracks.begin(), song.tracks.end(), [&](const auto &t) { return t.id == id; });
+    return static_cast<size_t>(track - song.tracks.begin());
+}
 }
 struct Session {
     jaras::Song value;
@@ -45,8 +51,9 @@ public:
     Component content;
     Session &session;
     std::unique_ptr<Strip> master;
-    OwnedArray<Strip> strips;
-    std::vector<ID> ids;
+    OwnedArray<Strip> strips, fixedStrips;
+    std::vector<ID> ids, fixedIDs, requestedPins;
+    int fixedDividerX = 0;
     bool masterRight=false,showsIcons=false;
     std::function<bool(ID)> isTrackVisible;
     ScrollBar horizontal{false};
@@ -95,4 +102,18 @@ int main(){
     session.value.tracks.front().role.id="other";controls.front()->refresh();
     require(!controls.front()->isTimerRunning(),"A role change left a scanner timer running");
     std::puts("WINDOWS_900_ORDINARY_TRACKS_HAVE_NO_SPECIAL_CONTROL_TIMERS_OK");
+
+    for (const auto *role : {"teleprompt", "teleprompt2", "timecode", "programChange", "generatedClick"}) {
+        jaras::Track track;
+        track.id = role;
+        track.role.id = role;
+        session.value.tracks.push_back(track);
+        panel.requestedPins.push_back(role);
+    }
+    panel.refresh();
+    require(panel.fixedIDs == std::vector<ID>{"generatedClick"}, "Excluded roles must stay out of the pinned Hoz Mixer");
+    for (const auto *role : {"teleprompt", "teleprompt2", "timecode", "programChange"})
+        require(std::find(panel.ids.begin(), panel.ids.end(), role) == panel.ids.end(), "Excluded role was still shown in the Hoz Mixer");
+    require(std::find(panel.ids.begin(), panel.ids.end(), "generatedClick") != panel.ids.end(), "Click track must remain available");
+    std::puts("WINDOWS_HOZ_MIXER_EXCLUDES_TELEPROMPTER_TIMECODE_PROGRAM_CHANGE_OK");
 }

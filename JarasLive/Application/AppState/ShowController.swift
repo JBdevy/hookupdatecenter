@@ -402,6 +402,17 @@ public struct ShowTimelinePresentationState: Equatable {
         focusRegion(id)
         return true
     }
+    @discardableResult public func selectLibraryTimelineEntry(_ id: UUID, region: Bool) -> Bool {
+        guard canControl(), !finishing, !isPlaying, snapshot.transport.paused != true else { return false }
+        if region { return selectRegionSearchResult(id) }
+        guard let marker = current?.markers?.first(where: { $0.id == id && !$0.isTempo && !$0.isSection &&
+            $0.unifiedRegionID == nil && $0.sourceRegionID == nil }) else { return false }
+        send(.editSeek, value: marker.position)
+        guard snapshot.transport.editPosition == marker.position else { return false }
+        navigationFocusPosition = marker.position
+        regionFocusRequest = UUID()
+        return true
+    }
     public var regionSetlist: RegionSetlist { snapshot.project.regionSetlist ?? RegionSetlist() }
     public var allRegions: [Part] { (current?.parts ?? []).filter { $0.parentRegionID == nil }.sorted { $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime < $1.startTime } }
     public var selectedRegionPlaylist: RegionPlaylist? { regionSetlist.playlists.first { $0.id == regionSetlist.selectedId && $0.songId == current?.id } }
@@ -770,7 +781,9 @@ public struct ShowTimelinePresentationState: Equatable {
         public let id: UUID
         public let track: UUID
     }
-    @Published public private(set) var trackSelectionRequest: TrackSelectionRequest?
+    @Published public private(set) var trackSelectionRequest: TrackSelectionRequest? {
+        didSet { projectPresentation.objectWillChange.send() }
+    }
     @Published public private(set) var mixerTrackSelection: Set<UUID> = [] {
         didSet { if oldValue != mixerTrackSelection { projectPresentation.objectWillChange.send() } }
     }
@@ -778,6 +791,11 @@ public struct ShowTimelinePresentationState: Equatable {
         let valid = ids.intersection((current?.tracks ?? []).map(\.id))
         selectedTrackForActions = anchor.flatMap { valid.contains($0) ? $0 : nil } ?? valid.first
         if mixerTrackSelection != valid { mixerTrackSelection = valid }
+    }
+
+    public func revealSelectedMixerTrack(_ track: UUID) {
+        guard mixerTrackSelection.contains(track) else { return }
+        trackSelectionRequest = TrackSelectionRequest(id: UUID(), track: track)
     }
 
     @discardableResult public func selectAllMixerTracks() -> Bool {
@@ -807,9 +825,21 @@ public struct ShowTimelinePresentationState: Equatable {
     @Published public var detectBPMRegions: [UUID] = []
     @Published public private(set) var tempoMarkerRequest: UInt64 = 0
     @Published public private(set) var addTrackRequest: UInt64 = 0
-    public private(set) var selectedTrackForActions: UUID?
+    public private(set) var selectedTrackForActions: UUID? {
+        didSet { if oldValue != selectedTrackForActions { projectPresentation.objectWillChange.send() } }
+    }
     private var tempoTaps = TapTempo()
     public func reportTrackSelection(_ track: UUID?) { selectedTrackForActions = track }
+    @discardableResult public func stepMixerTrack(_ direction: Int, visible tracks: [UUID]) -> UUID? {
+        guard !tracks.isEmpty else { return nil }
+        let current = selectedTrackForActions.flatMap { tracks.firstIndex(of: $0) }
+        let next = current.map { $0 + direction } ?? (direction > 0 ? 0 : tracks.count - 1)
+        guard tracks.indices.contains(next) else { return nil }
+        let track = tracks[next]
+        setMixerTrackSelection([track], anchor: track)
+        trackSelectionRequest = TrackSelectionRequest(id: UUID(), track: track)
+        return track
+    }
     public private(set) var gridItemSelection: Set<UUID> = []
     public func reportItemSelection(_ ids: Set<UUID>) { gridItemSelection = ids }
     public func clipFXTargets(_ anchor: UUID) -> [UUID] {
@@ -923,6 +953,9 @@ public struct ShowTimelinePresentationState: Equatable {
             guard let target = timelineNavigationCache?.points.target(for: action, position: position) else { return }
             send(.editSeek, value: target)
             guard abs((snapshot.transport.editPosition ?? snapshot.transport.position) - target) < 0.0000001 else { return }
+            if action == .projectStart || action == .projectEnd || action == .nextTimelinePoint || action == .previousTimelinePoint {
+                pauseTimelineFollow()
+            }
             navigationFocusPosition = target
             regionFocusRequest = UUID()
         }
@@ -1005,6 +1038,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var toggleTeleprompterWindow: () -> Void = {}
     public var navigateProjectTab: (Int) -> Void = { _ in }
     public var toggleTracksPanel: () -> Void = {}
+    public var showTrackFocus: (UUID?) -> Void = { _ in }
     public var toggleBarMixerPanel: () -> Void = {}
     public var toggleSetlistPanel: () -> Void = {}
     public var togglePartsPanel: () -> Void = {}
@@ -1155,6 +1189,7 @@ public struct ShowTimelinePresentationState: Equatable {
     /// Snapshot live plugin state before an undoable chain mutation.
     public var prepareForFXChange: (UUID?, UUID?, [String]) throws -> Void = { _, _, _ in }
     public var audioRouting: ([UUID: TrackRouting]) -> Void = { _ in }
+    public var audioMatrixPatch: (([UUID: TrackRouting], [UUID: [OutputPatch]], [OutputPatch]?) -> Void)?
     public var audioPatches: (UUID?, [OutputPatch]) -> Void = { _, _ in }
     public var audioPatch: (UUID?, OutputPatch, Int) -> Void = { _, _, _ in }
     public var audioMIDIChannel: (UUID, Int) -> Void = { _, _ in }
@@ -1242,7 +1277,7 @@ public struct ShowTimelinePresentationState: Equatable {
             onProjectEdited()
         } catch { message = error.localizedDescription }
     }
-    @discardableResult private func editProject(trackStructure: Bool = false, _ edit: (inout Project) -> Void) -> Bool {
+    @discardableResult private func editProject(trackStructure: Bool = false, refreshAudio: Bool = true, _ edit: (inout Project) -> Void) -> Bool {
         guard canControl(), !finishing else { return false }
         var project = snapshot.project; edit(&project)
         guard project != snapshot.project else { return true }
@@ -1250,7 +1285,7 @@ public struct ShowTimelinePresentationState: Equatable {
             tick()
             if trackStructure { try executor.applyTrackStructureEdit(project, previous: snapshot.project) }
             else { try executor.applyProjectEdit(project) }
-            snapshot = try executor.snapshot(); markChanged(); onProjectEdited()
+            snapshot = try executor.snapshot(); markChanged(refreshAudio: refreshAudio); onProjectEdited()
             return true
         } catch { message = error.localizedDescription; return false }
     }
@@ -2123,6 +2158,35 @@ public struct ShowTimelinePresentationState: Equatable {
         guard TimelineTempo.beatUnits.contains(unit) else { return }
         updateTiming(.beatUnit, value: Double(unit))
     }
+    private var transportMeterPosition: Double {
+        let transport = snapshot.transport
+        return transport.playing ? transport.position : transport.editPosition ?? transport.position
+    }
+    public var transportMeter: TimelineTempoSection? {
+        current?.tempoSection(at: transportMeterPosition)
+    }
+    public var transportMeterEditingAllowed: Bool {
+        guard let song = current else { return false }
+        let position = transportMeterPosition
+        return !(song.markers ?? []).contains { $0.isTempo && position - $0.position < 0.000001 }
+    }
+    @discardableResult public func setTransportMeter(beats: Int, unit: Int) -> Bool {
+        guard canControl(), !finishing, (1...32).contains(beats), TimelineTempo.beatUnits.contains(unit) else { return false }
+        tick()
+        guard let song = current, transportMeterEditingAllowed, let meter = transportMeter else { return false }
+        if meter.beats == beats && meter.unit == unit { return true }
+        guard song.markers?.contains(where: \.isTempo) == true else {
+            return configureProjectTime(bpm: song.bpm, beats: beats, unit: unit, settings: song.projectTime)
+        }
+        let position = transportMeterPosition
+        let active = song.activeTempoMarker(at: position)
+        let marker = TimelineMarker(id: UUID(), name: "TEMPO", position: position, color: 0x999999,
+            tempoBPM: meter.bpm, tempoBeats: beats, tempoUnit: unit,
+            tempoTimebase: active?.tempoTimebase ?? .global, tempoReferenceBPM: active?.tempoReferenceBPM,
+            tempoPlaybackRate: active.map { song.tempoPlaybackRate(for: $0) } ?? 1)
+        setMarker(marker)
+        return current?.markers?.contains(where: { $0.id == marker.id }) == true
+    }
     private func updateTiming(_ command: ShowCommand, value: Double) {
         guard canControl(), !finishing, let index = snapshot.project.songs.firstIndex(where: { $0.id == current?.id }) else { return }
         let song = snapshot.project.songs[index]
@@ -2169,7 +2233,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public func send(_ command: ShowCommand, target: UUID? = nil, value: Double = 0) {
         guard !ProjectSyncControl.following else { return }
         if command == .play && preparingAudio { return }
-        if [.pause, .stop, .stopAll, .subPlay, .subStop, .editSeek, .seek, .select, .selectRegion,
+        if [.pause, .stop, .stopAll, .subPlay, .subStop, .editSeek, .seek, .queueBeatSeek, .select, .selectRegion,
             .queueRegion, .queueSection, .next, .previous, .escape].contains(command), preparingAudio {
             cancelPendingPlayback()
         }
@@ -2178,6 +2242,7 @@ public struct ShowTimelinePresentationState: Equatable {
         let enablingRepeat = command == .toggleLoop && !snapshot.transport.loop.enabled
         let armingPart = command == .queueSection && snapshot.transport.playing && snapshot.transport.queuedSectionMarkerId != target
         if enablingRepeat, rejectOverCapacity(assumingPlayback: true) { return }
+        if command == .queueBeatSeek && snapshot.transport.playing && rejectOverCapacity(at: value) { return }
         if armingPart {
             if rejectOverCapacity() { return }
             let destination = current?.markers?.first(where: { $0.id == target && $0.isSection })?.position
@@ -2222,7 +2287,7 @@ public struct ShowTimelinePresentationState: Equatable {
                 guard canQueuePlaylistEntry(region.id) else { return }
                 try executor.execute(isPlaylistDuplicate(region.id) ? .queueRegion : .selectRegion, target: region.id, value: 0)
                 selectedSetlistBlock = nil
-            } else if [.editSeek, .seek, .select, .selectRegion, .queueRegion, .queueSection, .next, .previous].contains(command) {
+            } else if [.editSeek, .seek, .queueBeatSeek, .select, .selectRegion, .queueRegion, .queueSection, .next, .previous].contains(command) {
                 selectedSetlistBlock = nil
             }
             if command == .toggleLoop, !previous.loop.enabled, let range = selectedLoopArea() {
@@ -2285,7 +2350,7 @@ public struct ShowTimelinePresentationState: Equatable {
             applyLoopMixer()
             if disabledAuto { markChanged(refreshAudio: false, preservingMediaStorage: true) }
             focusPreparedRegion(previous: previous)
-            if command == .editSeek || (command == .queueSection && !snapshot.transport.playing) {
+            if command == .editSeek || command == .queueBeatSeek || (command == .queueSection && !snapshot.transport.playing) {
                 navigationFocusPosition = nil
                 focusTimelineRegion(at: snapshot.transport.editPosition ?? snapshot.transport.position)
             } else if command == .seek || (command == .play && !previous.playing) {
@@ -2551,8 +2616,10 @@ public struct ShowTimelinePresentationState: Equatable {
         do { try executor.execute(.pan, target: track, value: value); audioPan(track, value); synchronizeLinkedControl(.pan, target: track, value: value) }
         catch { message = error.localizedDescription }
     }
-    public func previewFX(_ track: UUID?, settings: NativeFXSettings) {
+    public func previewFX(_ track: UUID?, settings incoming: NativeFXSettings) {
         guard canControl(), !finishing else { return }
+        var settings = incoming
+        settings.maintainStripBypass()
         do {
             try settings.validate()
             let previous = fxSettings(track)
@@ -2570,11 +2637,17 @@ public struct ShowTimelinePresentationState: Equatable {
                     if let index = snapshot.project.songs[song].tracks.firstIndex(where: { $0.id == track }) { snapshot.project.songs[song].tracks[index].fx = settings }
                 }
             } else { snapshot.project.masterFX = settings }
+            knownMediaPaths.formUnion(settings.samplePaths)
             effectRevision &+= 1; hasUnsavedChanges = true; pendingFXEdit = true
-            audioFX(track, settings)
+            if !settings.inserted.isEmpty || !previous.inserted.isEmpty { audioFX(track, settings) }
         } catch { message = error.localizedDescription }
     }
-    public func commitFX() { endAutomationTouch(nil, all: true); guard pendingFXEdit else { return }; pendingFXEdit = false; markChanged(refreshAudio: false) }
+    public func commitFX() {
+        endAutomationTouch(nil, all: true)
+        guard pendingFXEdit else { return }
+        pendingFXEdit = false
+        markChanged(refreshAudio: false, preservingMediaStorage: true)
+    }
     public func clipFXSettings(_ clip: UUID) -> NativeFXSettings {
         if let settings = snapshot.project.songs.lazy.flatMap(\.tracks).flatMap(\.clips).first(where: { $0.id == clip })?.fx { return settings }
         if let defaults = clipFXDefaults[clip] { return defaults }
@@ -2591,6 +2664,7 @@ public struct ShowTimelinePresentationState: Equatable {
                 do {
                     try settings.validateForClip(); try executor.setClipFX(clip, settings: settings)
                     snapshot.project.songs[song].tracks[track].clips[index].fx = settings
+                    knownMediaPaths.formUnion(settings.samplePaths)
                     effectRevision &+= 1; hasUnsavedChanges = true; pendingFXEdit = true
                     audioClipFX(clip, settings)
                 } catch { message = error.localizedDescription }
@@ -2732,6 +2806,7 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public func setInputMonitoring(_ track: UUID, enabled: Bool) {
         guard canControl(), !finishing, let location = trackLocation(track) else { return }
+        guard !snapshot.project.songs[location.song].tracks[location.track].receivesMain else { return }
         do {
             try executor.setInputMonitoring(track, enabled: enabled)
             snapshot.project.songs[location.song].tracks[location.track].inputMonitoring = enabled
@@ -2740,7 +2815,9 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public func setRecordingChannels(_ track: UUID, channel: Int) {
         guard canControl(), !finishing, TrackRecordingMode(rawValue: channel) != nil else { return }
-        guard let location = trackLocation(track), snapshot.project.songs[location.song].tracks[location.track].recordingChannels != channel else { return }
+        guard let location = trackLocation(track),
+              channel != 0 || !snapshot.project.songs[location.song].tracks[location.track].receivesMain,
+              snapshot.project.songs[location.song].tracks[location.track].recordingChannels != channel else { return }
         do {
             try executor.setRecordingChannels(track, channel: channel)
             snapshot.project.songs[location.song].tracks[location.track].recordingChannels = channel
@@ -2784,6 +2861,36 @@ public struct ShowTimelinePresentationState: Equatable {
         var settings = automation(track)
         settings.toggleLanes(volume: row.volume, volumeName: "Volume")
         setAutomation(track, settings: settings)
+    }
+    private var tracksWithAutomationControls: [Track] {
+        (current?.tracks ?? []).filter { $0.kind == .standard }
+    }
+    public var canToggleAllTrackAutomationLanes: Bool { !tracksWithAutomationControls.isEmpty }
+    public var allTrackAutomationLanesVisible: Bool {
+        let tracks = tracksWithAutomationControls
+        return !tracks.isEmpty && tracks.allSatisfy { $0.automation?.visibleEnvelopes.isEmpty == false }
+    }
+    public func toggleAllTrackAutomationLanes() {
+        guard canControl(), !finishing, let songID = current?.id else { return }
+        finishAutomationRecording()
+        let showLanes = !allTrackAutomationLanesVisible
+        let targets = Set(tracksWithAutomationControls.map(\.id))
+        var project = snapshot.project
+        guard let song = project.songs.firstIndex(where: { $0.id == songID }), !targets.isEmpty else { return }
+        do {
+            for index in project.songs[song].tracks.indices {
+                let track = project.songs[song].tracks[index]
+                guard targets.contains(track.id) else { continue }
+                var settings = track.automation ?? TrackAutomation()
+                let visible = !settings.visibleEnvelopes.isEmpty
+                guard visible != showLanes else { continue }
+                settings.toggleLanes(volume: track.volume, volumeName: "Volume")
+                try settings.validate()
+                project.songs[song].tracks[index].automation = settings
+            }
+            try executor.applyProjectEdit(project)
+            snapshot.project = project; markChanged(); onProjectEdited()
+        } catch { message = error.localizedDescription }
     }
     public func setAutomation(_ track: UUID?, settings: TrackAutomation) {
         guard canControl(), !finishing else { return }
@@ -2966,6 +3073,31 @@ public struct ShowTimelinePresentationState: Equatable {
         value.removeEffect(effect)
         previewFX(track, settings: value); commitFX(); onProjectEdited()
     }
+    public func toggleStripFXBypass(_ track: UUID?, sessionWide: Bool = false) {
+        guard canControl(), !finishing else { return }
+        let tracks: [UUID?] = sessionWide
+            ? [nil] + snapshot.project.songs.flatMap { $0.tracks.filter { $0.kind == .standard }.map { Optional($0.id) } }
+            : [track]
+        let on = sessionWide ? fxSettings(nil).sessionFXBypassed != true : fxSettings(track).mixerBypassRestore == nil
+        commitFX()
+        do {
+            for id in tracks {
+                let value = fxSettings(id)
+                if !value.inserted.isEmpty { try prepareForFXChange(id, nil, value.inserted) }
+            }
+        } catch { message = error.localizedDescription; return }
+        for id in tracks {
+            let previous = fxSettings(id)
+            var value = previous
+            if !sessionWide || on || value.bypassAppliedBySession == true {
+                value.setStripBypass(on, fromSession: sessionWide)
+            }
+            if sessionWide && id == nil { value.sessionFXBypassed = on ? true : nil }
+            if value != previous { previewFX(id, settings: value) }
+        }
+        commitFX(); onProjectEdited()
+    }
+
     /// A selected track targets the selection; Master and unselected tracks stay independent.
     public func changeMixerFX(_ target: UUID?, remove: Bool = false) {
         guard canControl(), !finishing else { return }
@@ -3347,6 +3479,20 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         catch { message = error.localizedDescription }
     }
+    public func renameMixerTrack(_ id: UUID, name: String, project: UUID) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canControl(), !finishing, snapshot.project.id == project, !name.isEmpty,
+              let location = trackLocation(id), snapshot.project.songs[location.song].id == current?.id else { return }
+        var next = snapshot.project
+        let previous = next.songs[location.song].tracks[location.track]
+        guard previous.fixedName == nil, previous.role.rawValue != "vinhetas", previous.name != name else { return }
+        next.songs[location.song].tracks[location.track].name = name
+        do {
+            try executor.applyProjectEdit(next)
+            snapshot = try executor.snapshot()
+            markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
+        } catch { message = error.localizedDescription }
+    }
     /// Save track artwork outside Undo; name/color retain their existing history.
     public func editTrackDetails(_ ids: Set<UUID>, name: String?, color: UInt32?,
                                  instrumentIcon: String?, project: UUID) {
@@ -3374,6 +3520,28 @@ public struct ShowTimelinePresentationState: Equatable {
             markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
         } catch { message = error.localizedDescription }
     }
+    public func toggleTrackMixerComponents(_ ids: Set<UUID>, mask: Int) {
+        guard canControl(), !finishing, let songID = current?.id, !ids.isEmpty, mask > 0,
+              let song = snapshot.project.songs.firstIndex(where: { $0.id == songID }) else { return }
+        var next = snapshot.project
+        let rows = next.songs[song].tracks.indices.filter {
+            let t = next.songs[song].tracks[$0]
+            return ids.contains(t.id) && t.supportsMixerComponents
+        }
+        guard !rows.isEmpty else { return }
+        let restore = rows.allSatisfy { (next.songs[song].tracks[$0].hiddenMixerComponents ?? 0) & mask == mask }
+        for row in rows {
+            let current = next.songs[song].tracks[row].hiddenMixerComponents ?? 0
+            let hidden = restore ? current & ~mask : current | mask
+            next.songs[song].tracks[row].hiddenMixerComponents = hidden == 0 ? nil : hidden
+        }
+        do {
+            tick(); try executor.applyProjectEdit(next)
+            snapshot = try executor.snapshot()
+            markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
+        } catch { message = error.localizedDescription }
+    }
+
     /// Called once when a native row-height drag finishes. Preview lives in the grid.
     public func setTrackHeightScale(_ id: UUID, scale: Double, project: UUID, song: UUID) {
         guard canControl(), !finishing, snapshot.project.id == project, current?.id == song,
@@ -3419,27 +3587,80 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public func setTrackRouting(_ ids: Set<UUID>, receive: Bool, slot: Int, other: UUID?) {
         guard slot >= 0 else { return }
-        editTrackRouting(ids, receive: receive) { values in
-            while values.count <= slot { values.append(nil) }
-            values[slot] = other
+        editTrackRouting(ids) { routing in
+            if receive {
+                while routing.receives.count <= slot { routing.receives.append(nil) }
+                if other == MultiLoopTrack.masterID {
+                    routing.mainReceiveSlot = slot
+                    routing.receives[slot] = nil
+                } else {
+                    if routing.mainReceiveSlot == slot { routing.mainReceiveSlot = nil }
+                    routing.receives[slot] = other
+                }
+            } else {
+                while routing.transmitters.count <= slot { routing.transmitters.append(nil) }
+                routing.transmitters[slot] = other
+            }
+        }
+    }
+    public func setMainSend(from previous: UUID?, to destination: UUID?) {
+        guard previous != destination, let song = current else { return }
+        let receivers = song.tracks.filter(\.receivesMain)
+        if let previous, !receivers.contains(where: { $0.id == previous }) { return }
+        if let destination, !song.tracks.contains(where: { $0.id == destination && $0.kind == .standard && !$0.receivesMain }) { return }
+        let nextOrder = (receivers.compactMap { $0.routing?.mainSendOrder }.max() ?? -1) + 1
+        let order = receivers.first(where: { $0.id == previous })?.routing?.mainSendOrder ?? nextOrder
+        editRouting(for: Set([previous, destination].compactMap { $0 })) { id, routing in
+            if id == previous {
+                routing.mainReceiveSlot = nil
+                routing.mainSendOrder = nil
+            } else {
+                let index = routing.receives.firstIndex(where: { $0 == nil }) ?? routing.receives.count
+                if index == routing.receives.count { routing.receives.append(nil) }
+                routing.mainReceiveSlot = index
+                routing.mainSendOrder = order
+            }
+        }
+    }
+    public func setTrackSendTap(_ source: UUID, destination: UUID, tap: TrackSendTap) {
+        editTrackRouting([source]) { routing in
+            guard routing.transmitters.contains(destination) else { return }
+            routing.setSendTap(tap, to: destination)
         }
     }
     public func addTrackRoute(_ ids: Set<UUID>, receive: Bool) {
-        editTrackRouting(ids, receive: receive) { $0.append(nil) }
+        editTrackRouting(ids) { routing in
+            if receive { routing.receives.append(nil) } else { routing.transmitters.append(nil) }
+        }
     }
     public func removeTrackRoute(_ ids: Set<UUID>, receive: Bool, slot: Int) {
-        editTrackRouting(ids, receive: receive) { if $0.indices.contains(slot) { $0.remove(at: slot) } }
+        editTrackRouting(ids) { routing in
+            if receive, routing.receives.indices.contains(slot) {
+                routing.receives.remove(at: slot)
+                if let main = routing.mainReceiveSlot, main >= slot { routing.mainReceiveSlot = main == slot ? nil : main - 1 }
+            } else if !receive, routing.transmitters.indices.contains(slot) {
+                routing.transmitters.remove(at: slot)
+            }
+        }
     }
-    private func editTrackRouting(_ ids: Set<UUID>, receive: Bool, change: (inout [UUID?]) -> Void) {
+    private func editTrackRouting(_ ids: Set<UUID>, change: (inout TrackRouting) -> Void) {
+        editRouting(for: ids) { _, routing in change(&routing) }
+    }
+    private func editRouting(for ids: Set<UUID>, change: (UUID, inout TrackRouting) -> Void) {
         guard canControl(), !finishing, var song = current else { return }
         var edits: [UUID: TrackRouting] = [:]
         for index in song.tracks.indices where ids.contains(song.tracks[index].id) && song.tracks[index].kind == .standard {
             var routing = song.tracks[index].routing ?? TrackRouting(receives: [], transmitters: [])
-            if receive { change(&routing.receives) } else { change(&routing.transmitters) }
+            change(song.tracks[index].id, &routing)
+            if routing.mainReceiveSlot == nil { routing.mainSendOrder = nil }
             if routing != song.tracks[index].routing { edits[song.tracks[index].id] = routing }
         }
         guard !edits.isEmpty else { return }
         edits = song.applyReciprocalRouting(edits)
+        for index in song.tracks.indices where edits[song.tracks[index].id] != nil && song.tracks[index].receivesMain {
+            song.tracks[index].inputMonitoring = false
+            if song.tracks[index].recordingChannels == 0 { song.tracks[index].recordingChannels = 2 }
+        }
         do {
             try song.validateTrackRouting(); try executor.setTrackRouting(edits)
             for index in snapshot.project.songs.indices where snapshot.project.songs[index].id == song.id { snapshot.project.songs[index] = song }
@@ -3476,6 +3697,55 @@ public struct ShowTimelinePresentationState: Equatable {
                 recordEdit(); projectRevision &+= 1; hasUnsavedChanges = true
             } catch { message = error.localizedDescription }
         }
+    }
+    public func applyMatrixPatch(_ changes: [(source: UUID?, destination: MatrixPatchDestination)], enabled: Bool) {
+        guard canControl(), !finishing, !changes.isEmpty,
+              var song = current, let index = snapshot.project.songs.firstIndex(where: { $0.id == song.id }) else { return }
+        let before = song
+        var next = snapshot.project
+        func edited(_ patches: [OutputPatch], patch: OutputPatch) -> [OutputPatch] {
+            if enabled { return patches.contains(patch) ? patches : patches.filter { $0 != .none } + [patch] }
+            return patches.filter { $0 != patch }
+        }
+        do {
+            for change in changes {
+                switch change.destination {
+                case .output(let patch):
+                    guard patch.firstChannel >= 0 else { continue }
+                    if let source = change.source,
+                       let row = song.tracks.firstIndex(where: { $0.id == source && ($0.kind == .standard || $0.kind == .click) }) {
+                        song.tracks[row].outputs = edited(song.tracks[row].outputPatches, patch: patch)
+                        song.tracks[row].patch = nil; song.tracks[row].secondaryPatch = nil
+                    } else if change.source == nil, patch.firstChannel > 0 {
+                        next.masterOutputs = edited(next.masterOutputPatches, patch: patch)
+                        next.masterPatch = nil; next.masterSecondaryPatch = nil
+                    }
+                case .track(let destination):
+                    guard let source = change.source else { continue }
+                    try song.setMatrixConnection(source: source, destination: destination, enabled: enabled)
+                }
+            }
+            next.songs[index] = song
+            guard next != snapshot.project else { return }
+            try song.validateTrackRouting()
+            let master = next.masterOutputPatches == snapshot.project.masterOutputPatches ? nil : next.masterOutputPatches
+            try executor.applyProjectEdit(next)
+            snapshot.project = next
+            var routes: [UUID: TrackRouting] = [:]
+            var outputs: [UUID: [OutputPatch]] = [:]
+            for (old, track) in zip(before.tracks, song.tracks) {
+                if old.routing != track.routing { routes[track.id] = track.routing ?? TrackRouting() }
+                if old.outputPatches != track.outputPatches { outputs[track.id] = track.outputPatches }
+            }
+            if let audioMatrixPatch {
+                audioMatrixPatch(routes, outputs, master)
+            } else {
+                if !routes.isEmpty { audioRouting(routes) }
+                for (id, patches) in outputs { audioPatches(id, patches) }
+                if let master { audioPatches(nil, master) }
+            }
+            recordEdit(); projectRevision &+= 1; hasUnsavedChanges = true
+        } catch { message = error.localizedDescription }
     }
     public func setOutputPatches(track: UUID?, patches: [OutputPatch]) {
         guard canControl(), !finishing else { return }
@@ -3720,6 +3990,31 @@ public struct ShowTimelinePresentationState: Equatable {
             return id
         } catch { message = error.localizedDescription; return nil }
     }
+    public func insertChord(track id: UUID, region regionID: UUID, position: Double, name: String) -> Bool {
+        let label = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(ChordMarker.maximumNameLength))
+        guard !label.isEmpty, position.isFinite, let song = current,
+              let region = song.chordRegion(at: position), region.id == regionID,
+              let track = song.tracks.firstIndex(where: { $0.id == id && $0.kind == .chords }) else { return false }
+        let offset = position - region.startTime
+        return editProject { project in
+            guard let si = project.songs.firstIndex(where: { $0.id == song.id }) else { return }
+            var markers = project.songs[si].tracks[track].chordMarkers ?? []
+            if let existing = markers.firstIndex(where: { $0.regionID == regionID && abs($0.offset - offset) < 1e-6 }) {
+                markers[existing].name = label
+            } else {
+                markers.append(ChordMarker(id: UUID(), regionID: regionID, offset: offset, name: label))
+            }
+            project.songs[si].tracks[track].chordMarkers = markers
+        }
+    }
+    public func removeChord(track id: UUID, marker: UUID) {
+        editProject { project in
+            for si in project.songs.indices {
+                guard let ti = project.songs[si].tracks.firstIndex(where: { $0.id == id && $0.kind == .chords }) else { continue }
+                project.songs[si].tracks[ti].chordMarkers?.removeAll { $0.id == marker }
+            }
+        }
+    }
     @Published public var selectedProgramChangeID: UUID?
     @Published public private(set) var programChangePasteReady = false
     private var programChangeClipboard: ProgramChangeMarker?
@@ -3911,6 +4206,24 @@ public struct ShowTimelinePresentationState: Equatable {
                 changed = true
             }
         } catch { message = error.localizedDescription }
+    }
+    public func renameTimelineLabel(_ id: UUID, name: String, region: Bool) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let song = current?.id else { return }
+        editProject(refreshAudio: false) { project in
+            guard let index = project.songs.firstIndex(where: { $0.id == song }) else { return }
+            if region, let part = project.songs[index].parts.firstIndex(where: { $0.id == id }) {
+                project.songs[index].parts[part].name = name
+                for marker in project.songs[index].markers?.indices ?? 0..<0
+                where project.songs[index].markers?[marker].sourceRegionID == id {
+                    project.songs[index].markers?[marker].name = name
+                }
+            } else if !region, let marker = project.songs[index].markers?.firstIndex(where: {
+                $0.id == id && !$0.isTempo && !$0.isSection && $0.unifiedRegionID == nil && $0.sourceRegionID == nil
+            }) {
+                project.songs[index].markers?[marker].name = String(name.prefix(TimelineMarker.maximumNameLength))
+            }
+        }
     }
     public func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool? = nil) {
         guard canControl(), !finishing,
@@ -4204,9 +4517,20 @@ public struct ShowTimelinePresentationState: Equatable {
         guard !saving else { throw ProjectError.invalid("Salvamento em andamento.") }
         saving = true
         defer { saving = false }
-        try prepareForSave()
+        let project = try projectForSaving()
         let revision = projectRevision, effects = effectRevision, setlist = setlistRevision, session = projectSessionID
         let automationSequence = automationRecordingSequence
+        try await persistence.save(project)
+        if projectSessionID == session && snapshot.project.id == project.id, let syncID = project.projectSyncID {
+            executor.setProjectSyncID(syncID)
+            snapshot.project.projectSyncID = syncID
+        }
+        if projectSessionID == session && snapshot.project.id == project.id { lastSavedCursor = project.savedCursor; lastSavedAt = project.updatedAt }
+        if projectSessionID == session && snapshot.project.id == project.id && projectRevision == revision && effectRevision == effects &&
+            setlistRevision == setlist && automationRecordingSequence == automationSequence { hasUnsavedChanges = false }
+    }
+    public func projectForSaving() throws -> Project {
+        try prepareForSave()
         var project = snapshot.project; project.updatedAt = ISO8601DateFormatter().string(from: Date())
         project.savedCursor = editingCursor
         if project.projectSyncID == nil { project.projectSyncID = UUID() }
@@ -4219,14 +4543,7 @@ public struct ShowTimelinePresentationState: Equatable {
                 project.songs[location.song].tracks[location.track].automation = settings
             }
         }
-        try await persistence.save(project)
-        if projectSessionID == session && snapshot.project.id == project.id, let syncID = project.projectSyncID {
-            executor.setProjectSyncID(syncID)
-            snapshot.project.projectSyncID = syncID
-        }
-        if projectSessionID == session && snapshot.project.id == project.id { lastSavedCursor = project.savedCursor; lastSavedAt = project.updatedAt }
-        if projectSessionID == session && snapshot.project.id == project.id && projectRevision == revision && effectRevision == effects &&
-            setlistRevision == setlist && automationRecordingSequence == automationSequence { hasUnsavedChanges = false }
+        return project
     }
     public func saveForClosing() async throws {
         if hasUnsavedChanges { try await flushProject() }
@@ -4338,16 +4655,18 @@ public struct ShowTimelinePresentationState: Equatable {
 public struct TimelineNavigationPoints {
     public let regionStarts: [Double]
     public let points: [Double]
+    private let end: Double
     public init(song: Song) {
         let regions = song.parts.filter { $0.parentRegionID == nil }
         regionStarts = Array(Set(regions.map(\.startTime).filter { $0.isFinite && $0 >= 0 })).sorted()
         points = Array(Set((regions.flatMap { [$0.startTime, $0.endTime] } + (song.markers ?? []).filter { !$0.isTempo }.map(\.position))
             .filter { $0.isFinite && $0 >= 0 })).sorted()
+        end = max(points.last ?? 0, song.duration.isFinite ? song.duration : 0)
     }
     public func target(for action: DAWAction, position: Double) -> Double? {
         switch action {
         case .projectStart: return 0
-        case .projectEnd: return points.last ?? 0
+        case .projectEnd: return end
         case .nextRegion, .previousRegion, .nextTimelinePoint, .previousTimelinePoint:
             let candidates = action == .nextRegion || action == .previousRegion ? regionStarts : points
             let forward = action == .nextRegion || action == .nextTimelinePoint

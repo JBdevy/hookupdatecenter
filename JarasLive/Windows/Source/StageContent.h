@@ -7,7 +7,7 @@ struct StageContent {
     var payload = object();
     File media;
     Image noticeImage;
-    static StageContent make(const Session &session, const StageState &stage, int index) {
+    static StageContent make(const Session &session, const StageState &stage, int index, bool imageOnly = false) {
         StageContent result;
         auto &out=result.payload;
         const auto settings=stage.settings(index);
@@ -24,6 +24,7 @@ struct StageContent {
         const bool activeNotice=!preview && stage.noticeActive() && flag(noticeSettings,index==1?"window1":"window2",true);
         auto notice=object();put(notice,"active",activeNotice);
         if(activeNotice) {
+            put(notice,"id",String(stage.noticeSent,6));
             put(notice,"message",stage.noticeText(noticeSettings));
             put(notice,"font",str(noticeSettings,"font","Arial"));
             put(notice,"scale",num(noticeSettings,"scale",100));
@@ -51,7 +52,11 @@ struct StageContent {
                 const jaras::AudioClip *active=nullptr;
                 for(const auto &clip:track.clips) if(!clip.muted) {
                     const bool projection=clip.audioFile && clip.audioFile->path.rfind("Videos/",0)==0;
-                    if(target && projection && !media && mediaPosition>=clip.startTime && mediaPosition<clip.startTime+clip.duration)media=&clip;
+                    if (target && projection && !media && mediaPosition >= clip.startTime && mediaPosition < clip.startTime + clip.duration) {
+                        static const StringArray imageExtensions{"png", "jpg", "jpeg", "gif", "bmp", "webp", "heic"};
+                        const auto extension = text(clip.audioFile->path).fromLastOccurrenceOf(".", false, false);
+                        if (!imageOnly || imageExtensions.contains(extension, true)) media = &clip;
+                    }
                     if(!projection && clip.text && position>=clip.startTime && position<clip.startTime+clip.duration && (!active||clip.startTime>active->startTime))active=&clip;
                 }
                 if(target && !lyric)lyric=active;

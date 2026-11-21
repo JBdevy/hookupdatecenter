@@ -13,7 +13,6 @@
 #include "TrackDrop.h"
 #include "PartsPanel.h"
 #include "TunerControl.h"
-#include "NavigationPanel.h"
 #include "ResourceUsage.h"
 #include "DragDivider.h"
 #include "FooterKeyboard.h"
@@ -30,6 +29,7 @@
 #include "TrackRowGeometry.h"
 namespace catlive {
 class AudioPreparationOverlay;
+class WorkspaceLibrary;
 namespace native { class TransportButtons; }
 namespace remote { class Host; class Presentation; }
 class TeleprompterHTTP;
@@ -37,6 +37,7 @@ class TransportFadeoutOverlay;
 class MacLook final : public MacPopupMenuLook {
   public:
     MacLook();
+    void refreshThemeColours();
     void drawProgressBar(Graphics &, ProgressBar &, int, int, double, const String &) override;
     void drawTooltip(Graphics &,const String &,int,int) override;
     void drawButtonBackground(Graphics &, Button &, const Colour &, bool, bool) override;
@@ -82,6 +83,7 @@ class Workspace final : public Component,
                       std::optional<bool> saveAll = {}, std::function<void()> cancelled = {});
     Component &windowCaption();
     bool isProjectOpen() const { return projectReady; }
+    void returnToWorkspace();
     void resetProjectTab();
     void capture(const File &);
     var diagnostics() const;
@@ -109,9 +111,10 @@ class Workspace final : public Component,
     std::function<void(const String &)> selectRemoteProjectTab;
     std::function<void(const String &)> closeRemoteProjectTab;
     std::function<bool(int)> canNavigateProjectTab;
-    void chooseOpen();
-    void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false, bool allowMissing = false, ID remoteRequest = {});
-    void chooseSave(bool saveAs = false, std::function<void()> saved = {}, std::function<void()> cancelled = {});
+    void chooseOpen(bool projectOnly = false);
+    void openProject(const File &, std::function<void()> loaded = {}, bool confirmed = false, bool allowMissing = false, ID remoteRequest = {}, bool fromFileRecents = false);
+    void chooseSave(bool saveAs = false, std::function<void()> saved = {}, std::function<void()> cancelled = {},
+                    bool separateFolder = false);
     void chooseImport(bool adding = true, bool inNewTab = false);
     void chooseExport();
     void chooseSoundFont();
@@ -142,8 +145,8 @@ class Workspace final : public Component,
   private:
     std::set<int> heldShortcutKeys;
     std::unique_ptr<meterDisplay::PeakReadout> masterPeakReadout;
-    meterDisplay::RepaintState masterMeterPaint;
     int masterMuteBlinkPhase = -1;
+    bool timelineEditMode = false;
     bool lastSetlistPlaying = false;
     std::unique_ptr<native::TransportButtons> nativeTransport;
     void syncNativeTransport();
@@ -207,9 +210,14 @@ class Workspace final : public Component,
     std::array<std::unique_ptr<TeleprompterHTTP>,2> teleprompterHTTP;
     void openTPRemote(int);
     std::unique_ptr<StageTimerReadout> stageTimer;
-    std::unique_ptr<Component> toolbarHints;
     std::unique_ptr<TempoControl> tempoControl;
-    std::unique_ptr<MixerPanel> footerMixer;
+    std::unique_ptr<MixerPanel> footerMixer, focusMixer;
+    std::unique_ptr<WorkspaceLibrary> workspaceLibrary;
+    DragDivider libraryDivider;
+    int libraryWidth = 344, libraryResizeStart = 344;
+    struct DockHeights { int mixer = 0, parts = 0, total = 0, visible = 0; } dockHeights;
+    void layoutWorkspaceColumns(bool widthOnly);
+    bool libraryVisible = false;
     std::unique_ptr<PartsPanel> partsLeft;
     std::unique_ptr<PartsPanel> partsSidebar;
     std::unique_ptr<TunerControl> tuner;
@@ -218,7 +226,6 @@ class Workspace final : public Component,
     std::unique_ptr<Setlist> setlist;
     std::unique_ptr<Component> loginPanel;
     std::unique_ptr<ProjectBrowser> projectBrowser;
-    std::unique_ptr<NavigationPanel> navigation;
     bool browserVisible = false, projectReady = false;
     juce::Rectangle<int> editorWindowBounds;
     std::unique_ptr<FooterKeyboard> keyboard;
@@ -228,27 +235,27 @@ class Workspace final : public Component,
     TrackMixerViewport tracksViewport;
     Viewport dockViewport;
     Component tracksContent, dockContent;
-    OwnedArray<TrackRow> rows, pinnedMixerRows;
-    Component pinnedMixer;
-    std::vector<int> pinnedRowIndices;
-    std::vector<ID> pinnedMixerIDs;
-    void refreshFixedTracks();
-    int fixedTrackHeight(int row) const;
-    int fixedTracksHeight() const;
+    OwnedArray<TrackRow> rows;
     OwnedArray<TextButton> buttons;
     std::map<String, std::unique_ptr<DocumentWindow>> floatingWindows;
+    std::optional<unsigned> auxiliaryWindowSuppression;
     std::map<String, TextButton *> controls;
     GainFader masterVolume;
-    ParameterSlider masterPan, zoom;
-    SongDisplayLabel songDisplay;
-    Label transportTime, transportInfo, footer, tempo;
+    ParameterSlider zoom, trackHeightSlider;
+    std::optional<std::pair<double, double>> transportProgressRange;
+    int transportProgressPixels = -1;
+    juce::Rectangle<int> transportProgressBounds() const {
+        return {transportDisplayBounds.getX() + 3,
+                std::min(transportDisplayBounds.getCentreY() - 1, tempoDisplayBounds.getY() - 2),
+                std::max(0, transportDisplayBounds.getWidth() - 6), 2};
+    }
+    Label songDisplay, transportTime, transportInfo, footer, tempo;
     DragDivider mixerDivider, setlistDivider, partsLeftDivider, partsRightDivider;
     DragDivider footerHeightDivider{false}, mixerHeightDivider{false};
     int resizeStart = 0, footerHeightSetting = 27, mixerHeightSetting = 300;
     int footerLeftWidth = 155, footerRightWidth = 230;
     juce::Rectangle<int> footerSongBounds;
     bool mixerDetached = false;
-    bool showsTrackIcons = false;
     bool layoutInitialized = false, layoutActive = true, restoringLayout = false;
     double layoutSaveTime = 0;
     String lastSavedLayout;
@@ -264,21 +271,25 @@ class Workspace final : public Component,
     void layoutDetachedSetlist();
     void resizePartsWidth(bool left, int delta);
     void showDetachedMixer();
-    void refreshMixerIndicator();
+    void refreshToolbarPanelIndicators();
+    void refreshInterfaceTheme();
     void mixerMenu(Point<int>);
     ResourceUsage resourceUsage;
-    TextButton addTrack{"+"}, trackVisibilityButton, timelineSnap, timelineTimebase;
+    TextButton addTrack{"+"}, trackVisibilityButton, trackComponentsButton, timelineSnap, timelineTimebase, timelineBands;
+    bool showRegionLanes = true, showTempoLane = true;
     QuietButton timelineLock;
     bool freeTimelinePosition(ModifierKeys mods) const { return !(bool)appearance.value("jaras.timeline.snapEnabled", true) || mods.isShiftDown(); }
     std::unique_ptr<FileChooser> chooser;
     std::unique_ptr<FileLogger> logger;
     bool mixerVisible = true, setlistVisible = true, keyboardVisible = false,
-         footerMixerVisible = false, partsLeftVisible = false, partsRightVisible = false, partsLeftHorizontal = false;
+         footerMixerVisible = false, focusVisible = false, partsLeftVisible = false, partsRightVisible = false, partsLeftHorizontal = false;
     std::optional<bool> lastEditorVisible;
-    int mixerWidth = 281, setlistWidth = 336, trackHeight = 64, verticalOffset = 0;
+    int mixerWidth = 281, setlistWidth = 336, trackHeight = theme::trackMixerMinHeight, verticalOffset = 0;
     int horizontalPartsHeight = PartsPanel::defaultHorizontalHeight;
     int partsLeftWidth = 260, partsRightWidth = 0; // Zero keeps the original automatic right width until resized.
     double pixelsPerSecond = 20;
+    std::optional<int> trackHeightMemory;
+    std::optional<double> zoomMemory;
     ID selectedTrack, selectedClip;
     std::set<ID> selectedClips;
     bool clipSelected(const ID &id) const { return selectedClips.empty() ? selectedClip == id : selectedClips.count(id) != 0; }
@@ -292,8 +303,10 @@ class Workspace final : public Component,
     ID trackSelectionAnchor;
     bool trackSelected(const ID &id) const { return selectedTracks.empty() ? selectedTrack == id : selectedTracks.count(id) != 0; }
     void selectMixerTrack(const ID &, ModifierKeys, bool clearItems = true, bool footer = false);
+    bool stepMixerTrack(int direction, bool rename = false);
     bool trackSelectionFromFooter = false;
     void changeMixerFX(const ID &, bool remove);
+    void mapMixerControl(const ID &, jaras::CommandKind);
     ID recordVisualSelection;
     std::optional<GridItemClipboard> itemClipboard;
     std::optional<DWORD> itemClipboardSequence;
@@ -307,7 +320,7 @@ class Workspace final : public Component,
     bool uiRegressionPassed = false;
     bool capturingSnapshot = false;
     double lastTick = 0;
-    juce::Rectangle<int> transportBounds, workspaceBounds, footerBounds;
+    juce::Rectangle<int> transportBounds, transportDisplayBounds, tempoDisplayBounds, workspaceBounds, footerBounds;
     TextButton &button(String, const String &, std::function<void()>, Colour colour = {});
     void rebuild();
     void selectAndRevealTrackCopies(const std::vector<ID> &copies);
@@ -322,6 +335,7 @@ class Workspace final : public Component,
     mutable uint64 rowGeometryRevision = ~uint64(0);
     mutable ID rowGeometrySong;
     const ItemLanes &itemLanes(int index) const;
+    int minimumTrackHeight() const;
     int itemLaneHeight(int index) const;
     ItemLanes::Geometry itemGeometry(int index, const ID &clip, const ItemLanes *preview = nullptr) const;
     mutable uint64 itemLayoutRevision = ~uint64(0);
@@ -354,6 +368,7 @@ class Workspace final : public Component,
     void chooseMigration(bool logic);
     void newSong();
     void showShortcuts();
+    void toggleFocus();
     void toggleLeftParts();
     void leftPartsMenu(Point<int>);
     void detachLeftParts();
@@ -361,13 +376,16 @@ class Workspace final : public Component,
     void toggleRightParts();
     PopupMenu masterMenu(bool barMixer) const;
     void showMasterMenu(Point<int>, bool barMixer = false);
+    void showFileMenu();
+    void shareProject();
+    void chooseTimelineFile(int type);
     void handleMasterMenu(int choice, bool barMixer);
     void setBarMixerMasterRight(bool);
     void syncBarMixerMasterSide();
-    void setHozMixerSlotsOnly(bool);
-    void syncHozMixerMode();
-    void editMasterColour();
-    void showTrackMenu(ID, Point<int>);
+    void syncHozMixerTrackStyle();
+    void showTrackMenu(ID, Point<int>, bool trackMixerMenu = true);
+    void toggleTrackMixerComponents(const std::set<ID>&, int mask);
+    void showChordMenu(const ID& track, const ID& marker, Point<int>);
     void createTrack();
     void specialTrackAction(ID,const String &);
     void editTrack(ID, std::set<ID> targets = {});
@@ -386,7 +404,7 @@ class Workspace final : public Component,
     void openStageConfig(int index = 1);
     void openAutomation(ID);
     void openTimer(bool settings = false);
-    void openFloating(const String &, std::unique_ptr<Component>, int, int);
+    void openFloating(const String &, std::unique_ptr<Component>, int, int, const String &key = {});
     void openSettingsPage(int);
 };
 } // namespace catlive

@@ -3,6 +3,7 @@ import SwiftUI
 enum TrackMixerButtonAppearance {
     static let radius: CGFloat = 3
     static let normal = Color(red: 65.0 / 255, green: 65.0 / 255, blue: 65.0 / 255)
+    static let trackControl = Color(hex: 0x141414)
     static let muted = Color.red
     static func fxText(hasEffects: Bool, bypassed: Bool) -> Color {
         if !hasEffects { return .white }
@@ -40,9 +41,13 @@ enum TimelineRenderDiagnosticBypass {
 }
 
 struct GridSelectionItem {
+    static let verticalInset: CGFloat = 1
     // Mac reference zoom chosen in the timeline (10 * 2.347981560587109).
     // Use the same screen density on desktop and native touch timelines.
     static let followingHeaderMinimumScale: CGFloat = 23.47981560587109
+    // Keep the desktop thresholds in sync with ItemHeader on Windows.
+    static let volumeMinimumScale: CGFloat = 1.065964770560176
+    static let fxAndPanMinimumScale: CGFloat = 2.035375406750012
     static func pinsHeader(pixelsPerSecond: CGFloat) -> Bool {
         pixelsPerSecond.isFinite && pixelsPerSecond >= followingHeaderMinimumScale
     }
@@ -95,6 +100,8 @@ struct GridSelectionItem {
     // Component-local lanes can occupy a multiple/fraction of the track's
     // conventional lane height. Keep this immutable alongside the item ID.
     var laneHeightRatio: CGFloat = 1
+    enum HeaderMode { case full, volumeAndMute, titleOnly, titleAndMute }
+    var headerMode = HeaderMode.full
     var headerHidden = false
     var blackTitle = false
     var selectedBlackTitle = false
@@ -123,9 +130,11 @@ struct GridSelectionItem {
         #endif
     }
     // Reserve the complete name before revealing additional controls.
+    fileprivate var minimumWidthForVolume: CGFloat {
+        34 * Self.headerScale + max(24, ceil(preferredNameWidth)) + 12
+    }
     private var headerDetail: Int {
-        var required = 2 * Self.headerScale + 2 + 17 * Self.headerScale + 1 + max(24, ceil(preferredNameWidth)) + 8
-        required += 15 * Self.headerScale + 1
+        var required = minimumWidthForVolume
         guard headerRect.width >= required else { return 0 }
         if !midiEditable || hasFX { required += 20 * Self.headerScale + 1 }
         guard headerRect.width >= required else { return 1 }
@@ -134,21 +143,25 @@ struct GridSelectionItem {
     }
     var gainKnobMinimumWidth: CGFloat { 21 * Self.headerScale }
     var gainKnobRect: CGRect? {
-        guard headerRect.width >= 2 * Self.headerScale + 17 * Self.headerScale + 1 + 15 * Self.headerScale + 1 + max(24, ceil(preferredNameWidth)) + 8 else { return nil }
+        guard headerMode == .full || headerMode == .volumeAndMute,
+              headerRect.width >= minimumWidthForVolume else { return nil }
         return controlRect(x: controlStart, width: 15 * Self.headerScale)
     }
     var muteRect: CGRect? {
-        return controlRect(x: gainKnobRect.map { $0.maxX + 1 } ?? controlStart, width: 17 * Self.headerScale)
+        guard headerMode != .titleOnly else { return nil }
+        let width = headerMode == .full ? 17 * Self.headerScale : min(17 * Self.headerScale, headerRect.width - 2 * Self.headerScale - 2)
+        guard width >= 12 else { return nil }
+        return controlRect(x: gainKnobRect.map { $0.maxX + 1 } ?? controlStart, width: width)
     }
     var fxRect: CGRect? {
-        guard headerDetail >= 2, !midiEditable || hasFX, let mute = muteRect else { return nil }
+        guard headerMode == .full, headerDetail >= 2, !midiEditable || hasFX, let mute = muteRect else { return nil }
         return controlRect(x: mute.maxX + 1, width: 20 * Self.headerScale)
     }
     var phaseRect: CGRect? {
         return nil
     }
     var panKnobRect: CGRect? {
-        guard headerDetail >= 4, !midiEditable, let fx = fxRect else { return nil }
+        guard headerMode == .full, headerDetail >= 4, !midiEditable, let fx = fxRect else { return nil }
         return controlRect(x: fx.maxX + 1, width: 15 * Self.headerScale)
     }
     var panLabel: String {
@@ -176,7 +189,7 @@ struct GridSelectionItem {
     }
     var titleInset: CGFloat { headerTitleInset(gainLabel: nil) }
     func headerTitleInset(gainLabel: String?) -> CGFloat {
-        if editable && muteRect == nil { return headerRect.width }
+        if headerMode == .full && editable && muteRect == nil { return headerRect.width }
         let controls = [gainKnobRect, muteRect, fxRect, panKnobRect, editRect]
         guard let rightEdge = controls.compactMap({ $0?.maxX }).max() else { return 2 }
         return rightEdge - headerRect.minX + 1
@@ -302,8 +315,8 @@ final class GridSelectionLayout {
             guard let track = item.trackIndex, offsets.indices.contains(track), laneHeights.indices.contains(track) else { return item.rect }
             var rect = item.rect
             let height = laneHeights[track] * item.laneHeightRatio
-            rect.origin.y = top + offsets[track] + CGFloat(item.laneIndex) * height + 3
-            rect.size.height = max(0, height - 6)
+            rect.origin.y = top + offsets[track] + CGFloat(item.laneIndex) * height + GridSelectionItem.verticalInset
+            rect.size.height = max(0, height - 2 * GridSelectionItem.verticalInset)
             return rect
         }
     }
@@ -358,6 +371,10 @@ final class GridSelectionLayout {
     }
     func item(id: UUID, pixelsPerSecond: CGFloat) -> GridSelectionItem? {
         ids[id].map { projectedItem(at: $0, pixelsPerSecond: pixelsPerSecond) }
+    }
+    func sharesBoundary(left: UUID, right: UUID) -> Bool {
+        guard let a = ids[left], let b = ids[right] else { return false }
+        return abs(items[a].rect.maxX - items[b].rect.minX) <= (timeCoordinates ? 1e-7 : 2.01)
     }
     func selectionRange(from anchor: UUID, to target: UUID) -> Set<UUID> {
         let ordered = items.sorted {
@@ -471,7 +488,7 @@ enum GridSelectionHeaderText {
             guard rect.width > 0, rect.height > 0, let graphics = NSGraphicsContext.current else { return }
             let context = graphics.cgContext, flipped = graphics.isFlipped
             let transform = context.ctm
-            let scale = CGSize(width: hypot(transform.a, transform.b), height: hypot(transform.c, transform.d))
+            let scale = CGSize(width: max(2, hypot(transform.a, transform.b)), height: max(2, hypot(transform.c, transform.d)))
             let fits = completeWidth.map { rect.width >= $0 } ?? false
             let shapedLine: CTLine?
             if !fits, let shapedTitle {
@@ -503,6 +520,8 @@ enum GridSelectionHeaderText {
                     text.draw(in: rect); return
                 }
                 drawing.scaleBy(x: scale.width, y: scale.height)
+                drawing.setAllowsAntialiasing(true)
+                drawing.setShouldAntialias(true)
                 if flipped { drawing.translateBy(x: 0, y: rect.height); drawing.scaleBy(x: 1, y: -1) }
                 if let line = shapedLine, let shapedTitle {
                     // Zoom changes the available width, not the shaped glyphs.
@@ -526,6 +545,7 @@ enum GridSelectionHeaderText {
             }
             if let rendering {
                 context.saveGState()
+                context.interpolationQuality = .high
                 if fits || shapedLine != nil { context.clip(to: rect) }
                 if flipped {
                     context.translateBy(x: rect.minX, y: rect.maxY); context.scaleBy(x: 1, y: -1)
@@ -825,6 +845,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private struct HeaderPixels: Equatable {
         let id: UUID
         let hidden: Bool
+        let mode: GridSelectionItem.HeaderMode
         let rect: CGRect
         let name: String
         let blackTitle: Bool
@@ -1024,6 +1045,17 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         guard let name = source.name else { return source }
         var item = source
         item.headerHidden = headersHidden
+        let headerViewport = CGRect(origin: origin, size: viewport.size)
+        let nameWidth = GridSelectionHeaderText.width(name)
+        item.headerNameWidth = nameWidth
+        let unpinnedWidth = min(item.rect.maxX, headerViewport.maxX) - item.rect.minX
+        if headersPinned {
+            item.headerMode = .full
+        } else if pixelsPerSecond >= GridSelectionItem.volumeMinimumScale, unpinnedWidth >= item.minimumWidthForVolume {
+            item.headerMode = pixelsPerSecond >= GridSelectionItem.fxAndPanMinimumScale ? .full : .volumeAndMute
+        } else {
+            item.headerMode = selected.contains(item.id) ? .titleAndMute : .titleOnly
+        }
         if let liveHeaderGain, liveHeaderGain.id == item.id || (selected.contains(liveHeaderGain.id) && selected.contains(item.id)) { item.gain = liveHeaderGain.value }
         if let liveFade, liveFade.id == item.id {
             if let sCurve = liveFade.sCurve {
@@ -1031,7 +1063,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 else { if sCurve { item.fadeOutSCurve = liveFade.seconds } else { item.fadeOutCurve = liveFade.seconds } }
             } else if liveFade.left { item.fadeIn = liveFade.seconds } else { item.fadeOut = liveFade.seconds }
         }
-        return item.visibleLeftHeader(in: CGRect(origin: origin, size: viewport.size), titleWidth: GridSelectionHeaderText.width(name), gainLabel: gainLabel, pinned: headersPinned)
+        return item.visibleLeftHeader(in: headerViewport, titleWidth: nameWidth, gainLabel: gainLabel, pinned: headersPinned)
     }
     // Use native scroll bounds, not the delayed SwiftUI offset from its last render.
     private var coordinates: (viewport: CGRect, origin: CGPoint) {
@@ -1072,12 +1104,12 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let visible = body.offsetBy(dx: origin.x - viewport.minX, dy: origin.y - viewport.minY)
         var drawings: [HeaderDrawing] = []
         let headers = (candidates(in: visible) + recordingHeaders.filter { $0.rect.intersects(visible) }).compactMap { source -> HeaderPixels? in
-            guard source.name != nil, source.rect.width >= 20,
+            guard source.name != nil, source.rect.width >= (headersPinned ? 20 : 14),
                   source.rect.maxX >= visible.minX, source.rect.minX <= visible.maxX else { return nil }
             var source = source
             if let liveHeaderGain, liveHeaderGain.id == source.id || (selected.contains(liveHeaderGain.id) && selected.contains(source.id)) { source.gain = liveHeaderGain.value }
             let visibleWidth = max(0, min(source.rect.maxX, origin.x + viewport.width) - max(source.rect.minX, origin.x))
-            let gainLabel = source.editable && visibleWidth >= source.gainKnobMinimumWidth ? source.gainLabel : nil
+            let gainLabel = headersPinned && source.editable && visibleWidth >= source.gainKnobMinimumWidth ? source.gainLabel : nil
             var item = positionedHeader(source, viewport: viewport, origin: origin, gainLabel: gainLabel)
             let dx = viewport.minX - origin.x, dy = viewport.minY - origin.y
             item.rect = item.rect.offsetBy(dx: dx, dy: dy)
@@ -1085,7 +1117,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             if let liveHeaderPan, liveHeaderPan.id == item.id || (selected.contains(liveHeaderPan.id) && selected.contains(item.id)) { item.pan = liveHeaderPan.value }
             let fadeRects = item.fadeDrawingRects(in: body)
             drawings.append(HeaderDrawing(item: item, gainLabel: gainLabel))
-            return HeaderPixels(id: item.id, hidden: item.headerHidden, rect: item.headerRect, name: item.name!,
+            return HeaderPixels(id: item.id, hidden: item.headerHidden, mode: item.headerMode, rect: item.headerRect, name: item.name!,
                 blackTitle: selected.contains(item.id) ? item.selectedBlackTitle : item.blackTitle, gain: item.gain, pan: item.pan,
                 phase: item.phaseInverted, muted: item.muted, hasFX: item.hasFX, bypass: item.fxBypassed,
                 editable: item.editable, midi: item.midiEditable, text: item.textEditable, fadeRects: fadeRects, fadeCurves: [item.fadeInCurve, item.fadeInSCurve, item.fadeOutCurve, item.fadeOutSCurve])
@@ -1123,9 +1155,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     func sharedBoundary(at point: CGPoint) -> (left: UUID, right: UUID)? {
         let nearby = candidates(in: CGRect(x: point.x - 7, y: point.y, width: 14, height: 0))
-        for left in nearby where left.resizable && left.teleprompterText && selected.contains(left.id) && abs(left.rect.maxX - point.x) <= 6 {
-            for right in nearby where right.id != left.id && right.resizable && right.teleprompterText && selected.contains(right.id) && right.trackIndex == left.trackIndex && right.laneIndex == left.laneIndex {
-                guard abs(left.rect.maxX - right.rect.minX) <= 2.01,
+        for left in nearby where left.resizable && selected.contains(left.id) && abs(left.rect.maxX - point.x) <= 6 {
+            for right in nearby where right.id != left.id && right.resizable && selected.contains(right.id) && right.trackIndex == left.trackIndex && right.laneIndex == left.laneIndex {
+                guard selected.count == 2 || (left.teleprompterText && right.teleprompterText),
+                      itemLayout.sharesBoundary(left: left.id, right: right.id),
                       abs(left.rect.minY - right.rect.minY) < 0.01,
                       point.y > max(left.rect.minY, right.rect.minY) + min(Self.sharedBoundaryHeaderInset, min(left.rect.height, right.rect.height) / 2),
                       point.y < min(left.rect.maxY, right.rect.maxY) else { continue }

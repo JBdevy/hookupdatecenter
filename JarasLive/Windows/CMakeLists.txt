@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(CatLiveWindows VERSION 1.1.0 LANGUAGES C CXX)
-set(CATLIVE_VERSION "1.37" CACHE STRING "Public CatLive version (X.XX)")
+set(CATLIVE_VERSION "2.00" CACHE STRING "Public CatLive version (X.XX)")
 if(NOT CATLIVE_VERSION MATCHES "^[0-9]+\\.[0-9][0-9]$")
     message(FATAL_ERROR "CATLIVE_VERSION must use X.XX format.")
 endif()
@@ -61,6 +61,18 @@ juce_add_binary_data(CatLiveAssets SOURCES
     Assets/Localization/English.json Assets/Localization/Portuguese.json
     Assets/Localization/StageDefaults.json Assets/Localization/StageFields.json
     Assets/Localization/InstrumentCatalog.json Assets/Teleprompter.html
+    Assets/NoteEmoji/keycap_23.png
+    Assets/NoteEmoji/keycap_2a.png
+    Assets/NoteEmoji/keycap_30.png
+    Assets/NoteEmoji/keycap_31.png
+    Assets/NoteEmoji/keycap_32.png
+    Assets/NoteEmoji/keycap_33.png
+    Assets/NoteEmoji/keycap_34.png
+    Assets/NoteEmoji/keycap_35.png
+    Assets/NoteEmoji/keycap_36.png
+    Assets/NoteEmoji/keycap_37.png
+    Assets/NoteEmoji/keycap_38.png
+    Assets/NoteEmoji/keycap_39.png
     "${CATLIVEROOT}/Apple/Resources/Click.mp3"
     "${CATLIVEROOT}/Apple/Resources/StartupSound.wav"
     "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Regular.ttf"
@@ -68,6 +80,10 @@ juce_add_binary_data(CatLiveAssets SOURCES
     "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-SemiBold.ttf"
     "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-Bold.ttf"
     "${CATLIVEROOT}/Resources/Fonts/Inter/Inter-BoldItalic.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Setlist/ArchivoBlack-Regular.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Setlist/Bungee-Regular.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Setlist/Inter-Black.ttf"
+    "${CATLIVEROOT}/Resources/Fonts/Inter/Setlist/Inter-ExtraBold.ttf"
     "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveSplash.imageset/CatLiveSplash.png"
     "${CATLIVEROOT}/Apple/Assets.xcassets/CatLiveIcon.appiconset/icon-256@1x.png")
 juce_add_gui_app(CatLive PRODUCT_NAME "CatLive" COMPANY_NAME "Hook Developer"
@@ -184,7 +200,7 @@ set(CATLIVE_FFMPEG_PUBLIC_HEADERS "${CMAKE_CURRENT_BINARY_DIR}/ffmpeg-include")
 catlive_prepare_ffmpeg_headers("${CATLIVE_FFMPEG_INCLUDE_DIR}" "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
 target_include_directories(CatLive PRIVATE ThirdParty/FFmpeg/include "${CATLIVE_FFMPEG_PUBLIC_HEADERS}")
 target_link_libraries(CatLive PRIVATE CatLiveCore CatLiveLoudness CatLiveLame CatLiveAssets CatLiveVST3 juce::juce_audio_utils
-    juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite dcomp bcrypt crypt32 normaliz dnsapi iphlpapi comctl32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32 avrt
+    juce::juce_dsp juce::juce_osc juce::juce_cryptography d2d1 dwrite dcomp bcrypt crypt32 normaliz dnsapi iphlpapi comctl32 imm32 psapi mfplat mfreadwrite mfuuid mf d3d11 dxgi winmm msimg32 avrt icu
     juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 target_compile_definitions(CatLive PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="CatLive" JUCE_APPLICATION_VERSION_STRING="${CATLIVE_VERSION}"
@@ -265,6 +281,12 @@ add_custom_command(TARGET CatLive POST_BUILD
 install(DIRECTORY "${CATLIVEROOT}/Resources/SMK37" DESTINATION .)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Resources/SMK37Tools" DESTINATION .)
 
+foreach(folder NativeSamples TrackIcons)
+    add_custom_command(TARGET CatLive POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/Resources/${folder}" "$<TARGET_FILE_DIR:CatLive>/${folder}")
+    install(DIRECTORY "${CATLIVEROOT}/Resources/${folder}" DESTINATION .)
+endforeach()
+
 # Category artwork is decoded once per open editor, never in the audio callback.
 foreach(category pianos upright electric keyboard organ strings guitar bass synth synthPad lead acordeon brass mallets drum)
     set(artwork "${CATLIVEROOT}/Apple/Assets.xcassets/InstrumentArtwork_${category}.imageset/${category}.png")
@@ -291,6 +313,7 @@ install(FILES "${CATLIVE_LAME_ROOT}/COPYING" "${CATLIVE_LAME_ROOT}/lame-3.100-so
     "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/config.h" "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/Lame/BUILD.txt" DESTINATION Licenses/LAME)
 install(FILES "${CATLIVEROOT}/WindowsNative/ThirdParty/dr_libs/LICENSE" DESTINATION Licenses/dr_libs)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt" DESTINATION .)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/Assets/NoteEmoji/LICENSE-GRAPHICS.txt" DESTINATION Licenses/Twemoji)
 
 # CatStem DSP/protocol tests do not load a model or require physical audio.
 add_executable(CatStemCoreTests "${CATLIVEROOT}/WindowsNative/Tests/StemSeparatorCoreTests.cpp")

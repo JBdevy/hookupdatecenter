@@ -5,6 +5,7 @@
 #import "JarasEffects.h"
 
 #import "JarasSoundFont.h"
+#import "JarasDrummerPad.h"
 
 #import "JarasTimecode.h"
 

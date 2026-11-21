@@ -60,7 +60,7 @@ private final class RetentionInputHost: NSView, NativeTimelineBodyInputHost {
     scroll.setFrameSize(CGSize(width: 248, height: 4096)); fixture.settle()
     let owners = descendants(fixture.host, of: TrackMixerNativeControlView.self)
     let row = owners[30]
-    let hosts = [row.meter, row.activity, row.controls]
+    let hosts = [row.meter, row.controls]
     let identities = hosts.map(ObjectIdentifier.init)
     let sliders = descendants(row.controls, of: DirectVolumeSliderView.self)
     let sliderIDs = sliders.map(ObjectIdentifier.init)

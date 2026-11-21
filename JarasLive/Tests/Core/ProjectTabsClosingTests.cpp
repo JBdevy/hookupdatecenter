@@ -29,6 +29,7 @@ struct Session {
     struct Transport { bool playing = false; struct { bool playing = false; } subPlay; } state;
     std::function<void(String)> saved;
     bool isSaving() { return saving; }
+    bool isTemporary() const { return false; }
     Transport &transport() { return state; }
     void waitForSave(std::function<void(String)> callback) { saved = std::move(callback); }
     void command(jaras::CommandKind) {

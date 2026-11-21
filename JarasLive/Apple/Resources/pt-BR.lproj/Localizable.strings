@@ -130,7 +130,7 @@
 
 "Criar região do item" = "Criar região do item";
 
-"Editar região" = "Editar região";
+"Editar região" = "Editar Região";
 
 "Salvar" = "Salvar";
 
@@ -154,6 +154,7 @@
 "Copying audio and saving project…" = "Copiando áudios e salvando projeto…";
 "%lld song folders · %lld audio files" = "%lld pastas de músicas · %lld arquivos de áudio";
 "Browse…" = "Procurar…";
+"Open existing" = "Abrir existente";
 
 "Salvo" = "Salvo";
 "Salvando…" = "Salvando…";
@@ -217,7 +218,7 @@
 "Reverb" = "Reverb";
 "Delay — coming soon" = "Delay — em breve";
 "Track effects" = "Efeitos da pista";
-"Master effects" = "Efeitos do Master";
+"Master effects" = "Efeitos do Main";
 "Arm track for recording" = "Armar pista para gravação";
 "Record armed tracks" = "Gravar pistas armadas";
 "Repeat (R)" = "Repeat (R)";
@@ -530,6 +531,9 @@
 "Bottom" = "EM BAIXO";
 "Lyrics" = "LETRAS";
 "Chords" = "Cifras";
+"Chord" = "Acorde";
+"Insert chord here" = "Inserir acorde nesse ponto";
+"The cursor must be inside a region." = "A agulha precisa estar dentro de uma região.";
 "Night" = "NOITE";
 "Day" = "DIA";
 "Teleprompter settings" = "Configurações do Teleprompter";
@@ -590,7 +594,7 @@
 
 "Complete project" = "Projeto completo";
 
-"Master + Tracks" = "Master + Pistas";
+"Master + Tracks" = "Main + Pistas";
 
 "Stems" = "Stems";
 
@@ -776,8 +780,8 @@
 "Restore this mapping?" = "Restaurar este mapeamento?";
 "Restore" = "Restaurar";
 
-"Mute Master" = "Mutar Master";
-"Volume Master" = "Volume do Master";
+"Mute Master" = "Mutar Main";
+"Volume Master" = "Volume do Main";
 
 "Video window on/off" = "Abrir/fechar janela de vídeo";
 "Teleprompter window on/off" = "Abrir/fechar janela do Teleprompter";
@@ -794,7 +798,7 @@
 
 "Invalid tempo or time signature." = "BPM ou compasso inválido.";
 
-"Solo Master" = "Solo do Master";
+"Solo Master" = "Solo do Main";
 
 "Search plugins" = "Pesquisar plugins";
 
@@ -855,9 +859,9 @@
 
 "Withdraw message" = "Retirar";
 
-"Link tracks" = "Linkar tracks";
+"Link tracks" = "Linkar pistas";
 
-"Unlink tracks" = "Deslinkar tracks";
+"Unlink tracks" = "Deslinkar pistas";
 
 "Clone playlist" = "Clonar playlist";
 
@@ -886,7 +890,7 @@
 "FX Manager" = "Gerenciador de FX";
 
 "Click to open FX Manager" = "Clique para abrir o Gerenciador de FX";
-"Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (red slot)." = "Clique: abrir este plugin no Gerenciador de FX. Option/Alt + clique: remover plugin. Shift + clique: alternar bypass (slot vermelho).";
+"Click: open this plugin in FX Manager. Option/Alt + click: remove plugin. Shift + click: toggle bypass (dimmed text)." = "Clique: abrir este plugin no Gerenciador de FX. Option/Alt + clique: remover plugin. Shift + clique: alternar bypass (texto atenuado).";
 
 "All Regions song text" = "Letras das músicas em All Regions";
 "Playlist song text" = "Letras das músicas nas playlists";
@@ -918,7 +922,7 @@
 
 "Region ID" = "ID da região";
 
-"Toggle Master Stereo/Mono" = "Alternar Master entre Estéreo e Mono";
+"Toggle Master Stereo/Mono" = "Alternar Main entre Estéreo e Mono";
 
 "Multiloops" = "Multiloops";
 
@@ -1298,7 +1302,7 @@
 "Turn off Live" = "Desligar Live";
 "Turning off Live clears all played-song marks, including songs inside unified regions. Turning it on again starts the playback count from zero." = "Desligar o Live limpa todas as marcações de músicas tocadas, incluindo as músicas da gaveta. Ao ligar novamente, a contagem começa do zero.";
 
-"Render each selected region through the Master, including tracks routed to hardware outputs." = "Renderiza cada região selecionada pelo Master, incluindo pistas roteadas para saídas de hardware.";
+"Render each selected region through the Master, including tracks routed to hardware outputs." = "Renderiza cada região selecionada pelo Main, incluindo pistas roteadas para saídas de hardware.";
 
 "Cut" = "Recortar";
 
@@ -1455,11 +1459,19 @@
 "Save to Files" = "Salvar em Arquivos";
 
 "Save the project before exporting." = "Salve o projeto antes de exportar.";
+"Save the project before sharing." = "Salve o projeto antes de compartilhar.";
+"Preparing project package…" = "Preparando pacote do projeto…";
+"Project package ready." = "Pacote do projeto pronto.";
+"Download the native instrument before sharing: %@" = "Baixe o instrumento nativo antes de compartilhar: %@";
+"Sharing canceled." = "Compartilhamento cancelado.";
+"Delete Pads?" = "Excluir a pasta Pads?";
+"Delete these samples and clear them from all Pads that use them?" = "Excluir estes samples e removê-los de todos os Pads que os usam?";
 
 "Choose a folder for the imported project" = "Escolha uma pasta para o projeto importado";
 
 "Project not found" = "Projeto não encontrado";
 
+"Rename" = "Renomear";
 "Rename playlist" = "Renomear playlist";
 
 "Delete region and its contents?" = "Apagar a região e todo o seu conteúdo?";
@@ -1521,6 +1533,7 @@
 "Add to project" = "Adicionar ao projeto";
 
 "%@ contains no readable WAV, AIFF or MP3 files. Open the folder and select the song folders containing audio." = "A pasta %@ não contém áudio WAV, AIFF ou MP3 que possa ser lido. Abra essa pasta e selecione as pastas das músicas que contêm os áudios.";
+"%@ contains a CatLive project. Use Open existing and select the .jl file inside the folder." = "A pasta %@ contém um projeto do CatLive. Use Abrir existente e selecione o arquivo .jl dentro da pasta.";
 
 "No audio directly in this folder" = "Sem áudio diretamente nesta pasta";
 
@@ -1705,9 +1718,9 @@
 "Visibilidade das pistas" = "Visibilidade das pistas";
 "Painel" = "Painel";
 
-"Mostrar Master à direita" = "Mostrar Master à direita";
+"Mostrar Master à direita" = "Mostrar Main à direita";
 
-"Mostrar Master à esquerda" = "Mostrar Master à esquerda";
+"Mostrar Master à esquerda" = "Mostrar Main à esquerda";
 
 // Show Mode
 "Show Mode" = "Modo Show";
@@ -2153,7 +2166,7 @@
 "Invalid text encoding." = "Codificação de texto inválida.";
 "Logic alternative " = "Alternativa do Logic ";
 "Logic: invalid group ignored for " = "Logic: grupo inválido ignorado para ";
-"Master automation ignored: %@" = "Automação do Master ignorada: %@";
+"Master automation ignored: %@" = "Automação do Main ignorada: %@";
 "Missing MIDI source: " = "Fonte MIDI ausente: ";
 "Missing VST3 automation parameter identity." = "Identidade de parâmetro de automação VST3 ausente.";
 "Multiple project alternatives were found without an active selection. Open and save the desired alternative in Logic first." = "Foram encontradas várias alternativas do projeto sem uma seleção ativa. Abra e salve primeiro a alternativa desejada no Logic.";
@@ -2484,9 +2497,9 @@
 
 "MIDI activity" = "Atividade MIDI";
 
-"Master Patch" = "Patch do Master";
+"Master Patch" = "Patch do Main";
 
-"Master Stereo/Mono" = "Master Estéreo/Mono";
+"Master Stereo/Mono" = "Main Estéreo/Mono";
 
 "Track number" = "Número da pista";
 
@@ -2676,9 +2689,9 @@
 
 "Lower pitch" = "Diminuir afinação";
 
-"Master pan" = "Pan do Master";
+"Master pan" = "Pan do Main";
 
-"Master volume" = "Volume do Master";
+"Master volume" = "Volume do Main";
 
 "Mute item" = "Mutar item";
 
@@ -2739,3 +2752,61 @@
 "Track volume up" = "Aumentar volume da pista";
 "Track pan left" = "Pan da pista para a esquerda";
 "Track pan right" = "Pan da pista para a direita";
+
+"Home" = "Início";
+"Add Projects" = "Adicionar projetos";
+"Recents" = "Recentes";
+
+"Master" = "Main";
+"Main Stereo/Mono" = "Main Estéreo/Mono";
+"Switch Main to Mono?" = "Alternar o Main para Mono?";
+"Switch Main to Stereo?" = "Alternar o Main para Estéreo?";
+"Main Patch" = "Patch do Main";
+"Main pan" = "Pan do Main";
+"Main volume" = "Volume do Main";
+"Mostrar Main à esquerda" = "Mostrar Main à esquerda";
+"Mostrar Main à direita" = "Mostrar Main à direita";
+
+"Timeline lanes" = "Faixas da timeline";
+
+"Track style" = "Estilo da pista";
+"Stripe only" = "Apenas faixa";
+
+"Vertical grid color" = "Cor da Grade Vertical";
+"Horizontal grid color" = "Cor da Grade Horizontal";
+
+"Select a track" = "Selecione uma pista";
+"Create category" = "Criar categoria";
+"Delete category?" = "Excluir categoria?";
+"Remove %@ and its samples from the Library?" = "Excluir “%@” e seus samples da Library?";
+"Add Samplers" = "Adicionar samples";
+"New note" = "Criar anotação";
+"Add send" = "Adicionar envio";
+"Change destination" = "Alterar destino";
+"Remove send" = "Remover envio";
+"Delete note" = "Apagar anotação";
+"Samplers must be between 0 and 60 seconds." = "O sample precisa ter duração maior que zero e de até 60 segundos.";
+"Do you want to save the project %@?" = "Deseja salvar o projeto %@?";
+"Don't Save" = "Não salvar";
+"Resize Library" = "Ajustar largura do Library";
+"Resize Library folders" = "Ajustar largura das pastas do Library";
+"Collapse all categories" = "Recolher todas as categorias";
+"Sample preview volume" = "Volume da prévia do sample";
+"Pads accept audio up to 60 seconds." = "Os pads aceitam áudios de até 60 segundos.";
+"Drag along a row or column. Hold Shift and drag right to connect diagonally or left to disconnect." = "Arraste em uma linha ou coluna. Com Shift, arraste para a direita para marcar em diagonal ou para a esquerda para desmarcar.";
+"Desktop battery" = "Bateria do desktop";
+"The .jl project and all its media files will be copied to a different folder." = "O projeto .jl e todos os arquivos de mídia serão copiados para outra pasta.";
+"Select another track." = "Selecione outra pista.";
+"Could not read the MIDI file." = "Não foi possível ler o arquivo MIDI.";
+"The MIDI file contains no notes." = "O arquivo MIDI não contém notas.";
+"BPM Sync" = "Sincronizado com o BPM";
+"Division" = "Divisão";
+"Smoothing" = "Suavização";
+"Rate" = "Frequência";
+"Tone" = "Timbre";
+"Channel %lld" = "Canal %lld";
+"Bypass effect" = "Colocar em bypass";
+"Enable effect" = "Ativar efeito";
+
+"Set Track Color" = "Cor da Pista";
+"Set Track Icon" = "Ícone da Pista";

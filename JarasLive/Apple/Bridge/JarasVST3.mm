@@ -14,6 +14,7 @@
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "pluginterfaces/vst/ivstattributes.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
+#include "../../Core/Audio/VST3GainReduction.hpp"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/vstspeaker.h"
@@ -278,6 +279,7 @@ public:
     IConnectionPoint *source=nullptr,*destination=nullptr; bool initialized=false,controllerInitialized=false,active=false,processing=false;
     bool instrument=false;
     NSString *identifier; std::atomic<bool> bypass{false},hasChanges{false}; std::unique_ptr<Param[]> params; int paramCount=0; Changes changes;
+    catlive::audio::VST3GainReduction reduction;
     std::vector<std::pair<ParamID,int>> parameterIndex;
     std::vector<AudioBusBuffers> inputs,outputs; std::vector<std::vector<float>> storage; std::vector<std::vector<float *>> pointers;
     EventList events;
@@ -383,6 +385,7 @@ public:
                 }
             }
             prepareParameterIndex();
+            if (!instrument) reduction.configure(controller);
         }
         ProcessSetup setup{processMode,kSample32,frames,rate};if(processor->setupProcessing(setup)!=kResultOk)throw std::runtime_error("VST3 audio setup failed.");
         if(component->setActive(true)!=kResultOk)throw std::runtime_error("Could not activate this VST3 processor.");active=true;
@@ -489,7 +492,8 @@ public:
         context.projectTimeMusic=transport.quarterNotes;context.barPositionMusic=transport.barStartQuarterNotes;
         context.state=ProcessContext::kBarPositionValid|ProcessContext::kTempoValid|ProcessContext::kTimeSigValid|ProcessContext::kProjectTimeMusicValid|(transport.playing?ProcessContext::kPlaying:0);
         ProcessData data;data.processMode=processMode;data.numSamples=count;data.numInputs=(int)inputs.size();data.numOutputs=(int)outputs.size();data.inputs=inputs.data();data.outputs=outputs.data();data.inputParameterChanges=&changes;data.inputEvents=&events;data.processContext=&context;
-        if(processor->process(data)==kResultOk){auto &bus=outputs[mainOut];for(int c=0;c<(int)std::min(2u,buffer->mNumberBuffers);c++)if(buffer->mBuffers[c].mData){auto dest=(float *)buffer->mBuffers[c].mData;auto source=bus.channelBuffers32[std::min(c,bus.numChannels-1)];if(bus.silenceFlags&(1ull<<std::min(c,bus.numChannels-1))){if(!instrument)memset(dest,0,count*sizeof(float));}else for(unsigned f=0;f<count;f++){const float generated=std::isfinite(source[f])?source[f]:0;dest[f]=(instrument?dest[f]:0)+generated;}}}
+        if (reduction.supported()) { reduction.begin(); data.outputParameterChanges = &reduction; }
+        if(processor->process(data)==kResultOk){reduction.end();auto &bus=outputs[mainOut];for(int c=0;c<(int)std::min(2u,buffer->mNumberBuffers);c++)if(buffer->mBuffers[c].mData){auto dest=(float *)buffer->mBuffers[c].mData;auto source=bus.channelBuffers32[std::min(c,bus.numChannels-1)];if(bus.silenceFlags&(1ull<<std::min(c,bus.numChannels-1))){if(!instrument)memset(dest,0,count*sizeof(float));}else for(unsigned f=0;f<count;f++){const float generated=std::isfinite(source[f])?source[f]:0;dest[f]=(instrument?dest[f]:0)+generated;}}}
         sampleTime+=count;
     }
     NSDictionary *replacementSpec(NSDictionary *spec){
@@ -763,6 +767,11 @@ static void replaceNativeEditors(std::shared_ptr<Instance> previous,std::shared_
     if(i){i->appliedComponent=component;i->appliedController=controller;}
 }
 + (void)onParameterEdit:(AVAudioUnitEffect *)node identifier:(NSString *)id action:(void (^)(unsigned int,double,BOOL))action {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i)i->parameterEdited=[action copy];}
++ (float)gainReduction:(AVAudioUnitEffect *)node identifier:(NSString *)id {
+    auto instance = ((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);
+    if (!instance || !instance->reduction.supported()) return -1.f;
+    return instance->bypass.load() ? 0.f : instance->reduction.read();
+}
 + (NSArray<NSDictionary *> *)parameters:(AVAudioUnitEffect *)node identifier:(NSString *)id {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);NSMutableArray *result=[NSMutableArray array];if(i&&i->controller)for(int n=0;n<i->paramCount;n++){ParameterInfo p{};i->controller->getParameterInfo(n,p);if(p.flags&ParameterInfo::kIsReadOnly)continue;[result addObject:@{@"id":@(p.id),@"name":text(p.title),@"value":@(i->controller->getParamNormalized(p.id))}];}return result;}
 + (void)setParameter:(AVAudioUnitEffect *)node identifier:(NSString *)id parameter:(unsigned int)param value:(double)value {auto i=((JarasVSTAudioUnit *)node.AUAudioUnit)->kernel.find(id);if(i&&i->controller){value=std::clamp(value,0.,1.);i->controller->setParamNormalized(param,value);i->queueParameter(param,value);}}
 + (NSView *)editor:(AVAudioUnitEffect *)node identifier:(NSString *)identifier {

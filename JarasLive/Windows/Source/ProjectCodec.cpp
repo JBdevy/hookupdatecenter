@@ -389,6 +389,13 @@ void canonicalFX(var &fx) {
     // are opaque. In particular, never recurse through externalPlugins.
 }
 void canonicalAutomation(var &automation) {
+    // Write the same defaults that Windows uses at playback, including when
+    // saving an older document for an Apple build that requires these keys.
+    if (automation.isObject()) {
+        if (get(automation, "enabled").isVoid()) put(automation, "enabled", true);
+        if (get(automation, "mode").isVoid()) put(automation, "mode", "trimRead");
+        if (get(automation, "envelopes").isVoid()) put(automation, "envelopes", Array<var>{});
+    }
     identityElements(automation, "envelopes", [](var &envelope) {
         canonicalIDFields(envelope, {"id"});
         identityElements(envelope, "points", [](var &point) { canonicalIDFields(point, {"id"}); });
@@ -400,9 +407,11 @@ void canonicalAutomation(var &automation) {
         });
     });
 }
+void canonicalMapKeys(var &map, bool prefixed);
 void canonicalRouting(var &routing) {
     canonicalIDArray(routing, "receives");
     canonicalIDArray(routing, "transmitters");
+    identityField(routing, "sendTaps", [](var &taps) { canonicalMapKeys(taps, false); });
 }
 void canonicalMapKeys(var &map, bool prefixed) {
     const auto *node = map.getDynamicObject();
@@ -637,13 +646,17 @@ jaras::Project ProjectCodec::decode(const var &input) {
             t.output = (int)num(rt, "output", 1);
             optionalNum(rt, "color", t.color);
             optionalNum(rt, "phaseInverted", t.phaseInverted);
+            optionalNum(rt, "hiddenMixerComponents", t.hiddenMixerComponents);
             optionalNum(rt, "heightScale", t.heightScale);
+            t.instrumentIcon.reset(); // A saved track without artwork stays unassigned.
             optionalText(rt, "instrumentIcon", t.instrumentIcon);
             optionalText(rt, "parentTrackID", t.parentTrackID);
             optionalJSON(rt, "automation", t.automationJSON);
             optionalNum(rt, "midiInput", t.midiInput);
             optionalNum(rt, "midiChannel", t.midiChannel);
             optionalNum(rt, "midiOutput", t.midiOutput);
+            for (const auto &cue : list(get(rt, "chordMarkers")))
+                t.chordMarkers.push_back({utf8(str(cue,"id")),utf8(str(cue,"regionID")),num(cue,"offset"),utf8(str(cue,"name"))});
             for (const auto &cue : list(get(rt, "programChanges")))
                 t.programChanges.push_back({utf8(str(cue,"id")),num(cue,"position"),(int)num(cue,"program"),(int)num(cue,"channel",1),utf8(str(cue,"name")), !get(cue,"output").isVoid() && !get(cue,"output").isUndefined() ? std::optional<int>((int)num(cue,"output")) : std::nullopt});
             optionalNum(rt, "inputMonitoring", t.inputMonitoring);
@@ -668,13 +681,22 @@ jaras::Project ProjectCodec::decode(const var &input) {
                 routing.receives.clear();
                 routing.transmitters.clear();
                 auto rawRouting = get(rt, "routing");
+                optionalNum(rawRouting, "mainReceiveSlot", routing.mainReceiveSlot);
+                optionalNum(rawRouting, "mainSendOrder", routing.mainSendOrder);
                 for (auto id : list(get(rawRouting, "receives")))
                     routing.receives.push_back(
                         id.isString() ? std::optional<ID>(utf8(id.toString())) : std::nullopt);
                 for (auto id : list(get(rawRouting, "transmitters")))
                     routing.transmitters.push_back(
                         id.isString() ? std::optional<ID>(utf8(id.toString())) : std::nullopt);
-                t.routing = routing;
+                const auto taps = get(rawRouting, "sendTaps");
+                if (auto *node = taps.getDynamicObject())
+                    for (const auto &entry : node->getProperties()) {
+                        const auto id = utf8(entry.name.toString());
+                        for (const auto point : {jaras::TrackSendTap::preFX, jaras::TrackSendTap::postFX, jaras::TrackSendTap::preFader})
+                            if (entry.value.toString() == jaras::sendTapID(point)) routing.sendTaps[id] = point;
+                    }
+                t.routing = std::move(routing);
             }
             if (get(rt, "patch").isObject())
                 t.patch = patch(get(rt, "patch"));
@@ -959,6 +981,12 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                 put(value,"program",cue.program);put(value,"channel",cue.channel);put(value,"name",text(cue.name));if(cue.output)put(value,"output",*cue.output);programChanges.add(value);
             }
             if(!programChanges.isEmpty())put(rt,"programChanges",programChanges);else remove(rt,"programChanges");
+            Array<var> chordMarkers;
+            for (const auto &cue : t.chordMarkers) {
+                auto value = object(); put(value,"id",text(cue.id)); put(value,"regionID",text(cue.regionID));
+                put(value,"offset",cue.offset); put(value,"name",text(cue.name)); chordMarkers.add(value);
+            }
+            if (!chordMarkers.isEmpty()) put(rt,"chordMarkers",chordMarkers); else remove(rt,"chordMarkers");
             emit(rt, "inputMonitoring", t.inputMonitoring);
             emit(rt, "recordingChannels", t.recordingChannels);
             emit(rt, "recordingFormat", t.recordingFormat);
@@ -988,6 +1016,14 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
                     transmitters.add(id ? var(text(*id)) : var());
                 put(value, "receives", receives);
                 put(value, "transmitters", transmitters);
+                emit(value, "mainReceiveSlot", t.routing->mainReceiveSlot);
+                emit(value, "mainSendOrder", t.routing->mainSendOrder);
+                auto sendTaps = object();
+                for (const auto &target : t.routing->transmitters)
+                    if (target && t.routing->sendTap(*target) != jaras::TrackSendTap::postFader)
+                        put(sendTaps, Identifier(text(*target)), jaras::sendTapID(t.routing->sendTap(*target)));
+                if (!sendTaps.getDynamicObject()->getProperties().isEmpty()) put(value, "sendTaps", sendTaps);
+                else remove(value, "sendTaps");
                 put(rt, "routing", value);
             } else
                 remove(rt, "routing");
@@ -1008,6 +1044,8 @@ var ProjectCodec::encode(const jaras::Project &p, const var &input) {
             }
             if (t.parentTrackID)
                 put(rt, "parentTrackID", text(*t.parentTrackID));
+            if (t.hiddenMixerComponents) put(rt, "hiddenMixerComponents", *t.hiddenMixerComponents);
+            else remove(rt, "hiddenMixerComponents");
             if (t.heightScale)
                 put(rt, "heightScale", *t.heightScale);
             if (t.instrumentIcon)

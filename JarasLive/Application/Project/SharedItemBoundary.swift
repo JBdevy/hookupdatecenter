@@ -52,10 +52,7 @@ public struct SharedItemBoundaryEdit {
     public var position: Double { right.startTime }
     public init?(song: Song, track: Track, left: AudioClip, right: AudioClip, position: Double,
                  minimumDuration: Double = 0.01, sourceDurations: [UUID: Double] = [:]) {
-        guard position.isFinite, track.kind.isTeleprompter,
-              left.text != nil, right.text != nil,
-              !left.isProjectionMedia, !right.isProjectionMedia,
-              left.id != right.id,
+        guard position.isFinite, left.id != right.id,
               abs(left.startTime + left.duration - right.startTime) < 1e-7,
               (left.recordingLane ?? 0) == (right.recordingLane ?? 0) else { return nil }
         let minimum = max(0.01, min(minimumDuration, left.duration, right.duration))
@@ -79,6 +76,11 @@ public struct SharedItemBoundaryEdit {
                     guard let region = song.parts.first(where: { Project.timecodeItemID($0.id) == original.id }) else { return nil }
                     clip.timecodeStartOffset = start - region.startTime; clip.timecodeEndOffset = end - region.endTime
                 }
+                clip.startTime = start; clip.duration = end - start
+                return clip
+            }
+            if original.text != nil && original.audioFile == nil && track.audioFile == nil && original.midi == nil {
+                var clip = original
                 clip.startTime = start; clip.duration = end - start
                 return clip
             }

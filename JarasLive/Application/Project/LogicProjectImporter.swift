@@ -264,7 +264,11 @@ public enum LogicProjectImporter {
             do {
             let rowKind = try row.body.int(0, 1)
             guard rowKind != 3 else { continue } // Logic's output strip is not an audio track.
-            guard rowKind == 1 else { throw invalid("Unsupported arrangement track kind.") }
+            // Some version 6 rows use kind 10 with the same channel and depth
+            // fields as kind 1. Arrangement events still index the same rows.
+            guard rowKind == 1 || (row.version == 6 && rowKind == 10) else {
+                throw invalid("Unsupported arrangement track kind.")
+            }
             let depth = try row.body.int(14, 2)
             let channel = try row.body.int(6)
             let title = environments[channel] ?? "Track \(row.index + 1)"
@@ -427,7 +431,7 @@ public enum LogicProjectImporter {
             catch { warnings.append(sourceDescription + "\n" + localizeWarning("Logic item ignored: ") + describe(error)) }
 }
         }
-        var markers: [(name: String, start: Double, end: Double)] = []
+        var markers: [(name: String, start: Double, end: Double?)] = []
         for record in records where record.tag == "qSvE" && record.kind == 22 {
             for event in try readEvents(record.body) where event.data.first == 0x12 {
             do {
@@ -436,7 +440,8 @@ public enum LogicProjectImporter {
                 let length = Double(try event.int(28))
                 let savedTitle = markerNames[try event.int(16)] ?? ""
                 let title = savedTitle.isEmpty ? "Marker \(markers.count + 1)" : savedTitle
-                markers.append((title, max(0, seconds(tick)), max(0, seconds(tick + length))))
+                // Logic uses a length of one tick to extend up to the next marker.
+                markers.append((title, max(0, seconds(tick)), length > 1 ? max(0, seconds(tick + length)) : nil))
 
             } catch is CancellationError { throw CancellationError() }
             catch { warnings.append(localizeWarning("Logic marker ignored: ") + describe(error)) }
@@ -449,16 +454,20 @@ public enum LogicProjectImporter {
         }
         for marker in markers {
             duration = max(duration, marker.start)
-            duration = max(duration, marker.end)
+            if let end = marker.end { duration = max(duration, end) }
         }
         for region in musicRegions { duration = max(duration, region.endTime) }
         for marker in song.markers ?? [] { duration = max(duration, marker.position) }
         song.duration = duration
         for (index, marker) in markers.enumerated() {
-            song.markers?.append(TimelineMarker(id: UUID(), name: String(marker.name.prefix(TimelineMarker.maximumNameLength)), position: marker.start, color: 0xC7AB40))
             let next = index + 1 < markers.count ? markers[index + 1].start : song.duration
-            let end = min(next, marker.end > marker.start ? marker.end : next)
-            if end > marker.start { song.parts.append(Part(id: UUID(), name: marker.name, startTime: marker.start, endTime: end, color: 0xC7AB40)) }
+            let explicitEnd = marker.end.flatMap { $0 > marker.start ? $0 : nil }
+            let end = explicitEnd ?? next
+            if end > marker.start {
+                song.parts.append(Part(id: UUID(), name: marker.name, startTime: marker.start, endTime: end, color: 0xC7AB40))
+            } else {
+                song.markers?.append(TimelineMarker(id: UUID(), name: String(marker.name.prefix(TimelineMarker.maximumNameLength)), position: marker.start, color: 0xC7AB40))
+            }
         }
         convertMusicRegions(musicRegions, in: &song)
         if song.parts.isEmpty { song.parts = [Part(id: UUID(), name: name, startTime: 0, endTime: song.duration)] }
@@ -488,15 +497,10 @@ public enum LogicProjectImporter {
         let roots = song.parts.sorted { $0.startTime < $1.startTime }
         var assigned = Set<UUID>()
         var linked: [TimelineMarker] = []
-        for (index, root) in roots.enumerated() {
-            let next = index + 1 < roots.count ? roots[index + 1].startTime : song.duration
-            let entries = music.filter { $0.startTime >= root.startTime - epsilon && $0.startTime < root.endTime - epsilon && $0.endTime <= next + epsilon }
+        for root in roots {
+            let entries = music.filter { !assigned.contains($0.id) && $0.startTime >= root.startTime && $0.endTime <= root.endTime }
             guard !entries.isEmpty else { continue }
             assigned.formUnion(entries.map(\.id))
-            // A short Logic marker may only mark the beginning of a song.
-            if let last = entries.last, let rootIndex = song.parts.firstIndex(where: { $0.id == root.id }) {
-                song.parts[rootIndex].endTime = max(root.endTime, last.endTime)
-            }
             // One song already has its top-level region. Multiple songs form
             // a special region, preserving each item's exact bounds and gaps.
             guard entries.count > 1 else { continue }
@@ -509,7 +513,6 @@ public enum LogicProjectImporter {
         }
         for entry in music where !assigned.contains(entry.id) {
             song.parts.append(entry)
-            linked.append(TimelineMarker(id: UUID(), name: String(entry.name.prefix(TimelineMarker.maximumNameLength)), position: entry.startTime, color: entry.color ?? 0xC7AB40))
         }
         // Tempo points have their own lane. Prefer song flags over ordinary
         // marker flags at the same point, without duplicating either kind.

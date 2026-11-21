@@ -184,7 +184,6 @@ inline void resize(jaras::Project &project, const ID &id, double start, double e
 }
 inline std::optional<std::pair<jaras::AudioClip,jaras::AudioClip>> sharedBoundary(const jaras::Song &song,const jaras::Track &track,
     const jaras::AudioClip &left,const jaras::AudioClip &right,double position,std::optional<double> leftSource={},std::optional<double> rightSource={}) {
-    if(!jaras::isTeleprompterRole(track.role)||!left.text||!right.text||projection(left)||projection(right))return {};
     if(generatedClick(track,left))if(const auto *region=generatedClickRegion(song,left))position=std::min(position,region->endTime);
     if(generatedClick(track,right))if(const auto *region=generatedClickRegion(song,right))position=std::max(position,region->startTime);
     auto result=jaras::sharedItemBoundary(left,right,position,leftSource,rightSource);
@@ -199,9 +198,15 @@ inline std::optional<std::pair<jaras::AudioClip,jaras::AudioClip>> sharedBoundar
                 if(region==song.parts.end())return {};
                 item.timecodeStartOffset=item.startTime-region->startTime;item.timecodeEndOffset=item.startTime+item.duration-region->endTime;
             }
+        } else if (original.text && !original.audioFile && !track.audioFile && !original.midi) {
+            item.sourceOffset = original.sourceOffset;
+            item.loopStart = original.loopStart;
+            item.loopLength = original.loopLength;
         }
     }
-    if(std::abs(result->first.startTime+result->first.duration-result->second.startTime)>=1e-7)return {};
+    if (std::abs(result->first.startTime + result->first.duration - result->second.startTime) >= 1e-7 ||
+        std::abs(result->first.startTime - left.startTime) >= 1e-7 ||
+        std::abs(result->second.startTime + result->second.duration - right.startTime - right.duration) >= 1e-7) return {};
     return result;
 }
 inline void move(jaras::Project &project, const ID &id, double start, const ID &targetID = {}) {

@@ -10,7 +10,7 @@ enum WorkspaceMixerLayoutProbe { static var count = 0 }
 enum WorkspaceGeometryIdentityProbe { static var tokens: [UUID] = [] }
 enum WorkspaceGeometryFinalLayoutProbe { static var commit: (() -> Void)? }
 
-private let editRequest = TrackDetailsEditRequest(project: UUID(), tracks: [UUID(), UUID()], name: "Track", color: 0x123456, nameEditable: false)
+private let editRequest = TrackDetailsEditRequest(project: UUID(), tracks: [UUID(), UUID()], name: "Track", color: 0x123456)
 @MainActor private final class WorkspaceTestState: ObservableObject {
     @Published var width: CGFloat = 320
     @Published var revision = 0
@@ -121,7 +121,7 @@ private struct WorkspaceFixture: View {
         .environment(\.openClipFXChain, { _ in state.actions.append("clip\(revision)") })
         .environment(\.editTextItem, { _ in state.actions.append("text\(revision)") })
         .environment(\.editTrackDetails, { request in
-            precondition(request.project == editRequest.project && request.tracks == editRequest.tracks && !request.nameEditable)
+            precondition(request.project == editRequest.project && request.tracks == editRequest.tracks && request.color == editRequest.color)
             state.actions.append("details\(revision)")
         })
     }
@@ -257,7 +257,9 @@ MainActor.assumeIsolated {
     precondition(grids[1].contentView.bounds.minX == beforeX && !grids[1].permitsPlaybackFollow)
     grids[0].contentView.scroll(to: .zero); grids[1].contentView.scroll(to: .zero)
     precondition(keyboardScroll.scrollTimelineByArrow(126) && keyboardScroll.scrollTimelineByArrow(123))
-    precondition(grids[0].contentView.bounds.minY == 0 && grids[1].contentView.bounds.minX == 0)
+    precondition(grids[0].contentView.bounds.minY == 0 &&
+                 grids[1].contentView.bounds.minX == grids[1].contentView.documentRect.minX,
+                 "Arrow navigation stops at the document edge, including the ruler's leading inset")
     precondition(!keyboardScroll.scrollTimelineByArrow(0))
     keyboardScroll.detach(owner: leftHost)
     print("DESKTOP_KEYBOARD_SCROLL_PAIRED_VERTICAL_GRID_HORIZONTAL_BOUNDS_AND_PLAYBACK_FOLLOW_OK")

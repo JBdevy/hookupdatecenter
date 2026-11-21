@@ -58,7 +58,7 @@ private enum TPSettingField: Identifiable {
         .color("queueNameColor", "Queued song color", \.queueNameColor),
         .color("progressColor", "Progress color", \.progressColor),
         .color("chordColor", "Chords color", \.chordColor),
-        .range("textScale", "Lyrics scale", \.textScale, 35...100),
+        .range("textScale", "Lyrics scale", \.textScale, 35...150),
         .range("clockScale", "Timer scale", \.clockScale, 35...150),
         .range("songNameScale", "Song name scale", \.songNameScale, 35...200),
         .range("queueNameScale", "Queued song scale", \.queueNameScale, 35...200),
@@ -106,6 +106,7 @@ private enum TPSettingField: Identifiable {
 struct TeleprompterConfig: View {
     var showingNotices = false
     var embedded = false
+    var showsClose = true
     @ObservedObject var preferences: TeleprompterPreferences
     let close: () -> Void
     var body: some View {
@@ -113,8 +114,10 @@ struct TeleprompterConfig: View {
             if !embedded { HStack {
                 Text(LocalizedStringKey(showingNotices ? "Messages" : "Teleprompter settings")).font(.jarasHeadline)
                 Spacer()
-                Button(action: close) { Image(systemName: "xmark").frame(width: 36,height: 36).contentShape(Rectangle()) }
-                    .buttonStyle(.plain).jarasHelp("Close")
+                if showsClose {
+                    Button(action: close) { Image(systemName: "xmark").frame(width: 36,height: 36).contentShape(Rectangle()) }
+                        .buttonStyle(.plain).jarasHelp("Close")
+                }
             }
             }
             if !showingNotices {
@@ -143,10 +146,12 @@ struct TeleprompterConfig: View {
             if showingNotices {
                 ScrollView { TPNoticeSettingsView().frame(maxWidth: .infinity, alignment: .leading) }
             }
-            if !embedded { HStack {
-                Button("Timer settings") { TeleprompterTimerController.shared.showConfiguration() }
-                Spacer(); Button("Close",action: close).keyboardShortcut(.cancelAction)
-            } }
+            if !embedded && showsClose {
+                HStack {
+                    Spacer()
+                    Button("Close", action: close).keyboardShortcut(.cancelAction)
+                }
+            }
         }.padding(16).frame(minWidth: 500,idealWidth: 760,maxWidth: .infinity,minHeight: 520,idealHeight: 700,maxHeight: .infinity)
             .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
     }

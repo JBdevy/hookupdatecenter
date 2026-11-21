@@ -11,7 +11,7 @@ extension View { func interfaceScaled() -> some View { self } }
 // Window level coordination is covered separately; this fixture only owns the
 // detached Setlist lifecycle and does not mount a main workspace window.
 @MainActor enum ProjectionWindow {
-    static func followWorkspaceWindow(_ window: NSWindow) {}
+    static func followWorkspaceWindow(_ window: NSWindow, independent: Bool = false) {}
     static func presentWorkspaceWindow(_ window: NSWindow) { window.makeKeyAndOrderFront(nil) }
 }
 

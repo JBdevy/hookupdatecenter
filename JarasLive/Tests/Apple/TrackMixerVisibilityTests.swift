@@ -33,7 +33,7 @@ MainActor.assumeIsolated {
     document.addSubview(first); document.addSubview(distantAncestor); distantAncestor.addSubview(distant)
     document.layoutSubtreeIfNeeded()
     first.place(); distant.place()
-    let hosts: [NSView] = [distant.meter, distant.activity, distant.controls]
+    let hosts: [NSView] = [distant.meter, distant.controls]
     let identities = hosts.map(ObjectIdentifier.init)
     let accessibility = app.isFullKeyboardAccessEnabled || NSWorkspace.shared.isVoiceOverEnabled || NSWorkspace.shared.isSwitchControlEnabled
     precondition(!first.isHidden, "visible rows remain available")
@@ -74,7 +74,7 @@ MainActor.assumeIsolated {
     scroll.setFrameSize(CGSize(width: 320, height: 1900))
     scroll.tile()
     precondition(!distant.isHidden, "viewport growth reveals existing row controls")
-    precondition(distant.subviews.prefix(3).map(ObjectIdentifier.init) == identities)
+    precondition(distant.subviews.prefix(hosts.count).map(ObjectIdentifier.init) == identities)
     distant.removeFromSuperview()
     precondition(!distant.isHidden, "a detached control leaves no stale visibility state")
     distantAncestor.addSubview(distant)

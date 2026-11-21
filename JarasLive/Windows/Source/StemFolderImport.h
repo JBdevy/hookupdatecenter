@@ -149,7 +149,8 @@ inline bool prepareOverview(AudioFormatReader &reader, jaras::AudioClip &clip, d
     return true;
 }
 inline void restoreMultitrack(const Folder &folder, jaras::Song &arrangement, jaras::Part &region,
-                              const File &projectDirectory, const std::vector<Source> &supplemental, const std::map<ID, ID> *drawerMarkerIDs, Array<File> &owned,
+                              const File &projectDirectory, const std::vector<Source> &supplemental, const std::map<ID, ID> *drawerMarkerIDs,
+                              const std::map<ID, std::set<ID>> &renderedTracks, Array<File> &owned,
                               const std::function<void(String,double)> &progress) {
     const auto &data = *folder.regionData;
     const auto &snapshot = data.arrangement();
@@ -181,8 +182,19 @@ inline void restoreMultitrack(const Folder &folder, jaras::Song &arrangement, ja
     }
     region = original;
     region.id = regionID; region.startTime += origin; region.endTime += origin;
-    if (data.tunerUnbaked) { region.pitchTrackIDs.reset(); region.pitchGroupIDs.reset(); }
-    else { region.pitchTrackIDs = std::vector<ID>{}; region.pitchGroupIDs = std::vector<ID>{}; }
+    const bool explicitPitch = original.pitchTrackIDs || original.pitchGroupIDs;
+    if (!data.tunerUnbaked || explicitPitch) {
+        region.pitchTrackIDs.emplace();
+        region.pitchGroupIDs = std::vector<ID>{};
+    } else {
+        region.pitchTrackIDs.reset(); region.pitchGroupIDs.reset();
+    }
+    std::set<ID> restoredPitchTracks;
+    if (data.tunerUnbaked && explicitPitch) for (const auto &track : snapshot.tracks) {
+        if (const auto found = renderedTracks.find(track.id); found != renderedTracks.end() &&
+            regionPitch::selected(snapshot, track, original))
+            restoredPitchTracks.insert(found->second.begin(), found->second.end());
+    }
     std::map<String, String> copiedMedia;
     std::map<ID, std::vector<jaras::AudioClip>> rawClips;
     std::set<ID> rawTracks;
@@ -224,10 +236,10 @@ inline void restoreMultitrack(const Folder &folder, jaras::Song &arrangement, ja
     for (auto track : snapshot.tracks) {
         const auto sourceID = track.id;
         if (!rawTracks.count(sourceID)) continue;
-        const bool pitchTarget = !data.tunerUnbaked && rawClips.count(sourceID) && regionPitch::selected(snapshot, track, original);
+        const bool pitchTarget = region.pitchTrackIDs && rawClips.count(sourceID) &&
+            regionPitch::selected(snapshot, track, original);
         track.id = targets.at(sourceID);
-        if (pitchTarget)
-            region.pitchTrackIDs->push_back(track.id);
+        if (pitchTarget) restoredPitchTracks.insert(track.id);
         track.clips = std::move(rawClips[sourceID]);
         for (auto &marker : track.programChanges) {
             marker.id = uuid();
@@ -260,6 +272,9 @@ inline void restoreMultitrack(const Folder &folder, jaras::Song &arrangement, ja
         }
         arrangement.tracks.insert(at, std::move(track));
     }
+    if (region.pitchTrackIDs)
+        for (const auto &track : arrangement.tracks)
+            if (restoredPitchTracks.count(track.id)) region.pitchTrackIDs->push_back(track.id);
     for (const auto &source : supplemental)
         if (source.lyrics) jlLyrics::insert(arrangement, *source.lyrics, region.startTime, regionID);
     arrangement.duration = std::max(arrangement.duration, origin + snapshot.duration);
@@ -387,6 +402,7 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
     };
     std::map<ID, DrawerChild> drawerChildren;
     std::map<ID, std::map<ID, ID>> drawerMarkerIDs;
+    std::map<ID, std::map<ID, std::set<ID>>> renderedTracks;
     int count = 0, total = 0;
     for (const auto &[path, clips] : sources) total += (int)clips.size();
     auto media=destination.getParentDirectory().getChildFile("Stems");auto status=media.createDirectory();if(status.failed())throw std::runtime_error(utf8(status.getErrorMessage()));
@@ -469,7 +485,10 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
                         const auto key = stem["trackKey"].toString();
                         if (!keys.count(key)) throw std::runtime_error("Missing imported track.");
                         arrangement.duration = std::max(arrangement.duration, clip.startTime + clip.duration);
-                        arrangement.tracks[keys.at(key)].clips.push_back(std::move(clip));
+                        auto &destinationTrack = arrangement.tracks[keys.at(key)];
+                        if (rendered != renderedFiles.end())
+                            renderedTracks[part.id][rendered->second->track].insert(destinationTrack.id);
+                        destinationTrack.clips.push_back(std::move(clip));
                     }
                     if (progress) progress(displayName, double(++count) / total);
                 }
@@ -508,7 +527,7 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
                 const auto child = drawerChildren.find(region->id);
                 const auto *ids = child == drawerChildren.end() ? nullptr : &drawerMarkerIDs.at(child->second.parent);
                 restoreMultitrack(*exported->second, arrangement, *region, destination.getParentDirectory(),
-                    supplemental[songs[i]["folderPath"].toString()], ids, owned, progress);
+                    supplemental[songs[i]["folderPath"].toString()], ids, renderedTracks[region->id], owned, progress);
                 if (child != drawerChildren.end()) {
                     const auto &placement = child->second;
                     const auto parent = std::find_if(arrangement.parts.begin(), arrangement.parts.end(),

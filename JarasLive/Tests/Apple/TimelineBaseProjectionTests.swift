@@ -1,7 +1,5 @@
 // Uses the actual controller projection blocks, real tick model and native
 // renderers. The omitted controller responsibilities continue on every scroll.
-private let markerLaneHeight: CGFloat = 16
-private let tempoLaneHeight: CGFloat = 16
 private struct ProjectionFixtureRows: Equatable {
     var offsets: [CGFloat] = [0, 44, 88]
     var heights: [CGFloat] = [44, 44, 44]
@@ -12,11 +10,11 @@ private struct ProjectionFixtureContent {
     var extent: Double = 1_000_000
     var contentHeight: CGFloat = 700
     var layoutWidth: CGFloat = 2_000_000
-    var rulerHeight: CGFloat = 71
+    var headerBands = TimelineHeaderBands(regionRows: 1)
+    var rulerHeight: CGFloat { headerBands.height }
     var viewportSize = CGSize(width: 320, height: 100)
     var rows = ProjectionFixtureRows()
     var editPosition: Double = 0
-    var regionLanes = 1
     var sections = [TimelineTempoSection(start: 0, end: 1_000_000, bpm: 120, beats: 4, unit: 4, timebase: .free)]
     var divisions = 4
     var bands = [TimelineNativeGridBand(rect: CGRect(x: 0, y: 120, width: 100, height: 40), color: CGColor(gray: 0.3, alpha: 0.2))]
@@ -26,7 +24,6 @@ private struct ProjectionFixtureStyle {
     var displayScale: CGFloat = 2
     var background = CGColor(gray: 0.05, alpha: 1)
     var primary = CGColor(gray: 0.3, alpha: 1)
-    var secondary = CGColor(gray: 0.2, alpha: 0.85)
     var row = CGColor(gray: 0.4, alpha: 0.8)
     var panel = CGColor(gray: 0.1, alpha: 1)
     var headerLine = CGColor(gray: 0.5, alpha: 1)
@@ -35,6 +32,9 @@ private final class ProjectionFixtureHeader {
     var calls = 0
     func project(scale: CGFloat, viewport: CGRect, layoutWidth: CGFloat, displayScale: CGFloat) { calls += 1 }
 }
+precondition(timelineTrackSeparators(in: 98...220, offsets: [10, 40, 40, 90],
+    heights: [30, 0, 50, 60], top: 70) == [110, 160, 220],
+    "Only visible track edges get separators, including the final edge")
 private final class ProjectionFixtureController {
     let backdrop = TimelineNativeGridView()
     let ruler = TimelineNativeRulerView()
@@ -102,6 +102,18 @@ for scale: CGFloat in [1, 2] {
                      "ruler ticks, labels and rows match an uncached projection: \(label)")
     }
     matchesFresh("continuous scroll")
+    let rulerLayer = controller.ruler.layer!
+    let ticksLayer = rulerLayer.sublayers!.first { $0.name == "timelineTicks" } as! CAShapeLayer
+    let gridLayer = rulerLayer.sublayers!.first { $0.name == "timelinePrimaryLines" } as! CAShapeLayer
+    let headerBands = controller.value.headerBands
+    precondition(!gridLayer.isHidden && gridLayer.path!.boundingBoxOfPath.minY == headerBands.numberTop &&
+                 gridLayer.path!.boundingBoxOfPath.maxY == controller.value.rulerHeight,
+                 "Primary grid lines begin at the numbers below the optional lanes")
+    precondition(ticksLayer.path!.boundingBoxOfPath.minY >= headerBands.numberTop + rulerNumberLaneHeight)
+    precondition(headerBands.markerTop(tempo: false) == markerLaneHeight)
+    precondition(headerBands.tempoTop == 2 * markerLaneHeight)
+    precondition(headerBands.numberTop == 3 * markerLaneHeight)
+    precondition(headerBands.separators == [0.5, 15.5, 31.5, 47.5, 63.5, 79.5])
     let gridBeforeVertical = controller.backdrop.fixtureUpdates
     for y: CGFloat in [8, 20, 5, 0] {
         viewport.origin.y = y; controller.project(viewport)
@@ -139,7 +151,13 @@ for scale: CGFloat in [1, 2] {
     controller.style.panel = CGColor(gray: 0.2, alpha: 1)
     controller.contentChanged(); controller.project(viewport)
     matchesFresh("grid visibility and palette")
-    controller.value.regionLanes = 0; controller.value.rulerHeight = 55
+    controller.value.headerBands.showRegions = false
+    controller.contentChanged(); controller.project(viewport)
+    matchesFresh("only tempo and ruler")
+    controller.value.headerBands.showTempo = false
+    controller.contentChanged(); controller.project(viewport)
+    matchesFresh("only ruler")
+    controller.value.headerBands = TimelineHeaderBands(regionRows: 0)
     controller.value.rows.offsets = []; controller.value.rows.totalHeight = 0
     controller.value.contentHeight = 100; controller.value.bands = []
     viewport.origin.y = 0

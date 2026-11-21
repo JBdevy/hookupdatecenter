@@ -21,13 +21,31 @@ class Appearance final : public ChangeBroadcaster {
     // always 100%; the native peer still follows the monitor's system DPI.
     float interfaceScale() const { return 1.f; }
     bool continuousScroll() const { return (bool)get(values, "jaras.timeline.continuousScroll", false); }
-    int fontStyle() const { return jlimit(0, 2, (int)get(values, "jaras.setlist.fontStyle", 0)); }
+    int fontStyle() const {
+        const int style = (int)get(values, "jaras.setlist.fontStyle", 0);
+        return isPositiveAndBelow(style, 7) ? style : 0;
+    }
     bool regionIDs() const { return str(values, "jaras.setlist.idMode", "playlist") == "region"; }
-    Font setlistFont() const { return theme::font(13, fontStyle() != 0, fontStyle() == 2); }
+    Font setlistFont() const { return theme::setlistFont(13, fontStyle()); }
     Colour colour(const String &key, uint32 defaultRGB) const {
-        auto value = get(previews, Identifier(key), get(values, Identifier(key)));
-        return Colour(0xff000000u | ((value.isInt() || value.isInt64())
-                                      ? ((uint32)(int64)value & 0xffffffu) : defaultRGB));
+        auto stored = get(previews, Identifier(key), get(values, Identifier(key)));
+        if (theme::isTimelineThemeColour(key)) {
+            if (stored.isVoid() && key == theme::timelineBackgroundKey) {
+                const auto legacy = value("jaras.timeline.background", -1);
+                if ((int)legacy != 0x0f0f0f && (int)legacy != 0x222222) stored = legacy;
+            }
+            if (stored.isVoid() && key == theme::timelineVerticalGridKey) {
+                const auto legacy = value("jaras.timeline.primaryGrid", -1);
+                if ((int)legacy != 0xbdbdbd) stored = legacy;
+            }
+            if (value(theme::interfaceThemeKey, theme::defaultInterfaceTheme).toString() == "dark") {
+                if (key == theme::timelineBackgroundKey) defaultRGB = theme::darkBackgroundRGB;
+                else if (key == theme::timelineVerticalGridKey) defaultRGB = 0x5c5c5c;
+            }
+            if ((int64)stored < 0) stored = var();
+        }
+        return Colour(0xff000000u | ((stored.isInt() || stored.isInt64())
+                                      ? ((uint32)(int64)stored & 0xffffffu) : defaultRGB));
     }
     Colour setlistColour(bool playlist, bool child) const {
         return child ? colour("jaras.setlist.unifiedTextColor", 0xffeb3b)
@@ -35,6 +53,7 @@ class Appearance final : public ChangeBroadcaster {
                                 : colour("jaras.setlist.allRegionsTextColor", 0xffffff);
     }
     bool invertWaveformColors() const { return flag(values, "jaras.timeline.invertWaveformColors", false); }
+    bool mixerStripeOnly(const String &key) const { return value(key, "default").toString() == "stripeOnly"; }
     bool gridlines() const { return flag(values, "jaras.timeline.gridlines", true); }
     var value(const String &key, var fallback = {}) const {
         return get(key.startsWith("jaras.metronome.") ? metronomeValues : values, Identifier(key), fallback);
@@ -60,7 +79,7 @@ class Appearance final : public ChangeBroadcaster {
     void preview(const String &key,var value) { put(previews,Identifier(key),value);sendChangeMessage(); }
     void clearPreview(const String &key) { if(auto *p=previews.getDynamicObject())p->removeProperty(Identifier(key));sendChangeMessage(); }
     void reload() { auto loaded = JSON::parse(location); if (loaded.isObject()) values = std::move(loaded); }
-    Result set(const String &key, var value) {
+    Result set(const String &key, var value, bool notify = true) {
         reload();
         auto next = values.clone();
         put(next, Identifier(key), std::move(value));
@@ -69,7 +88,7 @@ class Appearance final : public ChangeBroadcaster {
         if (!location.replaceWithText(JSON::toString(next)))
             return Result::fail("Could not save appearance settings: " + location.getFullPathName());
         values = std::move(next);
-        sendChangeMessage();
+        if (notify) sendChangeMessage();
         return Result::ok();
     }
   private:

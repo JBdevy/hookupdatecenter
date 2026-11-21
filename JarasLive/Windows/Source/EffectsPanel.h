@@ -4,81 +4,14 @@
 #include "ExternalEffectEditor.h"
 #include "Localization.h"
 #include "EffectInsertPanel.h"
-#include "FXPresets.h"
+#include "FXDefaults.h"
 #include "FXChain.h"
-#include "FXSchema.h"
 #include "CatStemEditor.h"
 #include "CatDynamicsEditor.h"
 #include "InstrumentParameterEditor.h"
+#include "DrummerPadEditor.h"
 namespace catlive {
 namespace fxui {
-inline String enabledKey(const String &kind) {
-    return kind == "CatLive Trigger" ? "triggerEnabled"
-           : kind == "Cat Gate" ? "gateEnabled"
-           : kind == "CatStemSeparation 5" ? "stemSeparatorEnabled"
-           : kind == "EQ"            ? "eqEnabled"
-           : kind == "Compressor"  ? "compressorEnabled"
-           : kind == "Delay"       ? "delayEnabled"
-           : kind == "Reverb"      ? "reverbEnabled"
-           : kind == "Limiter"     ? "limiterEnabled"
-           : kind == "Pitch"       ? "pitchEnabled"
-           : kind == "Instruments" ? "instrumentBypassed"
-           : kind == "External"    ? "bypassed"
-                                   : "";
-}
-inline bool isEnabled(const String &kind, const var &settings) {
-    const auto key = enabledKey(kind);
-    return key.isNotEmpty() && ((kind == "Instruments" || kind == "External") ? !flag(settings, Identifier(key))
-                                                      : flag(settings, Identifier(key)));
-}
-inline void enable(const String &kind, var &settings, bool value) {
-    const auto key = enabledKey(kind);
-    if (key.isNotEmpty())
-        put(settings, Identifier(key), (kind == "Instruments" || kind == "External") ? !value : value);
-}
-inline void defaults(var &s) {
-    s = s.isObject() ? fxschema::complete(s, true) : fxschema::defaults(true);
-    if (!get(s, "trigger").isObject()) {
-        auto trigger = object();
-        for (const auto &[key, value] : std::map<String, double>{{"threshold",-30},{"retrigger",.08},{"gain",0},{"mix",100},{"attack",0},{"decay",.1},{"sustain",1},{"release",.02}}) put(trigger, Identifier(key), value);
-        put(s, "trigger", trigger);
-    }
-    if (!get(s, "gate").isObject()) {
-        auto gate = object();
-        for (const auto &[key, value] : std::map<String, double>{{"threshold",-40},{"attack",.001},{"decay",.02},{"hold",.05},{"release",.1},{"highPass",20},{"lowPass",20000}}) put(gate, Identifier(key), value);
-        put(gate, "filterOutput", false); put(s, "gate", gate);
-    }
-    if (get(s, "pitchSemitones").isVoid()) put(s, "pitchSemitones", 0.);
-    if (!get(s, "limiter").isObject()) {
-        auto l = object();
-        put(l, "ceiling", -.1);
-        put(l, "release", .1);
-        put(l, "inputGain", 0);
-        put(s, "limiter", l);
-    }
-}
-inline var instrumentParameters(const String &instrument) {
-    auto parameters = object(), controllers = object();
-    put(parameters, "gain", 0);
-    put(parameters, "attack", 0);
-    put(parameters, "hold", 10);
-    put(parameters, "decay", 10);
-    put(parameters, "sustain", 1);
-    put(parameters, "release", instrument.startsWith("drum-") ? 20. : .3);
-    String category;
-    for (auto item : instrumentAssets::catalog())
-        if (str(item, "id") == instrument)
-            category = str(item, "category");
-    put(controllers, "modulation", category == "synthPad" || category == "strings");
-    put(controllers, "pitchBend", category == "bass" || category == "lead");
-    put(controllers, "monophonic", category == "lead");
-    put(parameters, "controllers", controllers);
-    return parameters;
-}
-inline void reset(const String &kind, var &settings) {
-    for (const auto &key : fxpresets::fields(kind)) fxpresets::erase(settings, Identifier(key));
-    defaults(settings);
-}
 class EQGraph final : public Component {
   public:
     var settings;
@@ -101,7 +34,7 @@ class EQGraph final : public Component {
         const std::array<String,3> suffixes{" Hz"," dB",""};
         for(int i=0;i<3;++i){
             auto &slider=bandSliders[(size_t)i];auto &label=bandLabels[(size_t)i];
-            label.setText(localization::translate(names[(size_t)i]),dontSendNotification);
+            label.setText(names[(size_t)i],dontSendNotification);
             label.setFont(theme::font(11));label.setColour(Label::textColourId,theme::secondary);addAndMakeVisible(label);
             slider.setComponentID("eq"+names[(size_t)i]);slider.setSliderStyle(Slider::LinearHorizontal);
             slider.setTextBoxStyle(Slider::TextBoxRight,false,80,22);slider.setTextValueSuffix(suffixes[(size_t)i]);
@@ -135,13 +68,14 @@ class EQGraph final : public Component {
         lastSerial.fill(0); lastAnalysis = 0; analyzer.reset(); spectrum = {};
     }
     void paint(Graphics &g) override {
-        g.setColour(theme::display);
-        g.fillRoundedRectangle(getLocalBounds().toFloat(), 5);
         auto area = plot();
+        g.setGradientFill(ColourGradient(Colour(0xff170f21), area.getTopLeft(),
+                                         Colour(0xff2e1f3b), area.getTopRight(), false));
+        g.fillRoundedRectangle(area, 5);
         const auto bands = list(get(settings, "bands"));
         g.saveState();
         g.reduceClipRegion(area.toNearestInt());
-        g.setColour(Colour(0xff303030));
+        g.setColour(Colour(0xff463751));
         for (auto f : {20., 50., 100., 200., 500., 1000., 2000., 5000., 10000., 20000.})
             g.drawVerticalLine((int)xAt(f), area.getY(), area.getBottom());
         for (int db = -24; db <= 24; db += 6)
@@ -189,12 +123,20 @@ class EQGraph final : public Component {
             else
                 response.lineTo((float)x, y);
         }
-        g.setColour(flag(settings, "eqEnabled", true) ? theme::green : theme::secondary);
+        const auto curveColour = flag(settings, "eqEnabled", true) ? fxui::dialAccent("EQ") : theme::secondary;
+        auto fill = response;
+        fill.lineTo(area.getBottomRight());
+        fill.lineTo(area.getBottomLeft());
+        fill.closeSubPath();
+        g.setGradientFill(ColourGradient(curveColour.withAlpha(.2f), area.getTopLeft(),
+                                         curveColour.withAlpha(.02f), area.getBottomLeft(), false));
+        g.fillPath(fill);
+        g.setColour(curveColour);
         g.strokePath(response, PathStrokeType(1.8f));
         for (int i = 0; i < bands.size(); ++i) {
             const auto band = bands[i];
             const auto p = point(band);
-            g.setColour(flag(band, "enabled", true) ? theme::green : theme::secondary);
+            g.setColour(flag(band, "enabled", true) ? fxui::dialAccent("EQ") : theme::secondary);
             g.fillEllipse(p.x - 5, p.y - 5, 10, 10);
             g.setColour(i == selected ? Colours::white : theme::display);
             g.drawEllipse(p.x - 5.5f, p.y - 5.5f, 11, 11, 1);
@@ -314,7 +256,7 @@ class EQGraph final : public Component {
         for(size_t i=0;i<3;++i){bandSliders[i].setVisible(controlsVisible);bandLabels[i].setVisible(controlsVisible);}
         if(controlsVisible){
             bandChoice.clear(dontSendNotification);
-            for(int i=0;i<bands.size();++i)bandChoice.addItem(localization::translate("Band")+" "+String(i+1),i+1);
+            for(int i=0;i<bands.size();++i)bandChoice.addItem("Band "+String(i+1),i+1);
             bandChoice.setSelectedId(selected+1,dontSendNotification);
             const auto band=bands[selected]; const auto currentType=str(band,"type","bell");
             int first=0,last=0;
@@ -322,9 +264,9 @@ class EQGraph final : public Component {
                 if(num(bands[i],"frequency")<num(bands[first],"frequency"))first=i;
                 if(num(bands[i],"frequency")>num(bands[last],"frequency"))last=i;
             }
-            types={"bell"};StringArray titles{localization::translate("Bell")};
-            if(selected==first){types.add("lowCut");types.add("lowShelf");titles.add(localization::translate("Low Cut"));titles.add(localization::translate("Low Shelf"));}
-            if(selected==last){types.add("highCut");types.add("highShelf");titles.add(localization::translate("High Cut"));titles.add(localization::translate("High Shelf"));}
+            types={"bell"};StringArray titles{"Bell"};
+            if(selected==first){types.add("lowCut");types.add("lowShelf");titles.add("Low Cut");titles.add("Low Shelf");}
+            if(selected==last){types.add("highCut");types.add("highShelf");titles.add("High Cut");titles.add("High Shelf");}
             if(!types.contains(currentType)){types.add(currentType);titles.add(currentType);}
             typeChoice.clear(dontSendNotification);typeChoice.addItemList(titles,1);
             typeChoice.setSelectedId(types.indexOf(currentType)+1,dontSendNotification);
@@ -462,15 +404,19 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
     static constexpr int minimumContentWidth = 840, minimumContentHeight = 600;
     std::function<bool(const KeyPress &)> globalKey;
     std::function<void(bool)> globalKeyState;
-    EffectsPanel(Session &s, ID target, std::function<void(String)> report, bool itemTarget = false, std::vector<ID> batchTargets = {})
-        : session(s), track(std::move(target)), item(itemTarget), insertionTargets(std::move(batchTargets)), error(std::move(report)), chain("FX", this) {
+    std::function<void()> openLibrary;
+    EffectsPanel(Session &s, ID target, std::function<void(String)> report, bool itemTarget = false,
+                 String plugin = {})
+        : session(s), track(std::move(target)), item(itemTarget),
+          singleEffect(std::move(plugin)), error(std::move(report)), chain("FX", this) {
         setComponentID("effectsPanel");
         load();
         fxui::defaults(settings);
         chain.setRowHeight(30);
         chain.setColour(ListBox::backgroundColourId, Colour(0xff181818));
         chain.setOutlineThickness(0);
-        addAndMakeVisible(chain);
+        addChildComponent(chain);
+        chain.setVisible(singleEffect.isEmpty());
         for (auto *b : {&add, &remove, &removeEffect}) {
             addAndMakeVisible(b);
             b->getProperties().set("fontSize", 12);
@@ -482,11 +428,40 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         removeEffect.setButtonText(localization::translate("Remover efeito"));
         add.setComponentID("addEffect");
         remove.setComponentID("removeEffect");
-        add.onClick = [this] { addMenu(); };
+        add.onClick = [this] { if (openLibrary) openLibrary(); };
         remove.onClick = [this] { erase(); };
         removeEffect.onClick = [this] { erase(); };
-        enabled.setButtonText(localization::translate("Ativado"));
+        add.setVisible(singleEffect.isEmpty());
+        remove.setVisible(singleEffect.isEmpty());
+        enabled.setButtonText("Enabled");
         addAndMakeVisible(enabled);
+        channelLabel.setJustificationType(Justification::centredRight);
+        channelLabel.setColour(Label::textColourId, theme::secondary);
+        channelLabel.setFont(theme::font(12));
+        addChildComponent(channelLabel);
+        for (auto &button : channelButtons) addChildComponent(button);
+        for (int division : {2, 4, 8, 12, 16, 24, 32}) gateDivision.addItem("1/" + String(division), division);
+        gateDivision.setTitle("Division");
+        gateDivision.onChange = [this] {
+            auto group = get(current(), "divisionGate");
+            put(group, "division", gateDivision.getSelectedId());
+            session.audio.previewNativeParameters(track, key(), kind(), current(), settings);
+            commit();
+        };
+        addChildComponent(gateDivision);
+        arpChord.setTitle("Preview chord");
+        arpChord.addItem("C", 1);
+        arpChord.addItem("Cm", 2);
+        arpChord.addItem("Cmaj7", 3);
+        arpChord.setSelectedId(1, dontSendNotification);
+        arpChord.onChange = [this] { repaint(); };
+        addChildComponent(arpChord);
+        for (auto &button : gateSteps) {
+            button.setColour(TextButton::buttonColourId, theme::panel);
+            button.setColour(TextButton::buttonOnColourId, theme::green);
+            button.setColour(TextButton::textColourOnId, Colours::black);
+            addChildComponent(button);
+        }
         enabled.onClick = [this] {
             auto s = current();
             fxui::enable(kind(), s, enabled.getToggleState());
@@ -515,7 +490,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         graph.commit = [this] { commit(); };
         chain.updateContent();
         if (getNumRows())
-            chain.selectRow(0);
+            chain.selectRow(singleEffect.isEmpty() ? 0 : list(get(settings, "inserted")).indexOf(var(singleEffect)));
         else
             show();
         addAndMakeVisible(presets); addAndMakeVisible(savePreset); addAndMakeVisible(defaultPreset);
@@ -531,24 +506,29 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
     void selectEffect(const String &preferred) {
         const int index = list(get(settings, "inserted")).indexOf(var(preferred));
         if (index < 0) return;
-        chain.selectRow(index);
-        if (kind() == "External") openExternalEditor();
+        if (chain.getSelectedRow() == index) selectedRowsChanged(index);
+        else chain.selectRow(index);
     }
     void paint(Graphics &g) override {
-        g.fillAll(instrumentEditor ? theme::panel : Colour(0xff242424));
-        g.setColour(Colour(0xff181818));
-        g.fillRect(0, 0, 190, getHeight());
-        g.setColour(Colour(0xff202020));
-        g.fillRect(0, getHeight() - 40, 190, 40);
+        const auto body = getLocalBounds().toFloat();
+        g.setGradientFill(ColourGradient(Colour(0xff24262b), body.getTopLeft(),
+                                         Colour(0xff171a1f), body.getBottomRight(), false));
+        g.fillAll();
+        if (singleEffect.isEmpty()) {
+            g.setColour(Colour(0xff181818));
+            g.fillRect(0, 0, sidebarWidth(), getHeight());
+            g.setColour(Colour(0xff202020));
+            g.fillRect(0, getHeight() - 40, sidebarWidth(), 40);
+        }
         auto r = content();
         if(kind()=="CatStemSeparation 5"||kind()=="External"||dynamicsEditor)return;
         g.setColour(Colours::white);
-        g.setFont(theme::semiboldFont(14));
+        g.setFont(theme::semiboldFont(22));
         if (kind().isEmpty()) {
             g.drawText("Adicionar efeito", r, Justification::centred);
             return;
         }
-        g.drawText((kind()=="External"?str(current(),"name"):"CatLive " + kind()) + String::fromUTF8(" · ") + trackName, r.getX(), headerY, r.getWidth() - 36,
+        g.drawText(kind(), r.getX(), headerY, r.getWidth() - 36,
                    24, Justification::centredLeft);
         g.setFont(theme::semiboldFont(9));
         g.setColour(theme::secondary);
@@ -562,9 +542,12 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
                            "Clique com o botão direito na linha central para adicionar uma banda."),
                        r.getX(), getHeight() - 31, r.getWidth(), 20, Justification::centred);
         } else if (!instrumentEditor) {
-            g.setColour(theme::display);
-            g.fillRoundedRectangle(r.getX(), rackY, (float)r.getWidth(), (float)rackHeight, 10);
-            paintMeters(g);
+            fxui::paintRack(g, juce::Rectangle<int>(r.getX(), rackY, r.getWidth(), rackHeight).toFloat());
+            if (kind() == "Arpeggiator") {
+                paintArpeggio(g, {r.getX() + 16, rackY + 8, r.getWidth() - 32, rackHeight - 16});
+            } else if (!thresholdMeter) {
+                paintMeters(g);
+            }
         }
     }
     void resized() override {
@@ -582,29 +565,40 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         rackY = headerY + 118;
         removeEffect.setBounds(r.getRight() - 100, headerY + 42, 100, 22);
         enabled.setBounds(eq ? r.getX() : r.getCentreX() - 55, headerY + 76, 110, 24);
-        if(externalEditor)externalEditor->setBounds(190,40,std::max(1,getWidth()-190),std::max(1,getHeight()-40));
+        channelLabel.setBounds(r.getRight() - 151, headerY + 76, 68, 24);
+        for (int ch = 0; ch < 2; ++ch)
+            channelButtons[ch].setBounds(r.getRight() - 80 + ch * 40, headerY + 76, 38, 24);
+        arpChord.setBounds(r.getRight() - 124, rackY + 8, 108, 24);
+        gateDivision.setBounds(r.getX() + 16, rackY + 70, 96, 26);
+        const int stepWidth = std::max(15, (r.getWidth() - 8) / 16);
+        for (int step = 0; step < 16; ++step)
+            gateSteps[step].setBounds(r.getX() + 4 + step * stepWidth, headerY + 104, stepWidth - 3, 24);
+
+        if(externalEditor)externalEditor->setBounds(sidebarWidth(),40,std::max(1,getWidth()-sidebarWidth()),std::max(1,getHeight()-40));
         if(stemEditor)stemEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
         if(dynamicsEditor)dynamicsEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
+        if(drummerEditor)drummerEditor->setBounds(r.getX(),6,r.getWidth(),std::max(1,getHeight()-12));
         if(instrumentEditor)instrumentEditor->setBounds(r.getX(),headerY+88,r.getWidth(),std::max(1,getHeight()-headerY-104));
         graph.setBounds(r.getX(), headerY + 102, r.getWidth(),
                         std::max(40, getHeight() - headerY - 141));
         for (int i = 0; i < rooms.size(); ++i)
             rooms[i]->setBounds(r.getX() + r.getWidth() / 2 - 105 + i * 70, headerY + 43, 70, 24);
-        const int count = knobs.size(), columns = compressor ? 3 : std::max(1, count),
-                  left = r.getX() + 128, usable = r.getWidth() - 140;
+        if (thresholdMeter) thresholdMeter->setBounds(r.getX() + 10, rackY + (rackHeight-200)/2, 123, 200);
+        const int count = knobs.size(), columns = compressor ? 2 : std::max(1, count),
+                  left = r.getX() + (compressor ? 145 : 128), usable = r.getRight() - left - 12;
         for (int i = 0; i < count; ++i) {
-            int row = compressor ? i / 3 : 0, col = compressor ? i % 3 : i;
-            knobs[i]->setBounds(left + col * usable / columns, rackY + 16 + row * 146,
+            int row = compressor ? i / columns : 0, col = compressor ? i % columns : i;
+            knobs[i]->setBounds(left + col * usable / columns, rackY + (kind() == "Gate Divisor" ? 23 : 16) + row * 146,
                                 usable / columns, 130);
         }
     }
 
   private:
     Session &session;
-    std::vector<ID> insertionTargets;
     ID track;
     bool item = false;
-    String trackName = "Master";
+    String singleEffect;
+    String trackName = "Main";
     std::function<void(String)> error;
     var settings;
     uint64 loadedRevision = ~uint64(0);
@@ -612,6 +606,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
     TextButton add, remove, removeEffect, savePreset, defaultPreset;
     std::unique_ptr<CatDynamicsEditor> dynamicsEditor;
     std::unique_ptr<InstrumentParameterEditor> instrumentEditor;
+    std::unique_ptr<DrummerPadEditor> drummerEditor;
     std::unique_ptr<ExternalEffectEditor> externalEditor;
     String externalEditorKey;
     void openExternalEditor() {
@@ -630,7 +625,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         auto *window=findParentComponentOfClass<DocumentWindow>();
         if(!window)return;
         const int borderWidth=window->getWidth()-getWidth(),borderHeight=window->getHeight()-getHeight();
-        auto area=window->getBounds().withSize(std::max(360,width+190+borderWidth),std::max(240,height+40+borderHeight));
+        auto area=window->getBounds().withSize(std::max(360,width+sidebarWidth()+borderWidth),std::max(240,height+40+borderHeight));
         if(const auto *display=Desktop::getInstance().getDisplays().getDisplayForRect(window->getBounds())) {
             const auto visible=display->userArea;
             area.setSize(std::min(area.getWidth(),visible.getWidth()),std::min(area.getHeight(),visible.getHeight()));
@@ -646,14 +641,18 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
     int64 presetRevision = -1;
     int presetPoll = 0;
     fxui::EnableButton enabled;
+    Label channelLabel{"channelLabel", "Channel -"};
+    std::array<ToggleButton, 2> channelButtons;
+    std::array<TextButton, 16> gateSteps;
+    ComboBox gateDivision, arpChord;
     OwnedArray<TextButton> rooms;
     OwnedArray<fxui::Knob> knobs;
+    std::unique_ptr<fxui::DynamicsThresholdMeter> thresholdMeter;
     fxui::EQGraph graph;
     std::unique_ptr<CatStemEditor> stemEditor;
     int selected = -1, headerY = 24, rackY = 140, rackHeight = 180;
-    juce::Rectangle<int> content() const {
-        return {210, 0, std::max(200, getWidth() - 230), getHeight()};
-    }
+    int sidebarWidth() const { return singleEffect.isEmpty() ? 190 : 0; }
+    juce::Rectangle<int> content() const { return {sidebarWidth() + 20, 0, std::max(200, getWidth() - sidebarWidth() - 40), getHeight()}; }
     void load() {
         loadedRevision = session.revision;
         settings = var();
@@ -729,10 +728,22 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         return rows.size()==1 && rows[0]>=0 && rows[0]<keys.size() ? keys[rows[0]] : var();
     }
     bool isInterestedInDragSource(const SourceDetails &details) override {
-        return details.sourceComponent.get()==&chain && list(get(settings,"inserted")).contains(details.description);
+        return (item && str(details.description, "type") == "catlive-library-effect"
+                && str(details.description, "project") == text(session.project().id)) ||
+               (details.sourceComponent.get()==&chain && list(get(settings,"inserted")).contains(details.description));
     }
     void itemDropped(const SourceDetails &details) override {
         if(!isInterestedInDragSource(details)||session.busy)return;
+        if (str(details.description, "type") == "catlive-library-effect") {
+            try {
+                const auto key = session.insertLibraryEffect(track, str(details.description, "identity"),
+                                                             str(details.description, "preset"), {}, true);
+                if (key.isNotEmpty()) {
+                    load(); fxui::defaults(settings); chain.updateContent(); selectEffect(key);
+                }
+            } catch (const std::exception &failure) { error(String::fromUTF8(failure.what())); }
+            return;
+        }
         auto keys=list(get(settings,"inserted"));
         const auto effect=details.description;
         const int source=keys.indexOf(effect);
@@ -744,12 +755,21 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         keys.remove(source);if(destination>source)--destination;
         destination=jlimit(0,keys.size(),destination);
         if(destination==source)return;
+        const auto selectedEffect = key();
         keys.insert(destination,effect);put(settings,"inserted",keys);
-        if(commit()){
-            chain.updateContent();chain.selectRow(destination);selected=destination;show();
+        if(commit(false)){
+            const ScopedValueSetter<bool> reordering(reorderingChain, true);
+            chain.updateContent();
+            selected = list(get(settings, "inserted")).indexOf(var(selectedEffect));
+            if (selected >= 0) chain.selectRow(selected);
+            else chain.deselectAllRows();
+            refreshPresets();
+            chain.repaint();
         }
     }
+    bool reorderingChain = false;
     void selectedRowsChanged(int row) override {
+        if (reorderingChain) return;
         selected = row;
         show();
     }
@@ -774,11 +794,17 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
 
     void show() {
         stemEditor.reset();
+        thresholdMeter.reset();
         dynamicsEditor.reset();
         instrumentEditor.reset();
+        drummerEditor.reset();
         knobs.clear();
         refreshPresets();
         const auto k = kind();
+        channelLabel.setVisible(false);
+        for (auto &button : channelButtons) button.setVisible(false);
+        for (auto &button : gateSteps) button.setVisible(false);
+        gateDivision.setVisible(false);
         if(k=="External")openExternalEditor();else externalEditor.reset();
         const bool available = k.isNotEmpty() && fxui::enabledKey(k).isNotEmpty();
         enabled.setVisible(available&&k!="Instruments"&&k!="CatStemSeparation 5"&&k!="External"&&k!="CatLive Trigger"&&k!="Cat Gate");
@@ -789,6 +815,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             rooms[i]->setToggleState((int)num(current(), "reverbRoom", 1) == i,
                                      dontSendNotification);
         }
+        arpChord.setVisible(k == "Arpeggiator" && available);
         graph.setVisible(k == "EQ");
         if (k != "EQ") graph.clearAnalysis();
         enabled.checkbox = k == "EQ";
@@ -799,13 +826,67 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         }
         auto s = current();
         if(k!="External")fxui::defaults(s);
+        const auto channelProperty = fxpresets::channelsField(k);
+        channelLabel.setVisible(channelProperty.isNotEmpty());
+        const unsigned mask = fxpresets::channels(s, k);
+        for (unsigned ch = 0; ch < channelButtons.size(); ++ch) {
+            auto &button = channelButtons[ch];
+            const auto bit = 1u << ch;
+            button.setVisible(channelProperty.isNotEmpty());
+            button.setButtonText(String(ch + 1));
+            button.setToggleState((mask & bit) != 0, dontSendNotification);
+            button.onClick = [this, channelProperty, bit, ch] {
+                auto value = current();
+                const auto before = fxpresets::channels(value, kind());
+                const auto after = channelButtons[ch].getToggleState() ? (before | bit) : (before & ~bit);
+                if (after == 3) fxpresets::erase(value, Identifier(channelProperty));
+                else put(value, Identifier(channelProperty), int(after));
+                commit();
+            };
+        }
+        const auto *creative = jaras::audio::creativeEffect(utf8(k));
+        const bool rhythmic = creative && creative->kind == jaras::audio::CreativeEffect::divisionGate;
+        for (auto &step : gateSteps) step.setVisible(rhythmic);
+        gateDivision.setVisible(rhythmic);
+        if (creative) {
+            auto actual = current();
+            auto group = get(actual, Identifier(creative->field));
+            if (!group.isObject()) { group = object(); put(actual, Identifier(creative->field), group); }
+            for (const auto &parameter : creative->parameters) {
+                if (!parameter.key) continue;
+                const Identifier name(parameter.key);
+                if (get(group, name).isVoid()) put(group, name, parameter.initial);
+                const std::string_view key(parameter.key);
+                if (key == "steps" || key == "division") continue;
+                knob(parameter.name, parameter.key, parameter.minimum, parameter.maximum,
+                     parameter.increment, parameter.suffix, 1, creative->field);
+            }
+            if (rhythmic) {
+                gateDivision.setSelectedId(int(num(group, "division", 16)), dontSendNotification);
+                const int steps = int(num(group, "steps", 0x5b5b));
+                for (unsigned step = 0; step < gateSteps.size(); ++step) {
+                    auto &button = gateSteps[step];
+                    const int bit = 1 << step;
+                    button.setButtonText(String(step + 1));
+                    button.setClickingTogglesState(true);
+                    button.setToggleState((steps & bit) != 0, dontSendNotification);
+                    button.onClick = [this, bit] {
+                        auto value = get(current(), "divisionGate");
+                        put(value, "steps", int(num(value, "steps", 0x5b5b)) ^ bit);
+                        session.audio.previewNativeParameters(track, key(), kind(), current(), settings);
+                        commit();
+                    };
+                }
+            }
+        }
         enabled.setToggleState(fxui::isEnabled(k, s), dontSendNotification);
         graph.settings = s;
         graph.refreshControls();
         if (k == "CatLive Trigger" || k == "Cat Gate") {
             const auto dynamicsKey = key();
             dynamicsEditor = std::make_unique<CatDynamicsEditor>(k, session.mediaDirectory, [this] { return current(); }, [this] { commit(); chain.repaint(); }, error,
-                [this, dynamicsKey] { session.audio.previewDynamics(track, dynamicsKey, current()); }, [this] { return session.audio.fxLevels(track); });
+                [this, dynamicsKey] { session.audio.previewDynamics(track, dynamicsKey, current()); }, [this] { return session.audio.fxLevels(track); },
+                [this, dynamicsKey] { return session.audio.takeDynamicsLevels(track, dynamicsKey); });
             addAndMakeVisible(*dynamicsEditor);
         }
         if(k=="CatStemSeparation 5") {
@@ -817,7 +898,12 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             addAndMakeVisible(*stemEditor);
         }
         if (k == "Compressor") {
-            knob("Threshold", "threshold", -60, 0, .1, " dB");
+            thresholdMeter = std::make_unique<fxui::DynamicsThresholdMeter>(true, num(current(), "threshold", -20),
+                [this](double db) {
+                    auto value = current(); put(value, "threshold", db);
+                    session.audio.previewNativeParameters(track, key(), kind(), value, settings);
+                }, [this] { commit(); }, [this] { return session.audio.takeDynamicsLevels(track, key()); });
+            addAndMakeVisible(*thresholdMeter);
             knob("Ratio", "ratio", 1, 20, .1, " :1");
             knob("Gain", "makeup", -12, 24, .1, " dB");
             knob("Attack", "attack", .1, 200, .1, " ms", 1000);
@@ -835,12 +921,20 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             knob("High Cut", "reverbHighCut", 2000, 20000, 1, " Hz");
         }
         if (k == "Limiter") {
-            knob("Input Gain", "inputGain", -24, 24, .1, " dB", 1, "limiter");
+            knob("Gain", "inputGain", -24, 24, .1, " dB", 1, "limiter");
             knob("Ceiling", "ceiling", -24, 0, .1, " dB", 1, "limiter");
             knob("Release", "release", 10, 3000, 1, " ms", 1000, "limiter");
         }
-        if (k == "Pitch")
-            knob("Semitons", "pitchSemitones", -12, 12, 1, " st");
+        if (k == "Pitch") {
+            knob("Semitones", "pitchSemitones", -12, 12, 1, " st");
+            knob("Formant", "pitchFormant", -12, 12, .1, " st");
+        }
+        if (const auto n = drummer::count(k)) {
+            drummerEditor = std::make_unique<DrummerPadEditor>(session.audio, track, key(), k,
+                [this]{return current();}, [this,n](var kit){auto value=current();put(value,drummer::field(n),std::move(kit));commit(false);},error);
+            addAndMakeVisible(*drummerEditor);
+            removeEffect.setVisible(false); enabled.setVisible(false);
+        }
         if (k == "Instruments") {
             instrumentEditor = std::make_unique<InstrumentParameterEditor>(str(current(), "instrumentID"),
                 [this] { return current(); },
@@ -863,114 +957,10 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
                 session.audio.previewNativeParameters(track,key(),kind(),current(),settings);
             },
             [this] { commit(); }));
+        k->setAccent(fxui::dialAccent(kind()));
         addAndMakeVisible(k);
         if (property == "attack" || property == "release" || property == "delayTime")
             k->slider.setSkewFactor(.4);
-    }
-    class InsertWindow final : public DocumentWindow {
-      public:
-        InsertWindow()
-            : DocumentWindow("Inserir efeito", theme::panel, DocumentWindow::closeButton, true) {
-            setUsingNativeTitleBar(false);
-            setTitleBarButtonsRequired(DocumentWindow::closeButton, false);
-            setTitleBarHeight(32);
-            setResizable(false, false);
-        }
-        void closeButtonPressed() override { setVisible(false); }
-    };
-    std::unique_ptr<InsertWindow> insertWindow;
-    bool vinhetasTarget() const {
-        if (item) return false;
-        const auto targets = insertionTargets.empty() ? std::vector<ID>{track} : insertionTargets;
-        for (const auto &song : session.project().songs)
-            for (const auto &candidate : song.tracks)
-                if (candidate.role.id == "vinhetas" &&
-                    std::find(targets.begin(), targets.end(), candidate.id) != targets.end()) return true;
-        return false;
-    }
-    void addMenu() {
-        if (insertWindow && insertWindow->isVisible()) {
-            insertWindow->toFront(true);
-            return;
-        }
-        insertWindow = std::make_unique<InsertWindow>();
-        insertWindow->setLookAndFeel(&getLookAndFeel());
-        const auto safe = SafePointer<EffectsPanel>(this);
-        auto *panel = new EffectInsertPanel(
-            session.mediaDirectory,
-            [safe](String kind, String id) { return safe && safe->insert(kind, id); },
-            [safe] {
-                if (safe && safe->insertWindow)
-                    safe->insertWindow->setVisible(false);
-            }, !item && !track.empty() && insertionTargets.size() <= 1, item || !track.empty(), vinhetasTarget());
-        panel->setSize(460, 214);
-        insertWindow->setContentOwned(panel, true);
-        panel->updateLayout();
-        insertWindow->centreAroundComponent(this, 460, 246);
-        insertWindow->setVisible(true);
-        insertWindow->toFront(true);
-    }
-    bool insert(const String &kind, const String &instrument) {
-        try {
-            if (session.busy) return false;
-            if (vinhetasTarget() &&
-                ((kind != "External" && kind != "EQ" && kind != "Reverb" && kind != "Delay" && kind != "Limiter") ||
-                 (kind == "External" && str(JSON::parse(instrument), "category").containsIgnoreCase("Instrument"))))
-                return false;
-            if (!item && track.empty() &&
-                (kind == "Instruments" || kind == "CatStemSeparation 5" ||
-                 (kind == "External" && str(JSON::parse(instrument), "category").containsIgnoreCase("Instrument"))))
-                return false;
-            if(kind=="CatStemSeparation 5") {
-                if(insertionTargets.size()>1)throw std::runtime_error("Selecione uma pista para inserir CatStemSeparation 5.");
-            }
-            if (kind == "Instruments") {
-                auto source = instrumentAssets::resolve(instrument, session.mediaDirectory);
-                auto target = session.mediaDirectory.getChildFile("Instruments/" + instrument + ".sf2");
-                if (!instrumentAssets::validBank(source)) throw std::runtime_error("Download the instrument before applying it.");
-                target.getParentDirectory().createDirectory();
-                if (source != target && !source.copyFileTo(target)) throw std::runtime_error("Could not copy the instrument to the project.");
-            }
-            auto targets = insertionTargets.empty() ? std::vector<ID>{track} : insertionTargets;
-            if (kind == "Instruments" && targets.size() != 1) throw std::runtime_error("Escolha apenas uma pista para inserir um instrumento.");
-            std::map<ID, var> changes;
-            String ownKey;
-            for (const auto &target : targets) {
-                auto next = target == track ? settings.clone() : fxchain::settings(session, target).clone();
-                fxui::defaults(next);
-                auto inserted = list(get(next, "inserted"));
-                String key = kind;
-                if (kind == "External") {
-                    auto plugin = JSON::parse(instrument);
-                    if (!plugin.isObject() || str(plugin, "classID").isEmpty()) throw std::runtime_error("Selecione um plugin VST3.");
-                    put(plugin, "id", text(uuid())); put(plugin, "bypassed", false);
-                    auto plugins = list(get(next, "externalPlugins")); plugins.add(plugin); put(next, "externalPlugins", plugins);
-                    key = "External:" + str(plugin, "id");
-                } else {
-                    if (kind=="CatStemSeparation 5" && inserted.contains(var(kind))) { chain.selectRow(inserted.indexOf(var(kind))); return true; }
-                    auto initialize = [&](var &value) {
-                        fxui::reset(kind, value); fxui::defaults(value); fxui::enable(kind, value, true);
-                        if(kind=="CatStemSeparation 5")put(value,"stemMix",stemMix::defaults());
-                        if (kind == "Instruments") { put(value, "instrumentID", instrument); put(value, "instrumentParameters", fxui::instrumentParameters(instrument)); }
-                        fxpresets::Store().applyDefault(kind, value);
-                    };
-                    if (inserted.contains(var(kind))) {
-                        auto instance = object(), value = object(); initialize(value);
-                        put(value, "inserted", Array<var>{kind});
-                        const auto id = text(uuid()); put(instance, "id", id); put(instance, "kind", kind); put(instance, "settings", value);
-                        auto instances = list(get(next, "instances")); instances.add(instance); put(next, "instances", instances);
-                        key = "Native:" + id;
-                    } else initialize(next);
-                }
-                inserted.add(key); put(next, "inserted", inserted); changes.emplace(target, next);
-                if (target == track) ownKey = key;
-            }
-            session.configureEffects(changes);
-            load(); fxui::defaults(settings); refreshPresets(); chain.updateContent();
-            chain.selectRow(list(get(settings, "inserted")).indexOf(var(ownKey)));
-            if (kind == "External") openExternalEditor();
-            return true;
-        } catch (const std::exception &e) { error(String::fromUTF8(e.what())); return false; }
     }
     void erase() {
         if (selected < 0)
@@ -1002,13 +992,13 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             show();
         }
     }
-    bool commit() {
+    bool commit(bool updatePresets = true) {
         try {
             if (session.busy)
                 return false;
             session.configureEffects(track, settings);
             load();fxui::defaults(settings);
-            refreshPresets();
+            if (updatePresets) refreshPresets();
             return true;
         } catch (const std::exception &e) {
             load();
@@ -1032,7 +1022,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         return fxpresets::capture(kind(), value, "Factory");
     }
     void refreshPresets(bool reload = false) {
-        const bool available = fxpresets::fields(kind()).size() > 0;
+        const bool available = !drummer::count(kind()) && fxpresets::fields(kind()).size() > 0;
         presets.setVisible(available); savePreset.setVisible(available); defaultPreset.setVisible(available);
         if (!available) return;
         try {
@@ -1094,8 +1084,8 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             load(); fxui::defaults(settings);
             if (JSON::toString(settings, true) != previous) {
                 const auto keys = list(get(settings, "inserted"));
-                selected = keys.indexOf(var(selectedKey));
-                if (selected < 0 && !keys.isEmpty()) selected = 0;
+                selected = keys.indexOf(var(singleEffect.isEmpty() ? selectedKey : singleEffect));
+                if (singleEffect.isEmpty() && selected < 0 && !keys.isEmpty()) selected = 0;
                 chain.updateContent();
                 if (selected < 0) chain.deselectAllRows(); else chain.selectRow(selected);
                 show();
@@ -1106,6 +1096,42 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         // twenty times per second over an independently animated child HWND.
         if (isShowing() && !externalEditor)
             repaint();
+    }
+    void paintArpeggio(Graphics &g, juce::Rectangle<int> area) {
+        g.setColour(Colours::white);
+        g.setFont(theme::semiboldFont(15));
+        g.drawText("Pattern preview", area.removeFromTop(26), Justification::centredLeft);
+        const auto footer = area.removeFromBottom(23);
+        const auto beats = area.removeFromTop(14);
+        const float left = float(area.getX() + 30);
+        const float step = (area.getRight() - left) / 16.f, lane = area.getHeight() / 12.f;
+        const int chord = arpChord.getSelectedId(), count = chord == 3 ? 4 : 3;
+        const std::array<int, 4> offsets{0, chord == 2 ? 3 : 4, 7, 11};
+        const auto accent = fxui::dialAccent("Arpeggiator");
+        g.setFont(theme::font(10));
+        for (int note = 0; note < count; ++note) {
+            const float y = area.getY() + (11 - offsets[note]) * lane;
+            g.setColour(accent.withAlpha(.06f));
+            g.fillRect(left, y, 16 * step, lane);
+            g.setColour(accent);
+            const String label = note == 0 ? "C" : note == 1 ? (chord == 2 ? String::fromUTF8("E♭") : "E") : note == 2 ? "G" : "B";
+            g.drawText(label, area.getX(), roundToInt(y + lane * .5f) - 7, 28, 14, Justification::centredLeft);
+        }
+        for (int i = 0; i < 16; ++i) {
+            const float x = left + i * step;
+            g.setColour(Colours::white.withAlpha(i % 4 == 0 ? .23f : .065f));
+            g.drawVerticalLine(roundToInt(x), float(area.getY()), float(area.getBottom()));
+            if (i % 4 == 0) {
+                g.setColour(Colours::white);
+                g.drawText(String(i / 4 + 1), roundToInt(x) + 3, beats.getY(), 22, 14, Justification::centredLeft);
+            }
+            g.setColour(accent);
+            g.fillRoundedRectangle(x + 1, area.getY() + (11 - offsets[i % count]) * lane + 1,
+                                   step * .75f, std::max(2.f, lane - 2), 2);
+        }
+        g.setFont(theme::mediumFont(12));
+        g.setColour(Colours::white);
+        g.drawText("Direction   Ascending       Rate   1/16       Gate   75%", footer, Justification::centredLeft);
     }
     void paintMeters(Graphics &g) {
         const auto r = content();

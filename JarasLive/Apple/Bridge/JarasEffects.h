@@ -70,6 +70,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)endStop;
 - (void)setOutputEnabled:(BOOL)enabled;
 - (void)setPlaybackSourceCount:(NSUInteger)count;
+- (void)setLiveInstrumentMonitoring:(BOOL)monitoring;
 - (NSDictionary<NSString *, id> *)diagnostics;
 @end
 #endif
@@ -82,6 +83,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)startAndReturnError:(NSError **)error;
 - (void)gate;
 - (void)stop;
+@property(nonatomic, readonly, getter=isRunning) BOOL running;
+- (BOOL)hasStalled;
 @property(nonatomic, readonly, nullable) AVAudioTime *renderTime;
 // Control-thread snapshot only; never call from an audio render callback.
 - (NSDictionary<NSString *, id> *)diagnostics;
@@ -107,6 +110,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface JarasEqualizer : NSObject
 + (AVAudioUnitEffect *)makeNode;
 + (void)configure:(AVAudioUnitEffect *)node coefficients:(NSArray<NSArray<NSNumber *> *> *)coefficients enabled:(BOOL)enabled;
++ (void)setEffectChannels:(AVAudioUnitEffect *)node mask:(NSUInteger)mask;
 + (void)setPolarity:(AVAudioUnitEffect *)node inverted:(BOOL)inverted;
 + (void)setInputGain:(AVAudioUnitEffect *)node gain:(double)gain;
 + (void)setItemGain:(AVAudioUnitEffect *)node gain:(double)gain;
@@ -142,10 +146,14 @@ NS_ASSUME_NONNULL_BEGIN
 + (AVAudioUnitEffect *)makeReverb;
 + (void)configureCompressor:(AVAudioUnitEffect *)node enabled:(BOOL)enabled threshold:(double)threshold ratio:(double)ratio attack:(double)attack release:(double)release gain:(double)gain;
 + (void)configureReverb:(AVAudioUnitEffect *)node enabled:(BOOL)enabled space:(NSInteger)space mix:(double)mix decay:(double)decay lowCut:(double)lowCut highCut:(double)highCut;
++ (void)setEffectChannels:(AVAudioUnitEffect *)node mask:(NSUInteger)mask;
++ (AVAudioUnitEffect *)makeChannelDelay;
++ (void)configureChannelDelay:(AVAudioUnitEffect *)node enabled:(BOOL)enabled delay:(double)delay feedback:(double)feedback mix:(double)mix;
 + (void)setAnalysisEnabled:(AVAudioUnitEffect *)node input:(BOOL)input enabled:(BOOL)enabled;
 + (void)setCompressorMeteringEnabled:(AVAudioUnitEffect *)node enabled:(BOOL)enabled;
 + (nullable NSData *)analysisFrame:(AVAudioUnitEffect *)node input:(BOOL)input;
 + (NSArray<NSNumber *> *)analysisPeaks:(AVAudioUnitEffect *)node input:(BOOL)input;
++ (float)compressorReduction:(AVAudioUnitEffect *)node;
 + (NSArray<NSNumber *> *)takeCompressorPeaks:(AVAudioUnitEffect *)node;
 @end
 NS_ASSUME_NONNULL_END
@@ -182,5 +190,20 @@ NS_ASSUME_NONNULL_BEGIN
 /// Packs N independent stereo exports into one offline render block.
 @interface JarasExportMultiplexer : NSObject
 + (AVAudioUnitEffect *)makeNode:(NSInteger)outputs;
+@end
+NS_ASSUME_NONNULL_END
+
+NS_ASSUME_NONNULL_BEGIN
+@interface JarasPitchFormant : NSObject
++ (AVAudioUnitEffect *)makeNode;
++ (void)configure:(AVAudioUnitEffect *)node pitch:(float)pitch formant:(float)formant;
+@end
+
+@interface JarasCreativeEffects : NSObject
++ (float)gainReduction:(AVAudioUnitEffect *)node;
++ (AVAudioUnitEffect *)makeEffect:(NSInteger)kind;
++ (void)configure:(AVAudioUnitEffect *)node enabled:(BOOL)enabled parameters:(NSArray<NSNumber *> *)parameters;
++ (void)setTempoMap:(AVAudioUnitEffect *)node points:(NSArray<NSDictionary<NSString *, NSNumber *> *> *)points;
++ (void)transport:(AVAudioUnitEffect *)node position:(double)position clock:(double)clock playing:(BOOL)playing loopStart:(double)start loopEnd:(double)end tempo:(double)tempo;
 @end
 NS_ASSUME_NONNULL_END

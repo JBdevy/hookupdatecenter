@@ -57,6 +57,17 @@ for rate in [44100.0, 48000.0] {
     precondition(stopped.allSatisfy { $0 == 0 })
     // Short probe pulses measure beat spacing without overlapping sample tails.
     let pulse = [Float](repeating: 0.5, count: 64).withUnsafeBytes { Data($0) }
+    generators[0].setSections([["start": 0, "bpm": 120, "beats": 4, "unit": 4]], soundA: pulse, soundB: pulse, mode: 0)
+    generators[0].setEnabled(false)
+    start(generators[0])
+    _ = try capture(seconds: 0.64)
+    generators[0].setEnabled(true)
+    let enabled = try capture(seconds: 0.5)
+    precondition(enabled.prefix(Int(rate * 0.35)).allSatisfy { abs($0) < 0.00001 },
+                 "Enabling the metronome midway through a beat must not trigger an immediate pulse")
+    precondition(enabled.dropFirst(Int(rate * 0.35)).contains { abs($0) > 0.05 },
+                 "The first pulse after enabling the metronome must be the next beat")
+    stop(generators[0]); _ = try capture(seconds: 0.02)
     generators[0].setClickSections([
         ["start": 0, "end": 1, "origin": 0, "bpm": 240, "beats": 8, "unit": 4],
         ["start": 1, "end": 2, "origin": 0, "bpm": 120, "beats": 4, "unit": 4]

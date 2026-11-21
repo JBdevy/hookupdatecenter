@@ -6,11 +6,8 @@ import Combine
     @ObservedObject private var timer = TeleprompterTimerController.shared
     var body: some View {
         Button { timer.showConfiguration() } label: {
-            Image(systemName: "clock")
-                .font(.jarasSystem(size: 16, weight: .semibold))
-                .foregroundStyle(timer.running ? JarasTheme.green : Color(hex: 0x299df8))
-                .frame(width: 26, height: 24).contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityLabel("Timer").desktopIconTooltip("Timer")
+            DesktopToolbarLabel(title: Text(verbatim: "Timer"), active: timer.configurationOpen || timer.running)
+        }.buttonStyle(.plain).accessibilityLabel("Timer")
     }
 }
 
@@ -23,9 +20,9 @@ import Combine
                 TimelineView(.periodic(from: .now, by: 0.5)) { _ in
                     TimerReadout(text: timer.displayText(), expired: timer.expired(), fontSize: 16)
                         .opacity(timer.displayOpacity())
-                }
+                }.frame(width: 132, height: 24)
             }
-        }.frame(width: 132, height: 24).allowsHitTesting(false)
+        }.allowsHitTesting(false)
     }
 }
 

@@ -13,7 +13,6 @@ struct GrandMA2SettingsView: View {
     @State private var busy = false
     @State private var status = ""
     @ObservedObject private var runtime = ResolumeController.shared
-    @Environment(\.workspaceEditorDismiss) private var close
     init(show: ShowController) {
         self.show = show
         _settings = State(initialValue: GrandMA2Settings(project: show.snapshot.project))
@@ -23,7 +22,7 @@ struct GrandMA2SettingsView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack { Text(verbatim: "grandMA2").font(.jarasTitle2.bold()); Spacer(); Button("Close") { close?() }.disabled(busy) }
+            Text(verbatim: "grandMA2").font(.jarasTitle2.bold())
             Text("Select songs and create the grandMA2 macros on the Integration computer. Timecode: 30 FPS.")
                 .font(.jarasCallout).foregroundStyle(JarasTheme.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {

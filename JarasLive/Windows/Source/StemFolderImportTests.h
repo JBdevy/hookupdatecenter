@@ -38,6 +38,80 @@ template<class Test> void registerTests(const File& directory,Test test) {
         require(added.clips.size()==old.clips.size()*2,"New stem was not added to its existing matching track");
     }
  });
+ test("Stem append reuses first numbered aliases and preserves guitar wah",[&]{
+    using mediaImportTests::require;
+    auto root=directory.getNonexistentChildFile("first-numbered-stems","");
+    auto folder=root.getChildFile("New Song");
+    const StringArray fixtures{"Backing Vocals 1.wav","Baixo 1.wav","Metais 1.wav","Baixo 2.wav","GTR WAH 1 - Another Song.wav"};
+    for(const auto &file:fixtures) mediaImportTests::source(folder,file,4800);
+    auto base=Session::makeEmptyProject("Existing");
+    for(const auto *name:{"Back Vocais","Bass","Metais","Bass 2","Guitarra Wah","Guitarra 1"}) {
+        jaras::Track track;track.id=uuid();track.name=name;track.volume=.45;track.pan=-.2;
+        base.songs[0].tracks.push_back(track);
+    }
+    StringArray warnings;
+    const auto added=stemImport::build(*stemImport::scan({folder}),"",base,root.getChildFile("Project/Show.jl"),false,{},warnings);
+    const auto &tracks=added.songs[0].tracks;
+    require(tracks.size()==base.songs[0].tracks.size(),"Add Stems created duplicate tracks for first-channel aliases");
+    for(size_t i=0;i<tracks.size();++i) {
+        const auto &old=base.songs[0].tracks[i], &track=tracks[i];
+        require(track.id==old.id&&track.name==old.name&&track.volume==old.volume&&track.pan==old.pan,
+                "Add Stems changed the destination track");
+        if(i < size_t(fixtures.size()))
+            require(track.clips.size()==1&&text(track.clips.front().name)==fixtures[(int)i],"Stem reached the wrong existing track");
+        else require(track.clips.empty(),"The plain guitar track captured a wah stem");
+    }
+ });
+ test("Rendered stems restore transport tuner only on matching tracks",[&]{
+    using mediaImportTests::require;
+    auto root=directory.getNonexistentChildFile("stem-tuner-targets","");
+    auto folder=root.getChildFile("Mix");
+    mediaImportTests::source(folder,"Guitar.wav",48000);
+    mediaImportTests::source(folder,"Bass.wav",48000);
+
+    auto source=Session::makeEmptyProject("Source");
+    auto& song=source.songs.front();
+    jaras::Track guitar,bass;
+    guitar.id=uuid();guitar.name="Guitar";guitar.role.id="other";
+    bass.id=uuid();bass.name="Bass";bass.role.id="other";
+    song.tracks={guitar,bass};
+    jaras::Part region;
+    region.id=uuid();region.name="Mix";region.endTime=1;region.pitchSemitones=3;
+    region.pitchTrackIDs=std::vector<ID>{guitar.id};
+    region.pitchGroupIDs=std::vector<ID>{};
+    song.parts={region};
+    jaras::TimelineMarker tempo,cue;
+    tempo.id=uuid();tempo.name="Tempo";tempo.tempoBPM=140;
+    cue.id=uuid();cue.name="Cue";cue.position=.5;
+    song.markers=std::vector<jaras::TimelineMarker>{tempo,cue};
+
+    const std::vector<multitrackData::RenderedStem> stems{
+        {"Guitar.wav",guitar.id,{{0,1,1.1,-3}}},
+        {"Bass.wav",bass.id,{{0,1,1,std::nullopt}}}
+    };
+    const auto encoded=multitrackData::encode(song,region,song.tracks,stems,{},true,false);
+    const auto manifest=multitrackData::decode(encoded);
+    require(!manifest.stems[0].items[0].pitchSemitones,"Item pitch was saved after rendering");
+    require(manifest.arrangement().markers&&manifest.arrangement().markers->size()==1&&
+            manifest.arrangement().markers->front().name=="Cue","Printed rate included tempo markers");
+    multitrackData::write(folder.getChildFile(".jldata-Mix"),encoded);
+
+    auto base=Session::makeEmptyProject("Destination");
+    guitar.id=uuid();guitar.name="Guitarra";bass.id=uuid();
+    base.songs.front().tracks={guitar,bass};
+    StringArray warnings;
+    const auto added=stemImport::build(*stemImport::scan({folder}),"",base,root.getChildFile("Project/Show.jl"),false,{},warnings);
+    const auto& imported=added.songs.front();
+    require(imported.tracks.size()==2&&imported.tracks.front().id==guitar.id&&imported.tracks.back().id==bass.id,
+            "Rendered stems did not reuse the matching tracks");
+    const auto& restored=imported.parts.front();
+    require(restored.pitchSemitones==3&&regionPitch::selected(imported,imported.tracks[0],restored)&&
+            !regionPitch::selected(imported,imported.tracks[1],restored),"Transport tuner was applied to the wrong tracks");
+    const auto& clips=imported.tracks.front().clips;
+    require(clips.size()==1&&!clips.front().pitchSemitones,"Item pitch was applied again");
+    require(imported.markers&&imported.markers->size()==1&&imported.markers->front().name=="Cue",
+            "Add Stems restored tempo markers for a printed rate");
+ });
  test("Stem import preserves scalar rule results before matching existing tracks",[&]{
     using mediaImportTests::require;stemImport::Rules rules;
     for(const auto& entry:std::vector<std::pair<String,String>>{{"CLICK","click"},{"Click 2","click 2"},{"Guia","guia"},{"Guitarra 2","guitarra 2"}})

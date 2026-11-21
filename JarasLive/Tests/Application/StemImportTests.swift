@@ -3,6 +3,15 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testSavedProjectFolderIsRecognizedInAddStems() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try ProjectDocumentCodec.encode(.empty(name: "Saved")).write(to: folder.appendingPathComponent("Saved.jl"))
+        XCTAssertThrowsError(try StemProjectImporter.scan([folder])) { error in
+            XCTAssertEqual(error.localizedDescription, "\(folder.lastPathComponent): contains a CatLive project")
+        }
+    }
     func testScanSilentlySkipsUnreadableAndUnsupportedFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -122,7 +131,8 @@ final class StemImportTests: XCTestCase {
         var section = TimelineMarker(id: UUID(), name: "Refrão", position: 34, color: 1, section: true)
         section.automaticSectionTargetID = nextSection.id
         section.automaticSectionRepeatCount = 2
-        source.markers = [section, TimelineMarker(id: UUID(), name: "Sinal", position: 36, color: 2), nextSection]
+        let tempo = TimelineMarker(id: UUID(), name: "TEMPO", position: 32, color: 0, tempoBPM: 110)
+        source.markers = [section, TimelineMarker(id: UUID(), name: "Sinal", position: 36, color: 2), nextSection, tempo]
         let items = [
             MultitrackRegionData.RenderedStem.Item(offset: -1, duration: 3, rate: 1.1, pitchSemitones: -2),
             MultitrackRegionData.RenderedStem.Item(offset: 7, duration: 4, rate: 1, pitchSemitones: 4),
@@ -137,6 +147,8 @@ final class StemImportTests: XCTestCase {
             }
             let data = try MultitrackRegionData.snapshot(song: source, region: part, tracks: [sourceGroup, sourceTrack, programTrack],
                 renderedStems: stems, lyricsFiles: [], fullItems: true, tunerUnbaked: true)
+            XCTAssertTrue(data.renderedStems.flatMap(\.items).allSatisfy { $0.pitchSemitones == nil })
+            XCTAssertFalse(data.arrangement.markers?.contains(where: \.isTempo) == true)
             entries.append(.init(folder: part.name, offset: part.startTime - parent.startTime,
                                  cue: index == 0 ? 0 : 10.5, data: data, cueID: UUID(), cueName: "Bandeira " + part.name, cueColor: 0x123456))
         }
@@ -177,11 +189,78 @@ final class StemImportTests: XCTestCase {
         let clips = track.clips.sorted { $0.startTime < $1.startTime }
         XCTAssertEqual(clips.map { $0.startTime - drawer.startTime }, [-1, 7, 11])
         XCTAssertEqual(clips.map(\.duration), [3, 4, 2])
-        XCTAssertEqual(clips.compactMap(\.pitchSemitones), [-2, 4, 1])
+        XCTAssertTrue(clips.allSatisfy { $0.pitchSemitones == nil && $0.renderedTempo == true })
+        XCTAssertFalse(song.markers?.contains(where: \.isTempo) == true)
         XCTAssertEqual(clips.map(\.audioRate), [1, 1, 1])
         XCTAssertEqual(clips.map(\.regionOwnerID), [children[0].id, children[0].id, children[1].id])
         XCTAssertTrue(clips[1].name.hasSuffix("002.wav"))
         try project.validate()
+    }
+
+    func testRenderedStemsRestoreTransportTunerOnlyOnMatchingTracks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = try fixture(root, folder: "Mix", file: "Guitar.wav", seconds: 1)
+        _ = try fixture(root, folder: "Mix", file: "Bass.wav", seconds: 1)
+        let guitar = Track(id: UUID(), name: "Guitar", role: .other)
+        let bass = Track(id: UUID(), name: "Bass", role: .other)
+        let region = Part(id: UUID(), name: "Mix", startTime: 0, endTime: 1, pitchSemitones: 3,
+                          pitchTrackIDs: [guitar.id], pitchGroupIDs: [])
+        var source = Project.empty(name: "Source").songs[0]
+        source.tracks = [guitar, bass]
+        source.parts = [region]
+        source.markers = [
+            TimelineMarker(id: UUID(), name: "Tempo", position: 0, color: 0, tempoBPM: 140),
+            TimelineMarker(id: UUID(), name: "Cue", position: 0.5, color: 1)
+        ]
+        let manifest = try MultitrackRegionData.snapshot(song: source, region: region, tracks: source.tracks,
+            renderedStems: [
+                .init(file: "Guitar.wav", track: guitar.id, items: [.init(offset: 0, duration: 1, rate: 1.1, pitchSemitones: -3)]),
+                .init(file: "Bass.wav", track: bass.id, items: [.init(offset: 0, duration: 1, rate: 1)])
+            ], lyricsFiles: [], fullItems: true, tunerUnbaked: true)
+        XCTAssertEqual(manifest.region.pitchTrackIDs, [guitar.id])
+        XCTAssertNil(manifest.renderedStems[0].items[0].pitchSemitones)
+        XCTAssertEqual(manifest.arrangement.markers?.map(\.name), ["Cue"])
+        try JSONEncoder().encode(manifest).write(to: folder.appendingPathComponent(".jldata-Mix"))
+
+        var base = Project.empty(name: "Destination")
+        let destinationGuitar = Track(id: UUID(), name: "Guitarra", role: .other)
+        let destinationBass = Track(id: UUID(), name: "Bass", role: .other)
+        base.songs[0].tracks = [destinationGuitar, destinationBass]
+        let imported = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "",
+            base: base, destination: root.appendingPathComponent("Project/Show.jl")).songs[0]
+        let importedRegion = try XCTUnwrap(imported.parts.first)
+        XCTAssertEqual(imported.tracks.map(\.id), [destinationGuitar.id, destinationBass.id])
+        XCTAssertEqual(importedRegion.pitchTrackIDs, [destinationGuitar.id])
+        XCTAssertEqual(imported.pitch(for: destinationGuitar.id, region: importedRegion), 3)
+        XCTAssertEqual(imported.pitch(for: destinationBass.id, region: importedRegion), 0)
+        let item = try XCTUnwrap(imported.tracks[0].clips.first)
+        XCTAssertEqual(item.audioRate, 1)
+        XCTAssertNil(item.pitchSemitones)
+        XCTAssertEqual(imported.markers?.map(\.name), ["Cue"])
+    }
+
+    func testLegacyRenderedStemRestoresPitchStoredOutsideTheAudio() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Old")
+        _ = try fixture(root, folder: "Old", file: "Pandeirola.wav", seconds: 1)
+        var source = Project.empty(name: "Source").songs[0]
+        let track = Track(id: UUID(), name: "Pandeirola", role: .drums)
+        let part = Part(id: UUID(), name: "Old", startTime: 0, endTime: 1, pitchSemitones: 2)
+        source.parts = [part]
+        let stems = [MultitrackRegionData.RenderedStem(file: "Pandeirola.wav", track: track.id,
+            items: [.init(offset: 0, duration: 1, rate: 1, pitchSemitones: -3)])]
+        let snapshot = try MultitrackRegionData.snapshot(song: source, region: part, tracks: [track],
+            renderedStems: stems, lyricsFiles: [], tunerUnbaked: true)
+        XCTAssertTrue(snapshot.arrangement.markers?.contains(where: \.isTempo) == true)
+        let legacy = MultitrackRegionData(version: 1, project: snapshot.project, renderedStems: stems,
+            lyricsFiles: [], tunerUnbaked: true)
+        try JSONEncoder().encode(legacy).write(to: folder.appendingPathComponent(".jldata-Old"))
+        let imported = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "",
+            base: .empty(name: "Import"), destination: root.appendingPathComponent("Project/Show.jl"))
+        XCTAssertEqual(imported.songs[0].parts.first?.pitchSemitones, 2)
+        XCTAssertEqual(imported.songs[0].tracks.flatMap(\.clips).first?.pitchSemitones, -3)
     }
 
     func testAppendMatchesCustomNamesBeforeTaxonomyAndPreservesTracks() throws {
@@ -301,6 +380,24 @@ final class StemImportTests: XCTestCase {
         XCTAssertEqual(final.songs[0].tracks.map(\.id), base.songs[0].tracks.map(\.id))
         XCTAssertEqual(final.songs[0].tracks.first { $0.name == "Sanfona" }?.clips.count, 3)
     }
+    func testAppendMatchesFirstNumberedStemToUnnumberedAlias() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sources = ["Backing Vocals 1.wav", "Baixo 1.wav", "Metais 1.wav", "Baixo 2.wav", "GTR WAH 1 - Outra música.wav"]
+        let folder = try fixture(root, folder: "New Song", file: sources[0])
+        for file in sources.dropFirst() { _ = try fixture(root, folder: "New Song", file: file) }
+        var base = Project.empty(name: "Existing")
+        base.songs[0].tracks = ["Back Vocais", "Bass", "Metais", "Bass 2", "Guitarra Wah", "Guitarra 1"].map {
+            Track(id: UUID(), name: $0, role: .other, volume: 0.45, pan: -0.2)
+        }
+        let destination = root.appendingPathComponent("Project/Show.jl")
+        let added = try StemProjectImporter.build(scan: StemProjectImporter.scan([folder]), remove: "", base: base, destination: destination)
+        XCTAssertEqual(added.songs[0].tracks.map(\.id), base.songs[0].tracks.map(\.id))
+        XCTAssertEqual(added.songs[0].tracks.map { $0.clips.first?.name }, sources.map(Optional.some) + [nil])
+        XCTAssertEqual(added.songs[0].tracks.map(\.volume), base.songs[0].tracks.map(\.volume))
+        XCTAssertEqual(added.songs[0].tracks.map(\.pan), base.songs[0].tracks.map(\.pan))
+    }
+
     func testAppendUsesExistingNumberedInternalTracksAndGroups() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

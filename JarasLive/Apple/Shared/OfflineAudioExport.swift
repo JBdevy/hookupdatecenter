@@ -347,8 +347,8 @@ final class OfflineAudioExport {
                 engine.connect(bus.gain, to: matrix, format: format)
                 engine.connect(matrix, to: bus.pan, format: format)
             } else { engine.connect(bus.gain,to: bus.pan,format: format) }
-            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || !fx.instrumentKeys.isEmpty || fx.isEnabled(NativeFXSettings.stemSeparator) {
-                let effects = NativeEffectsChain(); bus.effects = effects
+            if let fx, fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.effectKeys.contains { DrummerPadKind(rawValue: fx.kind(of: $0)) != nil } || fx.hasCreativeEffects || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || !fx.instrumentKeys.isEmpty || fx.isEnabled(NativeFXSettings.stemSeparator) {
+                let effects = NativeEffectsChain(); effects.offlineDrums = true; bus.effects = effects
                 effectChains.append(effects)
                 effects.mediaDirectory = mediaDirectory
                 effects.attach(to: engine,input: bus.mix,format: format,destinations: [AVAudioConnectionPoint(node: bus.processedMix,bus: 0)])
@@ -444,7 +444,7 @@ final class OfflineAudioExport {
             // Match the live item chain, including legacy fixed native stages.
             fx.inserted = fx.clipEffectKeys
             var itemEffects: NativeEffectsChain?
-            if clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || fx.isEnabled(NativeFXSettings.stemSeparator) {
+            if clip.phaseInverted == true || (clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0 || (clip.channelMode ?? 0) != 0 || (clip.normalizationGain ?? 1) != 1 || fx.eqEnabled || fx.compressorEnabled || fx.delayEnabled || fx.reverbEnabled || fx.pitchEnabled == true || fx.limiterEnabled == true || fx.triggerEnabled == true || fx.gateEnabled == true || fx.effectKeys.contains { DrummerPadKind(rawValue: fx.kind(of: $0)) != nil } || fx.hasCreativeEffects || fx.externalPlugins?.isEmpty == false || fx.instances?.isEmpty == false || fx.isEnabled(NativeFXSettings.stemSeparator) {
                 let effects = NativeEffectsChain()
                 itemEffects = effects
                 effectChains.append(effects)
@@ -504,7 +504,7 @@ final class OfflineAudioExport {
                 engine.connect(controls, to: gain, format: format)
                 engine.connect(gain, to: bus.mix, fromBus: 0, toBus: bus.mix.nextAvailableInputBus, format: format)
                 var noteSource = clip; noteSource.gain = 1
-                let notes = song.midiPlaybackNotes(in: noteSource).map(\.sequenceValues)
+                let notes = song.instrumentPlaybackNotes(in: noteSource, track: track).map(\.sequenceValues)
                 itemEffects.setMIDISequence(notes, instrumentsOnly: true)
                 let position = start - Double(preroll) / format.sampleRate
                 itemEffects.setMIDISequenceClock(head: 0, position: position, clock: 0, running: true, loopStart: 0, loopEnd: 0)
@@ -535,7 +535,7 @@ final class OfflineAudioExport {
             let instruments = midiInstrumentsByTrack[track.id] ?? midiInstruments ?? [:]
             // One sequence per track preserves all clips for VST3, and one
             // sampler per slot keeps overlapping notes on the same instrument.
-            var playbackNotes: [MIDIPlaybackNote] = clips.filter { !$0.hasTakeInstrument }.flatMap { song.midiPlaybackNotes(in: $0) }
+            var playbackNotes: [MIDIPlaybackNote] = clips.filter { !$0.hasTakeInstrument }.flatMap { song.instrumentPlaybackNotes(in: $0, track: track) }
             playbackNotes.sort {
                 if $0.start != $1.start { return $0.start < $1.start }
                 if $0.channel != $1.channel { return $0.channel < $1.channel }
@@ -545,6 +545,13 @@ final class OfflineAudioExport {
                 ["start": $0.start, "end": $0.end, "pitch": Double($0.pitch), "velocity": Double($0.velocity), "channel": Double($0.channel)]
             }
             let position = start - Double(preroll) / format.sampleRate
+            effects.setDrumSequence(notes)
+            effects.drumClock(head: 0, position: position, clock: 0, running: true, loopStart: 0, loopEnd: 0)
+            for voice in effects.drummerVoices.values where voice.enabled {
+                sourceClocks.append((voice.source.node, { delay in
+                    voice.source.sequenceHead(0, position: position - delay, clock: 0, running: true, loopStart: 0, loopEnd: 0)
+                }))
+            }
             #if os(macOS)
             effects.setMIDISequence(notes)
             effects.setMIDISequenceClock(head: 0, position: position, clock: 0, running: true, loopStart: 0, loopEnd: 0)
@@ -648,9 +655,38 @@ final class OfflineAudioExport {
                     link(bus.output,target.mix,target.mix.nextAvailableInputBus + AVAudioNodeBus(links.values.flatMap { $0 }.filter { $0.node === target.mix }.count))
                 }
             }
-            for edge in song.trackConnections {
-                if let source = buses[edge.source], let target = buses[edge.destination] {
-                    link(source.output, target.mix, target.mix.nextAvailableInputBus + AVAudioNodeBus(links.values.flatMap { $0 }.filter { $0.node === target.mix }.count))
+            let tracksByID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+            var upstream: [(AVAudioMixerNode, [AVAudioConnectionPoint], [Float?])] = []
+            var tapped = Set<ObjectIdentifier>()
+            for edge in connections {
+                guard let source = buses[edge.source], let target = buses[edge.destination],
+                      let track = tracksByID[edge.source] else { continue }
+                let mode = track.routing?.sendTap(to: edge.destination) ?? .postFader
+                let signal: AVAudioNode
+                switch mode {
+                case .postFader: signal = source.output
+                case .preFX, .postFX, .preFader:
+                    guard !track.mute, soloAudible?.contains(track.id) ?? true else { continue }
+                    let mixer = mode == .preFX ? source.mix : source.processedMix
+                    if tapped.insert(ObjectIdentifier(mixer)).inserted {
+                        let points = engine.outputConnectionPoints(for: mixer, outputBus: 0)
+                        let volume = points.map { point in point.node.flatMap { mixer.destination(forMixer: $0, bus: point.bus)?.volume } }
+                        upstream.append((mixer, points, volume))
+                        for point in points {
+                            if let node = point.node { link(mixer, node, point.bus) }
+                        }
+                    }
+                    signal = mixer
+                }
+                link(signal, target.mix, target.mix.nextAvailableInputBus + AVAudioNodeBus(links.values.flatMap { $0 }.filter { $0.node === target.mix }.count))
+            }
+            for (id, destinations) in links where tapped.contains(id) {
+                engine.connect(nodes[id]!, to: destinations, fromBus: 0, format: format)
+                links[id] = nil
+            }
+            for (mixer, points, volumes) in upstream {
+                for (point, volume) in zip(points, volumes) {
+                    if let node = point.node, let volume { mixer.destination(forMixer: node, bus: point.bus)?.volume = volume }
                 }
             }
             for (index,writer) in writers.enumerated() {
@@ -710,9 +746,17 @@ final class OfflineAudioExport {
         // A MIDI take without automation must not force the entire graph and
         // all file writers into 128-frame blocks merely to repeat its tempo.
         var tempoEvents: [(Int64, () -> Void)] = []
-        #if os(macOS)
-        for (effects, origin) in transportClocks {
+        for (effects, origin) in transportClocks where effects.hasClockedEffects {
             effects.externalTimeline(tempoSections)
+            let gateStart = origin - Double(preroll) / format.sampleRate
+            effects.offlineCreativeTransport(position: gateStart, tempo: song.bpm, playing: true)
+            for section in tempoSections where section.start > gateStart {
+                let frame = Int64(((section.start - gateStart) * format.sampleRate).rounded())
+                tempoEvents.append((frame, {
+                    effects.offlineCreativeTransport(position: gateStart + Double(frame) / format.sampleRate, tempo: section.bpm, playing: true)
+                }))
+            }
+            #if os(macOS)
             for node in effects.externalNodes.values {
                 let delay = max(0, maximumLatency - node.latency - node.outputPresentationLatency)
                 let initialPosition = origin - Double(preroll) / format.sampleRate - delay
@@ -727,8 +771,8 @@ final class OfflineAudioExport {
                     }))
                 }
             }
+            #endif
         }
-        #endif
         tempoEvents.sort { $0.0 < $1.0 }
         var tempoEventIndex = 0
         func blockSize(at frame: Int64, remaining: Int64) -> AVAudioFrameCount {

@@ -24,13 +24,13 @@ for density: CGFloat in [1, 2] {
                 let tile = floor(offset / 512) * 512
                 grid.update(TimelineNativeGridBackdrop(viewport: CGRect(x: tile, y: 0, width: 1200, height: 300),
                     rulerHeight: 30, displayScale: density, primary: [anchor, (anchorTime + 2) * scale],
-                    secondary: [], bands: [], background: black, primaryColor: white, secondaryColor: white))
+                    bands: [], background: black, primaryColor: white))
                 ruler.update(TimelineNativeRuler(viewport: CGRect(x: tile, y: 0, width: 1200, height: 80),
-                    displayScale: density, barTop: 50,
+                    displayScale: density, barTop: 48, numberLaneHeight: 16,
                     ticks: [.init(x: anchor, primary: true, text: "1.1"), .init(x: (anchorTime + 2) * scale, primary: true, text: "1.2")],
                     rows: [], background: black, lineColor: white))
                 let gridPath = (grid.layer!.sublayers![1] as! CAShapeLayer).path!
-                let rulerPath = (ruler.layer!.sublayers![1] as! CAShapeLayer).path!
+                let rulerPath = (ruler.layer!.sublayers!.first { $0.name == "timelineTicks" } as! CAShapeLayer).path!
                 let g = vertices(gridPath).map { $0.x + tile - offset }
                 let r = vertices(rulerPath).map { $0.x + tile - offset }
                 precondition(g.count == 2 && r.count == 2)

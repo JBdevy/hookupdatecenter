@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 import AVFoundation
 #if os(macOS)
 import AppKit
+import AudioToolbox
 #endif
 
 enum PortableProjectImportPrompt: String, Identifiable {
@@ -31,9 +32,9 @@ extension UTType {
 
 @MainActor final class ProjectDocuments: ObservableObject {
     let multitrack = MultitrackPresentation()
-    func dropAtNativeGrid(_ providers: [NSItemProvider], position: Double) -> Bool {
+    func dropAtNativeGrid(_ providers: [NSItemProvider], position: Double, track: UUID?) -> Bool {
         guard let song = show.current else { return false }
-        return importAudio(providers, start: position, track: nil, song: song.id, layout: .separateTracks)
+        return importAudio(providers, start: position, track: track, song: song.id, layout: .separateTracks)
     }
     private func importLyrics(_ providers: [NSItemProvider], at position: Double, song: UUID, project: UUID) {
         busy = true
@@ -502,8 +503,12 @@ extension UTType {
     @Published var currentURL: URL?
     @Published var recent: [URL] = []
     @Published var canCancelOpening = false
-    @Published private(set) var backupOpeningProgress: Double?
-    @Published private(set) var backupOpeningFile = ""
+    struct OpeningProgress {
+        var fraction = 0.0
+        var fileName: String
+        let isBackup: Bool
+    }
+    @Published private(set) var openingProgress: OpeningProgress?
     private var openingTask: Task<Void, Never>?
     private var openingCancellation: ProjectOpeningCancellation?
     func cancelOpening() {
@@ -519,8 +524,9 @@ extension UTType {
         await task.value
         return !busy
     }
-    private func beginOpening(_ operation: @escaping @MainActor () async throws -> Void) {
+    private func beginOpening(progress: OpeningProgress? = nil, _ operation: @escaping @MainActor () async throws -> Void) {
         busy = true; error = ""; status = "Opening project…"; canCancelOpening = true
+        openingProgress = progress
         #if os(macOS)
         if let request = remoteOpening { Self.finishRemoteProjectOpening(request.id, state: "opening") }
         #endif
@@ -528,14 +534,20 @@ extension UTType {
         openingTask = Task {
             defer {
                 busy = false; canCancelOpening = false; openingTask = nil; openingCancellation = nil; status = ""
-                backupOpeningProgress = nil; backupOpeningFile = ""
+                openingProgress = nil
                 #if os(macOS)
                 finishRemoteOpening()
                 #endif
             }
             do { try await operation() }
             catch is CancellationError { missingAudioPrompt = nil }
-            catch { if Task.isCancelled { missingAudioPrompt = nil } else { self.error = error.localizedDescription } }
+            catch {
+                if Task.isCancelled { missingAudioPrompt = nil }
+                else {
+                    self.error = error.localizedDescription
+                    if let progress, !progress.isBackup { show.modalNotice = self.error }
+                }
+            }
         }
     }
     @Published var busy = false {
@@ -564,6 +576,7 @@ extension UTType {
         var paths: [String]
         var errors: [String] = []
         var isDAWImport = false
+        var openingProgress: OpeningProgress?
     }
     @Published var missingAudioPrompt: MissingAudioPrompt?
     @Published var importingAudio = false
@@ -608,6 +621,16 @@ extension UTType {
             do {
                 var urls: [URL] = []
                 for provider in providers {
+                    if provider.hasItemConformingToTypeIdentifier(LibrarySamplerTransfer.type.identifier) {
+                        let sample: URL = try await withCheckedThrowingContinuation { continuation in
+                            provider.loadDataRepresentation(forTypeIdentifier: LibrarySamplerTransfer.type.identifier) { data, error in
+                                if let url = LibrarySamplerTransfer.url(data) { continuation.resume(returning: url) }
+                                else { continuation.resume(throwing: error ?? ProjectError.invalid("Could not read the dropped file.")) }
+                            }
+                        }
+                        urls.append(sample)
+                        continue
+                    }
                     let url: URL = try await withCheckedThrowingContinuation { continuation in
                         provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
                             if let error { continuation.resume(throwing: error); return }
@@ -1088,8 +1111,9 @@ extension UTType {
         await TimelineAudioWaveform.shared.preload(files, cachedOnly: cachedOnly, cancelled: { cancellation?.cancelled == true }) { done, total in
             guard cancellation?.cancelled != true else { return }
             self.status = "Preparing waveforms… \(done)/\(total)"
-            if self.backupOpeningProgress != nil {
-                self.backupOpeningProgress = max(self.backupOpeningProgress ?? 0, 0.8 + 0.15 * Double(done) / Double(max(1, total)))
+            if let progress = self.openingProgress {
+                let start = progress.isBackup ? 0.8 : 0.25
+                self.openingProgress?.fraction = max(progress.fraction, start + (0.9 - start) * Double(done) / Double(max(1, total)))
             }
         }
     }
@@ -1100,6 +1124,42 @@ extension UTType {
         FXWindows.shared.closeAll()
         AutomationWindows.closeAll()
         MIDIEditorWindows.shared.closeAll()
+        #endif
+    }
+    private func confirmOutgoingProject() async throws {
+        guard ready, show.hasUnsavedChanges else { return }
+        #if os(macOS)
+        let alert = NSAlert()
+        alert.messageText = String(format: JarasLocalization.string("Do you want to save the project %@?"), show.snapshot.project.name)
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: JarasLocalization.string("Don't Save"))
+        alert.addButton(withTitle: JarasLocalization.string("Cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            if isTemporary, let lease = temporarySession {
+                let panel = NSSavePanel()
+                panel.title = JarasLocalization.string("Save Project")
+                panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
+                panel.nameFieldStringValue = "Untitled.jl"
+                panel.canCreateDirectories = true
+                guard panel.runModal() == .OK, let selected = panel.url else { throw CancellationError() }
+                let name = selected.deletingPathExtension().lastPathComponent
+                let destination = ProjectDirectoryPolicy.availableFolder(named: name, in: selected.deletingLastPathComponent())
+                    .appendingPathComponent(name).appendingPathExtension("jl")
+                try await show.saveForClosing()
+                guard let saved = try await store.load() else { throw ProjectError.invalid("Project not found") }
+                _ = try await Task.detached(priority: .userInitiated) { try lease.export(saved, to: destination) }.value
+                remember(destination)
+            } else {
+                try await show.saveForClosing()
+            }
+        case .alertSecondButtonReturn:
+            break
+        default:
+            throw CancellationError()
+        }
+        #else
+        try await show.saveForClosing()
         #endif
     }
     private func resetProjectSelections() {
@@ -1148,7 +1208,8 @@ extension UTType {
         try discardTemporarySession()
     }
     #endif
-    private func activate(_ project: Project, at url: URL, unreadableAudioPaths: Set<String> = []) async throws {
+    private func activate(_ project: Project, at url: URL, unreadableAudioPaths: Set<String> = [],
+                          confirmReplacement: Bool = true) async throws {
         var project = project
         for song in project.songs.indices {
             for track in project.songs[song].tracks.indices where project.songs[song].tracks[track].role.rawValue == "video" {
@@ -1167,12 +1228,12 @@ extension UTType {
         #endif
         try Task.checkCancellation()
         canCancelOpening = false
-        if backupOpeningProgress != nil { backupOpeningProgress = 0.95; status = "Opening project…" }
+        openingProgress?.fraction = 0.95
         let canExecute = show.canExecute
         show.canExecute = { false }
         defer { show.canExecute = canExecute }
         closeProjectEditors()
-        if ready && show.hasUnsavedChanges { try await show.saveForClosing() }
+        if confirmReplacement { try await confirmOutgoingProject() }
         if currentURL != url { try await rememberProjectMedia() }
         // Keep the current project playing through preparation and saving.
         // Only its actual replacement stops this session; other tabs keep playing.
@@ -1199,7 +1260,7 @@ extension UTType {
         if PlaybackCapacity.peak(project) > PlaybackCapacity.limit {
             show.modalNotice = JarasLocalization.string(PlaybackCapacity.openingNotice)
         }
-        if backupOpeningProgress != nil { backupOpeningProgress = 1 }
+        openingProgress?.fraction = 1
         if let temporarySession, !temporarySession.contains(url) {
             // Playback/readers now point at the new directory. Cleanup failure
             // must not invalidate an already committed/opened normal project.
@@ -1223,7 +1284,7 @@ extension UTType {
         if enriched != project { try await ProjectStore(url: url).save(enriched) }
     }
     func open(_ url: URL) { open(url, remoteCommandID: nil) }
-    func open(_ url: URL, remoteCommandID: UUID?) {
+    func open(_ url: URL, remoteCommandID: UUID? = nil, fromFileRecents: Bool = false) {
         #if os(macOS)
         if let remoteCommandID { remoteOpening = (remoteCommandID, url.standardizedFileURL.resolvingSymlinksInPath()) }
         guard canChangeProject(), !importingAudio else {
@@ -1263,37 +1324,42 @@ extension UTType {
         #if os(macOS)
         if ["logicx", "rpp"].contains(url.pathExtension.lowercased()) { importDAW(url); return }
         #endif
-        beginOpening {
+        let isBackup = url.pathExtension.lowercased() == "bkjl"
+        let progress = isBackup || (ready && fromFileRecents) ? OpeningProgress(fileName: url.lastPathComponent, isBackup: isBackup) : nil
+        beginOpening(progress: progress) {
             guard ["jl", "bkjl"].contains(url.pathExtension.lowercased()) else { throw ProjectError.invalid("Select a .jl or .bkjl project") }
-            let isBackup = url.pathExtension.lowercased() == "bkjl"
             let opening = self.openingCancellation
-            if isBackup {
-                self.backupOpeningProgress = 0; self.backupOpeningFile = url.lastPathComponent
-                self.status = "Restoring backup…"
-            }
+            if isBackup { self.status = "Restoring backup…" }
             let url = try await ProjectOpeningWork.run {
                 guard isBackup else { return url }
                 return try ProjectBackups.restore(url) { [weak self] progress in
                     Task { @MainActor in
                         guard let self, self.openingCancellation === opening, opening?.cancelled != true,
-                              let current = self.backupOpeningProgress, current <= progress.fraction * 0.7 else { return }
-                        self.backupOpeningProgress = progress.fraction * 0.7
-                        self.backupOpeningFile = progress.fileName
+                              let current = self.openingProgress, current.fraction <= progress.fraction * 0.7 else { return }
+                        self.openingProgress?.fraction = progress.fraction * 0.7
+                        self.openingProgress?.fileName = progress.fileName
                     }
                 }
             }
-            if isBackup { self.backupOpeningProgress = 0.75; self.backupOpeningFile = ""; self.status = "Opening project…" }
+            if isBackup {
+                self.openingProgress?.fraction = 0.75
+                self.openingProgress?.fileName = ""
+                self.status = "Opening project…"
+            }
             #if os(macOS)
             self.updateRemoteOpeningDestination(remoteCommandID, to: url)
             #endif
             guard let project = try await ProjectStore(url: url).load() else { throw ProjectError.invalid("Project not found") }
             try Task.checkCancellation()
             try project.validate()
+            if !isBackup { self.openingProgress?.fraction = 0.15 }
             let missing = try await ProjectOpeningWork.run {
                 ProjectAudioRecovery.missingPaths(in: project, directory: url.deletingLastPathComponent())
             }
+            try Task.checkCancellation()
+            if !isBackup { self.openingProgress?.fraction = 0.25 }
             if !missing.isEmpty {
-                self.missingAudioPrompt = MissingAudioPrompt(project: project, url: url, paths: missing)
+                self.missingAudioPrompt = MissingAudioPrompt(project: project, url: url, paths: missing, openingProgress: self.openingProgress)
                 return
             }
             try await self.finishOpening(project, at: url)
@@ -1331,7 +1397,7 @@ extension UTType {
     }
     func openWithMissingAudio() {
         guard !busy, let prompt = missingAudioPrompt else { return }
-        beginOpening {
+        beginOpening(progress: prompt.openingProgress) {
             try await self.finishOpening(prompt.project, at: prompt.url)
             self.missingAudioPrompt = nil
             if prompt.isDAWImport {
@@ -1412,12 +1478,13 @@ extension UTType {
         }
     }
     #endif
-    func browse() {
+    func browse(onlyCatLiveProject: Bool = false) {
         #if os(macOS)
         let panel = NSOpenPanel(); panel.allowedContentTypes = [UTType(filenameExtension: "ziplive") ?? .zip, .zip, UTType(filenameExtension: "jl") ?? .data, UTType(filenameExtension: "bkjl") ?? .data, UTType(filenameExtension: "logicx") ?? .package, UTType(filenameExtension: "rpp") ?? .data, .package, .folder]
-        panel.allowsMultipleSelection = false; panel.canChooseDirectories = true
+        if onlyCatLiveProject { panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data] }
+        panel.allowsMultipleSelection = false; panel.canChooseDirectories = !onlyCatLiveProject
         panel.treatsFilePackagesAsDirectories = false
-        let validator = ProjectSourcePanelValidator(extensions: ["jl", "bkjl", "logicx", "rpp", "ziplive", "zip"])
+        let validator = ProjectSourcePanelValidator(extensions: onlyCatLiveProject ? ["jl"] : ["jl", "bkjl", "logicx", "rpp", "ziplive", "zip"])
         panel.delegate = validator
         let response = withExtendedLifetime(validator) { panel.runModal() }
         if response == .OK, let url = panel.url { open(url) }
@@ -1428,6 +1495,117 @@ extension UTType {
         nativePicker = .project
         #endif
     }
+    #if os(macOS)
+    func saveAs() async {
+        guard ready, !busy, !show.saving, !TrackRecording.shared.recording,
+              !TrackRecording.shared.busy, let source = currentURL else { return }
+        if isTemporary { await saveTemporary(); return }
+        let panel = NSSavePanel()
+        panel.title = "Save As"
+        panel.allowedContentTypes = [UTType(filenameExtension: "jl") ?? .data]
+        panel.nameFieldStringValue = source.lastPathComponent
+        panel.directoryURL = source.deletingLastPathComponent().deletingLastPathComponent()
+        panel.canCreateDirectories = true
+        let validator = ProjectCopyPanelValidator(source: source)
+        panel.delegate = validator
+        let session = show.projectSessionID
+        let response: NSApplication.ModalResponse = await withCheckedContinuation { continuation in
+            if let window = NSApp.keyWindow { panel.beginSheetModal(for: window) { continuation.resume(returning: $0) } }
+            else { panel.begin { continuation.resume(returning: $0) } }
+        }
+        guard response == .OK, let target = panel.url, show.projectSessionID == session, !busy else { return }
+        _ = validator
+        busy = true; status = "Copying audio and saving project…"
+        temporarySaveProgress = .preparing
+        let canExecute = show.canExecute
+        defer { busy = false; status = ""; temporarySaveProgress = nil; show.canExecute = canExecute }
+        do {
+            closeProjectEditors()
+            let project = try show.projectForSaving()
+            show.canExecute = { false }
+            let result = try await Task.detached(priority: .userInitiated) {
+                try TemporaryProjectSession.copyProject(project, from: source.deletingLastPathComponent(), to: target) { progress in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.busy, progress.sequence >= (self.temporarySaveProgress?.sequence ?? 0) else { return }
+                        self.temporarySaveProgress = progress
+                    }
+                }
+            }.value
+            try await activate(result, at: target, confirmReplacement: false)
+        } catch { show.modalNotice = error.localizedDescription }
+    }
+
+    enum TimelineFileKind { case audio, movie, midi }
+    func importTimelineFile(_ kind: TimelineFileKind) {
+        guard ready, !busy, let song = show.current else { return }
+        guard let id = show.selectedTrackForActions, let track = song.tracks.first(where: { $0.id == id }),
+              kind == .movie ? track.kind == .video || track.kind.isTeleprompter : track.kind == .standard && track.role.rawValue != "vinhetas" else {
+            audioImportError = JarasLocalization.string("Select another track.")
+            return
+        }
+        let panel = NSOpenPanel()
+        switch kind {
+        case .audio: panel.allowedContentTypes = [.audio]
+        case .movie: panel.allowedContentTypes = [.movie]
+        case .midi: panel.allowedContentTypes = [UTType(filenameExtension: "mid") ?? .midi, .midi]
+        }
+        panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        let cursor = show.snapshot.transport.editPosition ?? show.snapshot.transport.position
+        let project = show.snapshot.project.id, session = show.projectSessionID
+        guard panel.runModal() == .OK, let url = panel.url, show.projectSessionID == session,
+              show.current?.id == song.id, show.current?.tracks.contains(where: { $0.id == id && $0.kind == track.kind }) == true else { return }
+        if kind != .midi {
+            _ = importAudio([NSItemProvider(item: url as NSURL, typeIdentifier: UTType.fileURL.identifier)],
+                            start: cursor, track: id, song: song.id, layout: .sameTrack)
+            return
+        }
+        do {
+            var imported = track
+            imported.clips = [try Self.readMIDIItem(url, start: cursor)]
+            try show.insertAudioTracks([imported], song: song.id, project: project)
+        } catch { audioImportError = error.localizedDescription }
+    }
+
+    nonisolated private static func readMIDIItem(_ url: URL, start: Double) throws -> AudioClip {
+        let unreadable = ProjectError.invalid("Could not read the MIDI file.")
+        var source: MusicSequence?
+        guard NewMusicSequence(&source) == noErr, let source else { throw unreadable }
+        defer { DisposeMusicSequence(source) }
+        guard MusicSequenceFileLoad(source, url as CFURL, .midiType, []) == noErr else { throw unreadable }
+        var count: UInt32 = 0
+        MusicSequenceGetTrackCount(source, &count)
+        var notes: [MIDINote] = [], duration = 0.0
+        for index in 0..<count {
+            var track: MusicTrack?
+            var iterator: MusicEventIterator?
+            guard MusicSequenceGetIndTrack(source, index, &track) == noErr, let track,
+                  NewMusicEventIterator(track, &iterator) == noErr, let iterator else { continue }
+            defer { DisposeMusicEventIterator(iterator) }
+            var hasEvent = DarwinBoolean(false)
+            while MusicEventIteratorHasCurrentEvent(iterator, &hasEvent) == noErr, hasEvent.boolValue {
+                var beat: MusicTimeStamp = 0, kind: MusicEventType = 0, size: UInt32 = 0
+                var data: UnsafeRawPointer?
+                MusicEventIteratorGetEventInfo(iterator, &beat, &kind, &data, &size)
+                if kind == kMusicEventType_MIDINoteMessage, let data, size >= MemoryLayout<MIDINoteMessage>.size {
+                    let note = data.load(as: MIDINoteMessage.self)
+                    var begin = 0.0, end = 0.0
+                    if note.velocity > 0, MusicSequenceGetSecondsForBeats(source, beat, &begin) == noErr,
+                       MusicSequenceGetSecondsForBeats(source, beat + Double(note.duration), &end) == noErr,
+                       begin.isFinite, end.isFinite, begin >= 0, end > begin {
+                        notes.append(.init(start: begin * 2, length: (end - begin) * 2, pitch: Int(note.note),
+                                           velocity: Int(note.velocity), channel: Int(note.channel) + 1))
+                        duration = max(duration, end)
+                    }
+                }
+                MusicEventIteratorNextEvent(iterator)
+            }
+        }
+        guard !notes.isEmpty else { throw ProjectError.invalid("The MIDI file contains no notes.") }
+        var item = AudioClip(id: UUID(), name: url.deletingPathExtension().lastPathComponent, startTime: start, duration: duration)
+        item.midi = MIDIItem(notes: notes)
+        return item
+    }
+    #endif
     func browsePortablePackage() {
         guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         #if os(macOS)
@@ -1489,6 +1667,11 @@ extension UTType {
         removal = ""; adding = false; appendDestination = nil
     }
     private func localizedStemWarning(_ warning: String) -> String {
+        let projectSuffix = ": contains a CatLive project"
+        if warning.hasSuffix(projectSuffix) {
+            return String(format: JarasLocalization.string("%@ contains a CatLive project. Use Open existing and select the .jl file inside the folder."),
+                          String(warning.dropLast(projectSuffix.count)))
+        }
         let suffix = ": no readable WAV, AIFF or MP3 files"
         guard warning.hasSuffix(suffix) else { return warning }
         return String(format: JarasLocalization.string("%@ contains no readable WAV, AIFF or MP3 files. Open the folder and select the song folders containing audio."), String(warning.dropLast(suffix.count)))
@@ -1509,11 +1692,11 @@ extension UTType {
         try temporarySession.discard()
         self.temporarySession = nil
     }
-    func createTemporary() {
+    func createTemporary(fromFileMenu: Bool = false) {
         guard show.canControl(), !busy, !importingAudio, !show.saving,
               !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
-        guard temporarySession == nil else {
-            error = "Close the other temporary session before creating a new one."; return
+        if isTemporary {
+            error = ""; opened = UUID(); return
         }
         busy = true; error = ""
         Task {
@@ -1530,9 +1713,12 @@ extension UTType {
                 project.projectSyncID = UUID()
                 try ProjectDocumentCodec.writeEncoded(ProjectDocumentCodec.encode(project), to: url, exclusive: true)
                 try await activate(project, at: url)
+            } catch is CancellationError {
+                if !isTemporary { try? discardTemporarySession() }
             } catch {
                 if !isTemporary { try? discardTemporarySession() }
                 self.error = error.localizedDescription
+                if fromFileMenu { show.modalNotice = self.error }
             }
         }
     }
@@ -1718,7 +1904,7 @@ extension UTType {
                     guard !show.hasUnsavedChanges else {
                         throw ProjectError.invalid("The project changed while saving. Save again before closing.")
                     }
-                } else if ready && show.hasUnsavedChanges { try await show.saveForClosing() }
+                } else { try await confirmOutgoingProject() }
                 var base: Project
                 if append {
                     // Use the committed copy: it contains captured plugin state,
@@ -1896,9 +2082,18 @@ private struct ImportReportScrollIndicators: ViewModifier {
     }
 }
 
+struct ProjectBrowserNavigation: Equatable {
+    private let id = UUID()
+    let recents: Bool
+}
+
 struct ProjectBrowserView: View {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @ObservedObject var documents: ProjectDocuments
     var completed: () -> Void = {}
+    var homeModal = false
+    var returnToProject: (() -> Void)? = nil
+    var navigation: ProjectBrowserNavigation? = nil
     @State private var creating = false
     @State private var addingOptions = false
     @State private var opening = false
@@ -1949,18 +2144,25 @@ struct ProjectBrowserView: View {
                 HStack { Button("Back", action: documents.reviewFolderOrder); Spacer(); Button("Create / Add") { askingForBPM = true }.buttonStyle(StageButtonStyle(color: JarasTheme.green)).keyboardShortcut(.defaultAction) }
                 #endif
             } else {
-                Text("CatLive").font(.jarasTitle2.bold())
+                HStack {
+                    Text("CatLive").font(.jarasTitle2.bold())
+                    if let returnToProject {
+                        Spacer()
+                        Button("Back to project", action: returnToProject)
+                            .disabled(documents.busy).keyboardShortcut(.cancelAction)
+                    }
+                }
                 #if os(iOS)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
                     startupCard("Create Project", icon: "plus.rectangle", color: JarasTheme.green) { creating.toggle(); opening = false; addingOptions = false }
                     addProjectButton
-                    startupCard("Recent Projects", icon: "folder", color: JarasTheme.purple) { opening = true; creating = false; addingOptions = false }
+                    startupCard(homeModal ? "Recents" : "Recent Projects", icon: "folder", color: JarasTheme.purple) { opening = true; creating = false; addingOptions = false }
                 }.padding(.vertical, 12)
                 #else
                 HStack(spacing: 10) {
                     action("Create Project", icon: "plus.rectangle") { creating.toggle(); opening = false; addingOptions = false }
                     addProjectButton
-                    action("Recent Projects", icon: "folder") { opening = true; creating = false; addingOptions = false }
+                    action(homeModal ? "Recents" : "Recent Projects", icon: "folder") { opening = true; creating = false; addingOptions = false }
                 }
                 #endif
                 #if os(iOS)
@@ -2041,11 +2243,11 @@ struct ProjectBrowserView: View {
                     #if os(iOS)
                     recentAction("Open multiple projects") { selectingMultipleProjects = true }
                         .disabled(documents.recent.isEmpty || documents.openProjectTabAndWait == nil)
-                    recentAction("Browse…") { documents.browse() }
+                    recentAction("Open existing") { documents.browse() }
                     #else
                     Button("Open multiple projects") { selectingMultipleProjects = true }
                         .disabled(documents.recent.isEmpty || documents.openProjectTabAndWait == nil)
-                    Button("Browse…") { documents.browse() }
+                    Button("Open existing") { documents.browse() }
                     #endif
                 }
                 HStack(spacing: 8) {
@@ -2062,7 +2264,10 @@ struct ProjectBrowserView: View {
                             Button {
                                 if documents.ready && documents.currentURL?.standardizedFileURL != url.standardizedFileURL {
                                     recentToOpen = url
-                                } else { documents.open(url) }
+                                } else {
+                                    documents.open(url)
+                                    if documents.ready, returnToProject != nil { completed() }
+                                }
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading) {
@@ -2123,7 +2328,12 @@ struct ProjectBrowserView: View {
                 }
             }
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+            .background(interfaceTheme.homeBackground).foregroundStyle(JarasTheme.text)
+            .onChange(of: navigation) { request in
+                if let request {
+                    opening = request.recents; creating = false; addingOptions = false
+                }
+            }
             .onChange(of: documents.opened) { _ in
                 if !documents.ready { opening = false; creating = false; addingOptions = false }
                 completed()
@@ -2176,9 +2386,9 @@ struct ProjectBrowserView: View {
             addingOptions.toggle(); creating = false; opening = false
         } label: {
             #if os(iOS)
-            startupCardLabel("Add Project", icon: "folder.badge.plus", color: JarasTheme.purple)
+            startupCardLabel(homeModal ? "Add Projects" : "Add Project", icon: "folder.badge.plus", color: JarasTheme.purple)
             #else
-            Label("Add Project", systemImage: "folder.badge.plus")
+            Label(homeModal ? LocalizedStringKey("Add Projects") : LocalizedStringKey("Add Project"), systemImage: "folder.badge.plus")
                 .font(.jarasSystem(size: 12, weight: .medium)).frame(maxWidth: .infinity, minHeight: 38)
                 .background(JarasTheme.panel).clipShape(RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
             #endif
@@ -2454,9 +2664,22 @@ struct ProjectWindowSizing: NSViewRepresentable {
     let editor: Bool
     var login = false
     let documents: ProjectDocuments
+    var chromeColor = JarasTheme.titlebar
     @AppStorage(InterfaceScale.key) private var interfaceScale = 1.0
-    func makeNSView(context: Context) -> ProjectWindowAnchor { ProjectWindowAnchor() }
-    func updateNSView(_ view: ProjectWindowAnchor, context: Context) { view.editor = editor; view.login = login; view.documents = documents; view.interfaceScale = CGFloat(InterfaceScale.factor(interfaceScale)); view.update() }
+    func makeNSView(context: Context) -> ProjectWindowAnchor {
+        let view = ProjectWindowAnchor()
+        configure(view)
+        return view
+    }
+    func updateNSView(_ view: ProjectWindowAnchor, context: Context) {
+        configure(view)
+        view.update()
+    }
+    private func configure(_ view: ProjectWindowAnchor) {
+        view.editor = editor; view.login = login; view.documents = documents
+        view.interfaceScale = CGFloat(InterfaceScale.factor(interfaceScale))
+        view.titlebarColor = NSColor(chromeColor)
+    }
 }
 // The native window already has explicit editor/browser bounds. Do not ask
 // SwiftUI to measure its entire document again for minimum, ideal and maximum
@@ -2477,6 +2700,7 @@ final class ProjectWindowAnchor: NSView {
         window.toggleFullScreen(nil)
     }
     static let editorFrameSize = NSSize(width: 1440, height: 791)
+    static let editorMinimumFrameSize = NSSize(width: 1162, height: 757)
     static func configureChrome(of window: NSWindow) {
         // The interface already stays below the native titlebar. Extending its
         // host underneath it makes AppKit walk every control's drag-prevention
@@ -2492,10 +2716,13 @@ final class ProjectWindowAnchor: NSView {
     var login = false
     weak var documents: ProjectDocuments?
     var interfaceScale: CGFloat = 1
+    var titlebarColor = NSColor(JarasTheme.titlebar)
     private var applied: NSSize?
+    private var applyingGeometry = false
     private weak var configuredWindow: NSWindow?
     private weak var configuredDocuments: ProjectDocuments?
     private var placementObservers: [NSObjectProtocol] = []
+    private var minimumObserver: NSKeyValueObservation?
     private var titlebarMonitor: Any?
     private var titlebarRestoreFrame: NSRect?
     private var remembersPlacement = false
@@ -2550,28 +2777,47 @@ final class ProjectWindowAnchor: NSView {
                               NSWindow.didEndLiveResizeNotification, NSWindow.willCloseNotification].map { name in
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in self?.rememberPlacement() }
         }
+        placementObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification,
+            object: window, queue: .main) { [weak self, weak window] _ in
+            if let window { self?.keepEditorMinimum(on: window) }
+        })
     }
     private static func restoredFrame(fallback: NSRect, scale: CGFloat) -> NSRect {
         guard let saved = UserDefaults.standard.string(forKey: placementKey) else { return fallback }
         var frame = NSRectFromString(saved)
-        guard frame.width >= 1050 * scale, frame.height >= 650 * scale, frame.origin.x.isFinite, frame.origin.y.isFinite,
+        guard frame.width > 0, frame.height > 0, frame.origin.x.isFinite, frame.origin.y.isFinite,
               frame.width.isFinite, frame.height.isFinite else { return fallback }
         let screen = NSScreen.screens.max { a, b in
             let ar = a.visibleFrame.intersection(frame), br = b.visibleFrame.intersection(frame)
             return (ar.isNull ? 0 : ar.width * ar.height) < (br.isNull ? 0 : br.width * br.height)
         }
         let visible = screen.flatMap { $0.visibleFrame.intersects(frame) ? $0.visibleFrame : nil } ?? NSScreen.main?.visibleFrame ?? fallback
-        frame.size.width = min(max(1408 * scale, frame.width), visible.width); frame.size.height = min(max(682 * scale, frame.height), visible.height)
+        frame.size.width = min(max(editorMinimumFrameSize.width * scale, frame.width), visible.width)
+        frame.size.height = min(max(editorMinimumFrameSize.height * scale, frame.height), visible.height)
         frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
         frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
         return frame
     }
+    private func applyMinimum(_ minimum: NSSize, available: NSSize, to window: NSWindow) {
+        let size = NSSize(width: min(available.width, minimum.width * interfaceScale),
+                          height: min(available.height, minimum.height * interfaceScale))
+        if window.minSize != size {
+            window.contentMinSize = window.contentRect(forFrameRect: NSRect(origin: .zero, size: size)).size
+        }
+    }
+    private func keepEditorMinimum(on window: NSWindow) {
+        guard editor, configuredWindow === window else { return }
+        applyMinimum(Self.editorMinimumFrameSize, available: window.screen?.visibleFrame.size ?? Self.editorFrameSize, to: window)
+    }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); update() }
     func update() {
-        guard let window else { return }
+        guard let window, !applyingGeometry else { return }
+        applyingGeometry = true
+        defer { applyingGeometry = false }
         if editor { Self.editorWindow = window }
         else if Self.editorWindow === window { Self.editorWindow = nil }
         if let documents, configuredWindow !== window || configuredDocuments !== documents {
+            ProjectionWindow.bindWorkspace(window)
             ProjectCloseGuard.shared.attach(window: window, documents: documents)
             configuredDocuments = documents
         }
@@ -2582,42 +2828,62 @@ final class ProjectWindowAnchor: NSView {
             configuredWindow = window
             observePlacement(window)
             observeTitlebar(window)
+            // SwiftUI can publish its content minimum after the native frame
+            // changes. Restore the editor's outer limit without replacing the
+            // window delegate or relaying out the whole workspace.
+            minimumObserver = window.observe(\.contentMinSize, options: [.new]) { [weak self, weak window] _, _ in
+                DispatchQueue.main.async {
+                    guard let self, let window else { return }
+                    self.keepEditorMinimum(on: window)
+                }
+            }
         }
-        let reviewing = documents?.folderReview != nil
-        let size = editor ? Self.editorFrameSize : login ? NSSize(width: 600, height: 760) : reviewing ? NSSize(width: 840, height: 540) : NSSize(width: 600, height: 460)
+        if window.backgroundColor != titlebarColor { window.backgroundColor = titlebarColor }
+        let size = editor ? Self.editorFrameSize : NSSize(width: 600, height: login ? 760 : 460)
         let available = window.screen?.visibleFrame.size ?? size
-        let minimum = editor ? NSSize(width: 1408, height: 682) : reviewing ? NSSize(width: 760, height: 460) : NSSize(width: 600, height: 460)
-        let minimumSize = NSSize(width: min(available.width, minimum.width * interfaceScale), height: min(available.height, minimum.height * interfaceScale))
-        if window.minSize != minimumSize { window.minSize = minimumSize }
-        guard applied != size else { return }
+        let minimum = editor ? Self.editorMinimumFrameSize : NSSize(width: 600, height: 460)
+        guard applied != size else {
+            applyMinimum(minimum, available: available, to: window)
+            return
+        }
         rememberPlacement()
         remembersPlacement = false
         applied = size
-        let isEditor = editor
-        DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, self.editor == isEditor, self.applied == size else { return }
-            let availableMinimum = window.screen?.visibleFrame.size ?? size
-            window.minSize = NSSize(width: min(availableMinimum.width, minimum.width * self.interfaceScale), height: min(availableMinimum.height, minimum.height * self.interfaceScale))
-            if isEditor {
-                let available = window.screen?.visibleFrame.size ?? size
-                let frameSize = NSSize(width: min(size.width, available.width), height: min(size.height, available.height))
-                window.setFrame(Self.restoredFrame(fallback: NSRect(origin: window.frame.origin, size: frameSize), scale: self.interfaceScale), display: true)
-                self.remembersPlacement = true
-                self.rememberPlacement()
-            } else {
-                // These sizes described the full window with the previous
-                // full-size content host; keep that same outer geometry.
-                let available = window.screen?.visibleFrame.size ?? size
-                let fitted = NSSize(width: min(size.width, available.width), height: min(size.height, available.height))
-                window.setFrame(NSRect(origin: window.frame.origin, size: fitted), display: true)
-            }
-            if !isEditor { window.center() }
+        if editor || login {
+            if !window.styleMask.contains(.resizable) { window.styleMask.insert(.resizable) }
+        } else if window.styleMask.contains(.resizable) {
+            window.styleMask.remove(.resizable)
         }
+        if !editor { applyMinimum(minimum, available: available, to: window) }
+        let frameSize = NSSize(width: min(size.width, available.width), height: min(size.height, available.height))
+        let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? window.frame
+        let fallback = NSRect(x: visible.midX - frameSize.width / 2, y: visible.midY - frameSize.height / 2,
+                              width: frameSize.width, height: frameSize.height)
+        let destination = editor ? Self.restoredFrame(fallback: fallback, scale: interfaceScale) : fallback
+        if !window.styleMask.contains(.fullScreen), window.frame != destination {
+            window.setFrame(destination, display: false, animate: false)
+        }
+        // Raising the minimum on the compact Home window first makes AppKit
+        // resize it to the editor minimum before it reaches its saved frame.
+        if editor { applyMinimum(minimum, available: available, to: window) }
+        remembersPlacement = editor
+        rememberPlacement()
     }
 }
 #endif
 
 #if os(macOS)
+private final class ProjectCopyPanelValidator: NSObject, NSOpenSavePanelDelegate {
+    private let sourceFolder: URL
+    init(source: URL) { sourceFolder = source.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL }
+    func panel(_ sender: Any, validate url: URL) throws {
+        guard url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL != sourceFolder,
+              !FileManager.default.fileExists(atPath: url.path) else {
+            throw ProjectError.invalid(JarasLocalization.string("Choose another folder and an unused .jl filename."))
+        }
+    }
+}
+
 /// Some Logic bundles arrive as ordinary directories (ZIP/external disks).
 /// Let AppKit select either representation, validating the actual project suffix.
 private final class ProjectSourcePanelValidator: NSObject, NSOpenSavePanelDelegate {

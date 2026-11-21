@@ -77,7 +77,6 @@ enum AppStartupPresentation {
     #if os(macOS)
     private let accessConnectivity = NWPathMonitor()
     #endif
-    private var armedInstrumentObservation: AnyCancellable?
     private var projectInstrumentObservation: AnyCancellable?
     let documents: ProjectDocuments
     let preview: Bool
@@ -180,27 +179,6 @@ enum AppStartupPresentation {
             else { audio.setLicenseAllowed(auth.allowed) }
             #endif
             if !tabContext { TrackRecording.shared.bind(show) }
-            armedInstrumentObservation = projectRecorder.$armed.sink { [weak show] _ in
-                // Published state is sent before the REC button redraws. Queue
-                // graph changes after the click, and only wake live instruments.
-                Task { @MainActor [weak self, weak show] in
-                    #if os(iOS)
-                    guard self?.localPlaybackEnabled == true, !AudioDeviceSettings.shared.localSessionInterrupted else { return }
-                    #endif
-                    guard let show else { return }
-                    #if os(macOS)
-                    guard DesktopProjectTabs.shared.isForeground(show) else { return }
-                    #endif
-                    #if os(iOS)
-                    guard NativeProjectTabs.shared.isForeground(show) else { return }
-                    #endif
-                    let instruments = Set(show.snapshot.project.songs.flatMap(\.tracks).filter { track in
-                        track.fx?.instrumentKeys.isEmpty == false || (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
-                    }.map(\.id))
-                    audio.armedMIDIRecordingTracks = recorder.armed.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter { $0.recordingMode == .midi }.map(\.id)))
-                    audio.setArmedInstrumentTracks(recorder.armed.intersection(instruments))
-                }
-            }
             audio.instrumentFile = { [weak audio] id in
                 guard let instrument = InstrumentLibrary.catalog.first(where: { $0.id == id }),
                       let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: audio?.mediaDirectory) else { return nil }
@@ -311,6 +289,7 @@ enum AppStartupPresentation {
             }
             #endif
             show.audioRouting = { audio.previewRouting($0) }
+            show.audioMatrixPatch = { audio.previewMatrixPatch(routes: $0, outputs: $1, master: $2) }
             show.audioPatches = { [weak show] track, patches in
                 audio.previewPatches(track, patches: patches)
                 if let track, let show, show.current?.tracks.first(where: { $0.id == track })?.kind == .timecode { audio.updateTimecode(show.snapshot) }
@@ -338,6 +317,12 @@ enum AppStartupPresentation {
             }
             do { try audio.startDeviceSession() } catch { audio.onError(error) }
             #else
+            show.validateAudioOutput = { [weak self, weak audio] in
+                guard self?.localPlaybackEnabled == true, let audio else {
+                    throw ProjectError.invalid(JarasLocalization.string("Audio output is unavailable"))
+                }
+                try audio.requireMobilePlaybackOutput()
+            }
             AudioDeviceSettings.shared.mobileSessionEvent = { event in NativeProjectTabs.shared.handleAudioEvent(event) }
             #endif
         }
@@ -635,11 +620,6 @@ enum AppStartupPresentation {
         StemAudioPlayback.shared = next.projectAudio
         TrackRecording.shared = next.projectRecorder
         next.projectRecorder.bind(next.show)
-        let instrumentTracks = Set(next.show.snapshot.project.songs.flatMap(\.tracks).filter {
-            $0.fx?.instrumentKeys.isEmpty == false || ($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
-        }.map(\.id))
-        next.projectAudio.setArmedInstrumentTracks(next.projectRecorder.armed.intersection(instrumentTracks))
-        next.projectAudio.armedMIDIRecordingTracks = next.projectRecorder.armed.intersection(Set(next.show.snapshot.project.songs.flatMap(\.tracks).filter { $0.recordingMode == .midi }.map(\.id)))
         if let directory = next.documents.currentURL?.deletingLastPathComponent() {
             VideoPlayback.shared.open(directory: directory)
             VideoPlayback.teleprompter.open(directory: directory)

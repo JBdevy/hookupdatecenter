@@ -1,4 +1,5 @@
 #pragma once
+#include "../../Core/Audio/DrummerPad.hpp"
 #include "Common.h"
 #include "Include/EQAnalysis.hpp"
 #include "../../WindowsNative/Source/StemSeparator.h"
@@ -23,10 +24,11 @@ public:
     // Build on the control thread. Applying this bounded snapshot never allocates,
     // resets filter history, or loads assets under the device callback lock.
     struct ParameterPreview {
-        enum Kind { none, equalizer, compressor, delay, reverb, limiter, pitch } kind = none;
+        enum Kind { none, equalizer, compressor, delay, reverb, limiter, pitch, creative } kind = none;
         static constexpr size_t maximumEQStages = 160;
         std::array<std::array<float, 5>, maximumEQStages> eq{};
         unsigned eqCount = 0;
+        unsigned channels = 3;
         double sampleRate = 48000;
         std::array<float, 16> values{};
         std::array<float, 5> highPass{}, lowPass{};
@@ -38,6 +40,9 @@ public:
     void process(AudioBuffer<float>&,int samples,double seconds=0,bool playing=true,const MidiBuffer *midi=nullptr,double stemSeconds=std::numeric_limits<double>::quiet_NaN(),const jaras::PluginTempoMap *tempoMap=nullptr);
     void processIdleEditors(int samples, double seconds, bool playing,const jaras::PluginTempoMap *tempoMap=nullptr);
     bool hasExternal() const;
+    // Left/right input peaks and pre-makeup gain reduction for one insert.
+    std::array<float, 3> takeDynamicsLevels(const String &key) const;
+    float gainReduction() const noexcept { return reductionDB; }
     bool empty() const noexcept { return effects.empty(); }
     std::shared_ptr<analysis::Capture> eqAnalysis(const String &key) const;
     void applyAutomation(const AutomationProgram &, double time);
@@ -62,9 +67,12 @@ public:
     void checkStemErrors() const;
     std::shared_ptr<native::vst3::Processor> external(const String &key) const;
     void captureExternalState(var &) const;
+    std::shared_ptr<jaras::audio::DrummerPad> drummerVoice(const String &key) const;
     StringArray unsupported;
 private:
     struct Effect;
     std::vector<std::unique_ptr<Effect>> effects;
+    bool hasDynamicsMeter = false;
+    float reductionDB = -1.f;
 };
 }

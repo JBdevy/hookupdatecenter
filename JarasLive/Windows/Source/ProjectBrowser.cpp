@@ -99,12 +99,14 @@ void ProjectBrowser::Action::paintButton(Graphics &g, bool over, bool down) {
 }
 ProjectBrowser::ProjectBrowser() {
     setOpaque(true);
+    setWantsKeyboardFocus(true);
     for (auto *button :
          {&create, &add, &recent, &empty, &temporary, &stems, &reaper, &logic, &recording, &package, &back}) {
         addAndMakeVisible(*button);
         button->setComponentID(button->getName());
     }
     addAndMakeVisible(browseButton);
+    browseButton.setComponentID("openExistingProject");
     addAndMakeVisible(multipleButton);
     multipleButton.setComponentID("openMultipleProjects");
     addChildComponent(cancelLoading);
@@ -263,7 +265,7 @@ void ProjectBrowser::updateEnabled() {
 void ProjectBrowser::refresh() {
     for (auto *button : {&create, &add, &recent, &empty, &temporary, &stems, &reaper, &logic, &recording, &package, &back})
         button->setButtonText(localization::translate(button->getName()));
-    browseButton.setButtonText(localization::translate(String::fromUTF8("Browse…")));
+    browseButton.setButtonText(localization::english ? "Open existing" : "Abrir existente");
     multipleButton.setButtonText(localization::translate("Open multiple projects"));
     search.setTextToShowWhenEmpty(localization::translate("Search recent projects"), theme::secondary);
     filtered.clear();
@@ -301,7 +303,11 @@ void ProjectBrowser::refreshStorage() {
     });
 }
 void ProjectBrowser::paint(Graphics &g) {
-    g.fillAll(theme::background);
+    g.fillAll(theme::homeBackground);
+    if (projectOpen) {
+        g.setColour(theme::line);
+        g.drawRect(getLocalBounds());
+    }
     g.setColour(Colours::white);
     g.setFont(theme::font(18, true));
     g.drawText("CatLive", 24, 24, getWidth() - 48, 20, Justification::centredLeft);
@@ -353,8 +359,8 @@ void ProjectBrowser::resized() {
     multipleButton.setVisible(mode == opening);
     search.setVisible(mode == opening);
     recents.setVisible(mode == opening);
-    browseButton.setBounds(getWidth() - 100, 114, 76, 24);
-    multipleButton.setBounds(getWidth()-290,114,182,24);
+    browseButton.setBounds(getWidth() - 132, 114, 108, 24);
+    multipleButton.setBounds(getWidth() - 322, 114, 182, 24);
     search.setBounds(24, 148, width, 35);
     const bool hasError = loadingError.getText().isNotEmpty();
     const int statusHeight = loading ? 60 : hasError ? 44 : 0;
@@ -404,6 +410,11 @@ void ProjectBrowser::returnKeyPressed(int row) {
     if (loading) return;
     if (isPositiveAndBelow(row, filtered.size()) && open)
         open(File(filtered[row]));
+}
+bool ProjectBrowser::keyPressed(const KeyPress &key) {
+    if (key != KeyPress::escapeKey || !projectOpen || loading || !resume) return false;
+    resume();
+    return true;
 }
 void ProjectBrowser::listBoxItemClicked(int row, const MouseEvent &event) {
     if (loading || !isPositiveAndBelow(row, filtered.size()))

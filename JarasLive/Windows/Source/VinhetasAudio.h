@@ -54,12 +54,14 @@ class VinhetasAudio {
             counts[size_t(command.preset * 16 + command.pad)].fetch_add(1, std::memory_order_relaxed);
         commands[w % capacity] = command; write.store(w + 1, std::memory_order_release); return true;
     }
-    static std::shared_ptr<Sample> decode(const juce::File &file) {
+    static std::shared_ptr<Sample> decode(const juce::File &file, double playbackLimit = maximumDuration) {
         juce::AudioFormatManager formats; formats.registerBasicFormats();
         std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
         if (!reader || !acceptsDuration(reader->lengthInSamples, reader->sampleRate) || reader->lengthInSamples > INT_MAX) return nullptr;
+        const auto frames = std::min(double(reader->lengthInSamples), std::floor(reader->sampleRate * playbackLimit));
+        if (frames < 1) return nullptr;
         auto sample = std::make_shared<Sample>(); sample->rate = reader->sampleRate;
-        sample->pcm.setSize(2, int(reader->lengthInSamples));
+        sample->pcm.setSize(2, int(frames));
         if (!reader->read(&sample->pcm, 0, sample->pcm.getNumSamples(), 0, true, true)) return nullptr;
         if (reader->numChannels == 1) sample->pcm.copyFrom(1, 0, sample->pcm, 0, 0, sample->pcm.getNumSamples());
         return sample;

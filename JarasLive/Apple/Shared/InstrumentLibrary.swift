@@ -337,6 +337,10 @@ struct LibraryInstrument: Identifiable {
         let source = file(id, projectDirectory: projectDirectory)
         return FileManager.default.fileExists(atPath: source.path) ? source : nil
     }
+    func previewFile(_ instrument: LibraryInstrument) -> URL? {
+        guard !instrument.percussion else { return nil }
+        return resolvedFile(instrument.id, projectDirectory: projectDirectory)
+    }
     func setProjectDirectory(_ directory: URL?) {
         guard projectDirectory != directory else { return }
         projectDirectory = directory
@@ -367,10 +371,16 @@ struct LibraryInstrument: Identifiable {
         progress[id] = 0; error = ""
         jobs[id] = Task {
             defer { jobs[id] = nil; progress[id] = nil }
+            let temporary = directory.appendingPathComponent("." + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: temporary) }
             do {
-                let observer = DownloadProgress { [weak self] value in Task { @MainActor in guard let self, self.jobs[id] != nil else { return }; self.progress[id] = value } }
-                let (temporary,response) = try await URLSession.shared.download(for: URLRequest(url: url),delegate: observer)
-                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { throw ProjectError.invalid("Download failed") }
+                let transfer = InstrumentBankDownload(destination: temporary) { [weak self] value in
+                    Task { @MainActor in
+                        guard let self, let previous = self.progress[id], value > previous else { return }
+                        self.progress[id] = value
+                    }
+                }
+                try await transfer.download(from: url)
                 let handle = try FileHandle(forReadingFrom: temporary)
                 let header = try handle.read(upToCount: 12); try handle.close()
                 guard let header, header.count == 12, String(data: header.prefix(4),encoding: .ascii) == "RIFF", String(data: header.suffix(4),encoding: .ascii) == "sfbk" else { throw ProjectError.invalid("The downloaded file is not an SF2 sound bank.") }
@@ -382,15 +392,48 @@ struct LibraryInstrument: Identifiable {
         }
     }
 }
-private final class DownloadProgress: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    let progress: @Sendable (Double) -> Void
-    private var last = -1.0
-    init(_ progress: @escaping @Sendable (Double) -> Void) { self.progress = progress }
-    func urlSession(_ session: URLSession,downloadTask: URLSessionDownloadTask,didFinishDownloadingTo location: URL) {}
+private final class InstrumentBankDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let destination: URL
+    private let progress: @Sendable (Double) -> Void
+    private var last = 0.0
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var staged: Result<Void, Error>?
+
+    init(destination: URL, progress: @escaping @Sendable (Double) -> Void) {
+        self.destination = destination
+        self.progress = progress
+    }
+
+    func download(from url: URL) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            // The session's download delegate receives didWriteData. The
+            // per-task delegate on URLSession.download(for:) does not.
+            let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+            session.downloadTask(with: url).resume()
+            session.finishTasksAndInvalidate()
+        }
+    }
+
     func urlSession(_ session: URLSession,downloadTask: URLSessionDownloadTask,didWriteData bytesWritten: Int64,totalBytesWritten: Int64,totalBytesExpectedToWrite: Int64) {
         guard totalBytesExpectedToWrite > 0 else { return }
-        let fraction = Double(totalBytesWritten)/Double(totalBytesExpectedToWrite)
+        let fraction = min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
         if fraction-last >= 0.01 { last = fraction; progress(fraction) }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        staged = Result {
+            guard let response = downloadTask.response as? HTTPURLResponse,
+                  (200...299).contains(response.statusCode) else { throw ProjectError.invalid("Download failed") }
+            // Foundation only retains its temporary URL during this callback.
+            try FileManager.default.moveItem(at: location, to: destination)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        defer { continuation = nil }
+        if let error { continuation?.resume(throwing: error) }
+        else { continuation?.resume(with: staged ?? .failure(ProjectError.invalid("Download failed"))) }
     }
 }
 struct InstrumentBrowser: View {

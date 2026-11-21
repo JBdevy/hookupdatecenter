@@ -8,7 +8,7 @@ public struct OutputPatch: Codable, Equatable, Hashable, Sendable {
     public static let masterGroup = OutputPatch(firstChannel: -2, channelCount: 2)
     public static let master = OutputPatch(firstChannel: 0, channelCount: 2)
     public static let stereo = OutputPatch(firstChannel: 1, channelCount: 2)
-    public var title: String { firstChannel == -2 ? "Master Group" : firstChannel == -1 ? "None" : firstChannel == 0 ? "Master" : channelCount == 2 ? "\(firstChannel)+\(firstChannel + 1)" : "\(firstChannel)" }
+    public var title: String { firstChannel == -2 ? "Main Group" : firstChannel == -1 ? "None" : firstChannel == 0 ? "Main" : channelCount == 2 ? "\(firstChannel)+\(firstChannel + 1)" : "\(firstChannel)" }
     public func validate(allowMaster: Bool, allowGroup: Bool = false, allowNone: Bool = false) throws {
         if firstChannel == -1 && allowNone && channelCount == 2 { return }
         if firstChannel == -2 && allowGroup && channelCount == 2 { return }

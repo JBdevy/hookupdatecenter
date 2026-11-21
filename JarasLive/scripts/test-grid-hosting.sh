@@ -17,9 +17,19 @@ track_environment = region[region.index('/// Immutable menu target:'):]
 models = Path('Application/Project/ProjectModels.swift').read_text()
 geometry = models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
 theme = Path('Apple/Shared/Theme.swift').read_text()
+color_start = theme.index('extension Color {')
+color = theme[color_start:theme.index('\n}', color_start) + 2]
 appearance = theme.index('enum TimelineAppearanceDefaults {')
 appearance = theme[appearance:theme.index('\n}', appearance) + 2]
-Path(sys.argv[1]).write_text(geometry + fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + track_environment + '\n' + appearance)
+interface = theme[theme.index('enum JarasInterfaceTheme:'):theme.index('enum JarasTheme {')]
+constants = '\n'.join(line for line in theme.splitlines() if line.strip().startswith((
+    'static let displayHex:', 'static let lightDarkBackgroundHex:', 'static let workspaceToolbar =',
+    'static let setlistQueuedYellow:')))
+theme = interface + '\nenum JarasTheme {\n' + constants + '\n}\n'
+pads = Path('Apple/Shared/VinhetasPanel.swift').read_text()
+transfer = pads[pads.index('enum LibrarySamplerTransfer {'):pads.index('enum PadAudioBuffer {')]
+Path(sys.argv[1]).write_text('import UniformTypeIdentifiers\n' + geometry + fx[:fx.index('enum FXModelLookup')] + text[:text.index('/// The draft')] + track_environment + '\n' + appearance + '\n' + color + '\n' + theme + transfer)
+
 PY
 python3 - "$test_dir/main.swift" <<'PYTEST'
 from pathlib import Path

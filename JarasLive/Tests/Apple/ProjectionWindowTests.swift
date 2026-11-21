@@ -127,3 +127,45 @@ precondition(application.presentationOptions.contains([.hideDock, .hideMenuBar])
 projections.forEach { $0.close() }; tools.close(); main.close()
 precondition(application.presentationOptions == presentation, "closing the last fullscreen projection restores presentation options")
 print("PROJECTION_LAST_CLICKED_WINDOW_ORDER_OK")
+
+let workspace = NSWindow(contentRect: mainFrame, styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+workspace.isReleasedWhenClosed = false
+let attached = (0..<3).map { _ in
+    let panel = NSPanel(contentRect: originalFrame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    return panel
+}
+let detached = (0..<3).map { _ in
+    let panel = NSWindow(contentRect: originalFrame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    ProjectionWindow.followWorkspaceWindow(panel, independent: true)
+    panel.orderFront(nil)
+    return panel
+}
+let stage = ProjectionWindow(contentRect: originalFrame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+stage.isReleasedWhenClosed = false
+stage.followApplicationWindowOrder()
+stage.orderFront(nil)
+workspace.orderFront(nil)
+ProjectionWindow.bindWorkspace(workspace)
+NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: application)
+ProjectionWindow.presentWorkspaceWindow(attached[0])
+attached[1].orderFront(nil)
+
+NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: application)
+precondition(attached.allSatisfy { !$0.isVisible }, "Backgrounding hides the open auxiliary windows")
+precondition(stage.isVisible && detached.allSatisfy { $0.isVisible }, "Output and detached windows remain visible")
+NotificationCenter.default.post(name: NSWindow.didMiniaturizeNotification, object: workspace)
+NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: application)
+precondition(attached.allSatisfy { !$0.isVisible }, "Activation alone cannot restore tools while the main window is minimized")
+attached[1].close()
+NotificationCenter.default.post(name: NSWindow.didDeminiaturizeNotification, object: workspace)
+precondition(attached[0].isVisible && !attached[1].isVisible && !attached[2].isVisible,
+             "Restore only tools that were visible and have not closed")
+
+NotificationCenter.default.post(name: NSWindow.didMiniaturizeNotification, object: workspace)
+precondition(!attached[0].isVisible && stage.isVisible && detached.allSatisfy { $0.isVisible })
+NotificationCenter.default.post(name: NSWindow.didDeminiaturizeNotification, object: workspace)
+precondition(attached[0].isVisible)
+(attached + detached + [stage, workspace]).forEach { $0.close() }
+print("WORKSPACE_WINDOWS_SUSPEND_AND_RESTORE_WITH_PROJECTION_AND_DETACHED_EXCEPTIONS_OK")

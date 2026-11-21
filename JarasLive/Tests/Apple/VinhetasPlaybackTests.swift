@@ -30,6 +30,17 @@ import AVFoundation
     try audio.update(state, revision: 1)
     precondition(engine.isRunning, "Updating stopped transport paused a sounding pad")
     precondition(meter.levels.x > 0 && meter.levels.y > 0, "VINHETAS-FX meters ignored a sounding pad with stopped transport")
+    for pan in [-1.0, 1.0] {
+        audio.previewPan(track.id, pan: pan)
+        _ = try level()
+        let audible = pan < 0 ? 0 : 1
+        precondition(abs(output.floatChannelData![audible][256]) > 0.02 &&
+                     abs(output.floatChannelData![1 - audible][256]) < 0.0001,
+                     "A playing pad must follow the VINHETAS-FX pan immediately")
+    }
+    audio.previewPan(track.id, pan: 0)
+    try expect(0.025, "Returning pan to Center restores the original stereo level")
+    print("VINHETAS_TRACK_PAN_LEFT_RIGHT_CENTER_OK")
     var releasedCompletions = 0
     try audio.playPad(second, buffer: input, gain: 1, track: track.id, finished: { releasedCompletions += 1 })
     try expect(0.05, "Repeated pad triggers must overlap")

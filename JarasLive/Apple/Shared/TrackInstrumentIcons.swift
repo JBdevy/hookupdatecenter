@@ -281,14 +281,79 @@ struct TrackInstrumentIconView: View {
     }
 }
 
+enum TrackIconCatalog {
+    struct Artwork: Identifiable {
+        let id: String
+        let title: String
+        let url: URL
+    }
+
+    struct Category: Decodable, Identifiable {
+        let name: String
+        let legacy: [String]
+        var id: String { name }
+        var artwork: [Artwork] { TrackIconCatalog.images[name] ?? [] }
+    }
+
+    private static let root = Bundle.main.resourceURL?.appendingPathComponent("TrackIcons", isDirectory: true)
+    static let categories: [Category] = {
+        guard let url = root?.appendingPathComponent("categories.json"),
+              let data = try? Data(contentsOf: url),
+              let values = try? JSONDecoder().decode([Category].self, from: data) else {
+            return [Category(name: "Other", legacy: TrackInstrumentIcon.allCases.map(\.rawValue))]
+        }
+        return values
+    }()
+
+    private static let images: [String: [Artwork]] = Dictionary(uniqueKeysWithValues: categories.map { category in
+        let files = root.flatMap { try? FileManager.default.contentsOfDirectory(
+            at: $0.appendingPathComponent(category.name, isDirectory: true), includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]) } ?? []
+        let artwork = files.filter { $0.pathExtension.lowercased() == "png" }.map { url in
+            let name = url.deletingPathExtension().lastPathComponent
+            return Artwork(id: "png:" + category.name + "/" + name, title: name.replacingOccurrences(of: "-", with: " ").capitalized, url: url)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        return (category.name, artwork)
+    })
+    private static let byID = Dictionary(uniqueKeysWithValues: images.values.flatMap { $0 }.map { ($0.id, $0) })
+
+    static func artwork(_ id: String) -> Artwork? { byID[id] }
+    static func contains(_ id: String?) -> Bool {
+        guard let id else { return false }
+        return TrackInstrumentIcon(rawValue: id) != nil || byID[id] != nil
+    }
+}
+
+struct TrackIconDisplay: View {
+    let id: String
+
+    @ViewBuilder var body: some View {
+        if let icon = TrackInstrumentIcon(rawValue: id) {
+            TrackInstrumentIconView(icon: icon)
+        } else if let artwork = TrackIconCatalog.artwork(id) {
+            #if os(macOS)
+            if let image = NSImage(contentsOf: artwork.url) { Image(nsImage: image).resizable().scaledToFit() }
+            #else
+            if let image = UIImage(contentsOfFile: artwork.url.path) { Image(uiImage: image).resizable().scaledToFit() }
+            #endif
+        }
+    }
+}
+
 struct TrackInstrumentPickerModal: View {
     let show: ShowController
     let request: TrackDetailsEditRequest
     let close: () -> Void
     @State private var icon: String?
+    @State private var category: String
     init(show: ShowController, request: TrackDetailsEditRequest, close: @escaping () -> Void) {
         self.show = show; self.request = request; self.close = close
         _icon = State(initialValue: request.instrumentIcon)
+        let currentCategory = TrackIconCatalog.categories.first { category in
+            category.legacy.contains(request.instrumentIcon ?? "") ||
+                category.artwork.contains { $0.id == request.instrumentIcon }
+        }
+        _category = State(initialValue: currentCategory?.name ?? TrackIconCatalog.categories.first?.name ?? "")
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -302,6 +367,7 @@ struct TrackInstrumentPickerModal: View {
             #endif
             HStack {
                 Button("Cancelar", action: close).keyboardShortcut(.cancelAction)
+                Button { icon = nil } label: { Text("Sem ícone") }
                 Spacer()
                 Button("Salvar") {
                     show.editTrackDetails(request.tracks, name: nil, color: nil,
@@ -315,27 +381,58 @@ struct TrackInstrumentPickerModal: View {
         #endif
     }
     private var choices: some View {
-        ScrollView(.vertical) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 68), spacing: 8)], spacing: 8) {
-                choice(nil, title: "Sem ícone")
-                ForEach(TrackInstrumentIcon.allCases) { choice($0, title: $0.title) }
-            }.padding(2)
+        HStack(alignment: .top, spacing: 12) {
+            ScrollView {
+                VStack(spacing: 3) {
+                    ForEach(TrackIconCatalog.categories) { group in
+                        Button { category = group.name } label: {
+                            Text(verbatim: group.name).font(.jarasCaption.weight(.semibold))
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                                .background(category == group.name ? JarasTheme.green.opacity(0.22) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 5))
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                            .accessibilityAddTraits(category == group.name ? .isSelected : [])
+                    }
+                }
+            }.frame(width: 108)
+            Divider()
+            ScrollView {
+                if let group = TrackIconCatalog.categories.first(where: { $0.name == category }) {
+                    VStack(spacing: 12) {
+                        if !group.artwork.isEmpty {
+                            iconGrid {
+                                ForEach(group.artwork) { choice($0.id, title: $0.title) }
+                            }
+                        }
+                        if !group.legacy.isEmpty {
+                            if !group.artwork.isEmpty { Divider() }
+                            iconGrid {
+                                ForEach(group.legacy.compactMap(TrackInstrumentIcon.init(rawValue:))) { choice($0.rawValue, title: $0.title) }
+                            }
+                        }
+                    }.padding(2)
+                }
+            }.id(category)
         }
     }
-    private func choice(_ value: TrackInstrumentIcon?, title: String) -> some View {
-        Button { icon = value?.rawValue } label: {
+    private func iconGrid<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 58), spacing: 6)], spacing: 6, content: content)
+    }
+    private func choice(_ value: String?, title: String) -> some View {
+        Button { icon = value } label: {
             VStack(spacing: 5) {
                 Group {
-                    if let value { TrackInstrumentIconView(icon: value) }
+                    if let value { TrackIconDisplay(id: value) }
                     else { RoundedRectangle(cornerRadius: 3).stroke(Color.white.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [3, 3])).padding(7) }
                 }.frame(height: 38)
                 Text(verbatim: title).font(.jarasSystem(size: 10)).lineLimit(1).minimumScaleFactor(0.7)
             }.foregroundStyle(.white).padding(6).frame(maxWidth: .infinity)
-                .background(icon == value?.rawValue ? JarasTheme.green.opacity(0.25) : Color.white.opacity(0.06))
+                .background(icon == value ? JarasTheme.green.opacity(0.25) : Color.white.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 5))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(icon == value?.rawValue ? JarasTheme.green : .clear, lineWidth: 1.5))
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(icon == value ? JarasTheme.green : .clear, lineWidth: 1.5))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(title)
-            .accessibilityAddTraits(icon == value?.rawValue ? .isSelected : [])
+            .accessibilityAddTraits(icon == value ? .isSelected : [])
     }
 }

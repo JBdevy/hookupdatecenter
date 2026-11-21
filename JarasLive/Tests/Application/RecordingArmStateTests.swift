@@ -21,12 +21,12 @@ final class RecordingArmStateTests: XCTestCase {
         XCTAssertEqual(state.armed, [manual])
         XCTAssertEqual(state.mode(for: first), .automatic)
     }
-    func testCycleAndDeletionNeverRearmAnOffOrRemovedTrack() {
+    func testRecordClickRequiresShiftForAutomaticAndNeverRearmsDeletedTracks() {
         let track = UUID()
         var state = RecordingArmState()
         state.select([track])
-        for mode in [RecordingArmState.Mode.manual, .automatic, .off] {
-            state.set(state.mode(for: track).next, tracks: [track])
+        for (shift, mode) in [(false, RecordingArmState.Mode.manual), (false, .off), (true, .automatic), (false, .off)] {
+            state.set(state.mode(for: track).afterRecordClick(automatic: shift), tracks: [track])
             XCTAssertEqual(state.mode(for: track), mode)
             XCTAssertEqual(state.armed.contains(track), mode != .off)
         }

@@ -64,6 +64,28 @@ std::optional<ID> regionOwnerForMedia(const Song& song, double start, double end
     if (auto owner = dominantUnifiedOwner(song, *root, start, end, preferred)) return owner;
     return regionOwnerAt(song, start);
 }
+const Part* chordRegion(const Song& song, double position) {
+    const auto id = regionOwnerAt(song, position);
+    if (!id) return nullptr;
+    for (const auto& part : song.parts)
+        if (part.id == *id && part.startTime <= position && position < part.endTime) return &part;
+    return nullptr;
+}
+const ChordMarker* chordAt(const Song& song, double position) {
+    if (std::none_of(song.tracks.begin(), song.tracks.end(), [](const auto& track) {
+        return track.role.id == "chords" && !track.chordMarkers.empty();
+    })) return nullptr;
+    const auto* region = chordRegion(song, position);
+    if (!region) return nullptr;
+    const auto offset = position - region->startTime;
+    const ChordMarker* current = nullptr;
+    for (const auto& track : song.tracks)
+        if (track.role.id == "chords")
+            for (const auto& marker : track.chordMarkers)
+                if (marker.regionID == region->id && marker.offset <= offset && (!current || marker.offset > current->offset))
+                    current = &marker;
+    return current;
+}
 std::optional<ID> dominantUnifiedOwner(const Song& song, const Part& root, double start, double end,
                                       const std::optional<ID>& preferred) {
     std::vector<std::pair<double, const Part*>> children;
@@ -231,13 +253,17 @@ void validateClipFXJSON(const std::string& json) {
     if (json.empty() || json.size() > 32 * 1024 * 1024) throw std::invalid_argument("Invalid item FX data");
     const auto settings = nlohmann::json::parse(json, nullptr, false);
     if (!settings.is_object()) throw std::invalid_argument("Invalid item FX data");
-    const auto checkInstruments = [](const nlohmann::json& value) {
-        for (const auto* key : {"instrumentID", "instrumentParameters", "instrumentBypassed"})
-            if (value.contains(key)) throw std::invalid_argument("Items cannot contain instruments");
+    const auto checkInstrument = [](const nlohmann::json& parameters, bool inserted) {
+        const auto id = parameters.find("instrumentID");
+        if (inserted) {
+            if (id == parameters.end() || !id->is_string() || id->get_ref<const std::string&>().empty())
+                throw std::invalid_argument("Invalid item instrument");
+        } else if (id != parameters.end() || parameters.contains("instrumentParameters") || parameters.contains("instrumentBypassed")) {
+            throw std::invalid_argument("Invalid item instrument");
+        }
     };
-    checkInstruments(settings);
     static const std::set<std::string> nativeKinds{
-        "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatLive Trigger", "Cat Gate", "CatStemSeparation 5"
+        "Instruments", "Drummer Pad 16", "Drummer Pad 48", "Arpeggiator", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatLive Trigger", "Cat Gate", "CatStemSeparation 5"
     };
     auto available = nativeKinds;
     const auto registerEffects = [&](const char* field, const char* prefix) {
@@ -259,7 +285,9 @@ void validateClipFXJSON(const std::string& json) {
                 if (kind != effect.end() && (!kind->is_string() || !nativeKinds.count(kind->get_ref<const std::string&>())))
                     throw std::invalid_argument("Invalid native item FX");
                 const auto parameters = effect.find("settings");
-                if (parameters != effect.end()) checkInstruments(*parameters);
+                const bool instrument = kind != effect.end() && *kind == "Instruments";
+                if (parameters != effect.end()) checkInstrument(*parameters, instrument);
+                else if (instrument) throw std::invalid_argument("Invalid item instrument");
             }
         }
     };
@@ -273,6 +301,7 @@ void validateClipFXJSON(const std::string& json) {
         const auto& key = effect.get_ref<const std::string&>();
         if (!available.count(key) || !used.insert(key).second) throw std::invalid_argument("Invalid item FX selection");
     }
+    checkInstrument(settings, used.count("Instruments") != 0);
 }
 void validateRegionSetlist(const Project& p, const RegionSetlist& state) {
     auto require = [](bool valid, const char* message) { if (!valid) throw std::invalid_argument(message); };
@@ -331,6 +360,10 @@ void validateRouting(const Song& song) {
     for (const auto& t : song.tracks) {
         if (t.routing) {
             if (!audio.count(t.id)) throw std::invalid_argument("Invalid track routing");
+            if (const auto main = t.routing->mainReceiveSlot)
+                if (*main < 0 || static_cast<size_t>(*main) >= t.routing->receives.size() ||
+                    t.routing->receives[static_cast<size_t>(*main)] || t.role.id == "vinhetas")
+                    throw std::invalid_argument("Invalid Main receive");
             for (const auto& id : t.routing->receives) if (id) link(*id,t.id);
             for (const auto& id : t.routing->transmitters) if (id) link(t.id,*id);
         }
@@ -416,6 +449,13 @@ void validate(const Project& p) {
                             marker.channel >= 1 && marker.channel <= 16 && ids.insert(marker.id).second && (!marker.output || (*marker.output>=1 && *marker.output<=6)),
                             "Invalid Program Change marker");
             } else require(t.programChanges.empty() && !t.midiOutput, "Program Change settings require a Program Change track");
+            if (!t.chordMarkers.empty()) {
+                require(t.role.id == "chords", "Chord markers require a Chords track");
+                std::set<ID> ids;
+                for (const auto& marker : t.chordMarkers)
+                    require(!marker.id.empty() && !marker.regionID.empty() && finite(marker.offset) && marker.offset >= 0 &&
+                            !marker.name.empty() && ids.insert(marker.id).second, "Invalid chord marker");
+            }
             require(!t.midiOutput || (*t.midiOutput >= 1 && *t.midiOutput <= 6), "Invalid MIDI output");
             if (t.role.id == "timecode") require(++timecodeTracks <= 1, "Only one Timecode track is allowed");
             if (t.role.id == "generatedClick") {

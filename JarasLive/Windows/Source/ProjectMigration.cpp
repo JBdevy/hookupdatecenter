@@ -15,7 +15,7 @@ void require(bool condition, const String &message) {
 jaras::Project emptyProject(const String &name) {
     jaras::Project project;
     project.id = uuid();
-    project.masterColor = 0x414141;
+    project.masterColor = jaras::Project::defaultMasterColor;
     project.name = utf8(name);
     project.importedTimeline = true;
     project.createdAt = project.updatedAt = utf8(Time::getCurrentTime().toISO8601(true));

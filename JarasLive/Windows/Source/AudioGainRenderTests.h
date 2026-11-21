@@ -156,8 +156,44 @@ inline void hardPanSilence(const File& directory) {
             report.appendText(String(inputChannels)+","+String(stage)+","+String(int(effect))+","+String(int(automated))+","+String(position)+","+String(silentPeak,9)+","+String(audiblePeak,9)+"\n");
         }
 }
+inline void sendTaps(const File &directory) {
+    using Tap = jaras::TrackSendTap;
+    auto song = inputSong();
+    song.tracks.reserve(2);
+    auto &source = song.tracks.front();
+    source.outputs = std::vector<jaras::OutputPatch>{{-1, 2}};
+    source.volume = .25;
+    jaras::Track destination; destination.id = uuid(); destination.role.id = "other";
+    destination.outputs = std::vector<jaras::OutputPatch>{{0, 2}};
+    song.tracks.push_back(destination);
+    source.routing = jaras::TrackRouting{{}, {destination.id}};
+    auto fx = object();
+    put(fx, "inserted", Array<var>{"Compressor"});
+    put(fx, "compressorEnabled", true); put(fx, "threshold", -30.);
+    put(fx, "ratio", 4.); put(fx, "attack", .001);
+    source.fxJSON = utf8(JSON::toString(fx, true));
+    auto engine = std::make_unique<AudioEngine>();
+    engine->prepareOffline(48000); engine->instrumentAllowed = true;
+    AudioBuffer<float> input(2, 256), output(2, 256);
+    for (int ch = 0; ch < 2; ++ch) for (int i = 0; i < 256; ++i) input.setSample(ch, i, .35f);
+    auto run = [&](Tap mode) {
+        source.routing->sendTaps[destination.id] = mode;
+        engine->prepareSong(song, directory, {});
+        for (int i = 0; i < 100; ++i)
+            engine->render(output.getArrayOfWritePointers(), 2, 256, input.getArrayOfReadPointers(), 2);
+        return output.getMagnitude(0, 0, 256);
+    };
+    const auto preFX = run(Tap::preFX), preFader = run(Tap::preFader);
+    const auto postFX = run(Tap::postFX), postFader = run(Tap::postFader);
+    require(std::abs(preFX - .35f) < .00001f, "Pre-FX should preserve the original signal");
+    require(preFader > 0 && preFader < preFX && std::abs(preFader - postFX) < .00001f,
+            "Post-FX and pre-fader should carry the compressed signal at full gain");
+    require(std::abs(postFader - preFader * .25f) < .00001f, "Post-fader must include the channel gain");
+    require(engine->gainReduction(source.id) > 0, "Native compressor publishes true gain reduction");
+}
 template <typename Register>
 void registerTests(const File& directory, Register&& test) {
+    test("Send taps read dry compressed and post-fader PCM", [&] { sendTaps(directory); });
     test("Loopback input uses the track Monitor Off switch while keeping armed meters", [&] { monitorOff(directory); });
     test("Static track and master gains preserve stereo PCM phase mute pan and mono", [&] { staticGain(directory); });
     test("Master evaluates sample automation consistently across stereo channels", [&] { automatedMaster(directory); });

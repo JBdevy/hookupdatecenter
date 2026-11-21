@@ -11,7 +11,7 @@ class ModalSheet final : public Component {
         setName(heading);
         const bool selfContained = (bool)content->getProperties()["selfContainedSheet"];
         if (selfContained) content->setName(heading);
-        headerHeight = selfContained ? 0 : heading == String::fromUTF8("Configurações") || heading == "Projetos" ? 76
+        headerHeight = selfContained ? 0 : heading == String::fromUTF8("Configurações") || heading == "Projetos" || heading == String::fromUTF8("Início") ? 76
                        : heading == "Resolume"                                               ? 66
                                                                                              : 44;
         close.getProperties().set("textClose", heading == "Resolume");
@@ -30,7 +30,7 @@ class ModalSheet final : public Component {
     void paint(Graphics &g) override {
         g.fillAll(Colours::black.withAlpha(.48f));
         DropShadow(Colours::black.withAlpha(.3f), 20, {0, 8}).drawForRectangle(g, frame);
-        g.setColour(theme::background);
+        g.setColour((bool)content->getProperties()["homeSheet"] ? theme::homeBackground : theme::background);
         g.fillRoundedRectangle(frame.toFloat(), (float)(double)content->getProperties().getWithDefault("sheetCornerRadius",16.0));
         if (headerHeight == 0) return;
         g.setColour(theme::line);

@@ -244,7 +244,16 @@ public extension Project {
         let mapping = Dictionary(uniqueKeysWithValues: source.tracks.filter { selected.contains($0.id) }.map { ($0.id, UUID()) })
         func mapped(_ id: UUID) -> UUID { mapping[id] ?? id }
         func routing(_ value: TrackRouting?) -> TrackRouting? {
-            value.map { TrackRouting(receives: $0.receives.map { $0.map(mapped) }, transmitters: $0.transmitters.map { $0.map(mapped) }) }
+            value.map { original in
+                var copy = original
+                copy.receives = original.receives.map { $0.map(mapped) }
+                copy.transmitters = original.transmitters.map { $0.map(mapped) }
+                copy.sendTaps = nil
+                for target in original.transmitters.compactMap({ $0 }) {
+                    copy.setSendTap(original.sendTap(to: target), to: mapped(target))
+                }
+                return copy
+            }
         }
         var copies: [UUID: Track] = [:]
         let connections = source.trackConnections.sorted {

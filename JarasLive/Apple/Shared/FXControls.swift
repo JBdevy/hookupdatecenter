@@ -1,6 +1,38 @@
 import SwiftUI
 import Combine
 
+enum NativeFXAppearance {
+    static let violet = Color(red: 0.76, green: 0.66, blue: 0.97)
+    static let mint = Color(red: 0.49, green: 0.85, blue: 0.75)
+    static let chassis = [Color(red: 0.14, green: 0.15, blue: 0.17), Color(red: 0.09, green: 0.10, blue: 0.12)]
+    static let plum = [Color(red: 0.18, green: 0.12, blue: 0.23), Color(red: 0.09, green: 0.06, blue: 0.13)]
+    static func accent(_ effect: String) -> Color {
+        switch effect {
+        case "EQ", "Arpeggiator", "Pitch": return violet
+        case "Compressor", "Limiter", "Cat Gate", "CatLive Trigger", "Amp":
+            return Color(red: 0.93, green: 0.72, blue: 0.41)
+        case "Phaser", "Chorus": return Color(red: 0.48, green: 0.78, blue: 0.93)
+        default: return mint
+        }
+    }
+}
+private struct FXDialAccentKey: EnvironmentKey { static let defaultValue = NativeFXAppearance.mint }
+extension EnvironmentValues {
+    var fxDialAccent: Color {
+        get { self[FXDialAccentKey.self] }
+        set { self[FXDialAccentKey.self] = newValue }
+    }
+}
+extension View {
+    func nativeFXRack() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        return background(shape.fill(LinearGradient(colors: [Color(red: 0.105, green: 0.115, blue: 0.14),
+                                                            Color(red: 0.07, green: 0.078, blue: 0.095)],
+                                                    startPoint: .top, endPoint: .bottom)))
+            .overlay(shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 1).allowsHitTesting(false))
+    }
+}
+
 private struct FXKnobDiameterKey: EnvironmentKey { static let defaultValue: CGFloat = 76 }
 extension EnvironmentValues {
     var fxKnobDiameter: CGFloat {
@@ -10,6 +42,7 @@ extension EnvironmentValues {
 }
 struct FXKnob: View {
     @Environment(\.fxKnobDiameter) private var diameter
+    @Environment(\.fxDialAccent) private var accent
     let title: String
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -17,11 +50,12 @@ struct FXKnob: View {
     var multiplier: Double = 1
     var logarithmic = false
     let reset: Double
-    let parameter: NativeFXParameter.Key
+    let parameter: NativeFXParameter.Key?
+    var dialOnly = false
     @State private var origin: Double?
-    init(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, unit: String, multiplier: Double = 1, logarithmic: Bool = false, reset: Double, parameter: NativeFXParameter.Key) {
+    init(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, unit: String, multiplier: Double = 1, logarithmic: Bool = false, reset: Double, parameter: NativeFXParameter.Key? = nil, dialOnly: Bool = false) {
         self.title = title; _value = value; self.range = range; self.unit = unit
-        self.multiplier = multiplier; self.logarithmic = logarithmic; self.reset = reset; self.parameter = parameter
+        self.multiplier = multiplier; self.logarithmic = logarithmic; self.reset = reset; self.parameter = parameter; self.dialOnly = dialOnly
     }
     private var fraction: Double {
         let offset = range.lowerBound == 0 ? 0.001 : 0
@@ -34,14 +68,32 @@ struct FXKnob: View {
         value = logarithmic ? (range.lowerBound+offset)*pow((range.upperBound+offset)/(range.lowerBound+offset),x)-offset : range.lowerBound+x*(range.upperBound-range.lowerBound)
     }
     var body: some View {
+        if let parameter { knob.mapFXMIDI(parameter, name: title, range: range, logarithmic: logarithmic) }
+        else { knob }
+    }
+    private var knob: some View {
         VStack(spacing: diameter < 76 ? 6 : 10) {
-            Text(LocalizedStringKey(title)).font(.jarasSystem(size: 11, weight: .medium)).foregroundStyle(JarasTheme.secondary)
+            if !dialOnly { Text(verbatim: title).font(.jarasSystem(size: 11, weight: .medium)).foregroundStyle(JarasTheme.secondary) }
             ZStack {
-                Circle().trim(from: 0,to: 0.75).stroke(Color.white.opacity(0.08),style: StrokeStyle(lineWidth: 4,lineCap: .round)).rotationEffect(.degrees(135))
-                Circle().trim(from: 0,to: 0.75*fraction).stroke(AngularGradient(colors: [Color.cyan,JarasTheme.green],center: .center,startAngle: .degrees(135),endAngle: .degrees(405)),style: StrokeStyle(lineWidth: 4,lineCap: .round)).rotationEffect(.degrees(135))
-                Circle().fill(LinearGradient(colors: [Color(white: 0.27),Color(white: 0.10)],startPoint: .topLeading,endPoint: .bottomTrailing)).padding(7)
-                    .overlay(Circle().stroke(Color.white.opacity(0.12),lineWidth: 1).padding(7)).shadow(color: .black.opacity(0.6),radius: 3,y: 3)
-                Capsule().fill(JarasTheme.green).frame(width: 3,height: diameter * 16 / 76).offset(y: -diameter * 21 / 76).rotationEffect(.degrees(-135 + fraction*270))
+                Canvas { context, size in
+                    let radius = size.width / 2
+                    for i in 0...10 {
+                        let angle = Double(-225 + i * 27) * .pi / 180
+                        let length: CGFloat = i.isMultiple(of: 5) ? 4 : 2.5
+                        var tick = Path()
+                        tick.move(to: CGPoint(x: radius + (radius - length) * cos(angle), y: radius + (radius - length) * sin(angle)))
+                        tick.addLine(to: CGPoint(x: radius + (radius - 1) * cos(angle), y: radius + (radius - 1) * sin(angle)))
+                        context.stroke(tick, with: .color(.white.opacity(0.50)), lineWidth: 1)
+                    }
+                }
+                Circle().trim(from: 0, to: 0.75).stroke(Color.white.opacity(0.12), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(135)).padding(min(7, diameter * 0.1))
+                Circle().trim(from: 0, to: 0.75 * fraction).stroke(accent, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(135)).padding(min(7, diameter * 0.1))
+                Circle().fill(LinearGradient(colors: [Color(white: 0.32), Color(white: 0.15)], startPoint: .top, endPoint: .bottom))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.17), lineWidth: 1)).padding(min(11, diameter * 0.17))
+                Capsule().fill(accent).frame(width: 3, height: diameter * 0.16)
+                    .offset(y: -diameter * 0.21).rotationEffect(.degrees(-135 + fraction * 270))
             }.frame(width: diameter,height: diameter).contentShape(Circle())
                 #if os(macOS)
                 .overlay(FXKnobMouseInput(fraction: Binding(get: { fraction }, set: { set($0) }), reset: { value = reset }))
@@ -50,13 +102,188 @@ struct FXKnob: View {
                     set((origin ?? fraction) - translation.height / 180)
                 }, ended: { origin = nil }, reset: { value = reset }))
                 #endif
-                .accessibilityElement().accessibilityLabel(LocalizedStringKey(title)).accessibilityValue(String(format: "%.1f %@",value*multiplier,unit))
+                .accessibilityElement().accessibilityLabel(Text(verbatim: title)).accessibilityValue(String(format: "%.1f %@",value*multiplier,unit))
                 .accessibilityAdjustableAction { set(fraction + ($0 == .increment ? 0.01 : -0.01)) }
-            Text(String(format: "%.1f %@", value*multiplier,unit)).font(.jarasSystem(size: 11,weight: .medium,design: .monospaced)).monospacedDigit()
-        }.frame(maxWidth: .infinity).jarasHelp("Drag vertically. Double-click to reset.")
-            .mapFXMIDI(parameter, name: title, range: range, logarithmic: logarithmic)
+            if !dialOnly {
+                Text(verbatim: String(format: "%.1f %@", value * multiplier, unit))
+                .font(.jarasSystem(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit()
+                .foregroundStyle(accent).padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Color.black.opacity(0.30), in: RoundedRectangle(cornerRadius: 4))
+            }
+        }.frame(maxWidth: dialOnly ? diameter : .infinity).jarasHelp("Drag vertically. Double-click to reset.")
     }
 }
+struct ArpeggioPatternPreview: View {
+    @State private var chord = 0
+    private let chords = ["C", "Cm", "Cmaj7"]
+    private var pitches: [Int] { [[0, 4, 7], [0, 3, 7], [0, 4, 7, 11]][chord] }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(verbatim: "Pattern preview").font(.jarasSystem(size: 15, weight: .semibold))
+                Spacer()
+                Picker("Preview chord", selection: $chord) {
+                    ForEach(chords.indices, id: \.self) { index in Text(verbatim: chords[index]).tag(index) }
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 158).accessibilityLabel("Preview chord")
+            }
+            Canvas { context, size in
+                let left: CGFloat = 30, top: CGFloat = 20
+                let step = max(1, (size.width - left) / 16)
+                let lane = (size.height - top) / 12
+                let color = NativeFXAppearance.violet
+                for column in 0..<16 {
+                    let x = left + CGFloat(column) * step
+                    if column.isMultiple(of: 4) {
+                        context.draw(Text(verbatim: String(column / 4 + 1)).font(.jarasCaption2).foregroundColor(.white),
+                                     at: CGPoint(x: x + 3, y: 7), anchor: .leading)
+                    }
+                    let stroke = CGRect(x: x, y: top, width: 1, height: size.height - top)
+                    context.fill(Path(stroke), with: .color(.white.opacity(column.isMultiple(of: 4) ? 0.23 : 0.065)))
+                }
+                for (index, pitch) in pitches.enumerated() {
+                    let y = top + CGFloat(11 - pitch) * lane
+                    let name = ["C", chord == 1 ? "E♭" : "E", "G", "B"][index]
+                    context.draw(Text(verbatim: name).font(.jarasCaption2).foregroundColor(color),
+                                 at: CGPoint(x: 0, y: y + lane / 2), anchor: .leading)
+                    context.fill(Path(CGRect(x: left, y: y, width: size.width - left, height: lane)),
+                                 with: .color(color.opacity(0.06)))
+                }
+                for column in 0..<16 {
+                    let pitch = pitches[column % pitches.count]
+                    let rect = CGRect(x: left + CGFloat(column) * step + 1, y: top + CGFloat(11 - pitch) * lane + 1,
+                                      width: step * 0.75, height: max(2, lane - 2))
+                    context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color))
+                }
+            }.frame(height: 122).accessibilityHidden(true)
+            HStack(spacing: 22) {
+                readout("Direction", "Ascending")
+                readout("Rate", "1/16")
+                readout("Gate", "75%")
+            }
+        }.padding(16).nativeFXRack()
+    }
+
+    private func readout(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 6) {
+            Text(verbatim: label).foregroundStyle(Color.white.opacity(0.62))
+            Text(verbatim: value).foregroundStyle(.white)
+        }.font(.jarasSystem(size: 12, weight: .medium))
+    }
+}
+
+/// The marker and the live input share a linear dB scale.
+struct DynamicsThresholdMeter: View {
+    let track: UUID?
+    let effect: String
+    @Binding var threshold: Double
+    let compressor: Bool
+    @State private var input = SIMD2<Double>.zero
+    @State private var reduction = 0.0
+    @State private var clock = Timer.publish(every: 1.0/30, on: .main, in: .common).autoconnect()
+    private var floorDB: Double { compressor ? -60 : -80 }
+    private let railHeight: CGFloat = 152
+    private var valueText: String { String(format: "%.1f dB", threshold) }
+
+    private static let handle = Path { path in
+        path.move(to: CGPoint(x: 2, y: 0.5))
+        path.addQuadCurve(to: CGPoint(x: 0.5, y: 1.5), control: CGPoint(x: 0.5, y: -0.3))
+        path.addLine(to: CGPoint(x: 0.5, y: 8.5))
+        path.addQuadCurve(to: CGPoint(x: 2, y: 9.5), control: CGPoint(x: 0.5, y: 10.3))
+        path.addLine(to: CGPoint(x: 9, y: 6))
+        path.addLine(to: CGPoint(x: 37, y: 6))
+        path.addQuadCurve(to: CGPoint(x: 37, y: 4), control: CGPoint(x: 39, y: 5))
+        path.addLine(to: CGPoint(x: 9, y: 4))
+        path.closeSubpath()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(spacing: 8) {
+                title("Threshold")
+                GeometryReader { geometry in
+                    let height = geometry.size.height
+                    ZStack(alignment: .topLeading) {
+                        ForEach(0..<2, id: \.self) { channel in
+                            let db = input[channel] > 0 ? 20 * log10(input[channel]) : floorDB
+                            let fraction = min(1, max(0, 1 - db / floorDB))
+                            ZStack(alignment: .bottom) {
+                                Color.black.opacity(0.65)
+                                LinearGradient(colors: [.yellow, JarasTheme.green], startPoint: .top, endPoint: .bottom)
+                                    .mask(alignment: .bottom) { Rectangle().frame(height: height * fraction) }
+                            }.frame(width: 11, height: height).clipShape(RoundedRectangle(cornerRadius: 2))
+                                .offset(x: CGFloat(7 + channel * 14))
+                        }
+                        ForEach(Array(stride(from: 0, through: Int(-floorDB), by: 20)), id: \.self) { tick in
+                            Text(verbatim: tick == 0 ? "0" : "−" + String(tick))
+                                .font(.jarasSystem(size: 9, design: .monospaced)).foregroundStyle(JarasTheme.secondary)
+                                .position(x: 51, y: min(height - 5, max(5, CGFloat(tick) / -floorDB * height)))
+                        }
+                        Self.handle.fill(Color.white).frame(width: 38, height: 10)
+                            .shadow(color: .black, radius: 1)
+                            .offset(y: min(height, max(0, height * threshold / floorDB)) - 5)
+                            .allowsHitTesting(false)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .contentShape(Rectangle())
+                        #if os(iOS)
+                        .overlay(FXTouchDrag(began: { set(at: $0.y, height: height) },
+                                             changed: { point, _ in set(at: point.y, height: height) },
+                                             ended: {}, reset: reset))
+                        #else
+                        .gesture(DragGesture(minimumDistance: 0).onChanged { set(at: $0.location.y, height: height) })
+                        .simultaneousGesture(TapGesture(count: 2).onEnded { reset() })
+                        #endif
+                }.frame(width: 65, height: railHeight)
+                readout(valueText)
+            }.accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(verbatim: "Threshold")).accessibilityValue(Text(verbatim: valueText))
+                .accessibilityAdjustableAction { threshold = min(0, max(floorDB, threshold + ($0 == .increment ? 1 : -1))) }
+                .mapFXMIDI(compressor ? .threshold : .gateThreshold, name: "Threshold", range: floorDB...0)
+            if compressor {
+                VStack(spacing: 8) {
+                    title("Reduce")
+                    ZStack(alignment: .top) {
+                        Color.black.opacity(0.65)
+                        Rectangle().fill(Color.red).frame(height: railHeight * min(1, reduction / 24))
+                    }.frame(width: 14, height: railHeight).clipShape(RoundedRectangle(cornerRadius: 2))
+                    readout(String(format: "%.1f dB", reduction))
+                }.accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text(verbatim: "Reduce"))
+                    .accessibilityValue(Text(verbatim: String(format: "%.1f dB", reduction)))
+            }
+        }
+        .onReceive(clock) { _ in
+            let engine = StemAudioPlayback.shared
+            let peaks = engine.effectPeaks(track, effect: effect)
+            guard peaks.count >= 2 else { return }
+            let decay = pow(10.0, -TrackMeterLevel.releaseDecibelsPerSecond / (30 * 20))
+            var next = input * decay
+            for channel in 0..<2 {
+                next[channel] = max(next[channel], Double(peaks[channel]))
+                if next[channel] < 0.0001 { next[channel] = 0 }
+            }
+            if next != input { input = next }
+            if compressor {
+                let db = max(peaks[0], peaks[1]) > 0 ? engine.compressorReduction(track, effect: effect) : 0
+                let shown = max(db, reduction - 1.4)
+                if shown != reduction { reduction = shown }
+            }
+        }
+    }
+
+    private func title(_ text: String) -> some View {
+        Text(verbatim: text).font(.jarasSystem(size: 11, weight: .semibold)).foregroundStyle(JarasTheme.secondary)
+    }
+    private func readout(_ text: String) -> some View {
+        Text(verbatim: text).font(.jarasSystem(size: 10, weight: .semibold, design: .monospaced)).monospacedDigit()
+            .foregroundStyle(.white).frame(minWidth: 49)
+    }
+    private func set(at y: CGFloat, height: CGFloat) {
+        let db = (floorDB * min(1, max(0, y / max(1, height))) * 10).rounded() / 10
+        if threshold != db { threshold = db }
+    }
+    private func reset() { threshold = compressor ? -20 : -40 }
+}
+
 struct EffectVerticalMeters: View {
     let track: UUID?
     let effect: String

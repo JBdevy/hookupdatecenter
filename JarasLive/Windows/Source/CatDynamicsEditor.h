@@ -13,6 +13,7 @@ class CatDynamicsEditor final : public Component, private Timer {
     std::vector<Control> controls;
     OwnedArray<fxui::Knob> knobs;
     std::function<std::pair<float, float>()> levels;
+    std::unique_ptr<fxui::DynamicsThresholdMeter> thresholdMeter;
     fxui::EnableButton enabled;
     juce::Rectangle<float> rack;
     TextButton loadSample;
@@ -41,11 +42,12 @@ class CatDynamicsEditor final : public Component, private Timer {
     }
   public:
     CatDynamicsEditor(String name, File projectDirectory, std::function<var()> values,
-                      std::function<void()> changed, std::function<void(String)> error, std::function<void()> livePreview = {}, std::function<std::pair<float, float>()> meterLevels = {})
+                      std::function<void()> changed, std::function<void(String)> error, std::function<void()> livePreview = {}, std::function<std::pair<float, float>()> meterLevels = {},
+                      std::function<std::array<float, 3>()> gateLevels = {})
         : effect(std::move(name)), directory(std::move(projectDirectory)), read(std::move(values)),
           save(std::move(changed)), preview(std::move(livePreview)), report(std::move(error)), levels(std::move(meterLevels)) {
         setComponentID(trigger() ? "catLiveTriggerEditor" : "catGateEditor");
-        enabled.setButtonText(localization::translate("Ativado"));
+        enabled.setButtonText("Enabled");
         enabled.setToggleState(flag(read(), trigger() ? Identifier("triggerEnabled") : Identifier("gateEnabled")), dontSendNotification);
         enabled.setComponentID("dynamicsEnabled"); addAndMakeVisible(enabled);
         enabled.onClick = [this] { auto settings = read(); put(settings, trigger() ? Identifier("triggerEnabled") : Identifier("gateEnabled"), enabled.getToggleState()); save(); };
@@ -61,13 +63,17 @@ class CatDynamicsEditor final : public Component, private Timer {
                         {"attack","Attack"," ms",0,10000,1,1000,0}, {"decay","Decay"," ms",0,10000,1,1000,100},
                         {"sustain","Sustain"," %",0,100,.1,100,100}, {"release","Release"," ms",0,20000,1,1000,20}};
         } else {
-            controls = {{"threshold","Threshold"," dB",-80,0,.1,1,-40}, {"attack","Attack"," ms",0,2000,.1,1000,1},
+            thresholdMeter = std::make_unique<fxui::DynamicsThresholdMeter>(false, num(parameters(), "threshold", -40),
+                [this](double db) { auto values = parameters(); put(values, "threshold", db); if (preview) preview(); },
+                [this] { save(); }, std::move(gateLevels));
+            addAndMakeVisible(*thresholdMeter);
+            controls = {{"attack","Attack"," ms",0,2000,.1,1000,1},
                         {"decay","Decay"," ms",0,2000,1,1000,20}, {"hold","Hold"," ms",0,2000,1,1000,50},
                         {"release","Release"," ms",0,5000,1,1000,100}, {"highPass","High-pass"," Hz",20,20000,1,1,20},
                         {"lowPass","Low-pass"," Hz",20,20000,1,1,20000}};
         }
         for (const auto &control : controls) {
-            auto *knob = knobs.add(new fxui::Knob(localization::translate(control.title), control.low, control.high, control.step,
+            auto *knob = knobs.add(new fxui::Knob(control.title, control.low, control.high, control.step,
                 num(parameters(), Identifier(control.key)) * control.multiplier, control.suffix,
                 [this, control](double amount) {
                     auto p = parameters(); double value = amount / control.multiplier;
@@ -93,7 +99,8 @@ class CatDynamicsEditor final : public Component, private Timer {
             g.setColour(theme::display);
             g.fillRoundedRectangle(0, 86, (float)getWidth(), 38, 8);
         }
-        g.setColour(theme::display); g.fillRoundedRectangle(rack, 10);
+        fxui::paintRack(g, rack);
+        if (!trigger()) return;
         const auto value = levels ? levels() : std::pair<float,float>{};
         const int x = (int)rack.getX() + 18, top = (int)rack.getCentreY() - 55, height = 110;
         g.setFont(theme::font(9));g.setColour(theme::secondary);
@@ -120,13 +127,15 @@ class CatDynamicsEditor final : public Component, private Timer {
         description.setBounds(0, trigger()?130:84, getWidth(), 28);
         const int top=trigger()?170:120;
         rack=juce::Rectangle<float>(0,(float)top,(float)getWidth(),std::max(290.f,(float)getHeight()-top-16));
-        const int left=120, width=std::max(1,(getWidth()-left-14)/4);
+        if (thresholdMeter) thresholdMeter->setBounds(16, roundToInt(rack.getCentreY()) - 100, 72, 200);
+        const int columns = trigger() ? 4 : 3;
+        const int left=trigger()?120:100, width=std::max(1,(getWidth()-left-14)/columns);
         for(int i=0;i<knobs.size();++i) {
             const int slot=trigger()&&i>=3?i+1:i;
-            knobs[i]->setBounds(left+(slot%4)*width,top+14+(slot/4)*146,width,132);
+            knobs[i]->setBounds(left+(slot%columns)*width,top+14+(slot/columns)*146,width,132);
         }
     }
   private:
-    void timerCallback() override { if(isShowing())repaint(rack.toNearestInt()); }
+    void timerCallback() override { if (trigger() && isShowing()) repaint(rack.toNearestInt()); }
 };
 } // namespace catlive

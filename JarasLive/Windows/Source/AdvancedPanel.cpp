@@ -143,12 +143,8 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
     setName("Advanced");
     timerCallback();startTimerHz(4);
     setWantsKeyboardFocus(true);
-    const StringArray names{String::fromUTF8("Tempo do projeto"),
-                            "Timeline",
-                            "Gravar",
-                            String::fromUTF8("Re-renderizar"),
-                            String::fromUTF8("Vídeo"),
-                            "Setlist", "Keyboard", "Pads"};
+    const StringArray names{"TimeProject", "Timeline", "Record", "Re-render", "Video", "Setlist",
+                            "Keyboard", "Pads", "Track Mixer", "Hoz Mixer"};
     for (int i = 0; i < names.size(); ++i) {
         auto *tab = tabs.add(new TextButton(names[i]));
         addAndMakeVisible(tab);
@@ -159,7 +155,7 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
         tab->getProperties().set("fontSize", 13);
         tab->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.15f));
         tab->setColour(TextButton::textColourOnId, Colours::white);
-        const char *icons[]{"metronome", "grid", "record.circle", "waveform", "video", "setlist", "piano", "grid"};
+        const char *icons[]{"metronome", "grid", "record.circle", "waveform", "video", "setlist", "piano", "grid", "mixer", "railMixer"};
         tab->getProperties().set("leadingIcon", icons[i]);
         tab->onClick = [this, i] { select(i); };
     }
@@ -167,14 +163,10 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
     viewport.setViewedComponent(&page, false);
     viewport.setScrollBarsShown(true, true);
     viewport.setScrollBarThickness(8);
-    for (auto *button : {&close, &apply}) {
-        addAndMakeVisible(button);
-        button->getProperties().set("flat", true);
-        button->getProperties().set("fontSize", 13.f);
-    }
+    addAndMakeVisible(apply);
+    apply.getProperties().set("flat", true);
+    apply.getProperties().set("fontSize", 13.f);
     apply.setColour(TextButton::buttonColourId, Colour(0xff60b746));
-    close.setColour(TextButton::buttonColourId, Colour(0xff505050));
-    close.onClick = [this] { ModalSheet::dismiss(*this); };
     apply.onClick = [this] { applyTiming(); };
     select(0);
 }
@@ -241,7 +233,11 @@ void AdvancedPanel::colourRow(const String &name, const String &key, uint32 init
         editor->previewColour=[safe,button,key](unsigned colour){
             if(safe&&button){safe->appearance.preview(key,(int)colour);button->setColour(TextButton::buttonColourId,Colour(0xff000000u|colour));}
         };
-        editor->finishPreview=[safe,key]{if(safe)safe->appearance.clearPreview(key);};
+        editor->finishPreview = [safe,button,key,initial] {
+            if (!safe) return;
+            safe->appearance.clearPreview(key);
+            if (button) button->setColour(TextButton::buttonColourId, safe->appearance.colour(key, initial));
+        };
         localization::panel(*editor);
         CallOutBox::launchAsynchronously(std::move(editor),button->getScreenBounds(),nullptr);
     };
@@ -253,8 +249,8 @@ void AdvancedPanel::colourRow(const String &name, const String &key, uint32 init
         resetButton->onClick = [safe, button, key, initial] {
             if (!safe || !button)
                 return;
-            safe->save(key, (int)initial);
-            button->setColour(TextButton::buttonColourId, Colour(0xff000000u | initial));
+            safe->save(key, theme::isTimelineThemeColour(key) ? -1 : (int)initial);
+            button->setColour(TextButton::buttonColourId, safe->appearance.colour(key, initial));
         };
     }
 }
@@ -300,26 +296,30 @@ void AdvancedPanel::select(int index) {
         choice("Gridline", {"Ativado", "Desativado"}, appearance.gridlines() ? 1 : 2, 436, 59, 148,
                [this](int id) { save("jaras.timeline.gridlines", id == 1); });
         label(String::fromUTF8("Scroll contínuo"), 18, 98, 300);
-        choice(String::fromUTF8("Scroll contínuo"), {"true", "none"}, appearance.continuousScroll() ? 1 : 2, 436, 99, 148,
+        choice(String::fromUTF8("Scroll contínuo"), {localization::translate("Enabled"), localization::translate("Disabled")}, appearance.continuousScroll() ? 1 : 2, 436, 99, 148,
                [this](int id) { save("jaras.timeline.continuousScroll", id == 1); });
+        label(String::fromUTF8("Inverter cores dos itens com waveform"),18,138,410);
+        auto &waveformColors = choice(String::fromUTF8("Inverter cores dos itens com waveform"), {"Default", localization::translate("Invertido")},
+            appearance.invertWaveformColors()?2:1,436,139,148,
+            [this](int id){save("jaras.timeline.invertWaveformColors",id==2);});
+        waveformColors.getProperties().set("preserveNames", true);
         const StringArray names{String::fromUTF8("Fundo da timeline"),
-                                String::fromUTF8("Cor do grid primário"),
-                                String::fromUTF8("Cor do grid secundário"),
+                                "Vertical grid color", "Horizontal grid color",
                                 String::fromUTF8("Cor do cursor de reprodução"),
-                                String::fromUTF8("Cor do cursor de edição"),
-                                "Cor do cursor Sub Play"};
-        const char *keys[]{"background", "primaryGrid", "secondaryGrid",
-                           "playCursor", "editCursor",  "subPlayCursor"};
-        const uint32 defaults[]{0x161616, 0x535250, 0x333235, 0x7548dd, 0xb9e229, 0xff6f00};
-        for (int i = 0; i < 6; ++i)
-            colourRow(names[i], String("jaras.timeline.") + keys[i], defaults[i], 142 + i * 40,
-                      true);
-        label({}, 18, 384, 566, 1).setColour(Label::backgroundColourId, theme::line);
-        label(String::fromUTF8("Limpeza de arquivos deletados da timeline"), 18, 574, 470);
+                                String::fromUTF8("Cor do cursor de edição")};
+        const char *keys[]{theme::timelineBackgroundKey, theme::timelineVerticalGridKey, theme::timelineHorizontalGridKey,
+                           "jaras.timeline.playCursor", "jaras.timeline.editCursor"};
+        const uint32 defaults[]{theme::timelineBackgroundRGB, theme::timelinePrimaryGridRGB, theme::timelineHorizontalGridRGB,
+                                theme::timelinePlayCursorRGB, theme::timelineEditCursorRGB};
+        for (int i = 0; i < names.size(); ++i)
+            colourRow(names[i], keys[i], defaults[i], 178 + i * 40, true);
+        label({}, 18, 370, 566, 1).setColour(Label::backgroundColourId, theme::line);
+        label({}, 18, 545, 566, 1).setColour(Label::backgroundColourId, theme::line);
+        label(String::fromUTF8("Limpeza de arquivos deletados da timeline"), 18, 570, 470);
         auto *cleanup = new TextButton("Excluir");
         fields.add(cleanup);
         page.addAndMakeVisible(cleanup);
-        cleanup->setBounds(504, 574, 80, 26);
+        cleanup->setBounds(504, 570, 80, 26);
         cleanup->getProperties().set("flat", true);
         cleanup->onClick = [this] {
             Component *host = this;
@@ -329,9 +329,9 @@ void AdvancedPanel::select(int index) {
             ModalSheet::open(*host, String::fromUTF8("Limpar arquivos removidos da timeline"),
                              std::make_unique<MediaCleanupPanel>(session), 480, 300);
         };
-        label(String::fromUTF8("Converter marcadores em regiões"),18,400,470);
+        label(String::fromUTF8("Converter marcadores em regiões"),18,385,470);
         auto *convert = new QuietButton("Converter");fields.add(convert);page.addAndMakeVisible(convert);
-        convert->setBounds(494,400,90,26);convert->setComponentID("timelineConvertMarkers");
+        convert->setBounds(494,385,90,26);convert->setComponentID("timelineConvertMarkers");
         convert->onClick=[this]{
             if(!session.song())return;
             try {
@@ -347,9 +347,9 @@ void AdvancedPanel::select(int index) {
         const StringArray deletionTitles{String::fromUTF8("Deletar todos os marcadores de tempo"),String::fromUTF8("Deletar todas as regiões"),String::fromUTF8("Deletar todos os marcadores")};
         for(int i=0;i<3;++i) {
             const auto kind=static_cast<timelineBulk::Kind>(i);
-            label(deletionTitles[i],18,450+i*40,470);
+            label(deletionTitles[i],18,423+i*40,470);
             auto *button=new QuietButton("Deletar");fields.add(button);page.addAndMakeVisible(button);
-            button->setBounds(504,450+i*40,80,26);button->setComponentID("timelineDelete"+String(i));
+            button->setBounds(504,423+i*40,80,26);button->setComponentID("timelineDelete"+String(i));
             button->setEnabled(session.song()!=nullptr && !session.busy && !session.audio.isRecording());
             button->onClick=[this,kind,title=deletionTitles[i]] {
                 if(!session.song())return;
@@ -368,19 +368,12 @@ void AdvancedPanel::select(int index) {
                     }));
             };
         }
-        contentHeight = 670;
-        for(auto* component:page.getChildren())if(component->getY()>=142)component->setTopLeftPosition(component->getX(),component->getY()+40);
-        label(String::fromUTF8("Inverter cores dos itens com waveform"),18,138,410);
-        auto &waveformColors = choice(String::fromUTF8("Inverter cores dos itens com waveform"), {"Default", localization::translate("Invertido")},
-            appearance.invertWaveformColors()?2:1,436,139,148,
-            [this](int id){save("jaras.timeline.invertWaveformColors",id==2);});
-        waveformColors.getProperties().set("preserveNames", true);
         auto *mp3 = new QuietButton(String::fromUTF8("MP3 - 320 kbps"));
         fields.add(mp3);page.addAndMakeVisible(mp3);
-        mp3->setBounds(314,654,270,28);
+        mp3->setBounds(314,618,270,28);
         mp3->setComponentID("timelineConvertAudioMP3Max");
         mp3Button=mp3;
-        contentHeight=704;
+        contentHeight=670;
         mp3->onClick=[this] {
             const auto safe=SafePointer<AdvancedPanel>(this);
             ConfirmationPanel::show(MessageBoxIconType::QuestionIcon,String::fromUTF8("MP3 - 320 kbps"),
@@ -447,7 +440,8 @@ void AdvancedPanel::select(int index) {
                [this](int id) { save("jaras.setlist.idMode", id == 2 ? "region" : "playlist"); });
         label(localization::translate("Fonte do Setlist"), 180, 100, 120);
         choice("Setlist font",
-               {String::fromUTF8("Padrão"), "Negrito", String::fromUTF8("Negrito itálico")},
+               {String::fromUTF8("Padrão"), "Negrito", String::fromUTF8("Negrito itálico"),
+                "Inter ExtraBold", "Inter Black", "Archivo Black", "Bungee"},
                appearance.fontStyle() + 1, 300, 101, 134,
                [this](int id) { save("jaras.setlist.fontStyle", id - 1); });
         const StringArray names{String::fromUTF8("Letras das músicas em All Regions"),
@@ -466,6 +460,14 @@ void AdvancedPanel::select(int index) {
         StringArray channels{"Omni"}; for (int i=1;i<=16;++i) channels.add(String(i));
         choice("MIDI channel", channels, jlimit(0,16,(int)appearance.value("jaras.keyboard.channel",0))+1,
             330, 105, 190, [this](int id) { save("jaras.keyboard.channel", id-1); });
+    }
+    if (index == 8 || index == 9) {
+        const String key = index == 8 ? theme::trackMixerStyleKey : theme::hozMixerStyleKey;
+        label("Track style", 18, 58, 280);
+        auto &style = choice("Track style", {"Default", localization::translate("Stripe only")},
+            appearance.mixerStripeOnly(key) ? 2 : 1, 330, 59, 190,
+            [this,key](int id) { save(key, id == 2 ? "stripeOnly" : "default"); });
+        style.getProperties().set("preserveNames", true);
     }
     if(index==7){
         label(String::fromUTF8("Exporte os 6 presets, cores, volumes, Gate, MIDI e áudios em .zipfx."),18,58,560);
@@ -523,7 +525,6 @@ void AdvancedPanel::resized() {
         tabs[i]->setBounds(10, 10 + i * tabStep, 116, tabStep - 6);
     viewport.setBounds(137, 0, getWidth() - 137, getHeight() - 52);
     page.setSize(std::max(610, viewport.getWidth() - 8), contentHeight);
-    close.setBounds(getWidth() - (selected == 0 ? 166 : 92), getHeight() - 38, 78, 24);
     apply.setBounds(getWidth() - 82, getHeight() - 38, 66, 24);
 }
 } // namespace catlive

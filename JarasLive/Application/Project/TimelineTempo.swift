@@ -335,6 +335,7 @@ public extension Song {
             if tracks[track].programChanges != nil {
                 for marker in tracks[track].programChanges!.indices { tracks[track].programChanges![marker].position *= scale }
             }
+            for marker in (tracks[track].chordMarkers ?? []).indices { tracks[track].chordMarkers?[marker].offset *= scale }
             for clip in tracks[track].clips.indices {
                 let end = (tracks[track].clips[clip].startTime + tracks[track].clips[clip].duration) * scale
                 tracks[track].clips[clip].startTime *= scale
@@ -969,7 +970,7 @@ public struct GlobalProjectTiming: Codable, Equatable, Sendable {
     }
 }
 
-/// One set of musical positions for both the grid and its elapsed-time ruler.
+/// One set of positions for the grid and its musical or elapsed-time ruler.
 public enum TimelineTimeRuler {
     public static let labelGap = 14.0
     /// Monospaced ruler text can include milliseconds and more than two hour
@@ -995,24 +996,55 @@ public enum TimelineTimeRuler {
     public struct Tick {
         public let time: Double
         public let primary: Bool
+        public let drawsInGrid: Bool
         /// Empty when the next label would be too close. The tick is still drawn.
         public let label: String
     }
+    public struct MusicalLabels {
+        private let firstMeasures: [Int]
+        public let spacing: Double
+
+        public init(sections: [TimelineTempoSection]) {
+            var next = 1
+            firstMeasures = sections.map { section in
+                let first = next
+                let count = (section.end - section.start) / section.barSeconds
+                if count.isFinite && count > 0 {
+                    next += max(1, Int(ceil(count - 1e-9)))
+                }
+                return first
+            }
+            // Reserve the widest label through the end of the timeline.
+            // A constant width prevents labels from shifting during scroll.
+            spacing = Double(String(next).count + 5) * 8.5 + TimelineTimeRuler.labelGap
+        }
+
+        fileprivate func label(section: Int, bar: Int, subdivision: Int, divisionsPerBeat: Int) -> String {
+            let measure = String(firstMeasures[section] + bar)
+            guard subdivision > 0 else { return measure }
+            let beat = subdivision / divisionsPerBeat + 1
+            let withinBeat = subdivision % divisionsPerBeat
+            return withinBeat == 0 ? "\(measure).\(beat)" : "\(measure).\(beat).\(withinBeat + 1)"
+        }
+    }
     public static func ticks(in sections: [TimelineTempoSection], from start: Double, to end: Double,
                              pixelsPerSecond scale: Double, divisions: Int = 4, labels: Bool = true,
-                             minimumLabelSpacing: Double? = nil) -> [Tick] {
+                             minimumLabelSpacing: Double? = nil, musical: MusicalLabels? = nil) -> [Tick] {
         guard start.isFinite, end.isFinite, scale.isFinite, scale > 0, end >= start else { return [] }
         let spacing = minimumLabelSpacing.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ?? musical?.spacing
             ?? labelSpacing(through: sections.last?.end ?? end, pixelsPerSecond: scale)
         let labelSeconds = spacing / scale
-        let columnSeconds = TimelineTempo.minimumGridSpacing / 2 / scale
+        let musicalGrid = musical != nil
+        let barLineSpacing = 6.0, beatLineSpacing = 32.0, rulerTickSpacing = 5.0
+        let columnSeconds = (musicalGrid ? rulerTickSpacing : TimelineTempo.minimumGridSpacing / 2) / scale
         let densityStart = floor(max(0, start) / columnSeconds) * columnSeconds
         // Finish the last column before clipping, so tiled/scrolling views
         // choose the same representative even at the viewport's right edge.
         let densityEnd = (floor(end / columnSeconds) + 1) * columnSeconds
         var result: [Tick] = []
         var lastColumn: Double?
-        var lastColumnHasLabel = false
+        var lastColumnRank = 0
         func firstSection(endingAfter time: Double) -> Int {
             var low = 0, high = sections.count
             while low < high {
@@ -1036,16 +1068,21 @@ public enum TimelineTimeRuler {
             guard bar.isFinite, bar > 0, section.start.isFinite, section.end.isFinite,
                   section.end > section.start else { continue }
             let boundaryEnd = sectionIndex < sections.count ? section.end : Double.infinity
-            let strideBars = TimelineTempo.barStride(bar: bar, pixelsPerSecond: scale)
+            let strideBars = musicalGrid
+                ? Int(pow(2, max(0, ceil(log2(barLineSpacing / max(0.001, bar * scale))))))
+                : TimelineTempo.barStride(bar: bar, pixelsPerSecond: scale)
             let first = max(0, Int(floor((densityStart - section.start) / bar)) / strideBars * strideBars)
             let last = max(first, Int(ceil((min(section.end, densityEnd) - section.start) / bar)))
             let beat = bar / Double(section.beats)
             // Reveal groups of beats as space opens between bar lines.
             // Finer configured divisions follow at closer zoom.
             let base = min(beat, beat * Double(section.unit) / Double(divisions == 0 ? 4 : divisions))
-            let minor = TimelineTempo.gridStep(bar: bar, beats: section.beats, pixelsPerSecond: scale,
-                                               divisions: divisions == 0 ? 4 : divisions, unit: section.unit)
+            let minor = musicalGrid
+                ? base * pow(2, max(0, ceil(log2(rulerTickSpacing / max(0.001, base * scale)))))
+                : TimelineTempo.gridStep(bar: bar, beats: section.beats, pixelsPerSecond: scale,
+                                         divisions: divisions == 0 ? 4 : divisions, unit: section.unit)
             guard base > 0, base.isFinite, minor > 0, minor.isFinite else { continue }
+            let divisionsPerBeat = max(1, Int((beat / base).rounded()))
             let boundaryClearance: Double
             if indexOfSection == 0 { boundaryClearance = .infinity }
             else {
@@ -1054,29 +1091,40 @@ public enum TimelineTimeRuler {
                 let right = indexOfSection + step < sections.count ? sections[indexOfSection + step].start : Double.infinity
                 boundaryClearance = min(section.start - left, right - section.start)
             }
-            func append(_ time: Double, primary: Bool, clearance: Double) {
+            func append(_ time: Double, bar: Int, subdivision: Int, clearance: Double) {
                 guard time >= densityStart, time <= densityEnd, time < section.end else { return }
                 let labeled = clearance + 1e-9 >= labelSeconds
+                let primary = subdivision == 0
+                let room = clearance * scale + 1e-9
+                // Label spacing and editing snap are independent of the grid.
+                // At close zoom, beat lines reach the tracks and finer marks stay in the ruler.
+                let drawsInGrid = musicalGrid
+                    ? room >= barLineSpacing && (primary || (subdivision % divisionsPerBeat == 0 && beat * scale >= beatLineSpacing))
+                    : primary && room >= 24
+                let rank = labeled ? 3 : !musicalGrid ? 0 : drawsInGrid ? 2 : primary ? 1 : 0
                 let column = floor(time / columnSeconds + 1e-9)
                 if column == lastColumn {
-                    guard labeled && !lastColumnHasLabel else { return }
+                    guard rank > lastColumnRank else { return }
                     result.removeLast()
                 }
-                lastColumn = column; lastColumnHasLabel = labeled
-                result.append(Tick(time: time, primary: primary, label: labels && labeled ? timeLabel(time) : ""))
+                lastColumn = column; lastColumnRank = rank
+                let title = labels && labeled
+                    ? (musical?.label(section: indexOfSection, bar: bar, subdivision: subdivision, divisionsPerBeat: divisionsPerBeat) ?? timeLabel(time))
+                    : ""
+                result.append(Tick(time: time, primary: primary, drawsInGrid: drawsInGrid, label: title))
             }
             for index in stride(from: first, through: last, by: strideBars) {
                 let time = section.start + Double(index) * bar
                 guard time < section.end else { continue }
                 let barClearance = index == 0 ? boundaryClearance :
                     min(Double(hierarchyStep(index)) * bar, boundaryEnd - time)
-                append(time, primary: true, clearance: barClearance)
+                append(time, bar: index, subdivision: 0, clearance: barClearance)
                 if minor < bar {
                     for offset in stride(from: minor, to: min(bar, section.end - time) - 1e-9, by: minor) {
                         let subdivision = max(1, Int((offset / base).rounded()))
                         let clearance = min(Double(hierarchyStep(subdivision)) * base,
                                             bar - offset, boundaryEnd - time - offset)
-                        append(time + offset, primary: false, clearance: clearance)
+                        append(time + offset, bar: index, subdivision: subdivision, clearance: clearance)
                     }
                 }
             }

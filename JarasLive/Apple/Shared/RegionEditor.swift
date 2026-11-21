@@ -8,7 +8,7 @@ struct RegionEditor: View {
     let save: (String, UInt32, Bool) -> Void
     @State private var uppercaseName = true
     var body: some View {
-        NameColorEditor(title: "Edit song", initialName: region.name, initialColor: initialColor,
+        NameColorEditor(title: "Editar região", initialName: region.name, initialColor: initialColor,
                         save: { save($0, $1, uppercaseName) }, uppercaseName: $uppercaseName)
             .onAppear { uppercaseName = region.usesUppercase }
     }
@@ -650,7 +650,7 @@ final class RegionRightClickView: NSView, NativeTimelineInputObserver {
             let item = NSMenuItem(title: JarasLocalization.string(title), action: action, keyEquivalent: "")
             item.target = self; menu.addItem(item)
         }
-        add("Edit", #selector(editSelected))
+        add("Editar região", #selector(editSelected))
         if detectBPM != nil { add("Detect BPM…", #selector(detectSelected)) }
         if unify != nil { add("Unify", #selector(unifySelected)) }
         if disunify != nil { add("Disunify", #selector(disunifySelected)) }
@@ -857,7 +857,6 @@ struct TrackDetailsEditRequest: Identifiable {
     let tracks: Set<UUID>
     let name: String
     let color: UInt32
-    let nameEditable: Bool
     var instrumentIcon: String? = nil
     var iconOnly = false
     var iconRequest: Self { var request = self; request.iconOnly = true; return request }

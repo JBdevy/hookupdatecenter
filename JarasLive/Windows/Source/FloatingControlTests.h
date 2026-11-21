@@ -3,6 +3,7 @@
 #include "UIFeatureTests.h"
 #include "PlaylistEditor.h"
 #include "ItemTunerPanel.h"
+#include "TrackEditing.h"
 namespace catlive::floatingControlTests {
 inline void require(bool okay, const char *message) { if (!okay) throw std::runtime_error(message); }
 inline void pump() {
@@ -16,6 +17,25 @@ inline jaras::Project fixture() {
     p.songs={s};p.savedCursor=jaras::SavedProjectCursor{s.id,0};return p;
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Linked track pan follows each mixer change from either side", [&] {
+        auto project = fixture();
+        const auto& song = project.songs.front();
+        const ID left = song.tracks[0].id, right = song.tracks[1].id;
+        const std::set<ID> linked{left, right};
+        trackEditing::link(project, song.id, linked, 1, 0x5685ca);
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        session.beginMixerGesture(jaras::CommandKind::pan, left);
+        session.mixerCommand(jaras::CommandKind::pan, left, linked, -.38);
+        require(std::abs(session.song()->tracks[0].pan + .38) < 1e-8 &&
+                std::abs(session.song()->tracks[1].pan - .38) < 1e-8, "The right pan must mirror before release");
+        session.endMixerGesture();
+        session.beginMixerGesture(jaras::CommandKind::pan, right);
+        session.mixerCommand(jaras::CommandKind::pan, right, {right}, -.21);
+        require(std::abs(session.song()->tracks[0].pan - .21) < 1e-8 &&
+                std::abs(session.song()->tracks[1].pan + .21) < 1e-8, "The left pan must mirror before release");
+        session.endMixerGesture();
+    });
     test("Marker shortcut modal focuses the name before the first typed character", [&] {
         Component host; host.setWantsKeyboardFocus(true); host.setSize(900,650);
         host.addToDesktop(ComponentPeer::windowIsTemporary);host.setVisible(true);host.grabKeyboardFocus();pump();
@@ -251,6 +271,29 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         settings->closeButtonPressed();pump();
         require(!Component::getCurrentlyModalComponent()&&windows("settingsTab0").empty()&&windows("advancedTab0").empty(),
                 "Closing preferences left a modal mask or visible window");
+    });
+    test("Transport meter follows the cursor and preserves earlier tempo markers", [&] {
+        auto project = fixture();
+        auto &song = project.songs.front();
+        jaras::TimelineMarker first{uuid(), "TEMPO", 0, 0};
+        first.tempoBPM = 120; first.tempoBeats = 4; first.tempoUnit = 4;
+        jaras::TimelineMarker last{uuid(), "TEMPO", 4, 0};
+        last.tempoBPM = 90; last.tempoBeats = 6; last.tempoUnit = 8;
+        song.markers = std::vector<jaras::TimelineMarker>{last, first};
+        Session session;
+        session.inspection = true;
+        session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project));
+        session.command(jaras::CommandKind::editSeek, {}, 2);
+        require(session.transportMeter() == std::make_pair(4, 4) && !session.meterInputAllowed(), "Meter before the last marker was editable");
+        session.command(jaras::CommandKind::editSeek, {}, 4);
+        require(session.transportMeter() == std::make_pair(6, 8) && !session.meterInputAllowed(), "Meter did not follow the last marker");
+        session.command(jaras::CommandKind::editSeek, {}, 6);
+        require(session.meterInputAllowed(), "Meter after the last marker was locked");
+        session.setMeter(7, 8);
+        require(session.transportMeter() == std::make_pair(7, 8), "Meter edit did not create a new section");
+        session.command(jaras::CommandKind::editSeek, {}, 5);
+        require(session.transportMeter() == std::make_pair(6, 8), "Meter edit rewrote the previous section");
     });
     test("Live tuner changes audible pitch without moving transport and restores with Undo", [&] {
         const auto folder=directory.getNonexistentChildFile("live-tuner","");folder.createDirectory();

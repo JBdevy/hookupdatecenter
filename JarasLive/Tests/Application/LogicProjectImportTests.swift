@@ -79,7 +79,9 @@ final class LogicProjectImportTests: XCTestCase {
         put(UInt64(utf16 ? value.utf16.count : bytes.count), in: &data, at: offset, width: 2)
         data.replaceSubrange((offset + 2)..<(offset + 2 + bytes.count), with: bytes)
     }
-    private func fixture(_ directory: URL, active: String = "000", corruptLink: Bool = false, invalidBounds: Bool = false) throws -> URL {
+    private func fixture(_ directory: URL, active: String = "000", corruptLink: Bool = false,
+                         invalidBounds: Bool = false, rowKind: UInt8 = 1, markerLength: UInt64 = 8 * 960,
+                         nextMarkerTick: UInt64? = nil) throws -> URL {
         let bundle = directory.appendingPathComponent("Migration.logicx")
         let alternative = bundle.appendingPathComponent("Alternatives/" + active)
         try FileManager.default.createDirectory(at: alternative, withIntermediateDirectories: true)
@@ -93,10 +95,10 @@ final class LogicProjectImportTests: XCTestCase {
         for (index, title) in ["Group", "Guitar"].enumerated() {
             var env = Data(count: 200); text(title, in: &env, at: 158)
             records.append(record("ivnE", body: env, owner: (index + 1) << 18, kind: 20))
-            var row = Data(count: 58); row[0] = 1
+            var row = Data(count: 58); row[0] = rowKind
             put(UInt64((index + 1) << 18), in: &row, at: 6)
             put(UInt64(index), in: &row, at: 14, width: 2)
-            records.append(record("karT", body: row, owner: 0x40000, index: index))
+            records.append(record("karT", body: row, owner: 0x40000, index: index, version: 6))
         }
         var file = Data(count: 100); text("Guitar.wav", in: &file, at: 8, utf16: true)
         records.append(record("lFuA", body: file, kind: 11))
@@ -122,13 +124,31 @@ final class LogicProjectImportTests: XCTestCase {
         }
         records.append(record("qSvE", body: tempos, kind: 3))
         var marker = Data(count: 48); marker[0] = 0x12; marker[23] = 0x88; marker[39] = 0x88
-        put(38400, in: &marker, at: 4); put(4, in: &marker, at: 16); put(8 * 960, in: &marker, at: 28)
+        put(38400, in: &marker, at: 4); put(4, in: &marker, at: 16); put(markerLength, in: &marker, at: 28)
+        if let nextMarkerTick {
+            var next = marker
+            put(38400 + nextMarkerTick, in: &next, at: 4); put(5, in: &next, at: 16); put(960, in: &next, at: 28)
+            marker.append(next)
+            records.append(record("qSxT", body: Data("{\\rtf1\\ansi Outro}".utf8), owner: 5 << 16, kind: 32))
+        }
         records.append(record("qSvE", body: marker, kind: 22))
         records.append(record("qSxT", body: Data("{\\rtf1\\ansi Introduction}".utf8), owner: 4 << 16, kind: 32))
         var data = Data(count: 24); put(0xabc04723, in: &data, at: 0); put(UInt64(records.count), in: &data, at: 16)
         data.append(records); try data.write(to: alternative.appendingPathComponent("ProjectData"))
         return bundle
     }
+    func testVersionSixAlternateTrackKindPreservesGroupingAndAudioPlacement() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let result = try LogicProjectImporter.read(fixture(directory, rowKind: 10))
+        let tracks = result.project.songs[0].tracks
+        XCTAssertEqual(tracks.map(\.name), ["Group", "Guitar"])
+        let group = try XCTUnwrap(tracks.first)
+        let guitar = try XCTUnwrap(tracks.last)
+        XCTAssertEqual(guitar.parentTrackID, group.id)
+        XCTAssertEqual(guitar.clips.map(\.name), ["Trimmed guitar"])
+    }
+
     func testDeclaredActiveAlternativeMustExistAndMatchExactly() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -218,6 +238,7 @@ final class LogicProjectImportTests: XCTestCase {
         XCTAssertEqual(clip.muted, true)
         XCTAssertEqual(song.parts[0].name, "Introduction")
         XCTAssertEqual(song.parts[0].endTime, 6)
+        XCTAssertTrue((song.markers ?? []).allSatisfy(\.isTempo))
         XCTAssertEqual(ProjectAudioRecovery.missingPaths(in: result.project, directory: directory), [clip.audioFile!.path])
         let search = directory.appendingPathComponent("Relink")
         try FileManager.default.createDirectory(at: search, withIntermediateDirectories: true)
@@ -229,6 +250,22 @@ final class LogicProjectImportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(clip.audioFile!.path)), bytes)
         let afterRecovery = try await ProjectStore(url: destination).load()
         XCTAssertEqual(afterRecovery, loaded)
+    }
+
+    func testMarkerRangesPreserveSavedAndAutomaticEnds() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // This item ends at 16 seconds. The next marker starts at 20 seconds.
+        for (length, expectedEnd) in [(12 * 960 as UInt64, 8.0), (1, 20.0)] {
+            let source = try fixture(directory, markerLength: length, nextMarkerTick: 36 * 960)
+            let song = try XCTUnwrap(LogicProjectImporter.read(source).project.songs.first)
+            XCTAssertEqual(song.parts.map(\.name), ["Introduction", "Outro"])
+            XCTAssertEqual(song.parts[0].startTime, 0)
+            XCTAssertEqual(song.parts[0].endTime, expectedEnd, accuracy: 1e-9)
+            XCTAssertEqual(song.parts[1].startTime, 20, accuracy: 1e-9)
+            XCTAssertEqual(song.parts[1].endTime, 20.5, accuracy: 1e-9)
+            XCTAssertTrue((song.markers ?? []).allSatisfy(\.isTempo))
+        }
     }
     func testBundledAudioCopiesAndExistingDestinationIsNotOverwritten() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -297,7 +334,7 @@ final class LogicProjectImportTests: XCTestCase {
         XCTAssertEqual(children.map(\.endTime), [4, 6])
         XCTAssertTrue(song.parts.contains { $0.name == "Outside" && $0.parentRegionID == nil && $0.startTime == 12 && $0.endTime == 12.5 })
         let flags = (song.markers ?? []).filter { !$0.isTempo }
-        XCTAssertEqual(flags.count, 3)
+        XCTAssertEqual(flags.count, 2)
         XCTAssertEqual(flags.filter { $0.unifiedRegionID == root.id }.map(\.sourceRegionID), children.map { Optional($0.id) })
         XCTAssertEqual(song.markers?.filter(\.isTempo).count, 2)
         XCTAssertTrue(song.tracks[2].clips.isEmpty)
@@ -481,9 +518,9 @@ final class LogicProjectImportTests: XCTestCase {
 
     func testRealProjectsWhenProvided() throws {
         guard let directory = ProcessInfo.processInfo.environment["JARAS_LOGIC_FIXTURES"] else { throw XCTSkip("Local Logic fixtures not supplied") }
-        for (filename, trackCount, clipCount, markerCount) in [
-            ("VS SHOW KITARA 2026.logicx", 19, 315, 38),
-            ("VS SHOW VICTOR SANTOS 2026 V4.logicx", 60, 1394, 86)
+        for (filename, trackCount, clipCount) in [
+            ("VS SHOW KITARA 2026.logicx", 19, 315),
+            ("VS SHOW VICTOR SANTOS 2026 V4.logicx", 60, 1394)
         ] {
             let url = URL(fileURLWithPath: directory).appendingPathComponent(filename)
             let original = try Data(contentsOf: url.appendingPathComponent("Alternatives/000/ProjectData"))
@@ -493,7 +530,11 @@ final class LogicProjectImportTests: XCTestCase {
             XCTAssertEqual(song.tracks.count, trackCount)
             XCTAssertEqual(song.tracks.flatMap(\.clips).filter { $0.audioFile != nil }.count, clipCount)
             XCTAssertTrue(song.tracks.flatMap(\.clips).contains { $0.midi?.notes.isEmpty == false })
-            XCTAssertEqual(song.markers?.filter { !$0.isTempo }.count, markerCount)
+            XCTAssertFalse((song.markers ?? []).contains { marker in
+                !marker.isTempo && marker.unifiedRegionID == nil && song.parts.contains {
+                    $0.parentRegionID == nil && $0.name == marker.name && $0.startTime == marker.position
+                }
+            })
             XCTAssertTrue(song.tracks.flatMap(\.clips).allSatisfy { ($0.midi != nil || $0.audioFile?.path.hasPrefix("Stems/Logic-") == true) && $0.duration > 0 })
             XCTAssertEqual(try Data(contentsOf: url.appendingPathComponent("Alternatives/000/ProjectData")), original)
             print("LOGIC_REAL_IMPORT \(filename) tracks=\(song.tracks.count) clips=\(song.tracks.flatMap(\.clips).count) groups=\(song.tracks.filter { $0.parentTrackID != nil }.count) duration=\(song.duration) missing=\(result.media.filter { $0.source == nil }.count)")

@@ -87,12 +87,16 @@ int main(){try {
     near(tcProgram.at(4)->time(4),5,"Timecode locate must include manual rate before a marker");
     near(tcProgram.at(5)->time(5),6.25,"Timecode address must remain continuous at a tempo boundary");
     near(tcProgram.at(6)->time(6),8.75,"Timecode clock must accelerate after the tempo marker");
-    for(int count:{0,1,2,8})for(int height=0;height<=500;++height) {
-        const catlive::MixerSlotSections sections(height,count);
-        check(sections.plugins+sections.outputs+sections.divider==height,"Slot sections lost vertical space");
-        check(sections.outputs==0 || sections.plugins>=63,"Output slots must stay below three FX rows");
+    for(int height=0;height<=500;++height) for (int count : {0,1,4,24}) {
+        const catlive::MixerSlotSections track(height,count), main(height,count,true);
+        check(track.plugins==main.plugins,"By All Fx must align across all strips, including Main");
+        for (const auto &areas : {track,main}) {
+            check(areas.plugins+areas.outputs+areas.divider<=height,"Routing overlaps bypass");
+            check(areas.outputs==track.outputs,"Sends headers must align across the Main and regular strips");
+        }
     }
-    const catlive::MixerSlotSections tall(500,8);
-    check(tall.plugins>63 && tall.outputs==40,"Plugins must grow beyond three slots and outputs must have an independent scroll viewport");
+    const catlive::MixerSlotSections main(500,1,true), many(500,24);
+    check(main.plugins==237 && main.outputs==216 && main.divider==47 && many.outputs==216,
+          "Center bypass, show the extra Main button and anchor outputs to the bottom");
     std::cout<<"SOURCE_EOF_AUDIO_VIDEO_REPETITION_RATE_BPM_STEPS_SOURCE_SPAN_AND_MIXER_OUTPUT_SECTIONS_OK\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

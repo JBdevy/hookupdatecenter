@@ -10,6 +10,10 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
     s=Path('Apple/Shared/TrackMixerRow.swift').read_text()
     theme=Path('Apple/Shared/Theme.swift').read_text()
     parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n', Path('Application/Transport/TransportFadeout.swift').read_text().split('extension ShowController {')[0], ('// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1])]
+    display = '; '.join(line.strip() for line in theme.splitlines() if 'static let displayHex:' in line or 'static let lightDarkBackgroundHex:' in line)
+    project=Path('Application/Project/ProjectModels.swift').read_text()
+    parts.append(project[project.index('public enum TrackHeightGeometry'):project.index('public struct TrackLinkOriginal')])
+    parts.append(theme[theme.index('enum JarasInterfaceTheme:'):theme.index('enum JarasTheme {')])
     parts.append(theme[theme.index('extension Color {'):theme.index('struct StageButtonStyle:')])
     selection = Path('Apple/Shared/GridSelectionInput.swift').read_text()
     appearance = selection.index('enum TrackMixerButtonAppearance {')
@@ -23,12 +27,13 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
                  +s[a:b]+'return sameHeightMode\n}')
     for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('private struct CompactTrackButtonStyle:','private struct TrackPanKnob:'),('private struct DirectVolumeSlider:','\n#endif'),('private struct TrackDragTitle:','\n#endif')]:
      a=s.index(begin);parts.append(s[a:s.index(end,a)])
+    a=s.index('enum MixerFaderThumbStyle {');parts.append(s[a:s.index('private struct TrackVolumeFader:',a)])
+    a=s.index('func mixerPanText(');parts.append(s[a:s.index('\n}',a)+2])
     if control_marker:
      a=s.index('struct TrackControlSelectionExclusion:');parts.append(s[a:s.index('@MainActor final class TrackSelectionRouter',a)])
     c=Path('Apple/Shared/ControlMappings.swift').read_text();a=c.index('final class MappingClickView:');parts.append(c[a:c.index('\n#endif',a)])
     parts.append(Path('Apple/Shared/RightClickRouting.swift').read_text())
     m=Path('Apple/Shared/StemAudioPlayback.swift').read_text()
-    a=m.index('@MainActor final class TrackMIDIActivity:');parts.append(m[a:m.index('@MainActor final class InstrumentKeyboardState:',a)])
     a=m.index('@MainActor final class TrackMeterLevel');parts.append(m[a:m.index('/// Item edges',a)])
     a=m.index('/// Uses the existing stereo readings');parts.append(m[a:m.index('private final class PreparedSoundFont',a)])
     v=Path('Apple/Shared/TimelineGridView.swift').read_text()
@@ -43,7 +48,7 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
     private enum AutomationTarget { enum Kind { case pan, volume } }
     @MainActor private final class ShowController: ObservableObject { let transportFadeout = TransportFadeout(); let multiLoopFaders = MultiLoopFaderPresentation(); var projectSessionID = UUID(); @Published var snapshot = 0; func automationPlaybackValue(_ track: UUID?, kind: AutomationTarget.Kind) -> Double? { nil } }
     private enum JarasLocalization { static func string(_ value:String)->String { value } }
-    private enum JarasTheme { static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white; static let trackButton = Color(hex: 0x484848) }
+    private enum JarasTheme { ''' + display + '''; static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white; static let trackButton = Color(hex: 0x484848) }
     private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
     private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }
     private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); func addControl(_ view:NSView) {}; func handle(_ event: NSEvent) {} ; func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
@@ -55,8 +60,11 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
       token='final class '+klass+': NSView {'
       p=p.replace(token,token+'''
         override func setFrameOrigin(_ origin: NSPoint) { if frame.origin != origin { Counts.origin += 1 }; super.setFrameOrigin(origin) }
-        override func setFrameSize(_ size: NSSize) { if frame.size != size { Counts.size += 1 }; super.setFrameSize(size) }
     ''')
+      if klass == 'DirectVolumeSliderView':
+       p=p.replace('let resized = newSize != frame.size', 'let resized = newSize != frame.size\n        if resized { Counts.size += 1 }')
+      else:
+       p=p.replace(token,token+'\n        override func setFrameSize(_ size: NSSize) { if frame.size != size { Counts.size += 1 }; super.setFrameSize(size) }')
      p=p.replace('if view.snapshot !== snapshot {', 'if view.snapshot !== snapshot { Counts.update += 1')
      a=p.find('private final class TrackMixerControlHost: NSHostingView<AnyView> {')
      if a >= 0:

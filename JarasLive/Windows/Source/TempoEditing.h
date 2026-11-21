@@ -2,6 +2,9 @@
 #include "Common.h"
 #include "ClipTempo.h"
 namespace catlive::tempoEditing {
+inline double cursorPosition(const jaras::TransportState &state) {
+    return state.playing ? state.position : state.editPosition;
+}
 inline const jaras::TimelineMarker *active(const jaras::Song &song, double position) {
     return jaras::tempoPlayback::active(song, position);
 }
@@ -26,7 +29,7 @@ inline const jaras::Part *region(const jaras::Song &song, const jaras::Transport
     return result;
 }
 inline double position(const jaras::Song &song, const jaras::TransportState &state) {
-    const double at = state.playing ? state.position : state.editPosition;
+    const double at = cursorPosition(state);
     const auto *part = region(song, state);
     return part && (at < part->startTime || at >= part->endTime) ? part->startTime : at;
 }

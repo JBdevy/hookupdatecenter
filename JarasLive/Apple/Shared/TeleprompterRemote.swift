@@ -26,6 +26,12 @@ struct TeleprompterRemoteBlock: Codable {
     var nameColor: UInt32? = nil
 }
 struct TeleprompterRemotePayload: Codable {
+    struct Notice: Codable {
+        let id: String
+        let message: String, imageID: String?, font: String, scale: Double
+        let textColor: UInt32, backgroundColor: UInt32, flashColor: UInt32
+        let elapsed: Double
+    }
     var text = "", chords = "", song = "", queued = ""
     var textStyled: String? = nil, chordsStyled: String? = nil
     var progress = 0.0, preview = false
@@ -36,8 +42,8 @@ struct TeleprompterRemotePayload: Codable {
     var timer = "00:00:00", expired = false
     var localTime = ""
     var mediaID: String?, mediaKind: String?
-    var mediaTime = 0.0, mediaRate = 0.0
     var mediaStretch = false
+    var notice: Notice?
 }
 
 /// The audio callback never touches networking. The worker serves immutable
@@ -49,6 +55,7 @@ final class TeleprompterHTTPServer {
     private var waitingForHeaders: Set<ObjectIdentifier> = []
     private var state = Data("{}".utf8)
     private var media: (id: String, url: URL)?
+    private var noticeImage: (id: String, data: Data)?
     private var stopped = false
     func start(port: UInt16 = 10101, ready: @escaping (UInt16) -> Void, failed: @escaping (String) -> Void) {
         queue.async { [self] in
@@ -87,14 +94,16 @@ final class TeleprompterHTTPServer {
     private func stopOnQueue() {
         stopped = true; listener?.cancel(); listener = nil
         for connection in connections.values { connection.cancel() }
-        connections.removeAll(); waitingForHeaders.removeAll(); media = nil
+        connections.removeAll(); waitingForHeaders.removeAll(); media = nil; noticeImage = nil
     }
     var path: String { "/" }
-    func publish(_ payload: TeleprompterRemotePayload, mediaURL: URL?) {
+    func publish(_ payload: TeleprompterRemotePayload, mediaURL: URL?, image: Data? = nil) {
         queue.async { [self] in
             guard !stopped, let data = try? JSONEncoder().encode(payload) else { return }
             state = data
             media = payload.mediaID.flatMap { id in mediaURL.map { (id, $0) } }
+            if let id = payload.notice?.imageID, let image { noticeImage = (id, image) }
+            else { noticeImage = nil }
         }
     }
     private func receive(_ connection: NWConnection, accumulated: Data) {
@@ -122,6 +131,8 @@ final class TeleprompterHTTPServer {
             respond(connection, body: state, type: "application/json; charset=utf-8", head: head)
         } else if let media, endpoint == path + "media/" + media.id {
             stream(connection, url: media.url, headers: lines, head: head)
+        } else if let noticeImage, endpoint == path + "notice/" + noticeImage.id {
+            respond(connection, body: noticeImage.data, type: "image/jpeg", head: head)
         } else { respond(connection, status: "404 Not Found", body: Data()) }
     }
     private func respond(_ connection: NWConnection, status: String = "200 OK", body: Data, type: String = "text/plain", head: Bool = false) {
@@ -179,11 +190,17 @@ final class TeleprompterHTTPServer {
 .progress{height:5px;background:#ffffff20}.progress div{height:100%}#blocks{display:none;width:100%;height:100%;gap:8px;align-items:stretch;min-height:0}.block{font-weight:bold;padding:6px;border:1px solid;border-radius:6px;overflow:hidden;min-width:0;min-height:0;line-height:1.2;box-sizing:border-box}.block-title{border-bottom:2px solid;padding-bottom:6px;margin-bottom:6px}.preview-song{padding:0 3px 4px;margin-bottom:4px}
 video,img{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}#connection{position:absolute;bottom:10px;right:10px;z-index:4;color:#ffdc52;font-size:12px;display:none}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:.25}}.expired{animation:blink 1s infinite}
-</style></head><body><div id="screen"><video id="video" muted playsinline></video><img id="image" hidden><div id="top"></div><div id="content"><div id="lyrics"></div><div id="blocks"></div></div><div id="bottom"></div><div id="connection">Connecting…</div></div>
+#notice{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;overflow:hidden}
+#notice[hidden],#notice img[hidden],#noticeText[hidden]{display:none}
+@keyframes notice-flash{0%{background-color:var(--notice-flash)}50%,100%{background-color:var(--notice-background)}}
+#notice.flashing{animation:notice-flash .35s step-end 3}
+#notice img{width:100%;height:100%;object-fit:contain}
+#noticeText{width:100%;max-height:100%;font-weight:700;white-space:pre-wrap;overflow-wrap:anywhere}
+</style></head><body><div id="screen"><img id="image" hidden><div id="top"></div><div id="content"><div id="lyrics"></div><div id="blocks"></div></div><div id="bottom"></div><div id="notice" hidden><div id="noticeText"></div><img id="noticeImage" alt="" hidden></div><div id="connection">Connecting…</div></div>
 <script>
 const $=id=>document.getElementById(id),hex=n=>'#'+Number(n).toString(16).padStart(6,'0');
 const fonts={system:'Arial,sans-serif',arial:'Arial,sans-serif',mono:'monospace',georgia:'Georgia,serif',verdana:'Verdana,sans-serif',tahoma:'Tahoma,sans-serif',impact:'Impact,sans-serif',trebuchet:'Trebuchet MS,sans-serif',segoe:'Segoe UI,sans-serif',bahnschrift:'Bahnschrift,sans-serif'};
-let current=null,lastBody='',mediaID='',lastStamp=performance.now();
+let current=null,lastBody='',mediaID='',lastNoticeID=null,noticeStateSeen=false;
 function color(n,rgb){return rgb?'hsl('+((Date.now()/6000*360)%360)+',90%,55%)':hex(n)}
 function duration(v){let n=Math.ceil(v);return (n>=3600?Math.floor(n/3600)+':':'')+String(Math.floor(n/60)%60).padStart(2,'0')+':'+String(n%60).padStart(2,'0')}
 function applyCase(v,s){return s.textCase==='uppercase'?v.toUpperCase():s.textCase==='lowercase'?v.toLowerCase():v}
@@ -228,7 +245,32 @@ function decorations(d,position){const s=d.settings,host=$(position);host.replac
  appendLoopBar(d,position,host);
 }
 const previewLayouts=new Map();
-function render(d){current=d;const s=d.settings;$('screen').style.borderColor=!s.clearMode&&s.windowBorderEnabled?color(s.borderColor,s.rgbWindowBorderEnabled):'transparent';decorations(d,'top');decorations(d,'bottom');
+function showingNotice(d){return !!(d&&!d.preview&&d.notice)}
+function updateNoticeFlash(layer,n){
+ const watching=noticeStateSeen;noticeStateSeen=true;
+ if(!n){layer.classList.remove('flashing');return}
+ const background=hex(n.backgroundColor),flash=hex(n.flashColor);
+ layer.style.backgroundColor=background;
+ layer.style.setProperty('--notice-background',background);
+ layer.style.setProperty('--notice-flash',flash);
+ if(n.id===lastNoticeID)return;
+ lastNoticeID=n.id;layer.classList.remove('flashing');
+ if(watching||n.elapsed<1.05){void layer.offsetWidth;layer.classList.add('flashing')}
+}
+function render(d){current=d;const s=d.settings,notice=showingNotice(d);$('notice').hidden=!notice;updateNoticeFlash($('notice'),notice?d.notice:null);$('screen').style.borderColor=(notice||!s.clearMode)&&s.windowBorderEnabled?color(s.borderColor,s.rgbWindowBorderEnabled):'transparent';
+ for(const id of ['top','content','bottom'])$(id).style.display=notice?'none':'';
+ if(notice){
+  $('image').hidden=true;
+  const n=d.notice,t=$('noticeText'),im=$('noticeImage');t.hidden=!!n.imageID;im.hidden=!n.imageID;
+  if(n.imageID){const path='notice/'+encodeURIComponent(n.imageID);if(im.getAttribute('src')!==path)im.setAttribute('src',path)}
+  else {
+   t.textContent=n.message;t.style.fontFamily=fonts[n.font.toLowerCase()]||n.font;t.style.color=hex(n.textColor);
+   let size=Math.min(72,Math.max(24,innerWidth*.078))*n.scale/100;t.style.fontSize=size+'px';
+   while(size>9&&t.scrollHeight>t.clientHeight){size=Math.max(9,size*.9);t.style.fontSize=size+'px'}
+  }
+  return;
+ }
+ decorations(d,'top');decorations(d,'bottom');
  $('lyrics').style.display=s.clearMode||d.preview?'none':'block';$('blocks').style.display=d.preview?'grid':'none';coloredText($('lyrics'),d.text,d.textStyled,s);
  $('lyrics').style.color=hex(s.textColor);$('lyrics').style.fontFamily=fonts[s.fontFamily];$('lyrics').style.textAlign=s.textAlignment;
  $('lyrics').style.borderColor=s.textBoxEnabled&&d.text?color(s.textBoxColor,s.rgbTextBoxBorderEnabled):'transparent';
@@ -254,16 +296,17 @@ function render(d){current=d;const s=d.settings;$('screen').style.borderColor=!s
  for(const e of previewCells){e.style.height='100%';e.style.alignSelf='stretch';e.style.fontSize=Math.max(1,layout.font*s.previewScale/100)+'px'}
  }
 
- const v=$('video'),im=$('image');v.hidden=d.preview||d.mediaKind!=='video';im.hidden=d.preview||d.mediaKind!=='image';
- for(const media of [v,im]){media.style.objectFit=d.mediaStretch?'fill':'contain';media.style.transform='scale('+s.mediaScale/100+')'}
- if(d.preview||!d.mediaID){v.pause();if(mediaID){v.removeAttribute('src');v.load();im.removeAttribute('src');mediaID=''}}
- else if(mediaID!==d.mediaID){mediaID=d.mediaID;if(d.mediaKind==='video'){v.src='media/'+encodeURIComponent(mediaID);v.load()}else {v.pause();im.src='media/'+encodeURIComponent(mediaID)}}
- if(!v.hidden){if(v.readyState>=1&&Math.abs(v.currentTime-d.mediaTime)>.3)v.currentTime=d.mediaTime;if(d.mediaRate>0){v.playbackRate=d.mediaRate;v.play().catch(()=>{})}else v.pause()}
+ const im=$('image');im.hidden=d.preview||d.mediaKind!=='image';
+ im.style.objectFit=d.mediaStretch?'fill':'contain';im.style.transform='scale('+s.mediaScale/100+')';
+ if(im.hidden){if(mediaID){im.removeAttribute('src');mediaID=''}}
+ else if(mediaID!==d.mediaID){mediaID=d.mediaID;im.src='media/'+encodeURIComponent(mediaID)}
 }
-async function poll(){try{const r=await fetch('state',{cache:'no-store'});if(!r.ok)throw Error();const body=await r.text(),d=JSON.parse(body);if(!d.settings)throw Error();$('connection').style.display='none';lastStamp=performance.now();if(body!==lastBody){lastBody=body;render(d)}}catch{ $('connection').style.display='block';$('video').pause()}finally{setTimeout(poll,250)}}
+async function poll(){try{const r=await fetch('state',{cache:'no-store'});if(!r.ok)throw Error();const body=await r.text(),d=JSON.parse(body);if(!d.settings)throw Error();$('connection').style.display='none';if(body!==lastBody){lastBody=body;render(d)}}catch{ $('connection').style.display='block';$('video').pause()}finally{setTimeout(poll,250)}}
 addEventListener('resize',()=>{if(current)render(current)});addEventListener('dblclick',()=>{if(document.fullscreenElement)document.exitFullscreen();else document.documentElement.requestFullscreen().catch(()=>{})});
-$('video').addEventListener('loadedmetadata',()=>{if(current)$('video').currentTime=current.mediaTime});poll();
-setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode&&!current.preview)return;
+poll();
+setInterval(()=>{if(!current)return;const s=current.settings;
+ if(showingNotice(current)){if(s.windowBorderEnabled&&s.rgbWindowBorderEnabled)$('screen').style.borderColor=color(s.borderColor,true);return;}
+ if(s.clearMode&&!current.preview)return;
  if(s.windowBorderEnabled&&s.rgbWindowBorderEnabled)$('screen').style.borderColor=color(s.borderColor,true);
  const timer=document.querySelector('.timer'),chords=document.querySelector('.chords');
  if(timer&&s.clockBorderEnabled&&s.rgbClockBorderEnabled)timer.style.borderColor=color(s.clockBorderColor,true);
@@ -294,6 +337,8 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode&&!cu
     private var directory: URL?
     private var payload = TeleprompterRemotePayload()
     private var mediaURL: URL?
+    private var noticeImageData: Data?
+    private var noticeImageDate = Date.distantPast
     private var heartbeat: Timer?
     private var lastPublish = 0.0
     func configure(directory: URL?, refresh: @escaping () -> Void) { self.directory = directory; self.refresh = refresh }
@@ -346,14 +391,16 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode&&!cu
         mediaURL = nil; payload.mediaID = nil; payload.mediaKind = nil
         let t = snapshot.transport, position = t.playing || t.paused == true ? t.position : t.editPosition ?? t.position
         if !payload.preview, let directory,
-           let song = snapshot.project.songs.first(where: { $0.id == t.songId }),
-           let clip = song.tracks.lazy.filter({ $0.kind == (self.index == 2 ? .teleprompt2 : .teleprompt) && !$0.mute }).flatMap(\.clips).first(where: { $0.isProjectionMedia && $0.muted != true && position >= $0.startTime && position < $0.startTime + $0.duration }),
+           let song = snapshot.project.songs.first(where: { $0.id == t.songId }) ?? snapshot.project.songs.first,
+           let clip = song.tracks.lazy.filter({ $0.kind == (self.index == 2 ? .teleprompt2 : .teleprompt) && !$0.mute }).flatMap(\.clips).first(where: {
+               guard $0.isProjectionMedia, $0.muted != true, position >= $0.startTime, position < $0.startTime + $0.duration,
+                     let path = $0.audioFile?.path else { return false }
+               return UTType(filenameExtension: (path as NSString).pathExtension)?.conforms(to: .image) == true
+           }),
            let file = clip.audioFile {
             mediaURL = directory.appendingPathComponent(file.path)
             payload.mediaID = clip.id.uuidString
-            payload.mediaKind = UTType(filenameExtension: mediaURL!.pathExtension)?.conforms(to: .image) == true ? "image" : "video"
-            payload.mediaTime = max(0, clip.sourceOffset + (position - clip.startTime) * clip.audioRate)
-            payload.mediaRate = t.playing ? clip.audioRate : 0
+            payload.mediaKind = "image"
         }
         publish()
     }
@@ -364,8 +411,25 @@ setInterval(()=>{if(!current)return;const s=current.settings;if(s.clearMode&&!cu
         payload.expired = TeleprompterTimerController.shared.expired()
         let values = Calendar.current.dateComponents([.hour, .minute, .second], from: Date())
         payload.localTime = String(format: "%02d:%02d:%02d", values.hour ?? 0, values.minute ?? 0, values.second ?? 0)
+        let notice = TPNoticeController.shared
+        let appearance = notice.appearance
+        if noticeImageDate != notice.sentAt {
+            noticeImageDate = notice.sentAt
+            noticeImageData = notice.remoteImage.flatMap { value in
+                value.split(separator: ",", maxSplits: 1).last.flatMap { Data(base64Encoded: String($0)) }
+            }
+        }
+        if !payload.preview, notice.active, (index == 1 ? appearance.window1 : appearance.window2) {
+            let text = notice.message.uppercased()
+            payload.notice = .init(id: String(notice.sentAt.timeIntervalSince1970),
+                message: appearance.emojiEnabled ? "\(appearance.emoji) \(text) \(appearance.emoji)" : text,
+                imageID: noticeImageData == nil ? nil : String(notice.sentAt.timeIntervalSince1970),
+                font: appearance.font, scale: appearance.scale, textColor: appearance.text,
+                backgroundColor: appearance.background, flashColor: appearance.flash,
+                elapsed: min(1.05, max(0, Date().timeIntervalSince(notice.sentAt))))
+        } else { payload.notice = nil }
         lastPublish = ProcessInfo.processInfo.systemUptime
-        server?.publish(payload, mediaURL: mediaURL)
+        server?.publish(payload, mediaURL: mediaURL, image: noticeImageData)
     }
     private static func qr(_ link: String) -> CGImage? {
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
@@ -425,7 +489,9 @@ struct TeleprompterRemoteView: View {
                 }.disabled(remote.link.isEmpty)
             }
             if !remote.message.isEmpty { Text(LocalizedStringKey(remote.message)).font(.jarasCaption).foregroundStyle(JarasTheme.yellow) }
+            #if os(iOS)
             HStack { Spacer(); Button("Close", action: close).keyboardShortcut(.cancelAction) }
+            #endif
         }.padding(20).frame(maxWidth: 420).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
     }

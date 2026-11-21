@@ -302,8 +302,8 @@ struct ImGuiFrontendView::Impl {
     void masterStrip(float width, float height) {
         ImGui::BeginChild("##master", ImVec2(width, height), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
         meter("", ImVec2(12 * scale(), height - 18 * scale())); ImGui::SameLine();
-        ImGui::BeginGroup(); ImGui::TextUnformatted("MASTER"); ImGui::SameLine();
-        if (ImGui::SmallButton("FX")) openFX("", "Master");
+        ImGui::BeginGroup(); ImGui::TextUnformatted("MAIN"); ImGui::SameLine();
+        if (ImGui::SmallButton("FX")) openFX("", "Main");
         const auto gain = gesture.active && gesture.track.empty() && gesture.kind == "masterVolume" ? sliderGain(gesture.value) : number(project(), "masterVolume", 1);
         ImGui::SameLine(); ImGui::TextDisabled("%s dB", gainText(gain).c_str());
         ImGui::BeginDisabled(!editable()); slider("##masterGain", "masterVolume", "", number(project(), "masterVolume", 1), std::max(40.f, width - 42 * scale())); ImGui::EndDisabled();
@@ -880,7 +880,7 @@ void ImGuiFrontendView::Impl::effectsPanel() {
                         control("Mix", "reverbMix", 0, 100, 1, "%.1f %%"); control("Decay", "reverbDecay", .1f, 20, 1, "%.1f s");
                         control("Low Cut", "reverbLowCut", 20, 2000, 1, "%.0f Hz"); control("High Cut", "reverbHighCut", 2000, 20000, 1, "%.0f Hz");
                     } else if (entry.kind == "Limiter") {
-                        control("Input", "limiter.inputGain", -24, 24, 1, "%.1f dB"); control("Ceiling", "limiter.ceiling", -24, 0, 1, "%.1f dB"); control("Release", "limiter.release", 10, 3000, 1000, "%.0f ms");
+                        control("Gain", "limiter.inputGain", -24, 24, 1, "%.1f dB"); control("Ceiling", "limiter.ceiling", -24, 0, 1, "%.1f dB"); control("Release", "limiter.release", 10, 3000, 1000, "%.0f ms");
                     } else if (entry.kind == "Pitch") control("Semitones", "pitchSemitones", -12, 12, 1, "%.1f st");
                     else if (entry.kind == "Cat Gate") {
                         control("Threshold", "gate.threshold", -80, 0, 1, "%.1f dB"); control("Attack", "gate.attack", 0, 2000, 1000, "%.0f ms");

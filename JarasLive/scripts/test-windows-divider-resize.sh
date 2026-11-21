@@ -8,7 +8,7 @@ python3 - "$resize_test_dir" <<'PY'
 from pathlib import Path
 import sys
 out=Path(sys.argv[1]); source=Path('Windows/Source/DragDivider.h').read_text()
-source=source[source.index('class DragDivider final'):source.index('class SongDisplayLabel final')]
+source=source[source.index('class DragDivider final'):source.index('// The footer previews')]
 source=source.replace('private Timer','public Timer').replace('  private:','  public:')
 (out/'main.cpp').write_text('#include <juce_gui_basics/juce_gui_basics.h>\n#include <optional>\nnamespace catlive { using namespace juce; namespace theme { const auto green=Colours::green,secondary=Colours::grey; }\n'+source+'}\n'+Path('Tests/Core/WindowsDividerResizeTests.cpp').read_text())
 (out/'CMakeLists.txt').write_text('''cmake_minimum_required(VERSION 3.22)

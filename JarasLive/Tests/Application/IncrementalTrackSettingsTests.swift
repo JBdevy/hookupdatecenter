@@ -990,6 +990,24 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         show.canExecute = { false }; show.performAction(.togglePreview)
         XCTAssertEqual(calls, 2, "Preview mapping must respect the active session's access gate")
     }
+    @MainActor func testMixerClickRevealsClickedTrackIndependentlyOfRangeAnchor() throws {
+        let project = fixture(), (show, executor) = try show(project)
+        let first = project.songs[0].tracks[0].id, last = project.songs[0].tracks[1].id
+        show.setMixerTrackSelection([first, last], anchor: first)
+        show.revealSelectedMixerTrack(last)
+        let request = try XCTUnwrap(show.trackSelectionRequest)
+        XCTAssertEqual(request.track, last)
+        XCTAssertEqual(show.selectedTrackForActions, first)
+        show.revealSelectedMixerTrack(last)
+        XCTAssertNotEqual(show.trackSelectionRequest?.id, request.id)
+        show.setMixerTrackSelection([first], anchor: first)
+        let previous = show.trackSelectionRequest
+        show.revealSelectedMixerTrack(last)
+        XCTAssertEqual(show.trackSelectionRequest, previous)
+        XCTAssertTrue(executor.mixerCommands.isEmpty)
+        XCTAssertFalse(show.hasUnsavedChanges)
+    }
+
     @MainActor func testActionsSelectTrackAndDeliverMIDIWithoutReloadingProject() throws {
         let project = fixture(), (show, executor) = try show(project)
         let track = project.songs[0].tracks[1].id

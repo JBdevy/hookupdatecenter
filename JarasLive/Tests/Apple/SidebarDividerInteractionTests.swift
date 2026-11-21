@@ -131,9 +131,11 @@ listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y
 listDivider.mouseDragged(with: pointer(listDivider, .leftMouseDragged, CGPoint(x: 3, y: 110)))
 listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: 3, y: 110)))
 precondition(setlistController.metrics.offset > 0 && mixerController.metrics.offset == offsetBeforeResize && listWidth == 0, "Setlist vertical dragging is independent from mixer and has no width callback")
+listDivider.showsRail = false; listDivider.showsScrollRail = false
 listDivider.mouseDown(with: pointer(listDivider, .leftMouseDown, CGPoint(x: 3, y: 50)))
 listDivider.mouseUp(with: pointer(listDivider, .leftMouseUp, CGPoint(x: -20, y: 50)))
-precondition(listWidth == 300, "leftward resize preserves the Setlist's reversed horizontal direction")
+precondition(listWidth == 300, "The hidden rail still resizes the Setlist in the correct direction")
+listDivider.showsRail = true; listDivider.showsScrollRail = true
 
 // A lazy Setlist can revise its estimated height while its thumb is held.
 // The same drag must still reach the last song, without releasing/regrabbing.
@@ -190,6 +192,7 @@ final class SidebarWheelEvent: NSEvent {
     override var window: NSWindow? { targetWindow }
     override var locationInWindow: NSPoint { point }
     override var scrollingDeltaY: CGFloat { delta }
+    override var phase: NSEvent.Phase { [] }
     override var hasPreciseScrollingDeltas: Bool { precise }
     override var modifierFlags: NSEvent.ModifierFlags { [] }
 }
@@ -211,11 +214,13 @@ precondition(mixerController.handleWheel(physicalWheel))
 settle(0.65)
 precondition(abs(mixerController.metrics.offset - max(0, beforeReversal - 32)) < 0.001, "reversal cancels outstanding travel")
 physicalWheel.precise = true
+mixerScroll.hasVerticalScroller = true
 let hitProbe = mixerScroll.contentView as! SidebarHitProbeClip
 let previousHits = hitProbe.hitCount
 for _ in 0..<120 {
     precondition(!mixerController.handleWheel(physicalWheel), "trackpad remains native")
 }
+mixerScroll.hasVerticalScroller = false
 precondition(hitProbe.hitCount == previousHits, "trackpad zoom must not hit-test the sidebar's entire hosted document")
 print("SIDEBAR_PHYSICAL_WHEEL_IMMEDIATE_EXACT_TARGET_AND_REVERSAL_OK")
 

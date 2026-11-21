@@ -178,7 +178,7 @@ struct ResolumeSettingsView: View {
     init(show: ShowController) { self.show = show; _settings = State(initialValue: show.snapshot.project.resolume ?? ResolumeSettings()) }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { Text(verbatim: "Resolume").font(.jarasTitle2.bold()); Spacer(); Button("Close") { (closeEditor ?? { dismiss() })() }.disabled(busy) }
+            Text(verbatim: "Resolume").font(.jarasTitle2.bold())
             Divider()
             Toggle("Use CatLive Integration on another computer", isOn: Binding(get: { settings.usesIntegration }, set: { settings.integrationEnabled = $0 }))
             if settings.usesIntegration {

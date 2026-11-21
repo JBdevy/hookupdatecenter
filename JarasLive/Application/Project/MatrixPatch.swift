@@ -19,28 +19,40 @@ public extension Song {
     /// One reversible edit, removing every representation of a connection.
     /// Validate the candidate before committing, so feedback never enters audio.
     mutating func toggleMatrixConnection(source: UUID, destination: UUID) throws {
+        var candidate = self
+        try candidate.setMatrixConnection(source: source, destination: destination,
+                                          enabled: !matrixConnection(source: source, destination: destination))
+        try candidate.validateTrackRouting()
+        self = candidate
+    }
+
+    /// Edit a candidate song. The caller validates the whole stroke before publishing it.
+    mutating func setMatrixConnection(source: UUID, destination: UUID, enabled: Bool) throws {
         guard source != destination,
               let from = tracks.firstIndex(where: { $0.id == source && $0.kind == .standard }),
               let to = tracks.firstIndex(where: { $0.id == destination && $0.kind == .standard }) else {
             throw ProjectError.invalid("Invalid track routing")
         }
-        var candidate = self
-        if matrixConnection(source: source, destination: destination) {
-            candidate.tracks[from].routing?.transmitters.removeAll { $0 == destination }
-            candidate.tracks[to].routing?.receives.removeAll { $0 == source }
+        guard matrixConnection(source: source, destination: destination) != enabled else { return }
+        if !enabled {
+            tracks[from].routing?.transmitters.removeAll { $0 == destination }
+            if var routing = tracks[to].routing {
+                // Preserve slot positions, including a Main capture.
+                if routing.mainReceiveSlot != nil { routing.receives = routing.receives.map { $0 == source ? nil : $0 } }
+                else { routing.receives.removeAll { $0 == source } }
+                tracks[to].routing = routing
+            }
             if tracks[from].parentTrackID == destination {
-                candidate.tracks[from].outputs = tracks[from].outputPatches.filter { $0 != .masterGroup }
-                candidate.tracks[from].patch = nil; candidate.tracks[from].secondaryPatch = nil
+                tracks[from].outputs = tracks[from].outputPatches.filter { $0 != .masterGroup }
+                tracks[from].patch = nil; tracks[from].secondaryPatch = nil
             }
         } else if tracks[from].parentTrackID == destination {
-            candidate.tracks[from].outputs = tracks[from].outputPatches.filter { $0 != .none } + [.masterGroup]
-            candidate.tracks[from].patch = nil; candidate.tracks[from].secondaryPatch = nil
+            tracks[from].outputs = tracks[from].outputPatches.filter { $0 != .none } + [.masterGroup]
+            tracks[from].patch = nil; tracks[from].secondaryPatch = nil
         } else {
             var routes = tracks[from].routing ?? TrackRouting()
             routes.transmitters.append(destination)
-            candidate.tracks[from].routing = routes
+            tracks[from].routing = routes
         }
-        try candidate.validateTrackRouting()
-        self = candidate
     }
 }

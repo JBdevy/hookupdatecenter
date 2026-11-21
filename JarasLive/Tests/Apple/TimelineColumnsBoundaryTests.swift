@@ -85,8 +85,12 @@ private func columnsDescendants(_ view: NSView) -> [NSView] {
 MainActor.assumeIsolated {
     _ = NSApplication.shared
     let dimensions = ColumnsDimensions(), zoom = ColumnsZoom()
+    let suite = "catlive.columns-test." + UUID().uuidString
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(JarasInterfaceTheme.lightDark.rawValue, forKey: JarasInterfaceTheme.preferenceKey)
     let outer = NSScrollView(frame: CGRect(x: 0, y: 0, width: 800, height: 320))
-    let document = GridHostingView(rootView: ColumnsFixture(dimensions: dimensions, zoom: zoom))
+    let document = GridHostingView(rootView: ColumnsFixture(dimensions: dimensions, zoom: zoom).defaultAppStorage(defaults))
     let verticalDocument = GridDocumentView()
     verticalDocument.host = document
     verticalDocument.addSubview(document)
@@ -117,8 +121,25 @@ MainActor.assumeIsolated {
     let originals = hosts.mapValues(ObjectIdentifier.init)
     let created = ColumnsProbeCounts.created
     let mixer = hosts["columns-mixer"]!, timeline = hosts["columns-timeline"]!
+    let backing = columnsDescendants(document).first { $0.identifier?.rawValue == "track-mixer-background" }!
     let mixerFrame = mixer.frame
     let rootsBefore = TimelineLayoutDiagnostics.roots["columns-mixer", default: 0]
+    func mixerBackground() -> Int {
+        guard let cgColor = backing.layer?.backgroundColor,
+              let color = NSColor(cgColor: cgColor)?.usingColorSpace(.sRGB) else {
+            preconditionFailure("Mixer backing is missing")
+        }
+        return Int((color.redComponent * 255).rounded())
+    }
+    precondition(mixerBackground() == 43)
+    defaults.set(JarasInterfaceTheme.dark.rawValue, forKey: JarasInterfaceTheme.preferenceKey)
+    settle()
+    precondition(mixerBackground() == 15, "The empty mixer must repaint independently of track selection")
+    precondition(TimelineLayoutDiagnostics.roots["columns-mixer", default: 0] == rootsBefore,
+                 "Changing the background must not reassign retained controls")
+    defaults.set(JarasInterfaceTheme.lightDark.rawValue, forKey: JarasInterfaceTheme.preferenceKey)
+    settle()
+    precondition(mixerBackground() == 43)
     TimelineLayoutDiagnostics.layouts.removeAll()
     for width: CGFloat in [2500, 2700, 3100, 2900, 2600, 2400] {
         zoom.documentWidth = width

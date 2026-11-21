@@ -94,6 +94,8 @@ class Session final : private Timer {
     std::function<void()> setlistChanged;
     ID duplicatePlaylistRegion(const ID &playlist, const ID &entry);
     double tempoBPM() const;
+    std::pair<int, int> transportMeter() const;
+    bool meterInputAllowed() const;
     void setTempo(double bpm);
     bool tempoInputAllowed() const { return !transport().playing && !transport().subPlay.playing; }
     void setTypedTempo(double bpm) { if (tempoInputAllowed()) setTempo(bpm); }
@@ -102,9 +104,13 @@ class Session final : private Timer {
     void configureEffects(const ID &, const var &);
     void configureEffects(const std::map<ID, var> &);
     String copyEffect(const ID &source, const String &effect, const ID &destination, const String &before = {});
+    String insertLibraryEffect(const ID &destination, const String &identity, const String &presetID,
+                               const String &before = {}, bool itemTarget = false);
     void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false, bool regionOperation = false);
     void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
     void resizeItem(const ID &, double start, double end);
+    void resizeItems(const std::map<ID, std::pair<double, double>> &);
+    void setTrackInputMonitoring(const ID &, bool);
     void resizeSharedItemBoundary(const ID &, const ID &, double, std::optional<double> = {}, std::optional<double> = {});
     void resizeTeleprompterBoundary(const std::set<ID> &, const ID &, const ID &, double);
     std::vector<ID> duplicateTracks(const std::set<ID> &, const var *copiedDocument = nullptr,
@@ -137,7 +143,7 @@ class Session final : private Timer {
     bool recordingArmed(const ID &id) const {
         return recordArm(id) == 1 || (recordArm(id) == 2 && recordSelections.count(id) != 0);
     }
-    void cycleRecordArm(const ID &, const std::set<ID> &targets = {});
+    void cycleRecordArm(const ID &, const std::set<ID> &targets = {}, bool automatic = false);
     void mixerCommand(jaras::CommandKind, const ID &, const std::set<ID> &, double value = 0, bool clearAll = false);
     void beginMixerGesture(jaras::CommandKind kind, ID source) {
         mixerGestureSource = std::move(source); mixerGestureProject = project().id; mixerGestureKind = kind;

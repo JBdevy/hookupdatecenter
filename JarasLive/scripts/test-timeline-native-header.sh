@@ -21,6 +21,7 @@ parts = [between('/// The closed header owns no SwiftUI zoom graph.', '@MainActo
 item_source = Path('Apple/Shared/GridSelectionInput.swift').read_text()
 item_constants = item_source[item_source.index('struct GridSelectionItem {'):item_source.index('    let id: UUID', item_source.index('struct GridSelectionItem {'))]
 parts.append(item_constants + '}')
+parts.append(between('private let markerLaneHeight', '\nstruct TimelineBandsGlyph'))
 environment = Path('Apple/Shared/FXWindows.swift').read_text()
 start = environment.index('private struct WorkspaceEditorDismissKey: EnvironmentKey')
 parts.append(environment[start:environment.index('extension View {', start)])
@@ -64,10 +65,10 @@ tests = Path('Tests/Apple/TimelineNativeHeaderTests.swift').read_text()+'\n'+Pat
 if os.environ.get('CATLIVE_ZOOM_BENCHMARK') == '1':
     tests = re.sub(r'^MainActor\.assumeIsolated.*$', '', tests, flags=re.M)
     tests += '\n'+Path('Tests/Apple/TimelineZoomHeaderPerformanceTests.swift').read_text()
-Path(sys.argv[1], 'main.swift').write_text('import AppKit\nimport SwiftUI\nimport CoreText\nprivate let markerLaneHeight: CGFloat = 16\n'+'\n'.join(parts)+probes+tests)
+Path(sys.argv[1], 'main.swift').write_text('import AppKit\nimport SwiftUI\nimport CoreText\n'+'\n'.join(parts)+probes+tests)
 PY
 swiftc ${CATLIVE_ZOOM_BENCHMARK:+-O} -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
-  Apple/Shared/TimelineVisibleClipIndex.swift Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
+  Apple/Shared/TimelineGridInk.swift Apple/Shared/TimelineVisibleClipIndex.swift Application/Project/OutputPatch.swift Application/Project/NativeFXSettings.swift \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
   Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift \
   Application/Project/TimelineTempo.swift Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift \

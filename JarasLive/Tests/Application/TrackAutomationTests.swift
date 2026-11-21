@@ -2,6 +2,27 @@ import XCTest
 @testable import JarasApplication
 
 final class TrackAutomationTests: XCTestCase {
+    func testWindowsProjectWithOmittedAutomationModeOpensWithTrimRead() throws {
+        var project = Project.empty(name: "Windows automation")
+        var track = Track(id: UUID(), name: "Track", role: .other)
+        var automation = TrackAutomation()
+        automation.toggleLanes(volume: 1, volumeName: "Volume")
+        automation.envelopes[0].points = [.init(time: 0, value: 0.7), .init(time: 1, value: 0.8)]
+        track.automation = automation
+        project.songs[0].tracks = [track]
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(project)) as? [String: Any])
+        var songs = try XCTUnwrap(json["songs"] as? [[String: Any]])
+        var tracks = try XCTUnwrap(songs[0]["tracks"] as? [[String: Any]])
+        var windowsAutomation = try XCTUnwrap(tracks[0]["automation"] as? [String: Any])
+        windowsAutomation.removeValue(forKey: "mode")
+        tracks[0]["automation"] = windowsAutomation
+        songs[0]["tracks"] = tracks
+        json["songs"] = songs
+        let decoded = try ProjectDocumentCodec.decode(JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(decoded.songs[0].tracks[0].automation, automation)
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(decoded)), decoded)
+        XCTAssertEqual(try JSONDecoder().decode(TrackAutomation.self, from: Data("{}".utf8)), TrackAutomation())
+    }
     func testEnvToggleDisablesPlaybackPreservesPointsAndSurvivesSave() throws {
         var automation = TrackAutomation()
         automation.toggleLanes(volume: 0.5, volumeName: "Volume")

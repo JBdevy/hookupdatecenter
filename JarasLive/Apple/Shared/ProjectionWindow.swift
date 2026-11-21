@@ -25,18 +25,35 @@ final class ProjectionWindow: NSWindow {
     private var placementKey: String?
     private var placementObservers: [NSObjectProtocol] = []
     private static let workspaceTools = NSHashTable<NSWindow>.weakObjects()
+    private static let independentWindows = NSHashTable<NSWindow>.weakObjects()
+    private static weak var workspaceWindow: NSWindow?
+    private static var workspaceIsActive = false
+    private static var workspaceIsMinimized = false
+    private static var suspendedWindows: [NSWindow] = []
+    private static var workspaceIsSuspended: Bool {
+        workspaceWindow != nil && (!workspaceIsActive || workspaceIsMinimized)
+    }
     private static let workspaceConfirmations = NSHashTable<NSWindow>.weakObjects()
     private static var activationObservers: [NSObjectProtocol] = []
     static let workspaceToolLevel = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue + 1)
     private static let workspaceConfirmationLevel = NSWindow.Level(rawValue: workspaceToolLevel.rawValue + 1)
 
-    func followApplicationWindowOrder() { Self.followWorkspaceWindow(self) }
-    static func followWorkspaceWindow(_ window: NSWindow) {
+    func followApplicationWindowOrder() { Self.followWorkspaceWindow(self, independent: true) }
+    static func bindWorkspace(_ window: NSWindow) {
+        guard workspaceWindow !== window else { return }
+        workspaceWindow = window
+        workspaceIsActive = NSApp.isActive
+        workspaceIsMinimized = window.isMiniaturized
+        observeWorkspaceActivation()
+    }
+
+    static func followWorkspaceWindow(_ window: NSWindow, independent: Bool = false) {
         window.animationBehavior = .none
         window.parent?.removeChildWindow(window)
         window.hidesOnDeactivate = false
         if let panel = window as? NSPanel { panel.isFloatingPanel = false }
         workspaceTools.add(window)
+        if independent { independentWindows.add(window) }
         window.level = workspaceToolLevel
         observeWorkspaceActivation()
     }
@@ -54,13 +71,62 @@ final class ProjectionWindow: NSWindow {
         guard activationObservers.isEmpty else { return }
         activationObservers = [
             NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                Self.workspaceIsActive = true
                 Self.setWorkspaceToolsActive(true)
+                Self.syncWorkspaceWindows()
             },
             NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+                Self.workspaceIsActive = false
                 Self.setWorkspaceToolsActive(false)
+                Self.syncWorkspaceWindows()
+            },
+            NotificationCenter.default.addObserver(forName: NSWindow.didMiniaturizeNotification, object: nil, queue: .main) { notification in
+                guard let window = notification.object as? NSWindow, window === Self.workspaceWindow else { return }
+                Self.workspaceIsMinimized = true
+                Self.syncWorkspaceWindows()
+            },
+            NotificationCenter.default.addObserver(forName: NSWindow.didDeminiaturizeNotification, object: nil, queue: .main) { notification in
+                guard let window = notification.object as? NSWindow, window === Self.workspaceWindow else { return }
+                Self.workspaceIsMinimized = false
+                Self.syncWorkspaceWindows()
+            },
+            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { notification in
+                guard let window = notification.object as? NSWindow else { return }
+                if window === Self.workspaceWindow {
+                    Self.workspaceWindow = nil
+                    Self.suspendedWindows.removeAll()
+                } else {
+                    Self.suspendedWindows.removeAll { $0 === window }
+                }
             }
         ]
     }
+
+    private static func syncWorkspaceWindows() {
+        guard let main = workspaceWindow else { return }
+        if workspaceIsSuspended {
+            let ordered = NSApp.orderedWindows
+            let listed = Set(ordered.map(ObjectIdentifier.init))
+            let windows = ordered + NSApp.windows.filter { !listed.contains(ObjectIdentifier($0)) }
+            let tools = windows.filter { window in
+                window !== main && window !== NSApp.modalWindow && window.isVisible && !window.isMiniaturized &&
+                    window.parent == nil && window.sheetParent == nil && !independentWindows.contains(window) &&
+                    (workspaceTools.contains(window) || window.styleMask.contains(.titled))
+            }
+            for window in tools {
+                if !suspendedWindows.contains(where: { $0 === window }) { suspendedWindows.append(window) }
+                window.orderOut(nil)
+            }
+        } else {
+            let restoring = suspendedWindows
+            suspendedWindows.removeAll()
+            for window in restoring.reversed() where !window.isVisible && !window.isMiniaturized {
+                if workspaceTools.contains(window) { window.level = workspaceToolLevel }
+                window.orderFront(nil)
+            }
+        }
+    }
+
     private static func setWorkspaceToolsActive(_ active: Bool) {
         // Leave existing sibling order intact. AppKit handles key-window
         // changes within the tool tier, so pointer events need no reordering.
@@ -74,6 +140,11 @@ final class ProjectionWindow: NSWindow {
     }
     static func presentWorkspaceWindow(_ window: NSWindow) {
         if !workspaceTools.contains(window) { followWorkspaceWindow(window) }
+        if workspaceIsSuspended && !independentWindows.contains(window) {
+            if !suspendedWindows.contains(where: { $0 === window }) { suspendedWindows.insert(window, at: 0) }
+            window.orderOut(nil)
+            return
+        }
         window.level = workspaceToolLevel
         window.makeKeyAndOrderFront(nil)
     }

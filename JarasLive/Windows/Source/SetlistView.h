@@ -479,6 +479,9 @@ class Workspace::Setlist final : public Component,
         return result;
     }
 
+    void selectLibraryRegion(const ID &id) {
+        chooseRegionResult(id, false);
+    }
   private:
     class AutoButton final : public QuietButton, private Timer {
       public:
@@ -789,8 +792,11 @@ class Workspace::Setlist final : public Component,
         });
     }
     void chooseSearchResult(ID id) {
+        if (searching) chooseRegionResult(id, true);
+    }
+    void chooseRegionResult(const ID &id, bool dismissSearch) {
         const auto *song=w.session.song();
-        if (!searching || !song || w.session.busy) return;
+        if (!song || w.session.busy) return;
         const auto found=std::find_if(song->parts.begin(),song->parts.end(),[&](const auto &part){return part.id==id;});
         if (found==song->parts.end()) return;
         const auto parent=found->parentRegionID;
@@ -807,8 +813,10 @@ class Workspace::Setlist final : public Component,
             selection={id};selectedEntry=id;
             // The normal list replaces the results immediately. The remainder
             // of this double-click must not activate its new row at that index.
-            ignoreSearchDoubleClick=true;
-            setSearching(false);
+            if (dismissSearch) {
+                ignoreSearchDoubleClick=true;
+                setSearching(false);
+            }
             refresh();
             for (int row=0;row<getNumRows();++row)
                 if (entries[(size_t)row].id==id) {list.scrollToEnsureRowIsOnscreen(row);break;}
@@ -948,20 +956,20 @@ class Workspace::Setlist final : public Component,
             g.drawHorizontalLine(17, (float)x, (float)left - 4);
         }
         auto bounds = juce::Rectangle<float>((float)left, 0, (float)width - left - (entry.block ? 0 : 14), 34);
-        g.setColour(played ? Colour(0xff451010) : theme::panel);
+        g.setColour(active ? theme::liveOffRed : played ? Colour(0xff451010) : theme::display);
         g.fillRoundedRectangle(bounds, 5);
-        if (active || queued || selected) {
-            const auto start = active ? 0xff8b2026u : queued ? (prepareOnly ? 0xff19633au : 0xffa84b13u) : 0xff2457a9u;
-            const auto end = active ? 0xff4c171cu : queued ? (prepareOnly ? 0xff123b27u : 0xff572808u) : 0xff152b58u;
+        if (!active && (queued || selected)) {
+            const auto start = queued ? (prepareOnly ? 0xff19633au : (0xff000000u | theme::setlistQueuedYellowRGB)) : 0xff2457a9u;
+            const auto end = queued ? (prepareOnly ? 0xff123b27u : 0xff4d440cu) : 0xff152b58u;
             g.setGradientFill(ColourGradient(Colour(start), bounds.getX(), 0,
                                              Colour(end), bounds.getRight(), 0, false));
             g.fillRoundedRectangle(bounds, 5);
-            if (selected && !active && !queued) {
+            if (selected && !queued) {
                 g.setColour(theme::green);
                 g.drawRoundedRectangle(bounds.reduced(.75f), 5, 1.5f);
             }
         }
-        g.setColour(active ? Colours::red : queued ? (prepareOnly ? theme::green : Colour(0xffff9500)) : entry.colour);
+        g.setColour(active ? Colours::red : queued ? (prepareOnly ? theme::green : theme::yellow) : entry.colour);
         g.fillRoundedRectangle((float)left + 8, 7, 3, 20, 2);
         g.setFont(theme::font(9));
         g.setColour(theme::secondary);
@@ -1415,7 +1423,7 @@ class Workspace::Setlist final : public Component,
         if (!targets.count(entry.id)) targets = {entry.id};
         for (const auto &row : entries) if (row.block) targets.erase(row.id);
         PopupMenu menu;
-        menu.addItem(4, localization::translate(String::fromUTF8("Editar música")));
+        menu.addItem(4, localization::translate(String::fromUTF8("Editar região")));
         menu.addItem(2, localization::translate(String::fromUTF8("Detectar BPM…")));
         if (targets.size() == 1 && !entry.hasChildren) menu.addItem(1, "Multiloops");
         const auto playlist = selectedPlaylist() ? selectedPlaylist()->id : ID{};
@@ -1488,7 +1496,7 @@ class Workspace::Setlist final : public Component,
             if (self)
                 for (auto *child : self->w.getChildren())
                     if (auto *sheet = dynamic_cast<ModalSheet *>(child))
-                        if (sheet->getName() == String::fromUTF8("Editar música") ||
+                        if (sheet->getName() == String::fromUTF8("Editar região") ||
                             sheet->getName() == "Editar bloco") {
                             sheet->exitModalState(0);
                             break;
@@ -1525,7 +1533,7 @@ class Workspace::Setlist final : public Component,
                 self->w.showError(String::fromUTF8(e.what()));
             }
         };
-        ModalSheet::open(w, entry.block ? "Editar bloco" : String::fromUTF8("Editar música"),
+        ModalSheet::open(w, entry.block ? "Editar bloco" : String::fromUTF8("Editar região"),
                          std::make_unique<RegionEditor>(name, entry.colour.getARGB() & 0xffffff,
                                                         uppercase, save, close, entry.block, entry.block),
                          300, 404);

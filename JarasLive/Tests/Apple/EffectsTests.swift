@@ -1,6 +1,6 @@
 import Foundation
 import AVFoundation
-@MainActor func render(_ settings: NativeFXSettings, rate: Double, frequency: Double? = 1000, duration: Double = 1, item: Bool = false, analysis: Bool = true, directDestination: Bool = false) throws -> [[Float]] {
+@MainActor func render(_ settings: NativeFXSettings, rate: Double, frequency: Double? = 1000, duration: Double = 1, item: Bool = false, analysis: Bool = true, directDestination: Bool = false, creativeTempo: Double? = nil, minimumReduction: Double? = nil) throws -> [[Float]] {
     let engine = AVAudioEngine()
     let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
     try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
@@ -10,6 +10,7 @@ import AVFoundation
                  destinations: directDestination ? [AVAudioConnectionPoint(node: engine.mainMixerNode, bus: 0)] : [])
     if !directDestination { engine.connect(chain.output, to: engine.mainMixerNode, format: format) }
     chain.apply(settings)
+    if let creativeTempo { chain.offlineCreativeTransport(position: 0, tempo: creativeTempo, playing: true) }
     if analysis { chain.observe(["Delay","Reverb","Compressor"]) }
     let count = Int(rate * duration)
     let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
@@ -25,10 +26,13 @@ import AVFoundation
     try engine.start(); player.play()
     let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
     var result = [[Float](), [Float]()]
+    var peakReduction = 0.0
     for _ in 0..<Int(ceil(Double(count)/512)) {
         guard try engine.renderOffline(512, to: buffer) == .success else { fatalError("render failed") }
+        if minimumReduction != nil { peakReduction = max(peakReduction, chain.gainReduction(silent: false) ?? 0) }
         for ch in 0..<2 { result[ch].append(contentsOf: UnsafeBufferPointer(start: buffer.floatChannelData![ch], count: Int(buffer.frameLength))) }
     }
+    if let minimumReduction { precondition(peakReduction >= minimumReduction, "Mixer did not receive measured reduction") }
     result = result.map { Array($0.prefix(count)) }
     if analysis {
     precondition(chain.spectrum("Reverb")?.count == 4096*MemoryLayout<Float>.size, "reverb spectrum receives stereo PCM")
@@ -529,9 +533,11 @@ func testSpectrumWorker(rate: Double) {
         settings.eqEnabled = false; chain.apply(settings)
         let restored = try steadyLevel()
         precondition(abs(restored / original - 1) < 0.03, "bypass restores dry audio after settling")
-        settings.compressorEnabled = true; settings.threshold = -30; settings.ratio = 4
+        settings.compressorEnabled = true; settings.inserted = ["Compressor", "EQ"]; settings.threshold = -30; settings.ratio = 4
         chain.apply(settings); _ = try steadyLevel()
-        precondition(chain.compressorPeaks().allSatisfy { $0 == 0 }, "closed compressor performs no meter capture")
+        precondition(chain.compressorPeaks().allSatisfy { $0 == 0 }, "closed compressor performs no editor meter capture")
+        precondition((chain.gainReduction(silent: false) ?? 0) > 5, "The mixer reads compressor reduction with its editor closed")
+        precondition(chain.gainReduction(silent: true) == 0, "A stopped mixer retains the empty gain-reduction track")
         chain.observe(["Compressor"]); _ = try steadyLevel()
         let peaks = chain.compressorPeaks()
         precondition(peaks[0] > peaks[2] && peaks[1] > peaks[3], "opening editor restores its input/output meters")
@@ -817,7 +823,51 @@ func testSpectrumWorker(rate: Double) {
     print("NATIVE_FX_SILENCE_HINT_TAILS_IDLE_BYPASS_AND_RESET_44100_48000_96000_OK")
 }
 
-try MainActor.assumeIsolated { try testEffectOutputSilenceFlags(); try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
+@MainActor func testChannelSelectionAndCreativeEffects() throws {
+    let rate = 48000.0
+    let dry = try render(NativeFXSettings(), rate: rate, duration: 0.5, analysis: false)
+    for effect in ["EQ", "Compressor", "Delay", "Reverb"] {
+        var settings = NativeFXSettings()
+        let key = settings.appendNative(effect, asInstance: true)
+        var parameters = settings.settings(for: key)
+        var band = EQBand(frequency: 1000)
+        band.gain = -12
+        parameters.bands = [band]
+        parameters.threshold = -40
+        parameters.delayTime = 0.03
+        parameters.delayMix = 100
+        parameters.reverbMix = 80
+        precondition(parameters.channels(for: effect) == 3)
+        for channel in 0..<2 {
+            parameters.setChannels(1 << channel, for: effect)
+            let selected = settings.merging(effect: key, from: parameters)
+            let decoded = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(selected))
+            precondition(decoded.settings(for: key).channels(for: effect) == 1 << channel)
+            let output = try render(decoded, rate: rate, duration: 0.5, analysis: false)
+            precondition(output[1 - channel] == dry[1 - channel], "\(effect) changed the bypassed channel")
+            precondition(output[channel] != dry[channel], "\(effect) did not process the selected channel")
+        }
+    }
+    for effect in NativeCreativeEffect.allCases {
+        var settings = NativeFXSettings()
+        settings.appendNative(effect.rawValue, asInstance: true)
+        if effect == .softClipper, let key = settings.effectKeys.first {
+            var draft = settings.settings(for: key)
+            draft.setCreativeParameters(["drive": 18], for: .softClipper)
+            settings = settings.merging(effect: key, from: draft)
+        }
+        let output = try render(settings, rate: rate, duration: 0.5, analysis: false, creativeTempo: 120,
+                                minimumReduction: effect == .softClipper ? 6 : nil)
+        precondition(output[0] != dry[0] && output[1] != dry[1], "\(effect.rawValue) did not affect stereo PCM")
+    }
+    var limiter = NativeFXSettings()
+    limiter.appendNative("Limiter", asInstance: false)
+    limiter.limiterParameters.ceiling = -18
+    _ = try render(limiter, rate: rate, duration: 0.2, analysis: false, minimumReduction: 10)
+    print("NATIVE_FX_CHANNEL_SELECTION_PRESERVES_EXACT_DRY_PCM_AND_CREATIVE_INSERTS_ARE_AUDIBLE")
+}
+
+try MainActor.assumeIsolated { try testChannelSelectionAndCreativeEffects(); try testEffectOutputSilenceFlags(); try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
 
 
 let spectrumStart = EQSpectrum(input: Array(repeating: -72, count: EQSpectrum.binCount), output: Array(repeating: -48, count: EQSpectrum.binCount))

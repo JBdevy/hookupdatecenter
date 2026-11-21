@@ -33,6 +33,11 @@ class ClipAudio;
 class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallback, private MidiKeyboardState::Listener, private Timer {
   public:
     VinhetasAudio vinhetas;
+    void playLibrarySample(std::shared_ptr<VinhetasAudio::Sample>, float gain);
+    void setLibrarySampleGain(float gain);
+    void stopLibrarySample();
+    bool librarySamplePlaying() const;
+    bool hasRecordingInputs(int first, int count) const;
 
     struct State {
         double position = 0, subPosition = 0;
@@ -52,6 +57,12 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     AudioDeviceManager &devices;
     SystemAudioDefaults systemDefaults;
     AudioCallbackMetrics callbackMetrics;
+    // -2 idle, -1 waiting for the next note, 0...127 learned note.
+    std::atomic<int> drummerLearnNote{-2};
+    std::shared_ptr<jaras::audio::DrummerPad> drummerVoice(const ID &id, const String &key, int head = 0) const {
+        if (auto *fx = effects(id, head)) return fx->drummerVoice(key);
+        return {};
+    }
     AudioFormatManager formats;
     MidiKeyboardState keyboardState;
     Instrument instrument;
@@ -65,6 +76,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void configureDeviceChannels(const BigInteger &inputs, const BigInteger &outputs);
     void configureMetronome(const var &, std::function<void(String)> completed = {});
     void setEffects(const ID &, const var &);
+    void refreshMIDIArpeggiators(const jaras::Song &, const std::set<ID> &);
     std::shared_ptr<native::vst3::Processor> externalEffect(const ID &, const String &) const;
     void captureExternalEffects(const ID &, var &) const;
     native::stem::Status stemStatus(const ID &,const String &)const;
@@ -191,12 +203,27 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         const auto found = trackMeters.find(id);
         return found == trackMeters.end() ? nullptr : found->second;
     }
+    std::array<float, 3> takeDynamicsLevels(const ID &id, const String &key) const {
+        std::array<float, 3> result{};
+        for (int head = 0; head < (id.empty() ? 1 : 2); ++head) {
+            if (auto *fx = effects(id, head)) {
+                const auto next = fx->takeDynamicsLevels(key);
+                for (size_t i = 0; i < result.size(); ++i) result[i] = std::max(result[i], next[i]);
+            }
+        }
+        return result;
+    }
     std::pair<float, float> fxLevels(const ID &id) const {
         if (id.empty()) return {masterFXInput.load(), masterFXOutput.load()};
         const auto found = trackMeters.find(id);
         if (found != trackMeters.end())
             return {found->second->fxInput.load(), found->second->fxOutput.load()};
         return {};
+    }
+    float gainReduction(const ID &id = {}) const {
+        if (id.empty()) return masterGainReduction.load(std::memory_order_relaxed);
+        if (auto state = trackMeterState(id)) return state->gainReduction.load(std::memory_order_relaxed);
+        return -1.f;
     }
     float trackPeak(const ID &id) const {
         const auto found = trackMeters.find(id);
@@ -348,13 +375,20 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void timerCallback() override;
     // Unused prepared readers retire with the outgoing graph on its worker.
     std::vector<std::shared_ptr<Source>> retiredSources;
+    enum class MonitorMode { followArm, off, on, lockedOff };
+    static MonitorMode monitorMode(const jaras::Track &track) {
+        if (track.receivesMain()) return MonitorMode::lockedOff;
+        if (!track.inputMonitoring) return MonitorMode::followArm;
+        return *track.inputMonitoring ? MonitorMode::on : MonitorMode::off;
+    }
     struct Update {
         bool resetElapsed=false;
         uint64 transportSerial=0;
         uint64 notBeforeFrame=0;
         enum Kind { transport, mixer, item, routing, promotion, preparedEdit } kind = transport;
         audio::PreparedAudioEdits::Ticket* edit = nullptr;
-        bool inputMonitoring=true, subplayExclusive=false;
+        MonitorMode inputMonitoring = MonitorMode::followArm;
+        bool subplayExclusive = false;
         int midiSlot=0,midiChannel=0;
         State state;
         double itemGain=1, itemPan=0, fadeIn=0, fadeOut=0;
@@ -422,6 +456,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         int parent = -1;
         std::vector<jaras::OutputPatch> outputs;
         std::vector<int> sends;
+        std::map<int, jaras::TrackSendTap> sendTaps;
         // Allocated during preparation. Rendering never copies/releases this owner.
         std::shared_ptr<audio::TrackMeterState> meters = std::make_shared<audio::TrackMeterState>();
         AudioBuffer<float> buffer{2, 4096};
@@ -440,16 +475,18 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
         jaras::PlaybackScope externalScopes[2];
         std::unique_ptr<MIDIPlayback> midi;
         MidiBuffer midiMessages;
+        std::unique_ptr<LiveArpeggiator> liveArpeggiator;
+        bool arpeggiates = false;
         VirtualKeyboardRoute keyboardRoute;
         int midiSlot = 0, midiChannel = 0;
         int inputFirst = 0, inputChannels = 2;
-        bool inputMonitoring = true;
+        MonitorMode inputMonitoring = MonitorMode::followArm;
         std::atomic<bool> armed{false};
         std::atomic<bool> fadeoutSelected{false};
     };
     struct TrackRoute { int parent=-1; std::vector<jaras::OutputPatch> outputs; };
     struct LatencyPlan {
-        struct Route { int target=-1;native::StereoDelay delay[2]; };
+        struct Route { int target=-1; jaras::TrackSendTap tap = jaras::TrackSendTap::postFader; native::StereoDelay delay[2]; };
         struct Channel {
             unsigned own=0,input=0,output=0;
             native::StereoDelay direct[2],inputDelay[2],master[2],hardware[2],frozen[2];
@@ -516,6 +553,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     TimecodeMIDI timecodeMIDI;
     float timecodeGain = 1;
     ClickProgram metronome;
+    ClickProgram::EnableGate metronomeGate;
     struct MetronomePreparation {
         ClickProgram::Sample a,b;
         String error;
@@ -542,7 +580,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     meterDisplay::PeakHold masterPeakHold;
     ID peakProject;
     std::array<std::atomic<float>, 2> masterLevels{};
-    std::atomic<float> masterFXInput{0}, masterFXOutput{0};
+    std::atomic<float> masterFXInput{0}, masterFXOutput{0}, masterGainReduction{-1};
     // The control side owns and recycles command blocks. Overflow never makes
     // the producer consume commands under the device callback lock.
     audio::RealtimeCommandQueue<Update> updates;
@@ -573,6 +611,16 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     TimeSliceThread recordingThread{"CatLive recording"};
     std::unique_ptr<BufferedAudioWriter> recorder;
     audio::RealtimeBorrowedPointer<BufferedAudioWriter> recorderSlot;
+    struct LibrarySampleVoice {
+        std::shared_ptr<VinhetasAudio::Sample> sample;
+        double position = 0;
+        std::atomic<bool> finished{false};
+        std::atomic<float> gain{1.f};
+    };
+    std::unique_ptr<LibrarySampleVoice> librarySample;
+    audio::RealtimeBorrowedPointer<LibrarySampleVoice> librarySampleSlot;
+    std::atomic<bool> librarySampleOutputReady{false};
+    void renderLibrarySample(AudioBuffer<float> &, int samples, double sampleRate);
     struct RecordingOutput { ID track; std::unique_ptr<NativeFX> fx; };
     struct RecordingState {
         std::unique_ptr<TrackCapture> capture;

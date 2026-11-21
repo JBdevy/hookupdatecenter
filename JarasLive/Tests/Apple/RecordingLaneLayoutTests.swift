@@ -45,6 +45,9 @@ import Foundation
         adjacent.clips = [AudioClip(id: UUID(), name: "Original", startTime: 10, duration: 0.1),
                           AudioClip(id: UUID(), name: "Copy", startTime: 10.1.nextDown, duration: 0.1)]
         precondition(TrackLanes(track: adjacent).count == 1, "rounded touching edges share one lane")
+        adjacent.clips[1].startTime = 10.1 - 0.5 / 44_100
+        precondition(TrackLanes(track: adjacent).localCount(for: adjacent.clips[1].id) == 1,
+                     "Half-sample import rounding must not stack adjacent items")
         adjacent.clips[1].startTime = 10.099
         precondition(TrackLanes(track: adjacent).count == 2, "real overlaps retain separate lanes")
         layout.clear()

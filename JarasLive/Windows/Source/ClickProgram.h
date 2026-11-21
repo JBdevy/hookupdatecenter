@@ -11,6 +11,26 @@ struct ClickProgram {
         std::vector<ItemGate> items;
     };
     struct Sample {std::vector<float> data;double rate=48000;};
+    struct EnableGate {
+        bool enabled=false, running=false, waiting=false;
+        std::optional<double> existingBeat;
+        void update(bool nextEnabled, bool nextRunning) noexcept {
+            if (nextEnabled && nextRunning && running && !enabled) {
+                waiting=true;
+                existingBeat.reset();
+            }
+            if (!nextEnabled || !nextRunning) waiting=false;
+            enabled=nextEnabled;
+            running=nextRunning;
+        }
+        bool accepts(double beatStart) noexcept {
+            if (!waiting) return true;
+            if (!existingBeat) existingBeat=beatStart;
+            if (*existingBeat == beatStart) return false;
+            waiting=false;
+            return true;
+        }
+    };
     std::vector<Section>sections;Sample a,b;
     static std::vector<Section> tempo(const jaras::Song &song){
         std::vector<Section> result;Section current{0,song.duration,0,song.bpm,song.beatsPerBar,song.beatUnit};
@@ -66,7 +86,8 @@ struct ClickProgram {
         }
         if(peak>0)for(auto &v:sample.data)v/=peak;return sample;
     }
-    float sample(double time,int mode=0,float gainA=1,float gainB=1,const jaras::PlaybackScope *scope=nullptr)const{
+    float sample(double time,int mode=0,float gainA=1,float gainB=1,const jaras::PlaybackScope *scope=nullptr,
+                 EnableGate *gate=nullptr)const{
         const auto next=std::upper_bound(sections.begin(),sections.end(),time,[](double t,const Section &s){return t<s.start;});
         if(next==sections.begin())return 0;const auto &section=*(next-1);if(time>=section.end||section.bpm<=0||section.unit<=0)return 0;
         double rate=section.rate; int subdivisions=section.subdivisions;
@@ -78,6 +99,7 @@ struct ClickProgram {
         const double bpm=section.bpm/section.rate*rate;
         const int beats=section.beats/section.subdivisions*subdivisions;
         const double beat=60./bpm*4/section.unit;const auto index=(int64)std::floor((time-section.origin)/beat+1e-9);
+        if (gate && !gate->accepts(section.origin + index * beat)) return 0;
         const bool accent=mode==1||(mode==0&&index%std::max(1,beats)==0);
         const auto &sound=accent?a:b;const double offset=(time-section.origin-index*beat)*sound.rate;
         if(offset<0||offset>=(double)sound.data.size())return 0;const auto n=(size_t)offset;const float fraction=(float)(offset-n);

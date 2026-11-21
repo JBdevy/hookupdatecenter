@@ -22,20 +22,13 @@ import UniformTypeIdentifiers
     @State private var exportFile: ExportFile?
     @State private var temporaryDirectory: URL?
     #endif
-    private var exportTitle: LocalizedStringKey {
-        #if os(macOS)
-        "Export ziplive"
-        #else
-        "Export ziplive"
-        #endif
-    }
     @State private var worker: Task<Void, Never>?
     init(documents: ProjectDocuments, close: (() -> Void)? = nil) { self.documents = documents; self.show = documents.show; self.close = close }
     private var requiresSave: Bool { !documents.ready || documents.currentURL == nil || show.needsSave }
     private var excluded: [String] { PortableProjectPackage.removedExternalPlugins(in: show.snapshot.project) }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(exportTitle).font(.jarasTitle2.bold())
+            Text(verbatim: "Share").font(.jarasTitle2.bold())
             Text("Create a .ziplive package with this project, its media and native instruments.")
                 .font(.jarasCallout).foregroundStyle(JarasTheme.secondary)
             Label("External VST3 plug-ins will not be included. Native effects will be preserved.", systemImage: "exclamationmark.triangle.fill")
@@ -46,11 +39,11 @@ import UniformTypeIdentifiers
                 }.frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 130)
             }
             if requiresSave {
-                Text("Save the project before exporting.").foregroundStyle(JarasTheme.yellow)
+                Text("Save the project before sharing.").foregroundStyle(JarasTheme.yellow)
             }
-            if busy { ProgressView(value: progress).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green); Text("Exporting project…").font(.jarasCaption) }
+            if busy { ProgressView(value: progress).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green); Text("Preparing project package…").font(.jarasCaption) }
             if let exported {
-                Label("Project exported successfully.", systemImage: "checkmark.circle.fill").foregroundStyle(JarasTheme.green)
+                Label("Project package ready.", systemImage: "checkmark.circle.fill").foregroundStyle(JarasTheme.green)
                 #if os(macOS)
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([exported]) }
                 #else
@@ -65,7 +58,7 @@ import UniformTypeIdentifiers
                 if requiresSave {
                     Button("Save") { Task { await show.save() } }.disabled(!documents.ready || show.saving || busy)
                 }
-                Button(exportTitle, action: export)
+                Button(action: export) { Text(verbatim: "Share") }
                     .disabled(requiresSave || busy || show.saving || documents.busy || TrackRecording.shared.recording)
                     .buttonStyle(StageButtonStyle(color: JarasTheme.green))
             }
@@ -93,7 +86,7 @@ import UniformTypeIdentifiers
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "ziplive") ?? .zip]
         panel.nameFieldStringValue = document.deletingPathExtension().lastPathComponent + ".ziplive"
-        panel.title = JarasLocalization.string("Export ziplive")
+        panel.title = "Share"
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let selected = panel.url else { return }
         let destination = selected.pathExtension.lowercased() == "ziplive" ? selected : selected.appendingPathExtension("ziplive")
@@ -112,13 +105,13 @@ import UniformTypeIdentifiers
             do {
                 guard let project = try await ProjectStore(url: document).load() else { throw ProjectError.invalid("Project not found") }
                 guard documents.currentURL == document, show.projectSessionID == session, !show.hasUnsavedChanges else {
-                    throw ProjectError.invalid("Save the project before exporting.")
+                    throw ProjectError.invalid("Save the project before sharing.")
                 }
                 let directory = document.deletingLastPathComponent()
                 var instruments: [String: URL] = [:]
                 for id in PortableProjectPackage.instrumentIDs(in: project) {
                     guard let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: directory) else {
-                        throw ProjectError.invalid(String(format: JarasLocalization.string("Download the native instrument before exporting: %@"), id))
+                        throw ProjectError.invalid(String(format: JarasLocalization.string("Download the native instrument before sharing: %@"), id))
                     }
                     instruments[id] = file
                 }
@@ -129,7 +122,7 @@ import UniformTypeIdentifiers
                 #if os(iOS)
                 exportFile = ExportFile(url: result.archive)
                 #endif
-            } catch is CancellationError { error = "Export canceled." }
+            } catch is CancellationError { error = "Sharing canceled." }
             catch { self.error = error.localizedDescription }
         }
     }

@@ -18,6 +18,10 @@ final class TrackInstrumentIconTests: XCTestCase {
         var project = Project.empty(name: "Icons")
         let track = Track(id: UUID(), name: "Piano", role: .keys)
         project.songs[0].tracks = [track]
+        XCTAssertEqual(track.instrumentIcon, "png:Sound Effects/noise")
+        XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)).songs[0].tracks[0].instrumentIcon,
+                       track.instrumentIcon)
+        project.songs[0].tracks[0].instrumentIcon = nil
         let legacy = try JSONEncoder().encode(project)
         XCTAssertFalse(String(decoding: legacy, as: UTF8.self).contains("instrumentIcon"))
         XCTAssertNil(try JSONDecoder().decode(Project.self, from: legacy).songs[0].tracks[0].instrumentIcon)
@@ -26,6 +30,56 @@ final class TrackInstrumentIconTests: XCTestCase {
             let reopened = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
             XCTAssertEqual(reopened.songs[0].tracks[0].instrumentIcon, icon)
         }
+    }
+    @MainActor func testCompactTrackComponentsRoundTripAndIndependentRestoration() throws {
+        var project = Project.empty(name: "Mixer")
+        let first = Track(id: UUID(), name: "Kit", role: .drums)
+        let second = Track(id: UUID(), name: "Bass", role: .bass)
+        project.songs[0].tracks = [first, second]
+        let show = try ShowController(executor: IconExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.toggleTrackMixerComponents([first.id], mask: TrackMixerComponent.phase.rawValue)
+        show.toggleTrackMixerComponents([first.id], mask: TrackMixerComponent.compactMask)
+        let rows = try XCTUnwrap(show.current?.tracks)
+        XCTAssertTrue(rows[0].compactMixerControls)
+        XCTAssertFalse(rows[1].compactMixerControls)
+        XCTAssertTrue(rows[0].showsMixerComponent(.inputMonitor))
+        XCTAssertEqual(TrackHeightGeometry.laneHeight(base: 30, scale: 1, count: 1, compact: rows[0].compactMixerControls), 44)
+        XCTAssertEqual(TrackHeightGeometry.laneHeight(base: 30, scale: 1, count: 1, compact: rows[1].compactMixerControls), 66)
+        let mixed = TrackHeightGeometry.globalLimits(scales: [1, 1], laneCounts: [1, 1], compact: [true, false])
+        XCTAssertEqual(mixed.lowerBound, 44)
+        let decoded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(show.snapshot.project))
+        XCTAssertEqual(decoded.songs[0].tracks[0].hiddenMixerComponents, rows[0].hiddenMixerComponents)
+        let both: Set<UUID> = [first.id, second.id]
+        show.toggleTrackMixerComponents(both, mask: TrackMixerComponent.compactMask)
+        XCTAssertTrue(show.current!.tracks.allSatisfy(\.compactMixerControls))
+        show.toggleTrackMixerComponents(both, mask: TrackMixerComponent.compactMask)
+        XCTAssertFalse(show.current!.tracks[0].showsMixerComponent(.phase))
+        XCTAssertTrue(show.current!.tracks[0].showsMixerComponent(.patch))
+        XCTAssertNil(show.current!.tracks[1].hiddenMixerComponents)
+    }
+    @MainActor func testSpecialTracksIgnoreComponentVisibilityIncludingStoredMasks() throws {
+        var project = Project.empty(name: "Components")
+        let roles = ["teleprompt", "teleprompt2", "video", "timecode", "chords", "generatedClick", "programChange", "vinhetas"]
+        let special = roles.map { role in
+            var row = Track(id: UUID(), name: role, role: TrackRole(rawValue: role))
+            row.hiddenMixerComponents = TrackMixerComponent.compactMask
+            return row
+        }
+        for row in special {
+            XCTAssertFalse(row.supportsMixerComponents)
+            XCTAssertFalse(row.compactMixerControls)
+            XCTAssertTrue(TrackMixerComponent.allCases.allSatisfy { row.showsMixerComponent($0) })
+        }
+        let normal = Track(id: UUID(), name: "Kit", role: .drums)
+        project.songs[0].tracks = [normal, special.last!]
+        let show = try ShowController(executor: IconExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let ids = Set(project.songs[0].tracks.map(\.id))
+        show.toggleTrackMixerComponents(ids, mask: TrackMixerComponent.phase.rawValue)
+        XCTAssertFalse(show.current!.tracks[0].showsMixerComponent(.phase))
+        XCTAssertEqual(show.current!.tracks[1].hiddenMixerComponents, TrackMixerComponent.compactMask)
+        show.toggleAutomationLanes(special.last!.id)
+        XCTAssertFalse(show.current!.tracks[1].automation!.visibleEnvelopes.isEmpty)
+        XCTAssertFalse(show.current!.tracks[1].compactMixerControls)
     }
     @MainActor func testIconOnlyOnLegacyTrackKeepsDefaultColorAndHistoryEmpty() throws {
         var project = Project.empty(name: "Legacy")

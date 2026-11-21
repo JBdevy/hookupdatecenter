@@ -38,7 +38,10 @@ struct BufferedAudioState {
     const unsigned channels;
     const double rate, ticksPerSecond;
     std::vector<float> pcm, lastOutput, transitionOrigin;
-    std::array<uint64_t, capacity/stampFrames> stamps{};
+    // Hardware callbacks can request non-aligned frame counts during rate conversion.
+    std::array<uint64_t, capacity> stamps{};
+    std::atomic<bool> liveMonitoring{false};
+    std::atomic_flag producing = ATOMIC_FLAG_INIT;
     std::atomic<int64_t> readFrame{0}, writeFrame{0};
     std::atomic<uint64_t> generation{1};
     std::atomic<bool> stopping{false};
@@ -117,12 +120,12 @@ struct BufferedAudioState {
             if(!data) continue;
             for(unsigned n=0;n<frames;++n) {
                 const auto index=(first+n)%capacity;
-                float value=n<available && stamps[index/stampFrames]==currentGeneration ? pcm[ch*capacity+index] : 0;
+                float value=n<available && stamps[index]==currentGeneration ? pcm[ch*capacity+index] : 0;
                 if(transitionFrame+n<transitionLength) {
                     const float amount=float(transitionFrame+n+1)/transitionLength;
                     // Fade the actual queued waveform, not a held last sample.
                     // Holding one sample through Stop creates a DC pulse.
-                    const bool hasTail=n<available && stamps[index/stampFrames]==transitionGeneration;
+                    const bool hasTail=n<available && stamps[index]==transitionGeneration;
                     const float tail=hasTail ? pcm[ch*capacity+index] : transitionOrigin[ch]*(1-amount);
                     value=value*amount+tail*(1-amount);
                 }
@@ -135,11 +138,10 @@ struct BufferedAudioState {
         // A missed deadline is silence at its original time, never a growing
         // delay. The producer renders/catches up, discarding already missed PCM.
         readFrame.store(first+frames,std::memory_order_release);
-        semaphore_signal(wake);
+        if (!liveMonitoring.load(std::memory_order_relaxed)) semaphore_signal(wake);
         return noErr;
     }
-    void produce(AVAudioEngine *engine, AVAudioEngineManualRenderingBlock render, AVAudioPCMBuffer *buffer) {
-        const auto frames=renderFrames.load(std::memory_order_acquire);
+    void produce(AVAudioEngine *engine, AVAudioEngineManualRenderingBlock render, AVAudioPCMBuffer *buffer, unsigned frames) {
         const auto first=writeFrame.load(std::memory_order_relaxed);
         const auto stamp=generation.load(std::memory_order_acquire);
         const bool stoppingBefore=stopping.load(std::memory_order_acquire);
@@ -175,7 +177,8 @@ struct BufferedAudioState {
                 if(initial<frames) std::fill_n(destination,frames-initial,0.f);
             }
         }
-        for(int64_t n=0;n<frames;n+=stampFrames) stamps[((first+n)%capacity)/stampFrames]=stamp;
+        std::fill_n(stamps.begin()+offset,initial,stamp);
+        if(initial<frames) std::fill_n(stamps.begin(),frames-initial,stamp);
         if (result==AVAudioEngineManualRenderingStatusSuccess ||
             result==AVAudioEngineManualRenderingStatusInsufficientDataFromInputNode) {
             const auto rendered=buffer.mutableAudioBufferList->mBuffers[0].mDataByteSize/sizeof(float);
@@ -183,6 +186,34 @@ struct BufferedAudioState {
         }
         graphClock.publish(host+uint64_t(frames/rate*ticksPerSecond),graphSample);
         writeFrame.store(first+frames,std::memory_order_release);
+    }
+    void produce(AVAudioEngine *engine, AVAudioEngineManualRenderingBlock render, AVAudioPCMBuffer *buffer) {
+        produce(engine,render,buffer,renderFrames.load(std::memory_order_acquire));
+    }
+    void setLiveMonitoring(bool live) {
+        liveMonitoring.store(live,std::memory_order_release);
+        semaphore_signal(wake);
+    }
+    void renderHardwareSlice(const AudioTimeStamp *time, unsigned frames, AVAudioEngine *engine,
+                             AVAudioEngineManualRenderingBlock render, AVAudioPCMBuffer *buffer) {
+        if(!liveMonitoring.load(std::memory_order_acquire)) return;
+        const auto first=readFrame.load(std::memory_order_relaxed);
+        const auto end=first+frames;
+        if(writeFrame.load(std::memory_order_acquire)>=end) return;
+        // Only the handoff from buffered playback can have a render in flight.
+        // Never wait for that render in the hardware callback.
+        if(producing.test_and_set(std::memory_order_acquire)) return;
+        const auto host=(time->mFlags & kAudioTimeStampHostTimeValid) ? time->mHostTime : mach_absolute_time();
+        hardwareClock.publish(host,first);
+        if(writeFrame.load(std::memory_order_relaxed)<first)
+            writeFrame.store(first,std::memory_order_relaxed);
+        auto missing=end-writeFrame.load(std::memory_order_relaxed);
+        while (missing>0) {
+            const auto slice=unsigned(std::min(missing,maximumBlock));
+            produce(engine,render,buffer,slice);
+            missing-=slice;
+        }
+        producing.clear(std::memory_order_release);
     }
 };
 }
@@ -198,6 +229,7 @@ struct BufferedAudioState {
     BOOL _running;
     BOOL _outputEnabled;
     NSUInteger _playbackSourceCount;
+    BOOL _liveInstrumentMonitoring;
     double _hardwareRate;
     AVAudioChannelCount _hardwareChannels;
     double _preferredProcessingSampleRate;
@@ -237,6 +269,7 @@ struct BufferedAudioState {
     _render=_engine.manualRenderingBlock;
     _state=std::make_shared<BufferedAudioState>(channels,rate);
     _state->setPlaybackSourceCount(_playbackSourceCount);
+    _state->setLiveMonitoring(_liveInstrumentMonitoring);
     _buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:BufferedAudioState::maximumBlock];
     auto state=_state;
     _clockUnit=_engine.mainMixerNode.AUAudioUnit;
@@ -244,8 +277,11 @@ struct BufferedAudioState {
         const AudioTimeStamp *time, AVAudioFrameCount frames, NSInteger bus) {
         if(flags & kAudioUnitRenderAction_PreRender) state->observeGraphTime(time);
     }];
+    auto engine=_engine; auto render=_render; auto buffer=_buffer;
     _source=[[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(BOOL *silent,const AudioTimeStamp *time,AVAudioFrameCount frames,AudioBufferList *output) {
-        *silent=NO; return state->consume(time,frames,output);
+        *silent=NO;
+        state->renderHardwareSlice(time,frames,engine,render,buffer);
+        return state->consume(time,frames,output);
     }];
     [_hardware attachNode:_source]; [_hardware connect:_source to:_hardware.mainMixerNode format:format];
     [_hardware connect:_hardware.mainMixerNode to:_hardware.outputNode format:sinkFormat];
@@ -266,7 +302,7 @@ struct BufferedAudioState {
     state->fallbackHost=mach_absolute_time();
     state->lastOutput.assign(state->channels,0); state->transitionOrigin.assign(state->channels,0);
     state->transitionFrame=state->transitionLength;
-    while(state->writeFrame.load()<state->targetFrames()) {
+    while(!state->liveMonitoring.load() && state->writeFrame.load()<state->targetFrames()) {
         @autoreleasepool { state->produce(_engine,_render,_buffer); }
     }
     state->enabled.store(true,std::memory_order_release);
@@ -274,10 +310,15 @@ struct BufferedAudioState {
     _worker=std::thread([state,render,buffer,engine] {
         pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE,0);
         while(state->enabled.load(std::memory_order_acquire)) {
-            if(state->writeFrame.load(std::memory_order_relaxed)-state->readFrame.load(std::memory_order_acquire)<state->targetFrames()) {
-                @autoreleasepool { state->produce(engine,render,buffer); }
-            }
-            else { mach_timespec_t timeout{0,5'000'000}; semaphore_timedwait(state->wake,timeout); }
+            if(state->liveMonitoring.load(std::memory_order_acquire)) {
+                semaphore_wait(state->wake);
+            } else if(state->writeFrame.load(std::memory_order_relaxed)-state->readFrame.load(std::memory_order_acquire)<state->targetFrames()
+                      && !state->producing.test_and_set(std::memory_order_acquire)) {
+                if(!state->liveMonitoring.load(std::memory_order_acquire)) {
+                    @autoreleasepool { state->produce(engine,render,buffer); }
+                }
+                state->producing.clear(std::memory_order_release);
+            } else { mach_timespec_t timeout{0,5'000'000}; semaphore_timedwait(state->wake,timeout); }
         }
     });
     // Licensing and transport gates remain in the render graph, before every
@@ -293,6 +334,10 @@ struct BufferedAudioState {
 - (void)setOutputEnabled:(BOOL)enabled {
     _outputEnabled=enabled;
     _hardware.mainMixerNode.outputVolume=enabled ? 1 : 0;
+}
+- (void)setLiveInstrumentMonitoring:(BOOL)monitoring {
+    _liveInstrumentMonitoring=monitoring;
+    if(_state) _state->setLiveMonitoring(monitoring);
 }
 - (void)setPlaybackSourceCount:(NSUInteger)count {
     _playbackSourceCount=count;
@@ -314,8 +359,8 @@ struct BufferedAudioState {
     if(!_state) return @{};
     auto &s=*_state; const auto count=s.renders.load();
     return @{@"callbacks":@(s.callbacks.load()),@"callbackFrames":@(s.callbackFrames.load()),@"underruns":@(s.underruns.load()),
-        @"renderFailures":@(s.failures.load()),@"renders":@(count),@"renderFrames":@(s.renderFrames.load()),
-        @"targetFrames":@(s.targetFrames()),@"sampleRate":@(s.rate),@"hardwareSampleRate":@(_hardwareRate),@"channels":@(s.channels),
+        @"renderFailures":@(s.failures.load()),@"renders":@(count),@"renderFrames":@(s.liveMonitoring.load() ? s.callbackFrames.load() : s.renderFrames.load()),
+        @"targetFrames":@(s.liveMonitoring.load() ? 0 : s.targetFrames()),@"sampleRate":@(s.rate),@"hardwareSampleRate":@(_hardwareRate),@"channels":@(s.channels),
         @"meanRenderMs":@(count ? s.renderTicks.load()/s.ticksPerSecond*1000/count : 0),
         @"maxRenderMs":@(s.maxRenderTicks.load()/s.ticksPerSecond*1000),
         @"bufferedFrames":@(s.writeFrame.load()-s.readFrame.load())};

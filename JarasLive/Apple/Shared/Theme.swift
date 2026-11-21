@@ -13,10 +13,11 @@ extension EnvironmentValues {
 }
 struct JarasNativePaletteSurface<Remote: View>: View {
     @Environment(\.jarasNativePalette) private var native
-    let color: Color
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
+    let color: (JarasInterfaceTheme) -> Color
     let remote: Remote
     var body: some View {
-        if native { color } else { remote }
+        if native { color(interfaceTheme) } else { remote }
     }
 }
 
@@ -34,26 +35,64 @@ extension View {
         else { self }
     }
 }
+enum JarasInterfaceTheme: String {
+    case dark, lightDark
+
+    static let preferenceKey = "jaras.interface.theme"
+    static let defaultTheme: Self = .lightDark
+    static var current: Self {
+        UserDefaults.standard.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) ?? defaultTheme
+    }
+
+    var background: Color { Color(hex: self == .dark ? JarasTheme.displayHex : JarasTheme.lightDarkBackgroundHex) }
+    var homeBackground: Color { self == .dark ? Color(hex: 0x0f0f0f) : background }
+    var panelHex: UInt32 { self == .dark ? JarasTheme.displayHex : 0x2b2b2b }
+    var panel: Color { Color(hex: panelHex) }
+    var display: Color { Color(hex: self == .dark ? JarasTheme.displayHex : 0x202020) }
+    var scrollRailHex: UInt32 { self == .dark ? 0x1f1f1f : 0x1c1c1c }
+    var titlebar: Color { self == .dark ? background : JarasTheme.workspaceToolbar }
+    var line: Color { Color(hex: self == .dark ? 0x444444 : 0x494949) }
+    var secondary: Color { Color(hex: self == .dark ? 0xb9b9b9 : 0xd7d7d7) }
+    #if !os(macOS)
+    var transportGradient: [Color] {
+        self == .dark ? [Color(hex: 0x0e182c), Color(hex: 0x050b17)]
+                      : [Color(hex: 0x15213a), Color(hex: 0x091121)]
+    }
+    #endif
+    var transportBorder: Color { Color(hex: self == .dark ? 0x3d3d3d : 0x505050) }
+}
+
 enum JarasTheme {
-    static let background = Color(hex: 0x161616)
-    static let panelHex: UInt32 = 0x1d1d1d
-    static let panel = Color(hex: panelHex)
+    static let displayHex: UInt32 = 0x0f0f0f
+    static let lightDarkBackgroundHex: UInt32 = 0x242424
+    static var homeBackground: Color { JarasInterfaceTheme.current.homeBackground }
+    static var display: Color { JarasInterfaceTheme.current.display }
+    static var background: Color { JarasInterfaceTheme.current.background }
+    static var panelHex: UInt32 { JarasInterfaceTheme.current.panelHex }
+    static var panel: Color { JarasInterfaceTheme.current.panel }
     static let trackButton = Color(hex: 0x414141)
-    static let line = Color(hex: 0x444444)
+    static var line: Color { JarasInterfaceTheme.current.line }
+    static var timelineHeaderLine: Color { line.opacity(0.65) }
     static let text = Color(hex: 0xffffff)
-    static let secondary = Color(hex: 0xb9b9b9)
-    static let grid = Color(hex: 0x161616)
-    static let mixerHex: UInt32 = 0x1d1d1d
-    static let mixer = Color(hex: mixerHex)
-    static let display = Color(hex: 0x101010)
-    static let titlebar = Color(hex: 0x222222)
+    static var secondary: Color { JarasInterfaceTheme.current.secondary }
+    static var grid: Color { background }
+    static var mixerHex: UInt32 { panelHex }
+    static var mixer: Color { panel }
+    static var titlebar: Color { JarasInterfaceTheme.current.titlebar }
     static let accent = Color(hex: 0x79f59a)
     static let green = Color(hex: 0x69ed91)
+    static let workspaceToolbar = Color(hex: 0x2a2a2a)
+    static let desktopTransportGradient = [Color(hex: 0x262626), Color(hex: 0x1a1a1a)]
+    static let licenseTitleGreen = Color(hex: 0x54ff93)
     static let transportPlay = Color(hex: 0x24f06a)
     static let liveOffRed = Color(hex: 0xff3030)
     static let transportRed = Color(hex: 0x8f2847)
     static let purple = Color(hex: 0xb8b8b8)
+    static let toolbarInactive = Color(hex: 0xc8c8c8)
+    static func toolbarTint(active: Bool) -> Color { active ? green : toolbarInactive }
     static let yellow = Color(hex: 0xffdc52)
+    static let setlistQueuedYellow: UInt32 = 0x807219
+    static let setlistQueuedGradient = [Color(hex: setlistQueuedYellow), Color(hex: 0x4d440c)]
     static func track(_ track: Track, emphasized: Bool = false) -> Color {
         let hex = track.color ?? roleHex(track.role)
         let color = TrackNameContrast.components(hex, emphasized: emphasized)
@@ -62,9 +101,6 @@ enum JarasTheme {
     static func trackNameHex(_ track: Track, emphasized: Bool, silenced: Bool) -> UInt32 {
         TrackNameContrast.foreground(track.color ?? roleHex(track.role), opacity: emphasized ? 0.65 : 0.5,
                                      background: mixerHex, emphasized: emphasized, desaturated: silenced)
-    }
-    static func masterNameHex(_ color: UInt32) -> UInt32 {
-        TrackNameContrast.foreground(color, opacity: 0.5, background: panelHex)
     }
     static func role(_ role: TrackRole) -> Color { Color(hex: roleHex(role)) }
     static func roleHex(_ role: TrackRole) -> UInt32 {
@@ -81,6 +117,32 @@ enum JarasTheme {
         case "fx": return 0xc79e60
         default: return 0x969ed7
         }
+    }
+}
+
+enum MixerTrackStyle: String {
+    case standard = "default"
+    case stripeOnly
+
+    static let trackMixerKey = "jaras.trackMixer.trackStyle"
+    static let hozMixerKey = "jaras.hozMixer.trackStyle"
+    static let trackStripeWidth: CGFloat = 5
+    static let hozStripeHeight: CGFloat = 2
+    static let darkSurfaceHex: UInt32 = 0x262626
+    static let surfaceTextHex: UInt32 = 0xffffff
+    static let surfaceText = Color(hex: surfaceTextHex)
+
+    static func surfaceHex(for theme: JarasInterfaceTheme) -> UInt32 {
+        theme == .dark ? darkSurfaceHex : Project.defaultMasterColor
+    }
+}
+
+struct MixerTrackSurface: View {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
+    var selected = false
+    var body: some View {
+        Color(hex: MixerTrackStyle.surfaceHex(for: theme))
+            .overlay { if selected { Color.white.opacity(0.11) } }
     }
 }
 
@@ -116,13 +178,148 @@ enum TrackNameContrast {
 extension Color {
     init(hex: UInt32) { self.init(red: Double(hex >> 16 & 255) / 255, green: Double(hex >> 8 & 255) / 255, blue: Double(hex & 255) / 255) }
 }
+#if os(macOS)
+enum DesktopToolbarTone {
+    case neutral, selected, live
+
+    var foreground: Color { JarasTheme.toolbarTint(active: self != .neutral) }
+}
+
+private struct CompactDesktopToolbarKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var compactDesktopToolbar: Bool {
+        get { self[CompactDesktopToolbarKey.self] }
+        set { self[CompactDesktopToolbarKey.self] = newValue }
+    }
+}
+
+struct DesktopToolbarChrome: ViewModifier {
+    @Environment(\.compactDesktopToolbar) private var compact
+    var tone: DesktopToolbarTone
+
+    func body(content: Content) -> some View {
+        content.font(.jarasSystem(size: compact ? 12 : 14, weight: .semibold))
+            .foregroundStyle(tone.foreground)
+            .lineLimit(1).fixedSize().padding(.horizontal, compact ? 2 : 6).frame(height: 24)
+            .contentShape(Rectangle())
+    }
+}
+
+struct DesktopToolbarLabel: View {
+    let title: Text
+    var systemImage: String? = nil
+    var active = false
+    @Environment(\.compactDesktopToolbar) private var compact
+    var tone: DesktopToolbarTone? = nil
+
+    var body: some View {
+        HStack(spacing: compact ? 3 : 4) {
+            if let systemImage { DesktopToolbarSymbol(name: systemImage).frame(width: compact ? 12 : 14, height: 14) }
+            title
+        }.modifier(DesktopToolbarChrome(tone: tone ?? (active ? .selected : .neutral)))
+    }
+}
+
+#endif
+
+struct DesktopToolbarSymbol: View {
+    let name: String
+
+    private struct Artwork {
+        let outline: Path
+        let interior: Path
+    }
+
+    // The Windows renderer uses the same path definitions at its display DPI.
+    private static let symbols: [String: Artwork] = {
+        guard let url = Bundle.main.url(forResource: "DesktopToolbarSymbols", withExtension: "def"),
+              let definitions = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
+        return Dictionary(uniqueKeysWithValues: definitions.split(separator: "\n").compactMap { row in
+            let fields = row.split(separator: "\"", omittingEmptySubsequences: false)
+            guard fields.count == 7 else { return nil }
+            return (String(fields[1]), Artwork(outline: path(fields[3]), interior: path(fields[5])))
+        })
+    }()
+
+    private static func path(_ source: Substring) -> Path {
+        var pieces = source.split(separator: " ").makeIterator()
+        func point() -> CGPoint? {
+            guard let x = pieces.next().flatMap({ Double($0) }),
+                  let y = pieces.next().flatMap({ Double($0) }) else { return nil }
+            return CGPoint(x: x, y: y)
+        }
+        var result = Path()
+        while let command = pieces.next() {
+            switch command {
+            case "m": if let end = point() { result.move(to: end) }
+            case "l": if let end = point() { result.addLine(to: end) }
+            case "q":
+                if let control = point(), let end = point() { result.addQuadCurve(to: end, control: control) }
+            case "c":
+                if let first = point(), let second = point(), let end = point() {
+                    result.addCurve(to: end, control1: first, control2: second)
+                }
+            case "z": result.closeSubpath()
+            default: return Path()
+            }
+        }
+        return result
+    }
+
+    var body: some View {
+        Group {
+            if let icon = Self.symbols[name] {
+                Canvas { context, layout in
+                    let size = min(layout.width, layout.height)
+                    let scale = size / 24
+                    let transform = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+                        tx: (layout.width - size) / 2, ty: (layout.height - size) / 2)
+                    context.fill(icon.interior.applying(transform), with: .foreground, style: FillStyle(eoFill: true))
+                    context.stroke(icon.outline.applying(transform), with: .foreground,
+                        style: StrokeStyle(lineWidth: 1.7 * scale, lineCap: .round, lineJoin: .round))
+                }
+            } else {
+                Image(systemName: name).resizable().scaledToFit()
+            }
+        }.accessibilityHidden(true)
+    }
+}
+
+struct TransportDetailSurface: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 4)
+            .fill(LinearGradient(colors: [Color(hex: 0x1f1f1f), Color(hex: 0x1a1a1a)],
+                                 startPoint: .top, endPoint: .bottom))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color(hex: 0x3b3b3b)))
+            .allowsHitTesting(false)
+    }
+}
+
+struct ProjectSaveIcon: Shape {
+    func path(in rect: CGRect) -> Path {
+        let unit = min(rect.width, rect.height) / 12
+        let origin = CGPoint(x: rect.midX - unit * 6, y: rect.midY - unit * 6)
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: origin.x + x * unit, y: origin.y + y * unit)
+        }
+        var path = Path()
+        path.addRect(CGRect(origin: point(1, 1), size: CGSize(width: 10 * unit, height: 10 * unit)))
+        path.addLines([point(3, 1), point(3, 5), point(9, 5), point(9, 1)])
+        path.addLines([point(3, 11), point(3, 8), point(9, 8), point(9, 11)])
+        return path.strokedPath(StrokeStyle(lineWidth: unit * 1.1, lineCap: .round, lineJoin: .round))
+    }
+}
+
 struct StageButtonStyle: ButtonStyle {
     var color = JarasTheme.panel
     var active = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.jarasSystem(size: 13, weight: .semibold, design: .rounded)).padding(.horizontal, 13).frame(minHeight: 40)
-            .foregroundStyle(active ? Color.black : JarasTheme.text)
-            .background(active ? color : color.opacity(configuration.isPressed ? 0.7 : 0.45))
+            .foregroundStyle(active || color == JarasTheme.green ? Color.black : JarasTheme.text)
+            .background(active || color == JarasTheme.green ? color.opacity(configuration.isPressed ? 0.8 : 1) : color.opacity(configuration.isPressed ? 0.7 : 0.45))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(color.opacity(active ? 1 : 0.65)))
     }
@@ -273,6 +470,15 @@ private final class NativeJarasBlinkHost: NSHostingView<AnyView> {
         colors[key] = color
         return color
     }
+    static func timeline(_ swatch: TimelineThemeColor) -> AppearanceColor {
+        if let color = colors[swatch.key] { return color }
+        let legacy = UserDefaults.standard.object(forKey: "jaras.timeline." + swatch.rawValue) as? NSNumber
+        let previous = legacy?.intValue ?? -1
+        return shared(swatch.key, default: swatch.previousDefaults.contains(previous) ? -1 : previous)
+    }
+
+    func resolved(default fallback: Int) -> Int { value >= 0 ? value : fallback }
+
     let key: String
     @Published var value: Int
     private init(key: String, fallback: Int) {
@@ -288,15 +494,63 @@ private final class NativeJarasBlinkHost: NSHostingView<AnyView> {
 /// CatLive factory colors. Explicit user timeline choices remain intact.
 enum TimelineAppearanceDefaults {
     static let leadingSpace: CGFloat = 6
-    static let background = 0x161616
-    static let primaryGrid = 0x535250
     static let secondaryGrid = 0x333235
-    static let playCursor = 0x7548DD
-    static let editCursor = 0xB9E229
-    static let subPlayCursor = 0xFF6F00
+    static let playCursor = 0xF44336
+    static let editCursor = 0x00A65A
+    static let subPlayCursor = Int(JarasTheme.setlistQueuedYellow)
+}
+
+enum TimelineThemeColor: String {
+    case background, verticalGrid = "primaryGrid", horizontalGrid
+
+    var key: String {
+        "jaras.timeline." + rawValue + (self == .horizontalGrid ? "" : "Override")
+    }
+    var previousDefaults: [Int] {
+        switch self {
+        case .background: return [0x0f0f0f, 0x222222]
+        case .verticalGrid: return [0xbdbdbd]
+        case .horizontalGrid: return []
+        }
+    }
+    func defaultColor(for theme: JarasInterfaceTheme) -> Int {
+        switch self {
+        case .background: return theme == .dark ? Int(JarasTheme.displayHex) : 0x222222
+        case .verticalGrid: return theme == .dark ? 0x5c5c5c : 0x828282
+        case .horizontalGrid: return 0x000000
+        }
+    }
+    @MainActor func current() -> UInt32 {
+        UInt32(AppearanceColor.timeline(self).resolved(default: defaultColor(for: .current)))
+    }
+}
+
+@MainActor @propertyWrapper struct TimelineColor: DynamicProperty {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
+    @ObservedObject private var settings: AppearanceColor
+    private let swatch: TimelineThemeColor
+
+    init(_ swatch: TimelineThemeColor) {
+        self.swatch = swatch
+        settings = AppearanceColor.timeline(swatch)
+    }
+    var wrappedValue: Int { settings.resolved(default: swatch.defaultColor(for: theme)) }
 }
 
 /// Shared operation progress: the same slim green bar used by audio separation.
+struct BPMDetectionProgress: View {
+    var fraction: Double? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Detecting BPM…").font(.jarasHeadline)
+            ProgressView(value: fraction)
+                .progressViewStyle(JarasProgressBarStyle())
+                .accessibilityLabel("Detecting BPM…")
+        }
+    }
+}
+
 struct JarasProgressBarStyle: ProgressViewStyle {
     func makeBody(configuration: Configuration) -> some View {
         GeometryReader { geometry in
@@ -319,14 +573,16 @@ struct JarasProgressBarStyle: ProgressViewStyle {
 
 // App-owned typography. Font files are registered only inside CatLive's process;
 // switching this family does not change macOS or external plug-in editors.
-#if os(macOS)
-import AppKit
 import CoreText
-private enum CatLiveTypeface {
+enum CatLiveTypeface {
     static let register: Void = {
         guard let directory = Bundle.main.resourceURL?.appendingPathComponent("Inter") else { return }
         for weight in ["Regular", "Medium", "SemiBold", "Bold", "Italic", "BoldItalic"] {
             CTFontManagerRegisterFontsForURL(directory.appendingPathComponent("Inter-\(weight).ttf") as CFURL, .process, nil)
+        }
+        for style in SetlistTypeface.allCases where style.rawValue >= 3 {
+            let url = directory.appendingPathComponent("Setlist").appendingPathComponent(style.face + ".ttf")
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
         }
     }()
     static func name(_ weight: Font.Weight?) -> String {
@@ -339,6 +595,36 @@ private enum CatLiveTypeface {
         }
     }
 }
+// Raw values are stored in preferences and sent to connected Remotes.
+enum SetlistTypeface: Int, CaseIterable {
+    case regular, bold, boldItalic, extraBold, black, archivoBlack, bungee
+
+    var face: String {
+        switch self {
+        case .regular: return "Inter-Regular"
+        case .bold: return "Inter-Bold"
+        case .boldItalic: return "Inter-BoldItalic"
+        case .extraBold: return "Inter-ExtraBold"
+        case .black: return "Inter-Black"
+        case .archivoBlack: return "ArchivoBlack-Regular"
+        case .bungee: return "Bungee-Regular"
+        }
+    }
+
+    static func font(_ style: Int, size: CGFloat = 13) -> Font {
+        let choice = Self(rawValue: style) ?? .regular
+        switch choice {
+        case .regular: return .jarasSystem(size: size)
+        case .bold: return .jarasSystem(size: size, weight: .bold)
+        case .boldItalic: return .jarasSystem(size: size, weight: .bold).italic()
+        default:
+            _ = CatLiveTypeface.register
+            return .custom(choice.face, fixedSize: size)
+        }
+    }
+}
+#if os(macOS)
+import AppKit
 private enum CatLiveNativeFonts {
     // NSFont(name:size:) reparses Inter's variation data on Ventura. Native
     // meters and timeline labels request these same immutable fonts every
@@ -361,6 +647,54 @@ extension NSFont {
     }
     static func jarasMonospacedSystemFont(ofSize size: CGFloat, weight: NSFont.Weight) -> NSFont { jarasSystemFont(ofSize: size, weight: weight) }
     static func jarasBoldSystemFont(ofSize size: CGFloat) -> NSFont { jarasSystemFont(ofSize: size, weight: .bold) }
+}
+
+/// Keep custom AppKit drawing at Retina resolution before compositing it on a 1× screen.
+@MainActor final class NativeScreenDrawing {
+    private var bitmap: CGContext?
+
+    func invalidate() { bitmap = nil }
+
+    func draw(in view: NSView, _ render: () -> Void) {
+        guard let target = NSGraphicsContext.current?.cgContext else { return }
+        target.setAllowsAntialiasing(true)
+        target.setShouldAntialias(true)
+        guard (view.window?.backingScaleFactor ?? 1) < 2 else {
+            invalidate(); render(); return
+        }
+        let area = view.backingAlignedRect(view.bounds, options: .alignAllEdgesOutward)
+        guard area.width > 0, area.height > 0 else { return }
+        let width = Int(ceil(area.width * 2)), height = Int(ceil(area.height * 2))
+        if bitmap?.width != width || bitmap?.height != height {
+            bitmap = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        }
+        guard let bitmap else { render(); return }
+        bitmap.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        bitmap.saveGState()
+        if view.isFlipped { bitmap.translateBy(x: 0, y: CGFloat(height)) }
+        bitmap.scaleBy(x: CGFloat(width) / area.width, y: CGFloat(height) / area.height * (view.isFlipped ? -1 : 1))
+        bitmap.translateBy(x: -area.minX, y: -area.minY)
+        bitmap.setAllowsAntialiasing(true)
+        bitmap.setShouldAntialias(true)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: bitmap, flipped: view.isFlipped)
+        render()
+        NSGraphicsContext.restoreGraphicsState()
+        bitmap.restoreGState()
+        guard let image = bitmap.makeImage() else { render(); return }
+
+        target.saveGState()
+        target.interpolationQuality = .high
+        if view.isFlipped {
+            target.translateBy(x: area.minX, y: area.maxY)
+            target.scaleBy(x: 1, y: -1)
+            target.draw(image, in: CGRect(origin: .zero, size: area.size))
+        } else {
+            target.draw(image, in: area)
+        }
+        target.restoreGState()
+    }
 }
 #endif
 extension Font {

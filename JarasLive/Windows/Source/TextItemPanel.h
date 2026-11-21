@@ -4,10 +4,13 @@
 #include "ModalSheet.h"
 #include "ItemTextColors.h"
 #include "ConfirmationPanel.h"
+#include <utility>
 namespace catlive {
 class TextItemPanel final : public Component {
   public:
-    TextItemPanel(String initial, std::function<void(String)> save, bool isColumn=false, bool outlineStanzas=false) : commit(std::move(save)), embedded(isColumn) {
+    TextItemPanel(String initial, std::function<void(String)> save, bool isColumn=false, bool outlineStanzas=false,
+                  bool liveEditing=false)
+        : commit(std::move(save)), embedded(isColumn), savesChanges(liveEditing) {
         const auto parts=ItemTextColors::columns(initial);twoColumns=!embedded && parts.size()==2;
         initial=parts[0];
         if(!embedded) {
@@ -22,6 +25,7 @@ class TextItemPanel final : public Component {
         editor.setReturnKeyStartsNewLine(true);
         editor.setScrollbarsShown(true);
         editor.setFont(theme::font(14));
+        if (savesChanges) editor.setColour(CaretComponent::caretColourId, theme::green);
         editor.setIndents(10, 10);
         for(const auto &run:ItemTextColors::runs(initial)) {
             editor.setColour(TextEditor::textColourId,run.color?Colour(0xff000000|*run.color):Colours::white);
@@ -37,8 +41,8 @@ class TextItemPanel final : public Component {
             editor.setColour(TextEditor::textColourId,color?Colour(0xff000000|*color):Colours::white);
         };
         editor.apply = [this] { apply(); };
-        editor.onEscapeKey = [this] { ModalSheet::dismiss(*this); };
-        editor.onTextChange = [this] { synchronize(); repaint(); };
+        editor.onEscapeKey = [this] { if (!savesChanges) ModalSheet::dismiss(*this); };
+        editor.onTextChange = [this] { synchronize(); if (savesChanges) apply(); repaint(); };
         addAndMakeVisible(cancel);
         addAndMakeVisible(confirm);
         cancel.onClick = [this] { ModalSheet::dismiss(*this); };
@@ -81,6 +85,7 @@ class TextItemPanel final : public Component {
     struct Notepad final : TextEditor {
         std::function<void()> apply,chooseColor,prepareInsertion;
         bool coloring=false, pasteHeld=false, outlineStanzas=false;
+        juce_wchar pendingHighSurrogate = 0;
         void paintOverChildren(Graphics &g) override {
             TextEditor::paintOverChildren(g);
             if (!outlineStanzas) return;
@@ -107,9 +112,23 @@ class TextItemPanel final : public Component {
         }
         void focusLost(FocusChangeType cause) override {
             pasteHeld=false;
+            pendingHighSurrogate=0;
             TextEditor::focusLost(cause);
         }
         bool keyPressed(const KeyPress &key) override {
+            // Windows WM_CHAR sends supplementary characters as two UTF-16 units.
+            const auto character = key.getTextCharacter();
+            if (character >= 0xd800 && character <= 0xdbff) {
+                pendingHighSurrogate = character;
+                return true;
+            }
+            if (character >= 0xdc00 && character <= 0xdfff) {
+                const auto high = std::exchange(pendingHighSurrogate, juce_wchar{});
+                if (high != 0)
+                    insertTextAtCaret(String::charToString(0x10000 + ((high - 0xd800) << 10) + (character - 0xdc00)));
+                return true;
+            }
+            if (character != 0) pendingHighSurrogate = 0;
             const auto mods=key.getModifiers();
             const int code=key.getKeyCode();
             // Own both Windows representations here, before a parent can
@@ -131,7 +150,7 @@ class TextItemPanel final : public Component {
     std::function<void(String)> commit;
     std::vector<std::optional<uint32>> colors;
     String previous;
-    bool embedded=false,twoColumns=false;
+    bool embedded=false,twoColumns=false,savesChanges=false;
     TextButton columnMode;
     std::unique_ptr<TextItemPanel> second;
     void toggleColumns() {
@@ -186,6 +205,7 @@ class TextItemPanel final : public Component {
             safe->editor.coloring=true;safe->editor.insertTextAtCaret(value);safe->editor.coloring=false;
             safe->editor.setHighlightedRegion(selected);
             safe->editor.grabKeyboardFocus();
+            if (safe->savesChanges) safe->apply();
         });
         auto *host=getTopLevelComponent();
         if(host)ModalSheet::open(*host,localization::translate("Text color"),std::move(panel),370,160,

@@ -10,7 +10,34 @@
 // Pure timeline calculations shared by the native input and its portable tests.
 namespace catlive::timelineGrid {
 using jaras::ID;
-struct Section { double start, end, bpm; int beats, unit; };
+struct Section {
+    double start, end, bpm;
+    int beats, unit;
+    double barSeconds() const { return 60 / bpm * beats * 4 / unit; }
+};
+struct MeasureLabels {
+    explicit MeasureLabels(const std::vector<Section>& sections) {
+        int64_t next = 1;
+        firstMeasures.reserve(sections.size());
+        for (const auto& section : sections) {
+            firstMeasures.push_back(next);
+            const auto count = (section.end - section.start) / section.barSeconds();
+            if (std::isfinite(count) && count > 0) next += std::max<int64_t>(1, (int64_t)std::ceil(count - 1e-9));
+        }
+        spacing = (std::to_string(next).size() + 5) * 8.5 + 14.0;
+    }
+    std::string label(size_t section, int64_t bar, int64_t subdivision, int divisionsPerBeat) const {
+        auto name = std::to_string(firstMeasures[section] + bar);
+        if (subdivision == 0) return name;
+        name += "." + std::to_string(subdivision / divisionsPerBeat + 1);
+        const auto withinBeat = subdivision % divisionsPerBeat;
+        if (withinBeat) name += "." + std::to_string(withinBeat + 1);
+        return name;
+    }
+    double spacing;
+private:
+    std::vector<int64_t> firstMeasures;
+};
 inline std::vector<Section> sections(const jaras::Song &song, double end) {
     std::vector<const jaras::TimelineMarker *> markers;
     if (song.markers) for (const auto &m : *song.markers)

@@ -128,7 +128,9 @@ linkedB.synchronizeModel(-12)
 precondition(linkedB.doubleValue == linkedA.doubleValue, "delayed model redraw cannot overwrite the live partner")
 linkedA.mouseUp(with: event(.leftMouseUp, 160))
 linkedA.mini = true; linkedB.mini = true
+linkedA.rotary = true; linkedB.rotary = true
 linkedA.minValue = -1; linkedA.maxValue = 1; linkedB.minValue = -1; linkedB.maxValue = 1
+linkedA.doubleValue = 0; linkedB.doubleValue = 0
 linkedA.mouseDown(with: event(.leftMouseDown, 40))
 linkedA.mouseDragged(with: event(.leftMouseDragged, 170))
 precondition(linkedA.trackingPointer && linkedB.doubleValue == -linkedA.doubleValue, "linked pan mirrors each drag event before release")
@@ -138,6 +140,7 @@ precondition(linkedA.doubleValue == 0 && linkedB.doubleValue == 0, "reset from e
 linkedB.linkedTrack = nil
 let unlinkedValue = linkedB.doubleValue
 linkedA.mouseDown(with: event(.leftMouseDown, 40))
+linkedA.mouseDragged(with: event(.leftMouseDragged, 170))
 precondition(linkedB.doubleValue == unlinkedValue, "unlinked controls cannot receive stale mirroring")
 linkedA.mouseUp(with: event(.leftMouseUp, 40))
 print("LINKED_FADER_AND_PAN_IMMEDIATE_DRAG_MIRROR_BEFORE_RELEASE_OK")
@@ -166,6 +169,7 @@ print("FOOTER_MIXER_VERTICAL_FADER_ROTARY_PAN_AND_SHARED_TRACK_LIVE_SYNC_OK")
 
 // Selected, unlinked tracks receive their own computed value on each native event.
 linkedA.linkedTrack = nil; linkedB.linkedTrack = nil
+linkedA.rotary = false; linkedB.rotary = false
 linkedA.mini = false; linkedB.mini = false
 linkedA.minValue = -60; linkedA.maxValue = 12; linkedB.minValue = -60; linkedB.maxValue = 12
 var groupValues: [UUID:Double] = [:]

@@ -66,8 +66,9 @@ class StageState final {
         if (playing != noticePlaybackRunning) {
             noticePlaybackRunning = playing;
             if (playing) { if (stoppedNoticeActive) clearNotice(); }
-            else if (pinWhenStopped) presentStoppedNotice();
+            else if (pinWhenStopped && !noticeActive()) presentStoppedNotice();
         }
+        if (!pinned && (!notice.isEmpty() || noticeImage.isValid()) && now() >= noticeDeadline) clearNotice();
         if (!t.playing) {
             wasPlaying = false;
             if (!t.paused)
@@ -97,6 +98,7 @@ class StageState final {
                               : 0;
     }
     void sendNotice(String message, Image image = {}) {
+        if (stoppedNoticeActive) pinned = false;
         stoppedNoticeActive = false;
         notice = message.trim().substring(0, 500);
         noticeImage = image;
@@ -105,10 +107,13 @@ class StageState final {
         noticeDeadline = now() + 20;
     }
     void clearNotice() {
+        const bool restore = !stoppedNoticeActive && pinWhenStopped && !noticePlaybackRunning &&
+            (!notice.isEmpty() || noticeImage.isValid());
         stoppedNoticeActive = false;
         notice.clear();
         noticeImage = {};
         pinned = false;
+        if (restore) presentStoppedNotice();
     }
     void togglePin() {
         pausedRemaining = noticeActive() ? remaining() : 20;

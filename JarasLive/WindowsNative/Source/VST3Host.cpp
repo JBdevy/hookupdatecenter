@@ -12,6 +12,7 @@
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "pluginterfaces/vst/ivstattributes.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
+#include "../../Core/Audio/VST3GainReduction.hpp"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/vstspeaker.h"
@@ -284,6 +285,7 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
     int paramCount=0, mainIn=-1, mainOut=-1, maximumFrames=4096;
     double rate=48000;
     Changes changes;
+    catlive::audio::VST3GainReduction reduction;
     EventList events;
     ParamID midiParameters[16][130];
     bool heldNotes[16][128]{};
@@ -419,6 +421,7 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
             }
         }
         if(controller){
+            if (!instrument) reduction.configure(controller);
             paramCount=std::clamp(controller->getParameterCount(),0,65536);
             params=std::make_unique<Param[]>(paramCount);
             for(int i=0;i<paramCount;++i){
@@ -515,7 +518,9 @@ struct Processor::Impl final: IComponentHandler, IComponentHandler2 {
         ProcessData data{};data.processMode=kRealtime;data.symbolicSampleSize=kSample32;data.numSamples=count;
         data.numInputs=int(inputs.size());data.numOutputs=int(outputs.size());data.inputs=inputs.data();data.outputs=outputs.data();
         data.inputParameterChanges=&changes;data.inputEvents=&events;data.processContext=&context;
+        if (reduction.supported()) { reduction.begin(); data.outputParameterChanges = &reduction; }
         if(processor->process(data)!=kResultOk)return false;
+        reduction.end();
         auto &output=outputs[mainOut];
         for(int c=0;c<2;++c){
             float *destination=c?right:left;int channel=std::min(c,output.numChannels-1);
@@ -540,6 +545,9 @@ bool Processor::processEditorSilence(int frames,const Transport &transport)noexc
     for(int channel=0;channel<16;++channel)stopNotes[channel]={0,std::uint8_t(0xb0|channel),123,0};
     const int count=impl->editorIdle?0:16;impl->editorIdle=true;
     try{return impl->render(impl->idleLeft.data(),impl->idleRight.data(),frames,transport,stopNotes,count);}catch(...){return false;}
+}
+float Processor::gainReduction() const noexcept {
+    return impl->reduction.supported() ? impl->reduction.read() : -1.f;
 }
 bool Processor::automate(std::uint32_t parameter, double value) noexcept {
     return impl->performEdit(parameter,value)==kResultOk;

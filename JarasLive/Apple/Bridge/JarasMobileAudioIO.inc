@@ -9,7 +9,7 @@
     std::atomic<bool> _enabled;
     std::atomic<uint64_t> _sequence, _host;
     std::atomic<int64_t> _sample;
-    std::atomic<uint64_t> _callbackCount, _failureCount, _lastCallbackHostTime;
+    std::atomic<uint64_t> _callbackCount, _failureCount, _lastCallbackHostTime, _lastSuccessfulRender;
     std::atomic<int32_t> _lastRenderStatus, _lastRenderError;
     double _rate, _ticksPerSecond;
 }
@@ -17,7 +17,7 @@
     if ((self = [super init])) {
         _engine = engine;
         _callbackCount.store(0); _failureCount.store(0); _lastCallbackHostTime.store(0);
-        _lastRenderStatus.store(-999); _lastRenderError.store(noErr);
+        _lastRenderStatus.store(-999); _lastRenderError.store(noErr); _lastSuccessfulRender.store(0);
         mach_timebase_info_data_t base; mach_timebase_info(&base);
         _ticksPerSecond = 1e9 * base.denom / base.numer;
     }
@@ -34,6 +34,21 @@
             return [[AVAudioTime alloc] initWithHostTime:host sampleTime:sample atRate:_rate];
     }
     return nil;
+}
+- (BOOL)isRunning {
+#if TARGET_OS_IOS
+    UInt32 value = 0, bytes = sizeof(value);
+    return _unit && AudioUnitGetProperty(_unit, kAudioOutputUnitProperty_IsRunning,
+                                         kAudioUnitScope_Global, 0, &value, &bytes) == noErr && value != 0;
+#else
+    return _engine.isRunning;
+#endif
+}
+- (BOOL)hasStalled {
+    if (!_enabled.load(std::memory_order_acquire)) return NO;
+    const auto last = _lastSuccessfulRender.load(std::memory_order_relaxed);
+    const auto now = mach_absolute_time();
+    return last && now > last && double(now - last) > 1.5 * _ticksPerSecond;
 }
 - (NSDictionary<NSString *, id> *)diagnostics {
     // Only atomics are written by renderFrames. Querying the hardware and
@@ -104,7 +119,9 @@
     _sample.store(_engine.manualRenderingSampleTime, std::memory_order_relaxed);
     _host.store(host + uint64_t(frames / _rate * _ticksPerSecond), std::memory_order_relaxed);
     _sequence.fetch_add(1, std::memory_order_release);
-    if (status != AVAudioEngineManualRenderingStatusSuccess) {
+    if (status == AVAudioEngineManualRenderingStatusSuccess) {
+        _lastSuccessfulRender.store(mach_absolute_time(), std::memory_order_relaxed);
+    } else {
         _failureCount.fetch_add(1, std::memory_order_relaxed);
         for (unsigned n = 0; n < data->mNumberBuffers; ++n)
             if (data->mBuffers[n].mData) memset(data->mBuffers[n].mData, 0, data->mBuffers[n].mDataByteSize);
@@ -118,7 +135,8 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
 }
 - (BOOL)startAndReturnError:(NSError **)error {
 #if TARGET_OS_IOS
-    if (_unit) return YES;
+    if (_unit && self.running && _enabled.load(std::memory_order_acquire)) return YES;
+    if (_unit) [self stop];
     AudioComponentDescription description = {kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0};
     OSStatus status = AudioComponentInstanceNew(AudioComponentFindNext(NULL, &description), &_unit);
     if (status == noErr) {
@@ -137,6 +155,7 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
     }
     if (status == noErr) status = AudioUnitInitialize(_unit);
     if (status == noErr) {
+        _lastSuccessfulRender.store(mach_absolute_time(), std::memory_order_relaxed);
         _enabled.store(true, std::memory_order_release);
         status = AudioOutputUnitStart(_unit);
     }
@@ -159,6 +178,7 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
         AudioComponentInstanceDispose(_unit);
         _unit = NULL;
     }
+    _lastSuccessfulRender.store(0, std::memory_order_relaxed);
     _sequence.fetch_add(1, std::memory_order_acq_rel);
     _host.store(0, std::memory_order_relaxed);
     _sample.store(0, std::memory_order_relaxed);

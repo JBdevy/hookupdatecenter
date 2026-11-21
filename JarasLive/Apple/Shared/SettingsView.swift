@@ -4,6 +4,7 @@ struct SettingsView: View {
     @ObservedObject var auth: AuthService
     @ObservedObject var show: ShowController
     let backend: any BackendClient
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage("jaras.language") private var language = "en"
     #if os(macOS)
     @AppStorage("jaras.startup.sound") private var startupSound = true
@@ -49,7 +50,7 @@ struct SettingsView: View {
                     }.buttonStyle(.plain)
                 }
                 Spacer()
-            }.padding(10).frame(width: 144).background(JarasTheme.panel)
+            }.padding(10).frame(width: 144).background(interfaceTheme.panel)
             Divider()
             GeometryReader { viewport in
             ScrollView(showsIndicators: false) {
@@ -64,6 +65,11 @@ struct SettingsView: View {
                     case .general:
                         Text("Language").font(.jarasHeadline)
                         Picker("Language", selection: $language) { Text("English").tag("en"); Text("Português").tag("pt-BR") }.pickerStyle(.segmented).labelsHidden()
+                        Text("Theme").font(.jarasHeadline)
+                        Picker("Theme", selection: $interfaceTheme) {
+                            Text(verbatim: "Dark").tag(JarasInterfaceTheme.dark)
+                            Text(verbatim: "Light Dark").tag(JarasInterfaceTheme.lightDark)
+                        }.pickerStyle(.segmented).labelsHidden()
                         #if os(macOS)
                         Text("Startup sound").font(.jarasHeadline)
                         Picker("Startup sound", selection: $startupSound) {

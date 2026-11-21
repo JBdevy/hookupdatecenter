@@ -37,9 +37,9 @@ struct TimelineInputVelocityResponse {
 
 /// Apply signed wheel travel to an unrounded target; presentation quantizes it.
 enum TimelineTrackHeightInput {
-    static func height(from height: CGFloat, factor: Double) -> CGFloat {
+    static func height(from height: CGFloat, factor: Double, limits: ClosedRange<CGFloat> = TimelineTrackHeightLimits.minimum...TimelineTrackHeightLimits.maximum) -> CGFloat {
         guard factor.isFinite, factor > 0 else { return height }
-        return min(TimelineTrackHeightLimits.maximum, max(TimelineTrackHeightLimits.minimum, height + CGFloat(log(factor)) * TimelineTrackHeightLimits.defaultHeight))
+        return min(limits.upperBound, max(limits.lowerBound, height + CGFloat(log(factor)) * TimelineTrackHeightLimits.defaultHeight))
     }
 }
 
@@ -97,8 +97,7 @@ final class TimelineTrackHeightMotion {
             requested = applied ?? current
         }
         if direction != 0 { wheelDirection = smoothWheel ? direction : 0 }
-        requested = TimelineTrackHeightInput.height(from: requested ?? current, factor: factor)
-        requested = requested.map { min(limits.upperBound, max(limits.lowerBound, $0)) }
+        requested = TimelineTrackHeightInput.height(from: requested ?? current, factor: factor, limits: limits)
         let displayed = applied ?? current
         if smoothWheel, let requested, abs(requested - displayed) >= 2 {
             wheelTransition = TimelineTrackHeightWheelTransition(from: displayed, to: requested, began: now)
@@ -234,6 +233,7 @@ struct TimelineTrackHeightResizeInput: NSViewRepresentable {
     let offsets: [CGFloat]
     let heights: [CGFloat]
     let laneCounts: [Int]
+    var compactRows: [Bool] = []
     let scales: [Double]
     let baseHeight: CGFloat
     let top: CGFloat
@@ -245,6 +245,7 @@ struct TimelineTrackHeightResizeInput: NSViewRepresentable {
     let cancel: () -> Void
     func makeNSView(context: Context) -> TimelineTrackHeightResizeView { TimelineTrackHeightResizeView() }
     func updateNSView(_ view: TimelineTrackHeightResizeView, context: Context) {
+        view.compactRows = compactRows
         view.change = change; view.cancelled = cancel
         view.scrollView = scrollView
         view.configure(project: project, song: song, tracks: tracks, offsets: offsets, heights: heights,
@@ -260,6 +261,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         let startY: CGFloat
         let height: CGFloat
         let count: Int
+        let compact: Bool
         let denominator: Double
         let initialScale: Double
         var scale: Double
@@ -274,6 +276,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
     private var song: UUID?
     private var tracks: [UUID] = []
     private var offsets: [CGFloat] = [], heights: [CGFloat] = []
+    var compactRows: [Bool] = []
     private var laneCounts: [Int] = [], scales: [Double] = []
     private var baseHeight: CGFloat = 64, top: CGFloat = 0, verticalOffset: CGFloat = 0
     private var mixerWidth: CGFloat = 0
@@ -360,14 +363,14 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
         window?.makeFirstResponder(self)
         let count = max(1, laneCounts[index]), scale = scales[index]
         drag = Drag(track: tracks[index], startY: event.locationInWindow.y, height: heights[index],
-                    count: count, denominator: Double(baseHeight) * (count > 1 ? 0.7 : 1), initialScale: scale, scale: scale)
+                    count: count, compact: compactRows.indices.contains(index) && compactRows[index], denominator: Double(baseHeight) * (count > 1 ? 0.7 : 1), initialScale: scale, scale: scale)
         NSCursor.resizeUpDown.push(); cursorPushed = true
         change?(tracks[index], scale, false)
     }
     override func mouseDragged(with event: NSEvent) {
         guard acceptsInput else { cancelDrag(); return }
         guard var drag else { return }
-        let limits = TrackHeightGeometry.laneLimits(count: drag.count)
+        let limits = TrackHeightGeometry.laneLimits(count: drag.count, compact: drag.compact)
         let travel = Double((drag.startY - event.locationInWindow.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height)))
         let lane = min(limits.upperBound, max(limits.lowerBound, ((Double(drag.height) + travel) / Double(drag.count)).rounded()))
         let scale = min(TrackHeightGeometry.maximumScale, max(TrackHeightGeometry.minimumScale, lane / drag.denominator))
@@ -453,7 +456,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
     }
 }
 
-/// Observes only wheel events over this timeline; clicks and playhead drags pass through.
+/// Handles timeline wheel and pinch input. Clicks and playhead drags pass through.
 struct TimelineWheelInput: NSViewRepresentable {
     @Binding var zoom: Double
     let position: Double
@@ -678,6 +681,7 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
     }
     private var monitor: Any?
     private var trackpadHorizontal: Bool?
+    private var trackpadVerticalMomentum = false
     private var horizontalLimiter = HorizontalScrollLimiter()
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() {
@@ -689,21 +693,35 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         if window != nil {
             NativeTimelineInputGate.shared.add(self)
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-                self?.handleWheelEvent(event) == true ? nil : event
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { [weak self] event in
+                let handled = event.type == .magnify ? self?.handleMagnifyEvent(event) : self?.handleWheelEvent(event)
+                return handled == true ? nil : event
             }
         }
     }
     func timelineInputGateChanged(blocked: Bool) {
-        if blocked { stopZoomUpdates(); heightResponse.reset(); trackpadHorizontal = nil }
+        if blocked {
+            stopZoomUpdates(); heightResponse.reset(); trackpadHorizontal = nil; trackpadVerticalMomentum = false
+        }
+    }
+    private func accepts(_ event: NSEvent) -> Bool {
+        guard let window, event.window === window, window.attachedSheet == nil,
+              !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window),
+              !isHiddenOrHasHiddenAncestor else { return false }
+        return visibleRect.contains(convert(event.locationInWindow, from: nil))
     }
     @discardableResult func handleWheelEvent(_ event: NSEvent, pressedMouseButtons: Int = NSEvent.pressedMouseButtons) -> Bool {
-        guard !interactionBlocked, !NativeTimelineInputGate.shared.isBlocked(window),
-              event.window === window, window != nil, window?.attachedSheet == nil,
-              visibleRect.contains(convert(event.locationInWindow, from: nil)) else { return false }
+        guard accepts(event) else { return false }
         for scroll in scrollViews { (scroll as? GridNativeScrollView)?.pauseManualPlaybackFollow() }
         layoutProfile?.event("input-received", view: self, input: event)
         return handle(event, pressedMouseButtons: pressedMouseButtons)
+    }
+    @discardableResult func handleMagnifyEvent(_ event: NSEvent) -> Bool {
+        guard accepts(event), let horizontal = scrollViews.first else { return false }
+        let magnification = Double(event.magnification)
+        guard magnification.isFinite, magnification > -1 else { return false }
+        applyZoom(amount: log1p(magnification), phase: event.phase, precise: true, horizontal: horizontal)
+        return true
     }
     deinit { zoomPersistenceTimer?.invalidate(); cancelDisplayLink?(); zoomTimer?.invalidate(); if let horizontalObserver { NotificationCenter.default.removeObserver(horizontalObserver) }; if let monitor { NSEvent.removeMonitor(monitor) }; if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
     private var scrollViews: [NSScrollView] {
@@ -740,6 +758,12 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         guard let horizontal = views.first else { return false }
         let delta = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) ? event.scrollingDeltaY : event.scrollingDeltaX
         let shifting = event.modifierFlags.contains(.shift)
+        let scrollingVertically = event.modifierFlags.contains(.option)
+        if event.momentumPhase.isEmpty && event.phase.contains(.began) { trackpadVerticalMomentum = false }
+        if scrollingVertically && event.hasPreciseScrollingDeltas && !event.phase.isEmpty { trackpadVerticalMomentum = true }
+        defer {
+            if event.momentumPhase.contains(.ended) || event.phase.contains(.cancelled) { trackpadVerticalMomentum = false }
+        }
         let movement = delta * (event.hasPreciseScrollingDeltas ? (shifting ? 2 : 1) : (shifting ? 54 : 18))
         let heldLeftWheel = pressedMouseButtons & 1 != 0 && !event.hasPreciseScrollingDeltas &&
             event.momentumPhase.isEmpty &&
@@ -750,6 +774,12 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
             if event.momentumPhase.isEmpty, event.scrollingDeltaY != 0 {
                 changeTrackHeight?(heightResponse.factor(delta: Double(event.scrollingDeltaY), timestamp: event.timestamp,
                     begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas), !event.hasPreciseScrollingDeltas)
+            }
+        } else if scrollingVertically || (!event.momentumPhase.isEmpty && trackpadVerticalMomentum) {
+            stopZoomUpdates()
+            let amount = event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 18)
+            if amount.isFinite, amount != 0, let vertical = views.dropFirst().first {
+                scroll(vertical, y: vertical.contentView.bounds.minY - amount)
             }
         } else if shifting || heldLeftWheel {
             takeHorizontalControl(horizontal)
@@ -792,10 +822,18 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
         return true
     }
     private func applyWheelZoom(_ event: NSEvent, delta: CGFloat, horizontal: NSScrollView) {
+        // The bounded finger-up finish owns the release. Do not accumulate
+        // AppKit's additional inertia after it has reached the chosen scale.
+        if !event.momentumPhase.isEmpty { return }
+        let amount = zoomResponse.change(delta: Double(delta), timestamp: event.timestamp,
+            begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas)
+        applyZoom(amount: amount, phase: event.phase, precise: event.hasPreciseScrollingDeltas, horizontal: horizontal)
+    }
+    private func applyZoom(amount: Double, phase: NSEvent.Phase, precise: Bool, horizontal: NSScrollView) {
         // Both devices retain signed native travel and display-frame batching.
-        if event.phase.contains(.cancelled) { stopZoomUpdates(); return }
+        if phase.contains(.cancelled) { stopZoomUpdates(); return }
         defer {
-            if event.hasPreciseScrollingDeltas, event.phase.contains(.ended), event.momentumPhase.isEmpty,
+            if precise, phase.contains(.ended),
                zoomRunning, let target = pendingZoom, abs(log(target / zoom)) > 0.005 {
                 // Keep the drag as responsive as the mouse; only finger-up gets
                 // a softer finish. Start at the visible scale, with no jump.
@@ -804,18 +842,13 @@ final class TimelineWheelView: NSView, NativeTimelineInputObserver {
                                                duration: 0.600, immediateFraction: 0)
             }
         }
-        if event.phase.contains(.began), event.momentumPhase.isEmpty, zoomRunning {
+        if phase.contains(.began), zoomRunning {
             // Finger-down interrupts the previous release at its visible
             // scale. Completing its unseen remainder here makes every item
             // jump, then rebound when the new gesture reverses direction.
             stopZoomUpdates()
         }
-        // The bounded finger-up finish owns the release. Do not accumulate
-        // AppKit's additional inertia after it has reached the chosen scale.
-        if !event.momentumPhase.isEmpty { return }
-        let amount = zoomResponse.change(delta: Double(delta), timestamp: event.timestamp,
-            begins: event.phase.contains(.began), precise: event.hasPreciseScrollingDeltas)
-        guard delta.isFinite, delta != 0, let grid = horizontal as? GridNativeScrollView,
+        guard amount.isFinite, amount != 0, let grid = horizontal as? GridNativeScrollView,
               horizontal.documentView != nil else { return }
         grid.prioritizeZoom()
         let direction = amount > 0 ? 1.0 : -1.0

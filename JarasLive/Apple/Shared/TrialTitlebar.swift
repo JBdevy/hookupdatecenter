@@ -28,7 +28,7 @@ private final class TrialTitlebarAnchor: NSView {
         super.init(frame: frame)
         label.identifier = NSUserInterfaceItemIdentifier("catlive.trialTitle")
         label.font = .jarasSystemFont(ofSize: 11, weight: .semibold)
-        label.textColor = NSColor(red: 84/255, green: 1, blue: 147/255, alpha: 1)
+        label.textColor = NSColor(JarasTheme.licenseTitleGreen)
         label.alignment = .center; label.lineBreakMode = .byTruncatingMiddle
         label.setAccessibilityHelp(text)
         label.isHidden = true

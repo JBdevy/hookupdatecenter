@@ -79,7 +79,7 @@ public:
     CatStemEditor(String name,std::function<var()> reader,std::function<void(var,bool)> writer,
                   std::function<native::stem::Status()> reporter)
         :title(std::move(name)),read(std::move(reader)),write(std::move(writer)),report(std::move(reporter)) {
-        enabled.setButtonText(localization::translate("Enabled"));enabled.setComponentID("catStemEnabled");
+        enabled.setButtonText("Enabled");enabled.setComponentID("catStemEnabled");
         enabled.onClick=[this]{auto settings=read();if(!get(settings,"stemMix").isObject())put(settings,"stemMix",stemMix::defaults());
             put(settings,"stemSeparatorEnabled",enabled.getToggleState());write(settings,true);refresh();};
         addAndMakeVisible(enabled);

@@ -15,20 +15,23 @@ final class TemporaryProjectTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         return root
     }
-    func testCrashRecoveryAndLiveSessionProtection() throws {
+    func testConcurrentProjectsKeepTheirOwnMediaAndPreserveInterruptedSession() throws {
         let root = try root(), fm = FileManager.default
         var session: TemporaryProjectSession? = try TemporaryProjectSession(documents: root)
         let media = session!.directory.appendingPathComponent("unfinished.wav")
         try Data([1,2,3]).write(to: media)
-        XCTAssertThrowsError(try TemporaryProjectSession(documents: root))
+        let second = try TemporaryProjectSession(documents: root)
+        XCTAssertNotEqual(session!.directory, second.directory)
+        XCTAssertFalse(second.contains(media))
+        let secondMedia = second.directory.appendingPathComponent("live.wav")
+        try Data([4]).write(to: secondMedia)
+        try second.discard()
+        XCTAssertFalse(fm.fileExists(atPath: secondMedia.path))
         XCTAssertTrue(fm.fileExists(atPath: media.path))
-        session = nil // Release lock as on process exit, deliberately leaving media.
+        session = nil
+        let third = try TemporaryProjectSession(documents: root)
         XCTAssertTrue(fm.fileExists(atPath: media.path))
-        let resumed = try TemporaryProjectSession(documents: root)
-        XCTAssertFalse(fm.fileExists(atPath: media.path))
-        try Data([4]).write(to: media)
-        try resumed.discard()
-        XCTAssertEqual(try fm.contentsOfDirectory(atPath: resumed.directory.path), [])
+        try third.discard()
     }
     func testPromotionCopiesMediaPreservesIdentityAndOnlyCleansScratch() throws {
         let root = try root(), fm = FileManager.default
@@ -107,7 +110,7 @@ final class TemporaryProjectTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: protected.path))
         try fm.removeItem(at: scratch)
         let session = try TemporaryProjectSession(documents: root)
-        try fm.createSymbolicLink(at: scratch.appendingPathComponent("link"), withDestinationURL: outside)
+        try fm.createSymbolicLink(at: session.directory.appendingPathComponent("link"), withDestinationURL: outside)
         try session.discard()
         XCTAssertTrue(fm.fileExists(atPath: protected.path))
     }

@@ -6,8 +6,8 @@ import UIKit
     private static var landscapeOnly = false
 
     private static var orientations: UIInterfaceOrientationMask {
-        if landscapeOnly { return .landscape }
-        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown
+        if UIDevice.current.userInterfaceIdiom == .phone { return .portrait }
+        return landscapeOnly ? .landscape : .all
     }
 
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
@@ -18,6 +18,11 @@ import UIKit
         guard landscapeOnly != locked else { return }
         landscapeOnly = locked
         updateOrientations()
+    }
+
+    static func setRemoteOrientation(active: Bool, director: Bool = false) {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        setLandscapeOnly(active && director)
     }
 
     static func updateOrientations() {
@@ -112,12 +117,22 @@ import UIKit
     }
 }
 struct RootView: View {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage("jaras.language") private var language = "en"
     @ObservedObject var container: AppContainer
     @ObservedObject private var auth: AuthService
     @ObservedObject private var documents: ProjectDocuments
     var leaveNative: (() -> Void)? = nil
     @State private var browsingNative = false
+    #if os(macOS)
+    @State private var browsingDesktop = false
+    @State private var desktopBrowserRequest: ProjectBrowserNavigation?
+    private var desktopBrowserVisible: Bool { browsingDesktop || !documents.ready }
+    private var desktopLoginVisible: Bool {
+        !container.starting && !auth.workspaceAllowed &&
+        ![.launching, .checkingSession, .checkingLicense, .checkingDevice].contains(auth.phase)
+    }
+    #endif
     init(container: AppContainer, leaveNative: (() -> Void)? = nil) {
         self.container = container; self.leaveNative = leaveNative; auth = container.auth; documents = container.documents
     }
@@ -135,7 +150,8 @@ struct RootView: View {
             } else if canEnter {
                 #if os(iOS)
                 if documents.ready && !browsingNative {
-                    IpadStandaloneWorkspace(show: container.show, documents: documents, auth: auth, backend: container.backend, onExit: {
+                    IpadStandaloneWorkspace(show: container.show, documents: documents, auth: auth, backend: container.backend,
+                                            onExit: leaveNative ?? {
                         browsingNative = true
                     })
                         .id(documents.opened)
@@ -147,34 +163,33 @@ struct RootView: View {
                             NativeAccessTitle()
                             Spacer()
                             if documents.ready { Button("Back to project") { browsingNative = false } }
-                        }.padding(16).background(JarasTheme.panel)
-                        ProjectBrowserView(documents: documents) { if documents.ready { browsingNative = false } }
+                        }.padding(16).background(JarasTheme.homeBackground)
+                        ProjectBrowserView(documents: documents, completed: { if documents.ready { browsingNative = false } })
                     }
                 }
                 #else
-                if documents.ready || documents.projectTabCount > 1 {
-                    ZStack {
-                        DesktopWorkspaceView(container: container)
-                        if !documents.ready {
-                            Color.black.opacity(0.45).ignoresSafeArea()
-                            VStack(spacing: 0) {
-                                HStack {
-                                    Text("Projects").font(.jarasHeadline)
-                                    Spacer()
-                                    if documents.canCancelOpening {
-                                        Button { documents.cancelOpening() } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
-                                    }
-                                }.padding(16)
-                                Divider()
-                                ProjectBrowserView(documents: documents)
-                            }.frame(width: 560, height: 500)
-                                .background(JarasTheme.background)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
+                ZStack {
+                    DesktopWorkspaceView(container: container, browserVisible: desktopBrowserVisible || documents.openingProgress != nil, showProjects: { recents in
+                        desktopBrowserRequest = ProjectBrowserNavigation(recents: recents)
+                        browsingDesktop = true
+                    })
+                        .opacity(documents.ready ? 1 : 0)
+                        .allowsHitTesting(!desktopBrowserVisible)
+                        .accessibilityHidden(desktopBrowserVisible)
+                    if desktopBrowserVisible && documents.ready {
+                        Color.black.opacity(0.28).contentShape(Rectangle())
                     }
-                } else {
-                    ProjectBrowserView(documents: documents)
-                        .background(ProjectTitlebarContent { EmptyView() })
+                    ProjectBrowserView(documents: documents, completed: { browsingDesktop = false },
+                                       returnToProject: documents.ready ? { browsingDesktop = false } : nil,
+                                       navigation: desktopBrowserRequest)
+                        .frame(width: 600, height: 432)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(interfaceTheme.line).allowsHitTesting(false) }
+                        .shadow(color: .black.opacity(0.60), radius: 20, y: 6)
+                        .opacity(desktopBrowserVisible ? 1 : 0)
+                        .allowsHitTesting(desktopBrowserVisible)
+                        .accessibilityHidden(!desktopBrowserVisible)
+                    if !documents.ready { ProjectTitlebarContent { EmptyView() } }
                 }
                 #endif
             }
@@ -191,11 +206,11 @@ struct RootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(InterfaceScaleAnchor(preserveFrame: true))
         .background(TrialTitlebar(auth: auth))
-        .background(ProjectWindowSizing(editor: (documents.ready || documents.projectTabCount > 1) && auth.workspaceAllowed,
-                                        login: !auth.workspaceAllowed, documents: documents))
+        .background(ProjectWindowSizing(editor: canEnter && (documents.ready || documents.projectTabCount > 1),
+                                        login: desktopLoginVisible, documents: documents, chromeColor: interfaceTheme.titlebar))
         .overlay {
             GeometryReader { geometry in
-                JarasTheme.titlebar
+                interfaceTheme.titlebar
                     .frame(height: geometry.safeAreaInsets.top)
                     .overlay(alignment: .bottom) {
                         Rectangle().fill(JarasTheme.line.opacity(0.65)).frame(height: 1)
@@ -210,7 +225,7 @@ struct RootView: View {
         #endif
         .onOpenURL { url in
             #if os(macOS)
-            if ["jl", "bkjl", "logicx", "rpp", "ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.open(url) }
+            if ["jl", "bkjl", "ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.open(url) }
             #else
             if ["ziplive", "zip"].contains(url.pathExtension.lowercased()) { documents.importPortablePackage(url) }
             #endif
@@ -247,7 +262,7 @@ struct RootView: View {
         #if os(iOS)
         .disabled(documents.showsBlockingProgress)
         .overlay {
-            if documents.showsBlockingProgress && documents.temporarySaveProgress == nil && documents.backupOpeningProgress == nil {
+            if documents.showsBlockingProgress && documents.temporarySaveProgress == nil && documents.openingProgress == nil {
                 ZStack {
                     Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(spacing: 16) {
@@ -263,15 +278,15 @@ struct RootView: View {
         .onChange(of: documents.folderReview != nil || documents.scan != nil) { reviewing in if reviewing { browsingNative = true } }
         #endif
         .overlay {
-            if let amount = documents.backupOpeningProgress {
+            if let progress = documents.openingProgress {
                 ZStack {
                     Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Opening backup…").font(.jarasHeadline)
-                        ProgressView(value: amount).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
+                        Text(progress.isBackup ? "Opening backup…" : "Opening project…").font(.jarasHeadline)
+                        ProgressView(value: progress.fraction).progressViewStyle(JarasProgressBarStyle()).tint(JarasTheme.green)
                         Text(LocalizedStringKey(documents.status)).font(.jarasCallout)
-                        if !documents.backupOpeningFile.isEmpty {
-                            Text(verbatim: documents.backupOpeningFile).font(.jarasCaption)
+                        if !progress.fileName.isEmpty {
+                            Text(verbatim: progress.fileName).font(.jarasCaption)
                                 .foregroundStyle(JarasTheme.secondary).lineLimit(1).truncationMode(.middle)
                         }
                         if documents.canCancelOpening { Button("Cancel") { documents.cancelOpening() } }
@@ -311,18 +326,29 @@ struct RootView: View {
 /// that host, preserving timeline/mixer views and their local presentation state.
 @MainActor private struct DesktopWorkspaceView: NSViewRepresentable {
     let container: AppContainer
+    let browserVisible: Bool
+    let showProjects: (Bool) -> Void
     @ObservedObject private var documents: ProjectDocuments
-    init(container: AppContainer) { self.container = container; documents = container.documents }
+    init(container: AppContainer, browserVisible: Bool, showProjects: @escaping (Bool) -> Void) {
+        self.container = container; self.browserVisible = browserVisible
+        self.showProjects = showProjects; documents = container.documents
+    }
     @Environment(\.locale) private var locale
     @Environment(\.displayScale) private var displayScale
-    private var environmentKey: String { locale.identifier + "|" + String(describing: displayScale) }
+    private var environmentKey: String { locale.identifier + "|" + String(describing: displayScale) + "|" + String(browserVisible) }
     private func content() -> AnyView {
-        AnyView(MainView(show: container.show, auth: container.auth, backend: container.backend, documents: container.documents)
+        AnyView(MainView(show: container.show, auth: container.auth, backend: container.backend, documents: container.documents,
+                         showProjects: showProjects)
             .environment(\.locale,locale).environment(\.colorScheme,.dark)
+            .environment(\.gridInteractionBlocked, browserVisible)
             .environment(\.controlActiveState, .active)
             .environment(\.displayScale,displayScale).font(.jarasBody))
     }
     final class Deck: NSView {
+        var browserVisible = false
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            browserVisible ? nil : super.hitTest(point)
+        }
         override func layout() {
             super.layout()
             for view in subviews where !view.isHidden && view.frame != bounds { view.frame = bounds }
@@ -331,6 +357,7 @@ struct RootView: View {
     }
     func makeNSView(context: Context) -> Deck { Deck() }
     func updateNSView(_ deck: Deck, context: Context) {
+        deck.browserVisible = browserVisible
         // A new tab mounts before its asynchronous document load finishes.
         // Observe that completion here: the container reference itself never
         // changes, so SwiftUI can otherwise retain the previous tab's host.
@@ -427,12 +454,26 @@ struct UnauthorizedPreview: PreviewProvider { static var previews: some View { l
 struct StartupView: View {
     static let panelWidth: CGFloat = 600
     static let panelHeight: CGFloat = 280
+    static func fit(in available: CGSize) -> CGFloat {
+        let margin: CGFloat = 24
+        return max(0, min(1, (available.width - margin * 2) / panelWidth,
+                          (available.height - margin * 2) / panelHeight))
+    }
     let progress: Double?
     let stage: String
     var transparent = false
     var body: some View {
-        ZStack {
-            if !transparent { JarasTheme.background.ignoresSafeArea() }
+        if transparent {
+            card
+        } else {
+            GeometryReader { geometry in
+                card.scaleEffect(Self.fit(in: geometry.size))
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            }.background(JarasTheme.homeBackground.ignoresSafeArea())
+        }
+    }
+
+    private var card: some View {
             HStack(spacing: 0) {
                 Image("CatLiveSplash").resizable().scaledToFit()
                     .padding(24)
@@ -480,7 +521,6 @@ struct StartupView: View {
             .background(JarasTheme.panel)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-        }
     }
 }
 
@@ -505,6 +545,11 @@ private final class FloatingStartupAnchor: NSView {
     var splashContent = AnyView(EmptyView())
     private var panel: NSPanel?
     private var hosting: NSHostingView<AnyView>?
+    private var artworkScale: CGFloat = 1
+    private var sizedContent: AnyView {
+        AnyView(splashContent.scaleEffect(artworkScale)
+            .frame(width: StartupView.panelWidth * artworkScale, height: StartupView.panelHeight * artworkScale))
+    }
     private var hidMain = false
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refresh() }
@@ -514,22 +559,27 @@ private final class FloatingStartupAnchor: NSView {
             window.alphaValue = 0
             hidMain = true
             if panel == nil {
-                let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: StartupView.panelWidth, height: StartupView.panelHeight), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+                let screen = window.screen ?? NSScreen.main
+                artworkScale = screen.map { StartupView.fit(in: $0.visibleFrame.size) } ?? 1
+                let size = NSSize(width: StartupView.panelWidth * artworkScale, height: StartupView.panelHeight * artworkScale)
+                let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
                 panel.isOpaque = false
                 panel.backgroundColor = .clear
                 panel.hasShadow = true
                 panel.level = .floating
                 panel.isReleasedWhenClosed = false
                 panel.ignoresMouseEvents = true
-                let hosting = NSHostingView(rootView: splashContent)
+                let hosting = NSHostingView(rootView: sizedContent)
                 panel.contentView = hosting
                 self.hosting = hosting
                 self.panel = panel
-                panel.center()
+                if let area = screen?.visibleFrame {
+                    panel.setFrameOrigin(NSPoint(x: area.midX - size.width / 2, y: area.midY - size.height / 2))
+                } else { panel.center() }
                 panel.orderFrontRegardless()
                 DispatchQueue.main.async { AppStartupPresentation.playSoundOnce() }
             }
-            hosting?.rootView = splashContent
+            hosting?.rootView = sizedContent
         } else { finish() }
     }
     func finish() {

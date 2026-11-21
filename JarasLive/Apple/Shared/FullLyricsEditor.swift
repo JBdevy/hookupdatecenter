@@ -69,14 +69,29 @@ struct FullLyricsEditor: View {
 #if os(iOS)
 import UIKit
 
-private struct NativeFullLyricsInput: UIViewRepresentable {
+struct NativeFullLyricsInput: UIViewRepresentable {
     @Binding var text: String
+    var outlineStanzas = true
+    var font: UIFont = .systemFont(ofSize: 15)
+
+    private var defaultAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: UIColor(JarasTheme.text)]
+    }
 
     func makeUIView(context: Context) -> UITextView {
         let view = StanzaTextView(usingTextLayoutManager: false)
+        view.outlineStanzas = outlineStanzas
         view.backgroundColor = UIColor(JarasTheme.background)
         view.textContainerInset = UIEdgeInsets(top: 9, left: 10, bottom: 9, right: 10)
-        view.typingAttributes = StanzaTextView.defaultAttributes
+        for run in ItemTextColors.runs(text) {
+            var attributes = defaultAttributes
+            if let color = run.color {
+                attributes[.foregroundColor] = UIColor(Color(hex: color))
+                attributes[StanzaTextView.colorKey] = NSNumber(value: color)
+            }
+            view.textStorage.append(NSAttributedString(string: run.text, attributes: attributes))
+        }
+        view.typingAttributes = defaultAttributes
         view.delegate = context.coordinator
         return view
     }
@@ -96,7 +111,7 @@ private struct NativeFullLyricsInput: UIViewRepresentable {
             textView.setNeedsDisplay()
         }
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-            textView.typingAttributes = StanzaTextView.defaultAttributes
+            textView.typingAttributes = parent.defaultAttributes
             return true
         }
         @available(iOS 16.0, *)
@@ -117,11 +132,10 @@ private struct NativeFullLyricsInput: UIViewRepresentable {
     }
 }
 private final class StanzaTextView: UITextView {
+    var outlineStanzas = true
     static let colorKey = NSAttributedString.Key("CatLiveItemColor")
-    static var defaultAttributes: [NSAttributedString.Key: Any] {
-        [.font: UIFont.systemFont(ofSize: 15), .foregroundColor: UIColor(JarasTheme.text)]
-    }
     override func draw(_ rect: CGRect) {
+        guard outlineStanzas else { super.draw(rect); return }
         UIColor(JarasTheme.secondary.opacity(0.45)).setStroke()
         for range in FullLyrics.stanzaRanges(text ?? "") {
             let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)

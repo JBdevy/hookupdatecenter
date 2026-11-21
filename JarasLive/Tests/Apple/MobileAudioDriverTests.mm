@@ -71,8 +71,20 @@ int main() { @autoreleasepool {
             assert(physical.mFlags & kAudioTimeStampHostTimeValid);
             assert(std::abs(double(physical.mHostTime - epoch) / ticks - 100 / rate) < 1e-6);
             jaras::realtimeClock = {};
+            if (rate == 44100 && channels == 2) {
+                assert(!driver.hasStalled);
+                [NSThread sleepForTimeInterval:1.6];
+                assert(driver.hasStalled);
+                AudioTimeStamp time = {};
+                AudioUnitRenderActionFlags flags = 0;
+                assert([driver renderFrames:512 time:&time flags:&flags buffers:output.mutableAudioBufferList] == noErr);
+                assert(!driver.hasStalled);
+                [NSThread sleepForTimeInterval:1.6];
+                assert(driver.hasStalled);
+            }
             // Gate immediately, before touching the output unit or graph.
             [driver gate];
+            assert(!driver.hasStalled);
             AudioTimeStamp time = {}; AudioUnitRenderActionFlags flags = 0;
             assert([driver renderFrames:512 time:&time flags:&flags buffers:output.mutableAudioBufferList] == noErr);
             assert(flags & kAudioUnitRenderAction_OutputIsSilence);

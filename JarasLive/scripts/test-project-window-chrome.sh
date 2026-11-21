@@ -22,6 +22,9 @@ extension Notification.Name {
 enum JarasTheme {
     static let titlebar = Color(red: 39.0 / 255, green: 46.0 / 255, blue: 56.0 / 255)
 }
+enum ProjectionWindow {
+    static func bindWorkspace(_ window: NSWindow) {}
+}
 final class ProjectDocuments { var folderReview: Bool? }
 final class ProjectCloseGuard {
     static let shared = ProjectCloseGuard()

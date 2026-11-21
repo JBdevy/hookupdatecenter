@@ -127,6 +127,14 @@ public struct TrackAutomation: Codable, Equatable, Sendable {
     /// Env controls both lane visibility and playback automation.
     public var lanesVisible: Bool?
     public init() {}
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        // Windows projects can omit fields that have their playback defaults.
+        enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        mode = try values.decodeIfPresent(AutomationMode.self, forKey: .mode) ?? .trimRead
+        envelopes = try values.decodeIfPresent([TrackEnvelope].self, forKey: .envelopes) ?? []
+        lanesVisible = try values.decodeIfPresent(Bool.self, forKey: .lanesVisible)
+    }
     public mutating func mapTimelineTimes(_ position: (Double) -> Double) {
         for envelope in envelopes.indices {
             for point in envelopes[envelope].points.indices {

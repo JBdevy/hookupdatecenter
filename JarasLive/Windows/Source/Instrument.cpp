@@ -96,6 +96,26 @@ void Instrument::configure(const var &parameters, bool drums) {
     sf.filterRelease = (float)jlimit(.001, 20., num(cutoff, "release", .3));
     sf.filterDepth = (float)jlimit(0., 10., num(cutoff, "depth"));
 }
+AudioBuffer<float> Instrument::renderLibraryPreview(const File &file) {
+    constexpr int heldFrames = previewSampleRate * 6 / 5, frames = previewSampleRate * 2;
+    // The CatLive Keyboard labels MIDI note 60 as C3.
+    constexpr std::array<int, 4> chord{60, 64, 67, 71};
+    Instrument instrument;
+    instrument.prepare(previewSampleRate);
+    auto parameters = object();
+    put(parameters, "gain", -12.);
+    instrument.configure(parameters);
+    instrument.loadSoundFont(file);
+    MidiBuffer midi;
+    for (const auto note : chord) {
+        midi.addEvent(MidiMessage::noteOn(1, note, uint8(90)), 0);
+        midi.addEvent(MidiMessage::noteOff(1, note), heldFrames);
+    }
+    AudioBuffer<float> output(2, frames);
+    output.clear();
+    instrument.render(output, midi, frames);
+    return output;
+}
 void Instrument::stop() {
     auto &sf = impl->sf;
     if (sf.font) {

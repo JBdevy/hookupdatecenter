@@ -8,6 +8,9 @@ from pathlib import Path
 import sys, uuid
 scroll=Path('Apple/Shared/GridScrollView.swift').read_text()
 diagnostics=scroll[scroll.index('enum TimelineLayoutDiagnostics'):scroll.index('protocol SidebarResizeLayoutBoundary')]
+diagnostics+=scroll[scroll.index('struct GridRowReveal:'):scroll.index('/// The grid owns these scroll views.')]
+diagnostics+=scroll[scroll.index('enum TimelineVerticalBar {'):scroll.index('struct GridScrollView<')]
+diagnostics+='\nprivate final class GridDocumentView: NSView { var followsViewportWidth = false; func synchronizeHostedViewport() {} }\n'
 start=scroll.index('final class GridNativeScrollView: NSScrollView')
 end=scroll.index('\n#endif',start)
 clip_start=scroll.index('private final class TimelineClipView: NSClipView')

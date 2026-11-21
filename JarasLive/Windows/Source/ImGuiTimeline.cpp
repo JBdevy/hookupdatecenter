@@ -435,7 +435,7 @@ void ImGuiTimeline::render(const J& snapshot,const J& telemetry,const Command& c
         const bool active=selectedTracks.count(row.id)!=0;
         draw.AddRectFilled({body.x,y},{body.x+body.w,y+row.height},active?IM_COL32(44,57,67,255):(row.index%2?IM_COL32(28,31,36,255):IM_COL32(25,28,33,255)));
         if(active)draw.AddRectFilled({body.x,y},{body.x+3*unit,y+row.height},IM_COL32(102,197,225,255));
-        draw.AddLine({body.x,y+row.height-.5f},{body.x+body.w,y+row.height-.5f},IM_COL32(67,73,81,255));draw.PopClipRect();
+        draw.PopClipRect();
     }
     draw.PushClipRect(body.min(),body.max(),true);s.grid(draw,body,ruler);draw.PopClipRect();
     // Ruler labels have their own clip; grid lines remain confined to tracks.

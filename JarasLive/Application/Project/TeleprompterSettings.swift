@@ -93,7 +93,7 @@ public struct TeleprompterSettings: Codable, Equatable, Sendable {
     }
     public func sanitized() -> Self {
         var result = self
-        result.textScale = textScale.isFinite ? min(100, max(35, textScale)) : Self().textScale
+        result.textScale = textScale.isFinite ? min(150, max(35, textScale)) : Self().textScale
         result.clockScale = clockScale.isFinite ? min(150, max(35, clockScale)) : Self().clockScale
         result.songNameScale = songNameScale.isFinite ? min(200, max(35, songNameScale)) : Self().songNameScale
         result.queueNameScale = queueNameScale.isFinite ? min(200, max(35, queueNameScale)) : Self().queueNameScale

@@ -378,8 +378,8 @@ public enum ProjectName {
 #if canImport(Darwin)
 import Darwin
 
-/// A disposable document owns exactly Documents/catlive-temp. The sibling lock
-/// survives cleanup and prevents another window/process from clearing live media.
+/// Each temporary document owns its own folder. An interrupted session remains
+/// available on disk and another tab can create a new document independently.
 public final class TemporaryProjectSession: @unchecked Sendable {
     public struct SaveProgress: Sendable {
         public enum Stage: Sendable { case preparing, copying, writing, complete }
@@ -406,64 +406,69 @@ public final class TemporaryProjectSession: @unchecked Sendable {
         public static var preparing: Self { .init(stage: .preparing, completedFiles: 0, totalFiles: 0, fileName: "") }
     }
     public let directory: URL
-    private var descriptor: Int32 = -1
+    private let parent: URL
+    private var ownsDirectory = false
     public init(documents: URL) throws {
         let fm = FileManager.default
-        directory = documents.appendingPathComponent("catlive-temp", isDirectory: true).standardizedFileURL
+        parent = documents.appendingPathComponent("catlive-temp", isDirectory: true).standardizedFileURL
+        directory = parent.appendingPathComponent("session-" + UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: documents, withIntermediateDirectories: true)
-        let lock = documents.appendingPathComponent(".catlive-temp.lock")
-        descriptor = Darwin.open(lock.path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
-        guard descriptor >= 0 else { throw ProjectError.invalid("Could not prepare the temporary project folder.") }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-            Darwin.close(descriptor); descriptor = -1
-            throw ProjectError.invalid("Close the other temporary session before creating a new one.")
+        try Self.verifyDirectory(parent)
+        if !fm.fileExists(atPath: parent.path) {
+            try fm.createDirectory(at: parent, withIntermediateDirectories: true)
         }
-        do {
-            try verifyDirectory()
-            if !fm.fileExists(atPath: directory.path) { try fm.createDirectory(at: directory, withIntermediateDirectories: false) }
-            try clearContents()
-        } catch { unlock(); throw error }
+        try Self.verifyDirectory(parent)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+        ownsDirectory = true
     }
-    deinit { unlock() } // An interrupted session is cleaned on the next creation.
-    private func unlock() {
-        if descriptor >= 0 { flock(descriptor, LOCK_UN); Darwin.close(descriptor); descriptor = -1 }
-    }
-    private func verifyDirectory() throws {
-        if let type = try? FileManager.default.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType, type != FileAttributeType.typeDirectory {
-            throw ProjectError.invalid("The temporary project folder must be a real directory.")
-        }
-        guard directory.resolvingSymlinksInPath().path == directory.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent("catlive-temp", isDirectory: true).path else {
+    private static func verifyDirectory(_ url: URL) throws {
+        if let type = try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType,
+           type != .typeDirectory {
             throw ProjectError.invalid("The temporary project folder must be a real directory.")
         }
     }
     public func contains(_ url: URL) -> Bool {
         url.standardizedFileURL.path.hasPrefix(directory.path + "/")
     }
-    private func clearContents() throws {
-        try verifyDirectory()
-        for entry in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
-            // removeItem removes a child symlink itself, never its destination.
-            try FileManager.default.removeItem(at: entry)
-        }
+    public func discard() throws {
+        guard ownsDirectory else { return }
+        try Self.verifyDirectory(parent)
+        try Self.verifyDirectory(directory)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: directory.path) { try fm.removeItem(at: directory) }
+        ownsDirectory = false
     }
-    public func discard() throws { guard descriptor >= 0 else { return }; try clearContents(); unlock() }
     /// Commit a self-contained normal project before releasing any scratch media.
     /// A failed/cancelled copy removes only the new folder this method created.
     public func export(_ original: Project, to destination: URL,
                        progress: @Sendable (SaveProgress) -> Void = { _ in }) throws -> Project {
-        progress(.preparing)
         let fm = FileManager.default, folder = destination.deletingLastPathComponent()
         let resolved = folder.resolvingSymlinksInPath().standardizedFileURL.path
-        let scratch = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        let scratch = parent.resolvingSymlinksInPath().standardizedFileURL.path
         guard resolved != scratch, !resolved.hasPrefix(scratch + "/"),
               !fm.fileExists(atPath: folder.path) else {
             throw ProjectError.invalid("Choose a new folder outside catlive-temp.")
+        }
+        return try Self.copyProject(original, from: directory, to: destination, progress: progress)
+    }
+    public static func copyProject(_ original: Project, from directory: URL, to destination: URL,
+                                   progress: @Sendable (SaveProgress) -> Void = { _ in }) throws -> Project {
+        progress(.preparing)
+        let fm = FileManager.default, folder = destination.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
+        let directory = directory.resolvingSymlinksInPath().standardizedFileURL
+        guard folder != directory, !fm.fileExists(atPath: destination.path) else {
+            throw ProjectError.invalid("Choose another folder and an unused .jl filename.")
         }
         try ProjectDirectoryPolicy.validate(destination)
         var project = original
         project.name = try ProjectName.validated(destination.deletingPathExtension().lastPathComponent)
         try project.validate()
-        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let ownsFolder = !fm.fileExists(atPath: folder.path)
+        if ownsFolder {
+            try fm.createDirectory(at: folder.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.createDirectory(at: folder, withIntermediateDirectories: false)
+        }
+        var added: [URL] = []
         do {
             var paths = project.mediaPaths
             let instruments = directory.appendingPathComponent("Instruments", isDirectory: true)
@@ -478,13 +483,20 @@ public final class TemporaryProjectSession: @unchecked Sendable {
                                fileName: URL(fileURLWithPath: path).lastPathComponent))
                 let source = directory.appendingPathComponent(path).standardizedFileURL
                 let target = folder.appendingPathComponent(path).standardizedFileURL
-                guard source.path.hasPrefix(directory.path + "/"), target.path.hasPrefix(folder.standardizedFileURL.path + "/"),
+                guard source.path.hasPrefix(directory.path + "/"), target.resolvingSymlinksInPath().path.hasPrefix(folder.path + "/"),
                       (try source.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else {
                     throw ProjectError.invalid("Invalid project media path.")
+                }
+                if fm.fileExists(atPath: target.path) {
+                    guard fm.contentsEqual(atPath: source.path, andPath: target.path) else {
+                        throw ProjectError.invalid("Different media already exists in the destination folder.")
+                    }
+                    continue
                 }
                 try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 let before = try fm.attributesOfItem(atPath: source.path)
                 try fm.copyItem(at: source, to: target)
+                added.append(target)
                 // copyItem reports copy/clone failures. Re-reading both complete
                 // files here defeats APFS cloning and blocks Play for minutes
                 // when a temporary session contains hundreds of large stems.
@@ -502,7 +514,11 @@ public final class TemporaryProjectSession: @unchecked Sendable {
             try ProjectDocumentCodec.writeEncoded(ProjectDocumentCodec.encode(project), to: destination, exclusive: true)
             progress(.init(stage: .complete, completedFiles: paths.count, totalFiles: paths.count, fileName: ""))
             return project
-        } catch { try? fm.removeItem(at: folder); throw error }
+        } catch {
+            if ownsFolder { try? fm.removeItem(at: folder) }
+            else { for file in added { try? fm.removeItem(at: file) } }
+            throw error
+        }
     }
 }
 #endif

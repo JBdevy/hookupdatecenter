@@ -386,14 +386,15 @@ private final class CaptureWriter: @unchecked Sendable {
         let tracks = show?.current?.tracks ?? []
         let playback = (projectAudio ?? StemAudioPlayback.shared)
         playback.armedMIDIRecordingTracks = Set(tracks.filter { armed.contains($0.id) && $0.recordingMode == .midi }.map(\.id))
-        // FX can be inserted or removed while REC remains armed. Refresh the
-        // live MIDI targets with the current chain, not just when REC changes.
         playback.setArmedInstrumentTracks(Set(tracks.filter { track in
-            armed.contains(track.id) && (track.fx?.instrumentKeys.isEmpty == false ||
-                (track.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false))
+            track.kind == .standard && track.role.rawValue != "vinhetas" &&
+                track.monitorsMIDIInstrument(armed: armed.contains(track.id)) &&
+                (track.fx?.hasDrummerPad == true || track.fx?.instrumentKeys.isEmpty == false ||
+                 track.fx?.externalPlugins?.contains { $0.category.localizedCaseInsensitiveContains("Instrument") } == true)
         }.map(\.id)))
         let desired = inputChannels > 0 && (AudioDeviceSettings.shared.usesSystemLoopback || AVCaptureDevice.authorizationStatus(for: .audio) == .authorized) ? tracks.filter {
-            armed.contains($0.id) && $0.role.rawValue != "vinhetas" && $0.recordingMode != .midi && $0.kind == .standard && $0.inputPatch != OutputPatch.none
+            $0.monitorsInput(armed: armed.contains($0.id)) && $0.role.rawValue != "vinhetas" &&
+                $0.recordingMode != .midi && $0.kind == .standard && hasRecordingInput($0)
         }.map { MonitorConfig(track: $0.id, patch: $0.inputPatch ?? defaultInputPatch, channels: $0.recordingChannels ?? 2) } : []
         guard desired != monitorConfig || desired.contains(where: { !playback.hasInputMonitor($0.track) }) else { return }
         for config in monitorConfig { playback.setInputMonitor(config.track, source: nil) }
@@ -469,6 +470,7 @@ private final class CaptureWriter: @unchecked Sendable {
     private var writer: CaptureWriter?
     private var activeTargets: [UUID: CaptureTarget] = [:]
     private var midiTakes: [UUID: MIDIRecordingTake] = [:]
+    private var silentTakes: [UUID: AudioClip] = [:]
     private var midiStartTime = 0.0
     private var recordingSong: UUID?
     private var recordingNames = RecordingNames(directory: nil)
@@ -562,7 +564,7 @@ private final class CaptureWriter: @unchecked Sendable {
         LiveRecordingPreview.shared.takes = [:]; RecordingLaneLayout.shared.clear()
     }
     func toggleArm(_ track: UUID, requiresAudioInput: Bool = true) {
-        setMode(armState.mode(for: track).next, tracks: [track], requiresAudioInput: requiresAudioInput)
+        setMode(armState.mode(for: track).afterRecordClick(), tracks: [track], requiresAudioInput: requiresAudioInput)
     }
     func setArmed(_ tracks: Set<UUID>, active: Bool, requiresAudioInput: Bool) {
         setMode(active ? .manual : .off, tracks: tracks, requiresAudioInput: requiresAudioInput)
@@ -585,7 +587,7 @@ private final class CaptureWriter: @unchecked Sendable {
         let wanted = armState.armed
         if let show {
             microphoneTracks = wanted.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter {
-                !$0.recordsOutput && $0.inputPatch != OutputPatch.none && $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false &&
+                !$0.recordsOutput && hasRecordingInput($0) && $0.recordingMode != .midi && $0.fx?.hasDrummerPad != true && $0.fx?.instrumentKeys.isEmpty != false &&
                     !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
             }.map(\.id)))
         }
@@ -593,7 +595,11 @@ private final class CaptureWriter: @unchecked Sendable {
         let effective = authorization == .authorized || inputChannels == 0 ? wanted : wanted.subtracting(microphoneTracks)
         if armed != effective { armed = effective; updateArmedTargets() }
         refreshMonitoring()
-        guard inputChannels > 0, !wanted.intersection(microphoneTracks).isEmpty, authorization != .authorized else { return }
+        let monitoring = show?.current?.tracks.contains {
+            !$0.receivesMain && $0.inputMonitoring == true && $0.kind == .standard && $0.role.rawValue != "vinhetas" &&
+                $0.recordingMode != .midi && hasRecordingInput($0)
+        } == true
+        guard inputChannels > 0, (monitoring || !wanted.intersection(microphoneTracks).isEmpty), authorization != .authorized else { return }
         guard authorization == .notDetermined else {
             error = "Allow microphone access in System Settings to record audio."; return
         }
@@ -611,7 +617,7 @@ private final class CaptureWriter: @unchecked Sendable {
     }
     private func target(for track: Track, position: Double) -> CaptureTarget {
         let lane = TrackLanes(track: track).recordingLane(start: position, duration: 0.01, clips: track.clips)
-        var target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: MediaProcessingFormat.load("record").recordingKey(for: track), name: recordingNames.allocate(track: track.name, clips: track.clips), lane: lane, recordedChannels: track.recordingChannels ?? 2)
+        var target = CaptureTarget(track: track.id, input: track.inputPatch ?? defaultInputPatch, format: MediaProcessingFormat.load("record").recordingKey(for: track), name: recordingNames.allocate(track: track.name, clips: track.clips), lane: lane, recordedChannels: track.receivesMain ? track.recordingMode.rawValue : track.recordingChannels ?? 2)
         target.postFader = track.recordsOutput && track.recordingPostFader != false
         target.postFX = track.recordsOutput && track.recordingPostFX != false
         target.gain = Float(track.volume)
@@ -652,7 +658,9 @@ private final class CaptureWriter: @unchecked Sendable {
             busy = true
             Task { do { for track in newOutputs { try await startOutputCapture(track) } } catch { self.error = error.localizedDescription }; busy = false }
         }
-        let tracks = allTracks.filter { $0.recordingMode != .midi && !$0.recordsOutput }
+        let inputTracks = allTracks.filter { $0.recordingMode != .midi && !$0.recordsOutput }
+        let tracks = inputTracks.filter { hasRecordingInput($0) }
+        updateSilentTakes(inputTracks.filter { !hasRecordingInput($0) }, at: position)
         guard let writer else {
             guard !tracks.isEmpty, !busy else { return }
             busy = true
@@ -695,6 +703,27 @@ private final class CaptureWriter: @unchecked Sendable {
         if let clip = take.finish(at: position), show?.snapshot.project.id == project { addRecordedClip(clip, track: track) }
         RecordingLaneLayout.shared.remove(take.id); LiveRecordingPreview.shared.takes[take.id] = nil
     }
+    private func hasRecordingInput(_ track: Track) -> Bool {
+        let input = track.inputPatch ?? defaultInputPatch
+        return input.firstChannel >= 1 && input.channelCount > 0 &&
+            input.firstChannel <= inputChannels - input.channelCount + 1
+    }
+    private func updateSilentTakes(_ tracks: [Track], at position: Double) {
+        let remaining = Set(tracks.map(\.id))
+        for track in Array(silentTakes.keys) where !remaining.contains(track) {
+            guard var clip = silentTakes.removeValue(forKey: track) else { continue }
+            clip.duration = max(0, position - clip.startTime)
+            if clip.duration >= 0.01, show?.snapshot.project.id == project { addRecordedClip(clip, track: track) }
+            RecordingLaneLayout.shared.remove(clip.id)
+            LiveRecordingPreview.shared.takes[clip.id] = nil
+        }
+        for track in tracks where silentTakes[track.id] == nil {
+            let target = target(for: track, position: position)
+            silentTakes[track.id] = AudioClip(id: target.id, name: target.name, startTime: position,
+                                             duration: 0.01, recordingLane: target.lane)
+            LiveRecordingPreview.shared.takes[target.id]?.channels = []
+        }
+    }
     private func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8, timestamp: Double) {
         guard recording, timestamp >= midiStartTime, let show else { return }
         let position = startPosition + timestamp - midiStartTime
@@ -735,7 +764,8 @@ private final class CaptureWriter: @unchecked Sendable {
         }
         #endif
         let audioTracks = tracks.filter { $0.recordingMode != .midi }
-        if !audioTracks.isEmpty, !AudioDestinationSpace.confirm(at: directory.appendingPathComponent("Stems", isDirectory: true)) { return }
+        if audioTracks.contains(where: { $0.recordsOutput || hasRecordingInput($0) }),
+           !AudioDestinationSpace.confirm(at: directory.appendingPathComponent("Stems", isDirectory: true)) { return }
         busy = true; self.show = show; error = ""; previewSession = UUID()
         (projectAudio ?? StemAudioPlayback.shared).setRecordingItemTracks(Set(tracks.map(\.id)))
         Task {
@@ -747,6 +777,7 @@ private final class CaptureWriter: @unchecked Sendable {
                 recordingSong = show.snapshot.transport.songId
                 lastPosition = startPosition; lastTime = midiStartTime
                 updateMIDITargets(tracks.filter { $0.recordingMode == .midi }, position: startPosition)
+                updateSilentTakes(audioTracks.filter { !$0.recordsOutput && !hasRecordingInput($0) }, at: startPosition)
                 for output in outputWriters.values { output.setInitialPosition(startPosition); output.start() }
                 recording = true; busy = false; reconcileArming()
                 if !show.snapshot.transport.playing { show.send(.play) }
@@ -771,7 +802,7 @@ private final class CaptureWriter: @unchecked Sendable {
         previewSession = UUID()
     }
     private func startAudioCapture(tracks: [Track]) async throws {
-        let inputs = tracks.filter { !$0.recordsOutput }
+        let inputs = tracks.filter { !$0.recordsOutput && hasRecordingInput($0) }
         if !inputs.isEmpty { try await startInputAudioCapture(tracks: inputs) }
         for track in tracks where track.recordsOutput && outputWriters[track.id] == nil { try await startOutputCapture(track) }
     }
@@ -783,7 +814,7 @@ private final class CaptureWriter: @unchecked Sendable {
         target.input = OutputPatch(firstChannel: 1, channelCount: 2)
         // The tap already contains track FX and, when requested, track controls.
         target.postFX = false; target.effects = nil
-        target.postFader = track.recordingPostFX == false && track.recordingPostFader != false
+        target.postFader = !track.receivesMain && track.recordingPostFX == false && track.recordingPostFader != false
         let format = audio.outputCaptureFormat
         let ring = JarasCaptureRing(channels: 2, capacity: UInt(format.sampleRate * 8))
         let captureTarget = target
@@ -808,8 +839,15 @@ private final class CaptureWriter: @unchecked Sendable {
         // Initial takes start together after every writer and tap is ready.
         ring.endCapture()
         if recording { output.start() }
-        do { _ = try audio.attachOutputCapture(track.id, postFX: track.recordingPostFX != false, postFader: track.recordingPostFader != false, ring: ring); outputWriters[track.id] = output }
-        catch { output.finish(start: position) { _, _ in }; throw error }
+        do {
+            _ = try audio.attachOutputCapture(track.id, postFX: track.recordingPostFX != false,
+                                             postFader: track.recordingPostFader != false, main: track.receivesMain, ring: ring)
+            outputWriters[track.id] = output
+        } catch {
+            audio.detachOutputCapture(track.id)
+            output.finish(start: position) { _, _ in }
+            throw error
+        }
     }
     private func startInputAudioCapture(tracks: [Track]) async throws {
         guard let show, let directory, !tracks.isEmpty else { return }
@@ -887,7 +925,9 @@ private final class CaptureWriter: @unchecked Sendable {
         // tracks or capture resources, there is nothing to reconcile or stop.
         // Automatic REC still takes the normal path while it is deselected.
         if !recording, !busy, !armState.hasConfiguredTracks, armed.isEmpty,
-           captureRing == nil, monitorConfig.isEmpty, !tapInstalled, !inputEngineRunning {
+           captureRing == nil, monitorConfig.isEmpty, !tapInstalled, !inputEngineRunning,
+           !(projectAudio ?? StemAudioPlayback.shared).hasInstrumentMonitoring,
+           !((show?.current?.tracks.contains { $0.inputMonitoring == true }) ?? false) {
             if !(projectAudio ?? StemAudioPlayback.shared).armedMIDIRecordingTracks.isEmpty {
                 (projectAudio ?? StemAudioPlayback.shared).armedMIDIRecordingTracks = []
             }
@@ -919,6 +959,11 @@ private final class CaptureWriter: @unchecked Sendable {
             RecordingLaneLayout.shared.update(take.id, duration: duration)
             LiveRecordingPreview.shared.takes[take.id]?.duration = duration
         }
+        for take in silentTakes.values {
+            let duration = max(0.01, snapshot.transport.position - take.startTime)
+            RecordingLaneLayout.shared.update(take.id, duration: duration)
+            LiveRecordingPreview.shared.takes[take.id]?.duration = duration
+        }
     }
     func finishAndWait() async {
         while busy {
@@ -937,6 +982,7 @@ private final class CaptureWriter: @unchecked Sendable {
         let end = lastPosition + max(0, ProcessInfo.processInfo.systemUptime - lastTime)
         recording = false; busy = true
         for track in Array(midiTakes.keys) { finishMIDITake(track, at: end) }
+        updateSilentTakes([], at: end)
         var writers = Array(outputWriters.values)
         for id in outputWriters.keys { (projectAudio ?? StemAudioPlayback.shared).detachOutputCapture(id) }
         outputWriters.removeAll()
@@ -1008,6 +1054,30 @@ private final class CaptureWriter: @unchecked Sendable {
     }
 }
 
+struct TrackInputMonitorButton: View {
+    let show: ShowController
+    let track: Track
+    var width: CGFloat = 22
+    var height: CGFloat = 21
+
+    var body: some View {
+        let enabled = !track.receivesMain && track.inputMonitoring == true
+        Button {
+            show.setInputMonitoring(track.id, enabled: !enabled)
+        } label: {
+            Text(verbatim: "I").font(.jarasSystem(size: 10, weight: .semibold))
+                .foregroundStyle(enabled ? Color.black : Color.white)
+                .frame(width: width, height: height)
+                .background(enabled ? JarasTheme.green : TrackMixerButtonAppearance.trackControl,
+                            in: RoundedRectangle(cornerRadius: TrackMixerButtonAppearance.radius))
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .disabled(track.receivesMain)
+            .accessibilityLabel("Input monitoring")
+            .accessibilityValue(enabled ? "On" : "Off")
+    }
+}
+
 struct TrackRecordButton: View {
     let show: ShowController
     let track: Track
@@ -1015,13 +1085,19 @@ struct TrackRecordButton: View {
     var touchWidth: CGFloat = 28
     @ObservedObject private var recorder = TrackRecording.shared
     @State private var editingMode = false
-    private func toggleArm() {
+    private func toggleArm(automatic: Bool) {
         let targets = show.mixerControlTargets(track.id).filter { $0.kind == .standard }
-        let requiresInput = targets.contains { $0.recordingMode != .midi && $0.fx?.instrumentKeys.isEmpty != false && !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false) }
-        recorder.setMode(recorder.armState.mode(for: track.id).next, tracks: Set(targets.map(\.id)), requiresAudioInput: requiresInput)
+        let requiresInput = targets.contains { $0.recordingMode != .midi && $0.fx?.hasDrummerPad != true && $0.fx?.instrumentKeys.isEmpty != false && !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false) }
+        recorder.setMode(recorder.armState.mode(for: track.id).afterRecordClick(automatic: automatic), tracks: Set(targets.map(\.id)), requiresAudioInput: requiresInput)
     }
     var body: some View {
-        Button(action: toggleArm) {
+        Button {
+            #if os(macOS)
+            toggleArm(automatic: NSApp.currentEvent?.modifierFlags.contains(.shift) == true)
+            #else
+            toggleArm(automatic: false)
+            #endif
+        } label: {
             Group {
                 if recorder.armState.mode(for: track.id) == .automatic {
                     Text(verbatim: "A").font(.jarasSystem(size: 11, weight: .bold))
@@ -1033,7 +1109,10 @@ struct TrackRecordButton: View {
         .immediateRightClick { editingMode = true }
         #else
         .frame(minWidth: touchWidth, minHeight: touchHeight).contentShape(Rectangle())
-        .overlay { IpadTapHoldTouchSurface(tap: toggleArm, hold: { editingMode = true }) }
+        .overlay {
+            IpadTapHoldTouchSurface(tap: { toggleArm(automatic: false) }, hold: { editingMode = true },
+                                    shiftTap: { toggleArm(automatic: true) })
+        }
         #endif
         .onChange(of: track.id) { _ in editingMode = false }
         .popover(isPresented: $editingMode) {
@@ -1042,7 +1121,7 @@ struct TrackRecordButton: View {
         .accessibilityLabel("Arm track for recording")
         .accessibilityValue(Text(recorder.armState.mode(for: track.id) == .automatic ? "Automatic record arm" : recorder.armed.contains(track.id) ? "Armed" : "Off"))
         .accessibilityAction(named: Text("Recording mode")) { editingMode = true }
-        .jarasHelp("Record arm: Off → Armed → Automatic (selected track)")
+        .jarasHelp("Record arm: click to arm or disarm, Shift-click for Automatic")
     }
 }
 
@@ -1056,10 +1135,10 @@ struct TrackRecordingSettings: View {
         if let track = show.current?.tracks.first(where: { $0.id == trackID }) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Recording mode").font(.jarasHeadline)
-                Picker("Recording mode", selection: Binding(get: { track.recordingChannels ?? 2 }, set: { show.setRecordingChannels(track.id, channel: $0) })) {
+                Picker("Recording mode", selection: Binding(get: { track.recordingMode.rawValue }, set: { show.setRecordingChannels(track.id, channel: $0) })) {
                     Text("Mono").tag(1)
                     Text("Stereo").tag(2)
-                    if track.role.rawValue != "vinhetas" { Text("MIDI").tag(0) }
+                    if track.role.rawValue != "vinhetas" && !track.receivesMain { Text("MIDI").tag(0) }
                 }.pickerStyle(.segmented).labelsHidden().disabled(recorder.recording || recorder.busy)
                 #if os(macOS)
                 // Keep the popover's size and anchor stable when switching to
@@ -1071,8 +1150,8 @@ struct TrackRecordingSettings: View {
                 if showsAudioSettings {
                     Group {
                         Picker("Recording signal", selection: Binding(get: { track.recordsOutput }, set: { show.setRecordingStage(track.id, output: $0) })) {
-                            Text("Input").tag(false); Text("Output").tag(true)
-                        }.pickerStyle(.segmented).disabled(track.role.rawValue == "vinhetas" || recorder.recording || recorder.busy)
+                            Text("Input").tag(false); Text(track.receivesMain ? "Main" : "Output").tag(true)
+                        }.pickerStyle(.segmented).disabled(track.receivesMain || track.role.rawValue == "vinhetas" || recorder.recording || recorder.busy)
                         Picker("Format", selection: Binding(get: { track.recordingFormat ?? "" }, set: {
                             show.setRecordingFormat(track.id, format: $0.isEmpty ? nil : $0)
                         })) {
@@ -1081,21 +1160,21 @@ struct TrackRecordingSettings: View {
                             Text(verbatim: "WAV · 32-bit float").tag("wav32")
                             Text(verbatim: "MP3 · \(MediaProcessingFormat.load("record").bitrate) kbps").tag("mp3")
                         }.disabled(recorder.recording || recorder.busy)
-                        Picker("Recording level", selection: Binding(get: { track.recordsOutput && track.recordingPostFader != false }, set: { show.setRecordingStage(track.id, postFader: $0) })) {
+                        Picker("Recording level", selection: Binding(get: { track.receivesMain || (track.recordsOutput && track.recordingPostFader != false) }, set: { show.setRecordingStage(track.id, postFader: $0) })) {
                             Text("Pre-fader").tag(false)
                             Text("Post-fader").tag(true)
-                        }.pickerStyle(.segmented).disabled(!track.recordsOutput || recorder.recording || recorder.busy)
-                        Picker("Recording effects", selection: Binding(get: { track.recordsOutput && track.recordingPostFX != false }, set: { show.setRecordingStage(track.id, postFX: $0) })) {
+                        }.pickerStyle(.segmented).disabled(track.receivesMain || !track.recordsOutput || recorder.recording || recorder.busy)
+                        Picker("Recording effects", selection: Binding(get: { track.receivesMain || (track.recordsOutput && track.recordingPostFX != false) }, set: { show.setRecordingStage(track.id, postFX: $0) })) {
                             Text("Pre-FX").tag(false)
                             Text("Post-FX").tag(true)
-                        }.pickerStyle(.segmented).disabled(!track.recordsOutput || recorder.recording || recorder.busy)
-                        if track.role.rawValue != "vinhetas" {
-                            Picker("Input monitoring", selection: Binding(get: { track.inputMonitoring != false }, set: { show.setInputMonitoring(track.id, enabled: $0) })) {
-                                Text(verbatim: "Monitor On").tag(true)
-                                Text(verbatim: "Monitor Off").tag(false)
-                            }.pickerStyle(.segmented).labelsHidden()
-                        }
+                        }.pickerStyle(.segmented).disabled(track.receivesMain || !track.recordsOutput || recorder.recording || recorder.busy)
                     }.disabled(track.recordingMode == .midi)
+                }
+                if track.role.rawValue != "vinhetas" {
+                    Picker("Input monitoring", selection: Binding(get: { track.monitorsInput(armed: recorder.armed.contains(track.id)) }, set: { show.setInputMonitoring(track.id, enabled: $0) })) {
+                        Text(verbatim: "Monitor On").tag(true)
+                        Text(verbatim: "Monitor Off").tag(false)
+                    }.pickerStyle(.segmented).labelsHidden().disabled(track.receivesMain)
                 }
             }.padding(16)
             #if os(macOS)
@@ -1113,6 +1192,8 @@ struct RecordingButtonStyle: ButtonStyle {
     var fontSize: CGFloat = 10
     var cornerRadius: CGFloat = 3
     var transport = false
+    var idleTransportBackground = JarasTheme.yellow
+    var idleTransportForeground = Color.black
     private let red = Color(red: 1, green: 0.12, blue: 0.12)
     @State private var pulseStart = Date()
     func makeBody(configuration: Configuration) -> some View {
@@ -1130,16 +1211,12 @@ struct RecordingButtonStyle: ButtonStyle {
             .font(.jarasSystem(size: fontSize, weight: .semibold))
             .lineLimit(1).minimumScaleFactor(0.75)
             .frame(width: width, height: height)
-            #if os(macOS)
-            .foregroundStyle(transport || active ? Color.black : Color.red)
-            #else
-            .foregroundStyle(transport || active ? Color.black : Color.red)
-            #endif
+            .foregroundStyle(active ? Color.black : transport ? idleTransportForeground : Color.red)
             .background {
                 ZStack {
-                    transport ? (active ? JarasTheme.liveOffRed : JarasTheme.yellow).opacity(configuration.isPressed ? 0.85 : 1) :
+                    transport ? (active ? JarasTheme.liveOffRed : idleTransportBackground).opacity(configuration.isPressed ? 0.85 : 1) :
                         active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
-                        (configuration.isPressed ? Color(hex: 0x565656) : JarasTheme.trackButton)
+                        (configuration.isPressed ? Color(hex: 0x282828) : TrackMixerButtonAppearance.trackControl)
                     Color(hex: 0x454545).opacity(grey)
                 }
             }
@@ -1150,14 +1227,29 @@ struct RecordingButtonStyle: ButtonStyle {
 }
 
 struct TransportRecordButton: View {
-    @Environment(\.transportControlWidth) private var buttonWidth
     let show: ShowController
+    var width = TransportControlMetrics.playbackWidth
     @ObservedObject private var recorder = TrackRecording.shared
     var body: some View {
+        #if os(macOS)
+        let idleBackground = Color(hex: 0x454545)
+        let idleForeground = Color.white
+        #else
+        let idleBackground = JarasTheme.yellow
+        let idleForeground = Color.black
+        #endif
         Button { recorder.toggle(show: show) } label: {
-            Label("REC", systemImage: recorder.recording ? "stop.circle.fill" : "record.circle")
-        }.buttonStyle(RecordingButtonStyle(active: recorder.recording, width: buttonWidth,
-            height: TransportControlMetrics.height, fontSize: TransportControlMetrics.font, cornerRadius: 6, transport: true))
+            Label {
+                Text("REC")
+            } icon: {
+                Image(systemName: recorder.recording ? "stop.circle.fill" : "record.circle")
+                    #if os(macOS)
+                    .foregroundStyle(recorder.recording ? Color.black : JarasTheme.liveOffRed)
+                    #endif
+            }
+        }.buttonStyle(RecordingButtonStyle(active: recorder.recording, width: width,
+            height: TransportControlMetrics.playbackHeight, fontSize: TransportControlMetrics.font, cornerRadius: 6,
+            transport: true, idleTransportBackground: idleBackground, idleTransportForeground: idleForeground))
             .disabled(recorder.busy).jarasHelp("Record armed tracks").accessibilityLabel("Record")
     }
 }

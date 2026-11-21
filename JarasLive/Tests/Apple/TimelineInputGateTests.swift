@@ -210,6 +210,37 @@ for tinyDelta: CGFloat in [0.1, 0.2, -0.1, -0.2] {
 }
 print("FRACTIONAL_ZOOM_FIRST_RESPONSE_AND_REVERSALS_OK")
 
+do {
+    final class MagnifyInputEvent: NSEvent {
+        weak var target: NSWindow?
+        var delta: CGFloat = 0.1
+        var gesturePhase: NSEvent.Phase = .began
+        override var type: NSEvent.EventType { .magnify }
+        override var window: NSWindow? { target }
+        override var locationInWindow: NSPoint { NSPoint(x: 100, y: 100) }
+        override var magnification: CGFloat { delta }
+        override var phase: NSEvent.Phase { gesturePhase }
+    }
+    let pinch = MagnifyInputEvent()
+    pinch.target = window
+    resetZoomInput()
+    pinch.delta = 0
+    precondition(wheel.handleMagnifyEvent(pinch) && zoomValues.isEmpty)
+    pinch.gesturePhase = .changed
+    pinch.delta = 0.05
+    precondition(wheel.handleMagnifyEvent(pinch) && zoomValues.count == 1 && zoomValues[0] > 1,
+                 "pinching out starts horizontal zoom on the first movement")
+    resetZoomInput()
+    pinch.gesturePhase = .began
+    pinch.delta = -0.05
+    precondition(wheel.handleMagnifyEvent(pinch) && zoomValues.count == 1 && zoomValues[0] < 1,
+                 "pinching in reduces the timeline scale")
+    gate.setBlocked(true, for: window)
+    precondition(!wheel.handleMagnifyEvent(pinch), "a modal blocks pinch along with other grid gestures")
+    gate.setBlocked(false, for: window)
+}
+print("TIMELINE_PINCH_ZOOM_OK")
+
 // A phase-ended gesture need not have a momentum tail. A later zero-delta
 // begin must not inherit its axis and swallow the next gesture's movement.
 resetZoomInput()

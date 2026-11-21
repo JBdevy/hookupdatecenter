@@ -427,11 +427,11 @@ struct IpadNativeVideoButton: View {
     var body: some View {
         Button { video.toggle() } label: {
             HStack(spacing: 3) {
-                Image(systemName: "video")
-                Text("Video").textCase(.uppercase).font(.jarasSystem(size: 10, weight: .heavy))
+                DesktopToolbarSymbol(name: "video").frame(width: 14, height: 14)
+                Text("Video").font(.jarasSystem(size: 11, weight: .semibold))
             }.lineLimit(1)
-                .frame(width: 62, height: 32).foregroundStyle(Color.black)
-                .background(visible ? JarasTheme.green : JarasTheme.liveOffRed, in: RoundedRectangle(cornerRadius: 5))
+                .frame(width: 62, height: 32).foregroundStyle(JarasTheme.toolbarTint(active: visible))
+                .background { RemoteSurface.panel.clipShape(RoundedRectangle(cornerRadius: 5)) }
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Video")
             .accessibilityValue(visible ? "On" : "Off")

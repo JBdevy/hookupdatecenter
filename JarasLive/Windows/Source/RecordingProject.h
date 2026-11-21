@@ -8,7 +8,7 @@ inline jaras::Project makeRecordingProject(String name, int channels) {
     project.id = uuid();
     project.name = utf8(name.trim());
     project.createdAt = project.updatedAt = utf8(Time::getCurrentTime().toISO8601(true));
-    project.masterColor = 0x414141;
+    project.masterColor = jaras::Project::defaultMasterColor;
     jaras::Song song;
     song.id = uuid(); song.name = project.name; song.duration = 300; song.bpm = 120;
     song.timeSettings = jaras::ProjectTimeSettings{};

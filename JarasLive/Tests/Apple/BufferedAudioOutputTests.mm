@@ -46,6 +46,29 @@ int main() {
             consume(blocks[step%8]);
         }
         assert(state.underruns.load()==0);
+        // Enter live monitoring with queued playback still audible. After draining it,
+        // a live note must affect the very next device slice, including after a buffer
+        // change or rate conversion. The PCM at the handoff must remain continuous.
+        state.setLiveMonitoring(true);
+        state.setPlaybackSourceCount(610);
+        const auto originalQueue=state.writeFrame.load();
+        for(unsigned cycle=0;cycle<300;++cycle) {
+            const unsigned requests[]={512,32,128,480,137,256,50,1024};
+            const auto frames=requests[cycle%8];
+            const auto first=state.readFrame.load();
+            AudioTimeStamp callback{}; callback.mFlags=kAudioTimeStampHostTimeValid;
+            callback.mHostTime=[AVAudioTime hostTimeForSeconds:10+double(first)/48000];
+            state.renderHardwareSlice(&callback,frames,engine,render,pcm);
+            assert(state.writeFrame.load()==std::max(originalQueue,first+frames));
+            consume(frames);
+        }
+        assert(state.underruns==0 && state.writeFrame.load()==state.readFrame.load());
+        state.setLiveMonitoring(false);
+        state.setPlaybackSourceCount(120);
+        while(state.writeFrame.load()-state.readFrame.load()<state.targetFrames()) prepare();
+        consume(512);
+        assert(state.underruns==0);
+        std::cout << "LIVE_INSTRUMENT_REAL_DEVICE_BUFFER_AND_CONTINUOUS_HANDOFF_OK\n";
         // Advance hardware through a stalled producer. Missing PCM is silent;
         // catching up must resume the original time instead of accumulating lag.
         while(state.readFrame.load()<state.writeFrame.load())

@@ -42,8 +42,10 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const ItemLanes connected(chain);
         require(connected.placement("a").count==2 && connected.placement("b").count==2 &&
                 connected.placement("c").count==2 && connected.placement("c").lane==0 &&
-                connected.placement("touch").count==1,"Overlap chains or nanosecond adjacency tolerance differ from Mac");
-        chain.clips={clip("a",0,2),clip("b",2-2e-9,1)};
+                connected.placement("touch").count==1,"Overlap chains or adjacency tolerance differ from Mac");
+        chain.clips={clip("a",0,2),clip("b",2-.5/44100.,1)};
+        require(ItemLanes(chain).placement("b").count==1,"Half-sample import rounding must not stack adjacent items");
+        chain.clips={clip("a",0,2),clip("b",2-.001,1)};
         require(ItemLanes(chain).placement("b").count==2,"A real overlap beyond tolerance was treated as adjacency");
     });
     test("Recorded takes keep their order and active recording retains the existing global lane geometry", [] {
@@ -68,7 +70,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
         Auth auth;Lighting lighting(session);
         Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("item-local-geometry",".json"));
-        workspace.setSize(1366,768);timelineVisualParityTests::fit(workspace);
+        workspace.setSize(1366,768);timelineVisualParityTests::zoomInForInspection(workspace);
         auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");
         auto *row=uiFeatureTests::find(workspace,"trackRow:local-lanes");
         require(canvas && canvas->getParentComponent() && row,"Local item geometry fixture is unavailable");

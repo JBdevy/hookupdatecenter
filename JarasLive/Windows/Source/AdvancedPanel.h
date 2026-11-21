@@ -24,7 +24,7 @@ class AdvancedPanel final : public Component, private Timer {
     Session &session;
     std::function<void(String)> error;
     OwnedArray<TextButton> tabs;
-    TextButton close{localization::translate("Cancelar")}, apply{localization::translate("Aplicar")};
+    TextButton apply{localization::translate("Aplicar")};
     Viewport viewport;
     Component page;
     OwnedArray<Component> fields;

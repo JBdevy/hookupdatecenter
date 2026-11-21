@@ -10,7 +10,7 @@ inline float block(Instrument& instrument, const MidiBuffer& midi = {}) {
     instrument.render(audio, midi, 512);
     return audio.getMagnitude(0, 512);
 }
-inline void loadTestBank(Instrument& instrument) {
+inline void writeTestBank(const File &file) {
     // An explicit, generated SF2 fixture keeps the sustain/retrigger checks
     // independent of the removed automatic piano and of downloaded banks.
     const auto chunk=[](MemoryOutputStream& out,const char* id,const MemoryOutputStream& data) {
@@ -42,8 +42,11 @@ inline void loadTestBank(Instrument& instrument) {
     chunk(pdta,"pgen",pgen);chunk(pdta,"inst",inst);chunk(pdta,"ibag",ibag);chunk(pdta,"imod",imod);
     chunk(pdta,"igen",igen);chunk(pdta,"shdr",shdr);
     MemoryOutputStream body,bank;body.write("sfbk",4);chunk(body,"LIST",sdta);chunk(body,"LIST",pdta);chunk(bank,"RIFF",body);
+    require(file.replaceWithData(bank.getData(),bank.getDataSize()),"Cannot write explicit instrument fixture");
+}
+inline void loadTestBank(Instrument& instrument) {
     TemporaryFile file(".sf2");
-    require(file.getFile().replaceWithData(bank.getData(),bank.getDataSize()),"Cannot write explicit instrument fixture");
+    writeTestBank(file.getFile());
     instrument.prepare(48000);instrument.loadSoundFont(file.getFile());
 }
 inline void idleAndRetrigger() {
@@ -100,5 +103,22 @@ template <typename Register>
 void registerTests(Register&& test) {
     test("Idle instrument preserves the mix and restarts with identical PCM", [] { idleAndRetrigger(); });
     test("Instrument idle optimization preserves sustain and release tails", [] { sustainAndRelease(); });
+    test("Library SoundFont previews render C major seventh and release within two seconds", [] {
+        TemporaryFile file(".sf2");
+        writeTestBank(file.getFile());
+        const auto pcm = Instrument::renderLibraryPreview(file.getFile());
+        require(pcm.getNumChannels() == 2 && pcm.getNumSamples() == 96000, "Unexpected preview format");
+        for (const auto note : {60, 64, 67, 71}) {
+            const double step = MathConstants<double>::twoPi / 512 * std::exp2((note - 60) / 12.);
+            double real = 0, imaginary = 0;
+            for (int frame = 8000; frame < 24000; ++frame) {
+                const auto sample = pcm.getSample(0, frame);
+                real += sample * std::cos(step * frame);
+                imaginary += sample * std::sin(step * frame);
+            }
+            require(std::hypot(real, imaginary) / 8000 > .003, "C major seventh preview is missing a chord tone");
+        }
+        require(pcm.getMagnitude(94000, 2000) < .001f, "Preview audio did not finish its release");
+    });
 }
 } // namespace catlive::instrumentRenderTests

@@ -132,7 +132,7 @@ struct InstrumentRenderer {
             if(active) tsf_voice_lowpass_setup(&filter,std::min(frequency/font->outSampleRate,.45f));
         }
     }
-    void render(AudioBufferList *output, unsigned frames, const AudioTimeStamp* time = nullptr) {
+    void render(AudioBufferList *output, unsigned frames, const AudioTimeStamp* time = nullptr, unsigned outputOffset = 0) {
         jaras::ScopedAudioDenormals denormals;
         if(time) sequence.render(catMIDIClock(time,font->outSampleRate),font->outSampleRate,frames);
         else sequence.count=0;
@@ -192,12 +192,13 @@ struct InstrumentRenderer {
                 smoothGain+=(targetGain-smoothGain)*.005f; smoothPan+=(targetPan-smoothPan)*.005f;
                 const float left=buffer[i*2]*smoothGain*(smoothPan>0?1-smoothPan:1);
                 const float right=buffer[i*2+1]*smoothGain*(smoothPan<0?1+smoothPan:1);
+                const unsigned frame=outputOffset+offset+i;
                 if(output->mNumberBuffers>=2) {
-                    ((float*)output->mBuffers[0].mData)[offset+i]=left;
-                    ((float*)output->mBuffers[1].mData)[offset+i]=right;
+                    ((float*)output->mBuffers[0].mData)[frame]=left;
+                    ((float*)output->mBuffers[1].mData)[frame]=right;
                 } else if(output->mNumberBuffers==1 && output->mBuffers[0].mNumberChannels==2) {
-                    ((float*)output->mBuffers[0].mData)[(offset+i)*2]=left;
-                    ((float*)output->mBuffers[0].mData)[(offset+i)*2+1]=right;
+                    ((float*)output->mBuffers[0].mData)[frame*2]=left;
+                    ((float*)output->mBuffers[0].mData)[frame*2+1]=right;
                 }
             }
             offset+=count;
@@ -229,6 +230,26 @@ struct InstrumentRenderer {
         }];
     }
     return self;
+}
++ (AVAudioPCMBuffer *)libraryPreviewAtURL:(NSURL *)url error:(NSError **)error {
+    constexpr unsigned rate = 48000, heldFrames = rate * 6 / 5, frames = rate * 2;
+    // The CatLive Keyboard labels MIDI note 60 as C3.
+    constexpr std::array<uint8_t, 4> chord{60, 64, 67, 71};
+    JarasSoundFont *sampler = [[JarasSoundFont alloc] initWithURL:url sampleRate:rate error:error];
+    if (!sampler) return nil;
+    AVAudioFormat *format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:rate channels:2];
+    AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:frames];
+    if (!buffer) {
+        if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadUnknownError userInfo:nil];
+        return nil;
+    }
+    buffer.frameLength = frames;
+    [sampler setGain:-12 pan:0];
+    for (const auto note : chord) [sampler sendStatus:0x90 data1:note data2:90];
+    sampler->_renderer->render(buffer.mutableAudioBufferList, heldFrames);
+    for (const auto note : chord) [sampler sendStatus:0x80 data1:note data2:0];
+    sampler->_renderer->render(buffer.mutableAudioBufferList, frames - heldFrames, nullptr, heldFrames);
+    return buffer;
 }
 - (AVAudioSourceNode*)node { return _node; }
 - (void)setSequenceNotes:(NSArray<NSDictionary *> *)notes { _renderer->sequence.setNotes(catMIDINotes(notes)); }

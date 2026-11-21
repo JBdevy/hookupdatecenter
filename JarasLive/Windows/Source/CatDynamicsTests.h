@@ -78,6 +78,30 @@ void run(Test test, Require require, const File &directory) {
             for(int n=0;n<4096;++n)require(std::abs(input.getSample(1,n)-input.getSample(0,n)*.3f)<1.e-6f,"Gate changed linked stereo balance");
         }
     });
+    test("Threshold meters read each insert and Reduce excludes makeup gain", [&] {
+        auto fx = object(); fxui::defaults(fx);
+        put(fx, "inserted", Array<var>{"Cat Gate", "Compressor"});
+        put(fx, "gateEnabled", true); put(fx, "compressorEnabled", true);
+        auto gate = get(fx, "gate"); put(gate, "threshold", 0);
+        NativeFX chain; chain.prepare(fx, 48000);
+        AudioBuffer<float> block(2, 1024);
+        auto fill = [&] {
+            for (int i=0; i<1024; ++i) {
+                block.setSample(0,i,.25f); block.setSample(1,i,.125f);
+            }
+        };
+        fill(); chain.process(block,1024);
+        const auto in = chain.takeDynamicsLevels("Cat Gate"), after = chain.takeDynamicsLevels("Compressor");
+        require(std::abs(in[0]-.25f)<.0001f && std::abs(in[1]-.125f)<.0001f, "Gate input meter lost stereo peaks");
+        require(after[0]<.0001f && after[2]<.0001f, "Compressor metered the track input instead of the gate output");
+        put(fx, "inserted", Array<var>{"Compressor"}); put(fx, "ratio", 8.);
+        put(fx, "threshold", -32.); put(fx, "attack", .0001); put(fx, "makeup", 12.);
+        chain.prepare(fx,48000); fill(); chain.process(block,1024);
+        const float withMakeup = chain.takeDynamicsLevels("Compressor")[2];
+        put(fx, "makeup", 0.); chain.prepare(fx,48000); fill(); chain.process(block,1024);
+        const float dryMakeup = chain.takeDynamicsLevels("Compressor")[2];
+        require(dryMakeup>1.f && std::abs(dryMakeup-withMakeup)<.02f, "Reduce must measure compression before output gain");
+    });
     test("Dynamics parameter previews reach post-FX recording before release", [&] {
         const auto folder=directory.getChildFile("trigger-audio");
         for(const String kind:{"CatLive Trigger","Cat Gate"}) {
@@ -121,6 +145,9 @@ void run(Test test, Require require, const File &directory) {
             Slider *slider=nullptr;
             for(auto *child:editor.getChildren()) if(auto *knob=dynamic_cast<fxui::Knob*>(child))
                 if(knob->slider.getComponentID()==(kind=="Cat Gate"?"gate_threshold":"trigger_threshold"))slider=&knob->slider;
+            if (kind == "Cat Gate") for (auto *child : editor.getChildren())
+                if (auto *meter = dynamic_cast<fxui::DynamicsThresholdMeter*>(child))
+                    slider = dynamic_cast<Slider*>(meter->findChildWithID("gate_threshold"));
             require(slider!=nullptr,"Missing dynamics threshold control");slider->setValue(-25,sendNotificationSync);
             require(commits==1&&num(get(values,kind=="Cat Gate"?"gate":"trigger"),"threshold")==-25,"Dynamics editor did not persist its own parameter");
             auto image=editor.createComponentSnapshot(editor.getLocalBounds());auto output=directory.getChildFile(kind=="Cat Gate"?"cat-gate.png":"catlive-trigger.png").createOutputStream();

@@ -18,11 +18,18 @@ int main() {
     require(meter.update({0,0}), "Last decay frame must clear the bars");
     require(!meter.update({0,0}), "Settled decay kept repainting");
     require(meter.update({1,1}), "Full-scale input did not paint");
-    require(!meter.update({2,4}), "Above-scale input changed saturated bars");
+    require(meter.update({2,4}), "Positive peaks must rise past the 0 dB mark");
+    require(meter.update({4,5}) && !meter.update({5,6}), "Only levels above +12 dB saturate the rail");
+    for (float db : {-60.f, -24.f, -12.f, -6.f, 0.f, .1f, 6.f, 12.f}) {
+        const float gain = std::pow(10.f, db / 20.f);
+        require(std::abs(fraction(gain) - (db + 60.f) / 72.f) < .00001f, "Meter misses its scale mark");
+    }
     meter.invalidate();
     require(meter.update({2,4}), "Resized meter failed to repaint");
     require(fraction(std::numeric_limits<float>::quiet_NaN())==0 &&
             fraction(std::numeric_limits<float>::infinity())==0 && fraction(-1)==0,
             "Invalid meter sample must be silent");
+    require(meter.update({.5f, .2f}) && meter.update({.2f, .5f}),
+            "Swapping channels at the same peak must update the compact stereo rail");
     std::cout << "PASS: idle, live input, stereo, decay, saturation and resize\n";
 }

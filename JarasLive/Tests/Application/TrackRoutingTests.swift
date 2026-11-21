@@ -29,6 +29,27 @@ import XCTest
     func applyProjectEdit(_ p: Project) throws { try p.validate(); project = p; fullEdits += 1 }
 }
 final class TrackRoutingTests: XCTestCase {
+    @MainActor func testMainSendsPreserveDestinationOrderAndReplaceAtomically() throws {
+        var project = Project.empty(name: "Main sends")
+        let tracks = (0..<3).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.setMainSend(from: nil, to: tracks[2].id)
+        show.setMainSend(from: nil, to: tracks[0].id)
+        show.setMainSend(from: nil, to: tracks[2].id)
+        XCTAssertEqual(executor.writes, 2)
+        XCTAssertEqual(show.current?.tracks.map { $0.routing?.mainSendOrder }, [1, nil, 0])
+        show.setMainSend(from: tracks[2].id, to: tracks[1].id)
+        XCTAssertEqual(executor.writes, 3)
+        let restored = try JSONDecoder().decode(Project.self, from: JSONEncoder().encode(show.snapshot.project))
+        XCTAssertEqual(restored.songs[0].tracks.map { $0.routing?.mainSendOrder }, [1, 0, nil])
+        XCTAssertEqual(restored.songs[0].tracks.map(\.receivesMain), [true, true, false])
+        XCTAssertEqual(restored.songs[0].tracks[1].inputMonitoring, false)
+        show.setMainSend(from: tracks[1].id, to: nil)
+        XCTAssertEqual(show.current?.tracks.map(\.receivesMain), [true, false, false])
+    }
+
     @MainActor func testCreateGroupUsesOnlySelectionAndClickedParent() throws {
         var project = Project.empty(name: "Selected group")
         let tracks = (0..<6).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
@@ -60,6 +81,26 @@ final class TrackRoutingTests: XCTestCase {
         show.removeTrackRoute([tracks[1].id], receive: true, slot: 0)
         XCTAssertTrue(show.current?.tracks[2].routing?.transmitters.compactMap { $0 }.isEmpty == true)
         XCTAssertEqual(show.current?.trackConnections.count, 0)
+    }
+
+    @MainActor func testSendTapsPersistPerDestinationAndResetAfterRemoval() throws {
+        var project = Project.empty(name: "Send taps")
+        let tracks = (0..<3).map { Track(id: UUID(), name: "Route \($0)", role: .other) }
+        project.songs[0].tracks = tracks
+        let show = try ShowController(executor: RoutingExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let source = tracks[0].id, first = tracks[1].id, second = tracks[2].id
+        show.setTrackRouting([source], receive: false, slot: 0, other: first)
+        show.setTrackRouting([source], receive: false, slot: 1, other: second)
+        show.setTrackSendTap(source, destination: first, tap: .preFX)
+        show.setTrackSendTap(source, destination: second, tap: .preFader)
+        let data = try JSONEncoder().encode(show.snapshot.project)
+        let reopened = try JSONDecoder().decode(Project.self, from: data)
+        XCTAssertEqual(reopened.songs[0].tracks[0].routing?.sendTap(to: first), .preFX)
+        XCTAssertEqual(reopened.songs[0].tracks[0].routing?.sendTap(to: second), .preFader)
+        show.setTrackRouting([source], receive: false, slot: 0, other: nil)
+        show.setTrackRouting([source], receive: false, slot: 0, other: first)
+        XCTAssertEqual(show.current?.tracks[0].routing?.sendTap(to: first), .postFader)
+        XCTAssertEqual(show.current?.tracks[0].routing?.sendTap(to: second), .preFader)
     }
 
     @MainActor func testDisableRecordingInputAndRestoreLinkedPair() throws {
@@ -519,6 +560,34 @@ final class TrackRoutingTests: XCTestCase {
 }
 
 extension TrackRoutingTests {
+    @MainActor func testMatrixStrokePublishesOneFinalAudioGraphAndRejectsFeedbackAtomically() throws {
+        let rows = (0..<4).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+        var project = Project.empty(name: "Matrix stroke")
+        project.songs[0].tracks = rows
+        let executor = RoutingExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        let physical = OutputPatch(firstChannel: 3, channelCount: 2)
+        let stroke: [(source: UUID?, destination: MatrixPatchDestination)] = [
+            (rows[0].id, .track(rows[1].id)), (rows[0].id, .track(rows[1].id)),
+            (rows[1].id, .track(rows[2].id)), (rows[0].id, .output(physical)), (nil, .output(physical))
+        ]
+        var calls = 0
+        show.audioMatrixPatch = { routes, outputs, master in
+            calls += 1
+            XCTAssertEqual(routes[rows[0].id]?.transmitters, [rows[1].id])
+            XCTAssertEqual(routes[rows[1].id]?.transmitters, [rows[2].id])
+            XCTAssertTrue(outputs[rows[0].id]?.contains(physical) == true)
+            XCTAssertTrue(master?.contains(physical) == true)
+        }
+        show.applyMatrixPatch(stroke, enabled: true)
+        let installed = show.snapshot.project
+        show.applyMatrixPatch(stroke, enabled: true)
+        show.applyMatrixPatch([(rows[2].id, .track(rows[3].id)), (rows[3].id, .track(rows[0].id))], enabled: true)
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(executor.fullEdits, 1)
+        XCTAssertEqual(show.snapshot.project, installed)
+    }
+
     @MainActor func testMatrixRemovesReceiveAndSendTogetherAndUndoRestoresBoth() throws {
         var project = Project.empty(name: "Matrix")
         var a = Track(id: UUID(), name: "A", role: .other)

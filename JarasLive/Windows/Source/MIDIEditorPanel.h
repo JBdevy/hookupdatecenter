@@ -356,6 +356,19 @@ class MIDIEditorPanel final : public Component, private Timer {
             yOffset = vertical.getCurrentRangeStart();
             repaint();
         }
+        static const auto &velocityLabels() {
+            static const auto labels = [] {
+                std::array<std::pair<String, float>, 128> values;
+                const auto font = theme::font(10);
+                for (int velocity = 0; velocity < int(values.size()); ++velocity) {
+                    const String text(velocity);
+                    values[size_t(velocity)] = {text, std::ceil(GlyphArrangement::getStringWidth(font, text))};
+                }
+                return values;
+            }();
+            return labels;
+        }
+
         void paint(Graphics &g) override {
             g.fillAll(Colour(0xff242424));
             const auto content = area();
@@ -393,11 +406,11 @@ class MIDIEditorPanel final : public Component, private Timer {
                             g.setColour(Colours::white);
                             g.drawRect(r.reduced(.5f), 1);
                         }
-                        if (r.getWidth() > 30) {
+                        const auto &label = velocityLabels()[size_t(jlimit(0, 127, note.velocity))];
+                        if (r.getWidth() >= label.second + 6.f) {
                             g.setColour(Colours::black);
                             g.setFont(theme::font(10));
-                            g.drawText(String(note.pitch), r.reduced(4, 0),
-                                       Justification::centredLeft);
+                            g.drawText(label.first, r.reduced(3, 0), Justification::centredLeft);
                         }
                     }
                 if (p.clip && p.timing) {

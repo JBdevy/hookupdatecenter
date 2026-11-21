@@ -19,7 +19,10 @@ end = source.index('\n#endif', start)
 scroll = Path('Apple/Shared/GridScrollView.swift').read_text()
 start = scroll.index('struct NativeTimelinePinnedInput:')
 end = scroll.index('final class NativeTimelinePinnedView:', start)
-(folder/'scroll.swift').write_text(scroll[:start] + scroll[end:])
+theme = Path('Apple/Shared/Theme.swift').read_text()
+leadingSpace = next(line for line in theme.splitlines() if 'static let leadingSpace: CGFloat' in line)
+(folder/'scroll.swift').write_text(scroll[:start] + scroll[end:] +
+    '\nenum TimelineAppearanceDefaults {\n' + leadingSpace + '\n}\n')
 (folder/'main.swift').write_text(Path('Tests/Apple/SidebarDividerInteractionTests.swift').read_text())
 PY
 python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"

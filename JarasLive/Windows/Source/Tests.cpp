@@ -6,6 +6,7 @@
 #include "AudioThreadSchedulingTests.h"
 #include "ItemLayout.h"
 #include "TextItemPanel.h"
+#include "LibraryNoteEditor.h"
 #include "native_video_decoder.h"
 #include <array>
 #include <charconv>
@@ -181,25 +182,27 @@ int runTests(const File &directory) {
         }
     };
     smk37FirmwareTests::run(directory,test);
-    test("Temporary project cleanup and live session protection", [&] {
-        const auto root = directory.getNonexistentChildFile("temporary-session", "", false);
+    test("Temporary projects own independent folders and preserve other sessions", [&] {
+        const auto documents = directory.getNonexistentChildFile("temporary-session", "", false);
+        const auto root = documents.getChildFile("catlive-temp");
         root.createDirectory();
-        const auto normal = root.getChildFile("normal/keep.wav");
-        normal.getParentDirectory().createDirectory(); normal.replaceWithText("keep");
-        const auto scratch = root.getChildFile("catlive-temp");
-        scratch.createDirectory(); scratch.getChildFile("crashed.wav").replaceWithText("old");
+        const auto oldMedia = root.getChildFile("crashed.wav");
+        oldMedia.replaceWithText("old");
+        TemporaryProjectSession first(documents);
+        auto firstMedia = first.directory.getChildFile("playing.wav");
+        firstMedia.replaceWithText("live");
         {
-            TemporaryProjectSession lease(root);
-            expect(!scratch.getChildFile("crashed.wav").exists(), "Crash residue remains");
-            auto source = scratch.getChildFile("playing.wav"); source.replaceWithText("live");
-            bool rejected=false;
-            try { TemporaryProjectSession other(root); } catch (...) { rejected=true; }
-            expect(rejected && source.loadFileAsString()=="live", "Second session deleted live media");
-            expect(lease.contains(source) && !lease.contains(normal), "Temporary boundary changed");
+            TemporaryProjectSession second(documents);
+            auto secondMedia = second.directory.getChildFile("other.wav");
+            secondMedia.replaceWithText("other");
+            expect(first.directory != second.directory && !second.contains(firstMedia), "Temporary folders are shared");
+            expect(second.insideTemporaryRoot(firstMedia), "Promotion must keep media outside all temporary folders");
         }
-        expect(scratch.findChildFiles(File::findFilesAndDirectories,false).isEmpty(), "Close left temporary files");
-        expect(normal.loadFileAsString()=="keep", "Cleanup touched a normal project");
-        root.deleteRecursively();
+        expect(firstMedia.loadFileAsString() == "live" && oldMedia.loadFileAsString() == "old",
+               "Closing another session must preserve live and interrupted media");
+        first.clear();
+        expect(!first.directory.exists() && oldMedia.exists(), "Cleanup must remove only the owned folder");
+        documents.deleteRecursively();
     });
     test("SMK37 display navigation and playback", [&] {
         auto wire=SMK37Connection::navigationFrame(1,{"A","B","B","C"},2);
@@ -258,8 +261,13 @@ int runTests(const File &directory) {
         DocumentWindow window("Window placement", Colours::black, 0);
         window.setResizable(true, false);
         fitProjectBrowserWindow(window);
+        const auto home = window.getBounds();
+        window.setBoundsConstrained(home.expanded(100));
+        expect(window.getWidth() == home.getWidth() && window.getHeight() == home.getHeight() &&
+               home.getWidth() <= 600 && home.getHeight() <= 492, "Home must stay compact and fixed");
         showEditorWindow(window);
         const auto editor = window.getBounds();
+        expect(editor.getWidth() > home.getWidth(), "The first project must open at editor size");
         window.setBounds(editor.withPosition(editor.getX() + 17, editor.getY() + 23));
         const auto moved = window.getBounds();
         showEditorWindow(window); // New tab has no remembered editor bounds.
@@ -287,7 +295,7 @@ int runTests(const File &directory) {
         showEditorWindow(window);
         expect(window.isFullScreen(), "New project unmaximized the editor");
         window.setFullScreen(false);
-        fitProjectBrowserWindow(window);
+        showEditorWindow(window);
         checkScale();
         showEditorWindow(window);
         expect(window.getWidth() > 600, "Browser failed to expand for first project");
@@ -1290,6 +1298,124 @@ int runTests(const File &directory) {
         const auto saved=std::find_if(savedTracks.begin(),savedTracks.end(),[&](const auto &value){return value.id==track.id;});
         expect(saved!=savedTracks.end() && text(*saved->clips.front().text)==encoded,"Project save lost selected word colors");
     });
+    test("Library annotations accept emoji from the Windows keyboard", [&] {
+        String saved;
+        TextItemPanel panel("Piano ", [&](String text) { saved = std::move(text); }, true, false, true);
+        TextEditor *editor = nullptr;
+        for (auto *child : panel.getChildren())
+            if (auto *field = dynamic_cast<TextEditor *>(child)) editor = field;
+        expect(editor != nullptr, "Annotation field is missing");
+        expect(editor->keyPressed(KeyPress(0xd83c, {}, 0xd83c)), "The emoji's first UTF-16 unit was not handled");
+        expect(editor->getText() == "Piano ", "An incomplete emoji appeared in the annotation");
+        expect(editor->keyPressed(KeyPress(0xdfb9, {}, 0xdfb9)), "The emoji's second UTF-16 unit was not handled");
+        floatingControlTests::pump();
+        const auto expected = "Piano " + String::charToString(0x1f3b9);
+        expect(editor->getText() == expected && ItemTextColors::plain(saved) == expected,
+               "The inserted emoji did not survive saving the annotation");
+    });
+    test("Library Notes render Unicode and edit at the displayed caret", [&] {
+        Component window;
+        window.setSize(560, 250);
+        window.addToDesktop(ComponentPeer::windowIsTemporary);
+        window.setVisible(true);
+        const auto piano = String::charToString(0x1f3b9);
+        String saved;
+        LibraryNoteEditor panel(ItemTextColors::encode({{"Piano ", {}}, {piano, 0xff4040}, {" final", {}}}),
+            [&](String text) { saved = std::move(text); });
+        window.addAndMakeVisible(panel);
+        panel.setBounds(5, 5, 520, 220);
+        floatingControlTests::pump();
+        const auto editor = panel.nativeEditor();
+        expect(editor != nullptr, "The Windows Notes field did not attach its native editor");
+
+        const auto pointAt = [&](LONG position) {
+            POINTL point{};
+            SendMessageW(editor, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&point), position);
+            return point;
+        };
+        CHARFORMAT2W noteFont{};
+        noteFont.cbSize = sizeof(noteFont);
+        SendMessageW(editor, EM_GETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&noteFont));
+        expect(String(noteFont.szFaceName) == "Inter", "Stored notes must use the bundled Inter font");
+        const auto emojiStart = pointAt(6);
+        const auto emojiEnd = pointAt(8);
+        expect(emojiEnd.x > emojiStart.x && emojiEnd.y == emojiStart.y,
+               "The piano emoji did not occupy one inline glyph area");
+        const auto beforeWord = pointAt(9);
+        const auto click = MAKELPARAM(beforeWord.x, beforeWord.y + 3);
+        SendMessageW(editor, WM_LBUTTONDOWN, MK_LBUTTON, click);
+        SendMessageW(editor, WM_LBUTTONUP, 0, click);
+        CHARRANGE selection{};
+        SendMessageW(editor, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+        expect(selection.cpMin == 9 && selection.cpMax == 9, "The click after the emoji placed the caret at a different character");
+        SendMessageW(editor, WM_CHAR, 'X', 1);
+        expect(ItemTextColors::plain(saved) == "Piano " + piano + " Xfinal", "Keyboard input did not land at the clicked caret");
+        const auto runs = ItemTextColors::runs(saved);
+        expect(runs.size() == 3 && runs[1].text == piano && runs[1].color == 0xff4040, "Editing lost the note's existing color run");
+        SendMessageW(editor, WM_CHAR, 0xd83c, 1);
+        SendMessageW(editor, WM_CHAR, 0xdfb9, 1);
+        expect(ItemTextColors::plain(saved) == "Piano " + piano + " X" + piano + "final", "The Notes field saved split Unicode characters");
+
+        // Inspect pixels from the actual editor. Glyph advance and text
+        // round trips also pass with the old monochrome RichEdit renderer.
+        const auto sample = String::fromUTF8("😃 ❤️ 👩🏽‍🎤");
+        SendMessageW(editor, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(sample.toWideCharPointer()));
+        RECT bounds{};
+        GetClientRect(editor, &bounds);
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = bounds.right;
+        info.bmiHeader.biHeight = -bounds.bottom;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        void *pixels = nullptr;
+        const auto dc = CreateCompatibleDC(nullptr);
+        const auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+        int yellowPixels = 0, redPixels = 0;
+        int keycapPixels = 0, caretPixels = 0;
+        if (dc && bitmap && pixels) {
+            const auto previous = SelectObject(dc, bitmap);
+            SendMessageW(editor, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+            const auto image = static_cast<const uint32 *>(pixels);
+            for (int i = 0; i < bounds.right * bounds.bottom; ++i) {
+                const auto color = image[i];
+                const int r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255;
+                if (r > 165 && g > 120 && b < 85 && g > b + 70) ++yellowPixels;
+                if (r > 165 && g < 110 && b < 120 && r > g + 90) ++redPixels;
+            }
+            const auto numbers = String::fromUTF8("1️⃣ 2️⃣ #️⃣ *️⃣");
+            SendMessageW(editor, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(numbers.toWideCharPointer()));
+            SendMessageW(editor, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+            for (int i = 0; i < bounds.right * bounds.bottom; ++i)
+                if ((image[i] & 0xffffff) == 0x3b88c3) ++keycapPixels;
+            SendMessageW(editor, EM_SETSEL, -1, -1);
+            for (const auto letter : std::wstring(L"abc")) {
+                SendMessageW(editor, WM_CHAR, letter, 1);
+                SendMessageW(editor, WM_TIMER, NoteTextServices::caretTimer, 0);
+                SendMessageW(editor, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+                GdiFlush();
+                int visibleKeycaps = 0;
+                for (int i = 0; i < bounds.right * bounds.bottom; ++i)
+                    if ((image[i] & 0xffffff) == 0x3b88c3) ++visibleKeycaps;
+                expect(visibleKeycaps > 30 && ItemTextColors::plain(saved).startsWith(numbers),
+                       "Typing after a number must retain its emoji and colored pixels across caret repaints");
+            }
+            SendMessageW(editor, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L""));
+            SetFocus(editor);
+            SendMessageW(editor, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(25, 16));
+            SendMessageW(editor, WM_LBUTTONUP, 0, MAKELPARAM(25, 16));
+            SendMessageW(editor, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+            for (int i = 0; i < bounds.right * bounds.bottom; ++i)
+                if ((image[i] & 0xffffff) == (theme::green.getARGB() & 0xffffff)) ++caretPixels;
+            SelectObject(dc, previous);
+        }
+        if (bitmap) DeleteObject(bitmap);
+        if (dc) DeleteDC(dc);
+        expect(yellowPixels > 8 && redPixels > 8, "The Notes editor did not draw color emoji");
+        expect(keycapPixels > 30, "The Notes editor did not render the numbered Twemoji glyphs");
+        expect(caretPixels > 5, "New notes must paint the insertion caret in CatLive green");
+    });
     test("Item text columns edit independently and confirm removal before returning to Default", [&] {
         Component host;host.setBounds(0,0,800,500);
         String committed;
@@ -1574,6 +1700,27 @@ int runTests(const File &directory) {
         expect(busy && document.existsAsFile(),"A locked file must report failure and retain the project document for retry");
         plan.remove();expect(!root.exists() && outside.loadFileAsString()=="keep","Whole-folder deletion left residue or removed an external file");
     });
+    test("Mixer session bypass preserves independent Main and strip overrides", [&] {
+        auto p = projectFixture();
+        auto track = p.songs[0].tracks.front();
+        track.id = uuid(); track.clips.clear(); p.songs[0].tracks.push_back(track);
+        const auto fx = fxschema::complete(JSON::parse(R"({"inserted":["EQ","Delay"],"eqEnabled":true,"delayEnabled":false})"));
+        for (auto &t : p.songs[0].tracks) t.fxJSON = utf8(JSON::toString(fx));
+        p.masterFXJSON = utf8(JSON::toString(fx));
+        Session s; s.inspection=true; s.restoreSnapshot(ProjectCodec::encode(p));
+        const auto id=p.songs[0].tracks.front().id;
+        fxchain::toggleStripBypass(s,{},true);
+        for (const auto &t : p.songs[0].tracks)
+            expect(fxchain::stripBypassed(fxchain::settings(s,t.id)), "Session missed a strip");
+        fxchain::toggleStripBypass(s,{},false); fxchain::toggleStripBypass(s,id,false);
+        expect(flag(fxchain::settings(s,{}),"sessionFXBypassed") && fxchain::enabled(fxchain::settings(s,{}),"EQ"),
+               "Main must be independently releasable while session is on");
+        expect(fxchain::enabled(fxchain::settings(s,id),"EQ") && fxchain::allBypassed(fxchain::settings(s,track.id)),
+               "Releasing a track affected other strips");
+        fxchain::toggleStripBypass(s,{},true);
+        expect(fxchain::enabled(fxchain::settings(s,track.id),"EQ") && !fxchain::enabled(fxchain::settings(s,track.id),"Delay"),
+               "Session restore destroyed individual plugin bypass state");
+    });
     test("Batch FX bypass and deletion undo every selected chain with exact plugin state", [&] {
         auto p = projectFixture();
         auto other = p.songs[0].tracks[0]; other.id = uuid(); other.clips.clear(); p.songs[0].tracks.push_back(other);
@@ -1811,7 +1958,9 @@ int runTests(const File &directory) {
         jaras::Track track; track.role.id="other";
         jaras::AudioClip clip;clip.id="clip";clip.duration=10;clip.fadeIn=2;clip.fadeOut=3;
         ItemHeader header({-80,100,400,60},600,track,clip);
-        expect(header.gainRect.getX()==2.6f && header.gainLabel.isEmpty() && header.panLabel.isEmpty(),"Item value readouts should use transient tooltips, not permanent labels");
+        expect(std::abs(header.gainRect.getX() - 2 * ItemHeader::headerScale) < .001f &&
+               header.gainLabel.isEmpty() && header.panLabel.isEmpty(),
+               "Item value readouts should use transient tooltips, not permanent labels");
         expect(header.phaseRect.isEmpty(),"Phase inversion should not be shown in the item strip");
         const std::vector<std::pair<ItemHeader::Control,juce::Rectangle<float>>> controls{
             {ItemHeader::mute,header.muteRect},{ItemHeader::fx,header.fxRect},
@@ -1964,13 +2113,15 @@ int runTests(const File &directory) {
         }
         expect(parent.calls==4,"Wheel reaches parent exactly once");
     });
-    test("Meter bars use a short smooth fall without hold and keep instant attack", [&] {
+    test("Meter bars use a slow even fall without hold and keep instant attack", [&] {
         for(int block:{64,128,480,1024}) {
             float level=1;const double elapsed=double(block)/48000;const int count=(int)(.1/elapsed);
             for(int i=0;i<count;++i)level=meterDisplay::envelope(level,0,elapsed);
-            expect(std::abs(20*std::log10(level)+120*count*elapsed)<.001,"Fall must follow elapsed audio time, not callback count");
+            expect(std::abs(20*std::log10(level)+40*count*elapsed)<.001,"Fall must follow elapsed audio time, not callback count");
             for(int i=0;i<(int)(.5/elapsed);++i)level=meterDisplay::envelope(level,0,elapsed);
-            expect(level==0,"Silence clears short tail within 600 ms");
+            expect(level>0,"The meter should still be falling after 600 ms");
+            for(int i=0;i<(int)(.95/elapsed);++i)level=meterDisplay::envelope(level,0,elapsed);
+            expect(level==0,"The meter clears by 1.55 seconds");
         }
         expect(meterDisplay::envelope(0,.8f,.01)==.8f,"Immediate attack");
         expect(meterDisplay::envelope(.001f,0,.1)==0,"Silence threshold");
@@ -2340,6 +2491,22 @@ int runTests(const File &directory) {
                 expect(image.getPixelAt(left+x,y)==image.getPixelAt(right+x,y),"Equal stereo levels must have identical pixels and hue");
         }
     });
+    test("Stereo fader rail stays yellow at zero and clips only above zero dB", [&] {
+        Image image(Image::ARGB, 200, 14, true, SoftwareImageType());
+        {
+            Graphics graphics(image);
+            meterDisplay::rail(graphics, image.getBounds().toFloat(), {1.f, std::pow(10.f, .1f / 20.f)}, false);
+        }
+        const auto yellow = image.getPixelAt(189, 3);
+        const auto red = image.getPixelAt(189, 10);
+        expect(yellow.getRed() > 200 && yellow.getGreen() > 150,
+               "Zero dBFS must stay yellow: " + yellow.toDisplayString(true));
+        expect(red.getRed() > 200 && red.getGreen() < 115,
+               "+0.1 dBFS must show a red tip for the matching channel: " + red.toDisplayString(true));
+        const auto earlyYellow = image.getPixelAt(144, 3);
+        expect(earlyYellow.getRed() > 200 && earlyYellow.getGreen() > 150,
+               "The meter must already be fully yellow by -17 dBFS");
+    });
     test("Special track rows expose role-specific controls without audio FX and recording", [&] {
         auto project=projectFixture();auto &song=project.songs.front();song.tracks.clear();
         for(const auto &role:{"generatedClick","timecode","video","teleprompt","teleprompt2","chords"}) {
@@ -2356,7 +2523,7 @@ int runTests(const File &directory) {
                 if(button->getButtonText()=="M"||button->getButtonText()=="S")expect(button->isVisible()==(track.role.id=="generatedClick"||track.role.id=="timecode"),"Mute/Solo only on audio-generating special tracks");
                 if(button->getButtonText()==String::fromUTF8("Ø"))expect(!button->isVisible(),"Special tracks have no phase inversion button");
             }
-            auto *pan=uiFeatureTests::find(*row,"trackPan");expect(pan&&!pan->isVisible(),"Standard pan hidden on special tracks");
+            auto *pan=uiFeatureTests::find(*row,"trackPan");expect(!pan,"Track Mixer does not create a pan knob");
             if(track.role.id=="generatedClick") {
                 auto *insert=uiFeatureTests::find(*controls,"insertClick"),*patch=uiFeatureTests::find(*controls,"specialPatch");
                 expect(insert->isVisible()&&patch&&patch->isVisible()&&patch->getRight()<insert->getX(),"Click must expose Patch immediately before Insert");
@@ -2472,6 +2639,42 @@ int runTests(const File &directory) {
             session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Single undo restores entire batch");
             session.redo();expect(session.song()->tracks.front().clips.size()==(same?2u:1u),"Redo restores batch and media references");
         }
+    });
+    test("Library samples dropped on the grid import on the target track", [&] {
+        const auto root = directory.getNonexistentChildFile("library-grid-drop", "");
+        expect(root.createDirectory().wasOk(), "Could not create the scratch project directory");
+        const auto sample = File::getSpecialLocation(File::currentExecutableFile)
+            .getSiblingFile("NativeSamples").getChildFile("FX Brazil").getChildFile("BUZINA.mp3");
+        expect(sample.existsAsFile(), "The native FX Brazil pack is missing");
+        auto project = floatingControlTests::fixture();
+        project.songs.front().parts.clear();
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        session.save(root.getChildFile("Sample Drop.jl"));
+        Auth auth; Lighting lighting(session);
+        Workspace workspace(session, auth, lighting, false, root.getChildFile("appearance.json"));
+        workspace.setSize(1366, 768); workspace.projectOpened(false);
+        auto *canvas = uiFeatureTests::find(workspace, "timelineCanvas");
+        auto *target = dynamic_cast<DragAndDropTarget *>(canvas);
+        expect(target != nullptr, "The grid has no Library sample drop target");
+        const auto timeline = get(workspace.diagnostics(), "timeline");
+        const int header = int(num(timeline, "headerHeight"));
+        const int rowHeight = int(num(timeline, "trackHeight"));
+        const Point<int> point{120, header + rowHeight + 12};
+        auto description = object();
+        put(description, "type", "catlive-library-sampler");
+        put(description, "file", sample.getFullPathName());
+        const DragAndDropTarget::SourceDetails drop(description, &workspace, point);
+        expect(target->isInterestedInDragSource(drop), "The grid rejected the native sample");
+        target->itemDropped(drop);
+        const auto deadline = Time::getMillisecondCounterHiRes() + 10000;
+        while (session.busy && Time::getMillisecondCounterHiRes() < deadline) floatingControlTests::pump();
+        const auto &tracks = session.song()->tracks;
+        expect(tracks.size() == 3 && tracks[0].clips.empty() && tracks[1].clips.size() == 1 && tracks[2].clips.empty(),
+               "The native sample must land on the second track");
+        const auto &clip = tracks[1].clips.front();
+        expect(clip.name == "BUZINA" && clip.startTime > 0 && clip.audioFile &&
+               root.getChildFile(text(clip.audioFile->path)).existsAsFile(), "The dropped grid item must keep its name, placement and media");
     });
     test("Generated Click Subplay filters item owners without muting the incoming click", [&] {
         jaras::Song song; song.duration=8; song.bpm=120; song.regionOwnershipInitialized=true;
@@ -2728,17 +2931,20 @@ int runTests(const File &directory) {
         auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");expect(canvas!=nullptr,"Canvas exists");
         auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,canvas,canvas,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
         const auto geometry=get(workspace.diagnostics(),"timeline");const double zoom=num(geometry,"zoom"),scroll=num(geometry,"horizontal");
+        const float rulerHeight=(float)num(geometry,"rulerHeight");
+        const float rulerTop=(float)num(geometry,"rulerTop");
+        const float regionCenter=8;
         const int free=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
         for(int edge:{1,-1}) {
             const auto region=session.song()->parts.front();
             const float x=(float)((edge>0?region.endTime:region.startTime)*zoom-scroll)+(edge>0?-2.f:2.f);
-            Point<float> anchor{x,8},end{x+(float)(edge*2*zoom),8};
+            Point<float> anchor{x,regionCenter},end{x+(float)(edge*2*zoom),regionCenter};
             canvas->mouseMove(event(anchor,anchor,0,false));
             expect(canvas->getMouseCursor()!=MouseCursor(MouseCursor::NormalCursor) &&
                    canvas->getMouseCursor()!=MouseCursor(MouseCursor::LeftRightResizeCursor),"Region edge did not use its compact resize cursor");
             const auto hover=canvas->createComponentSnapshot(canvas->getLocalBounds());
             const int gripX=roundToInt((edge>0?region.endTime:region.startTime)*zoom-scroll);
-            const auto grip=hover.getPixelAt(gripX,8);
+            const auto grip=hover.getPixelAt(gripX,roundToInt(regionCenter));
             expect(grip.getGreen()>240 && grip.getRed()<110 && grip.getBlue()>120,"Green edge grip is missing");
             canvas->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));canvas->mouseDrag(event(end,anchor,free,true));
             expect(session.song()->parts.front().startTime==region.startTime && session.song()->parts.front().endTime==region.endTime,"Preview committed early");
@@ -2748,7 +2954,7 @@ int runTests(const File &directory) {
             const auto clip=session.song()->tracks.front().clips.front();
             expect(clip.startTime==original.startTime && clip.duration==original.duration && clip.sourceOffset==original.sourceOffset,"Region resize moved or trimmed its audio");
         }
-        Point<float> ruler{200,(float)num(geometry,"headerHeight")-8};canvas->mouseMove(event(ruler,ruler,0,false));
+        Point<float> ruler{200,rulerTop+rulerHeight-8};canvas->mouseMove(event(ruler,ruler,0,false));
         expect(canvas->getMouseCursor()==MouseCursor(MouseCursor::PointingHandCursor),"Number ruler did not show hand cursor");
     });
     test("Dragging paints the actual item at the pointer and commits only on release", [&] {
@@ -2888,7 +3094,15 @@ int runTests(const File &directory) {
         expect(count(playing)==0,"Audio controls remained visible during playback");
         session.command(jaras::CommandKind::stop);
         SettingsPanel stopped(session,auth,lighting,appearance,bindings,1,[](String){},[]{});stopped.setSize(780,580);
-        expect(count(stopped)>0,"Audio controls did not return when stopped");
+        const auto *driver = dynamic_cast<ComboBox*>(uiFeatureTests::find(stopped, "Driver"));
+        const auto *input = dynamic_cast<ComboBox*>(uiFeatureTests::find(stopped, "Entrada"));
+        const auto *output = dynamic_cast<ComboBox*>(uiFeatureTests::find(stopped, String::fromUTF8("Saída")));
+        expect(driver && driver->getNumItems() > 0, "Audio driver selector did not return when stopped");
+        expect(driver && input && output && driver->getBottom() < input->getY() && input->getBottom() < output->getY(),
+               "Driver must be the first audio selector, above Input and Output");
+        expect(input && output && input->isVisible() && output->isVisible() &&
+               input->getNumItems() > 0 && output->getNumItems() > 0,
+               "The first visit with an unopened audio device must expose input and output selectors");
     });
     test("Colour-only editor supports presets, preview, cancel and save", [&] {
         unsigned saved=0,preview=0;bool finished=false;
@@ -3441,6 +3655,17 @@ int runTests(const File &directory) {
         expect(regular.getTypefaceName() == "Inter", "Embedded Inter family loaded");
         expect(bold.getTypefaceStyle().containsIgnoreCase("Bold"), "Real embedded bold face");
         expect(italic.getTypefaceStyle().containsIgnoreCase("Italic"), "Real embedded italic face");
+        const StringArray families{"Inter", "Inter", "Archivo Black", "Bungee"};
+        for (int style = 3; style <= 6; ++style) {
+            expect(settings.set("jaras.setlist.fontStyle", style).wasOk(), "Persist heavy Setlist font");
+            Appearance reopened(file);
+            const auto face = reopened.setlistFont();
+            const auto fullName = (face.getTypefacePtr()->getName() + face.getTypefaceStyle()).removeCharacters(" -");
+            expect(reopened.fontStyle() == style && fullName.containsIgnoreCase(families[style - 3].removeCharacters(" -")),
+                   "Setlist style " + String(style) + " restored as " + String(reopened.fontStyle()) + ": " +
+                   face.getTypefaceName() + " / " + face.getTypefacePtr()->getName() + " / " + face.getTypefaceStyle());
+            expect(face.getTypefacePtr() != bold.getTypefacePtr(), "Heavy option fell back to the existing bold font");
+        }
         expect(std::abs(regular.getHeightInPoints() - 13.f * .9f) < .01f, "Compact Windows text remains independent of display DPI");
     });
     test("Timecode LTC physical route, Master bypass, spans and main-only playback", [&] {
@@ -3717,7 +3942,9 @@ int runTests(const File &directory) {
         session.cycleRecordArm(first.id,selection);
         expect(session.recordArm(first.id)==1&&session.recordArm(second.id)==1&&session.recordArm(third.id)==0,"Arm every selected track");
         session.cycleRecordArm(first.id,selection);
-        expect(session.recordArm(first.id)==2&&session.recordArm(second.id)==2,"Same next REC mode");
+        expect(session.recordArm(first.id)==0&&session.recordArm(second.id)==0,"Plain REC toggles off");
+        session.cycleRecordArm(first.id,selection,true);
+        expect(session.recordArm(first.id)==2&&session.recordArm(second.id)==2,"Shift REC enables automatic mode for the selection");
         session.mixerCommand(jaras::CommandKind::mute,first.id,selection);
         expect(session.song()->tracks[0].mute&&session.song()->tracks[1].mute&&!session.song()->tracks[2].mute,"Mute mixed selection consistently");
         session.mixerCommand(jaras::CommandKind::solo,first.id,selection);
@@ -4699,6 +4926,59 @@ int runTests(const File &directory) {
         core.execute({jaras::CommandKind::stopAll}); core.execute({jaras::CommandKind::selectRegion, a}); core.execute({jaras::CommandKind::play}); core.advance(3.99);
         core.execute({jaras::CommandKind::ignoreNext}); render(0, "Ignore Next rendered past last owned audio");
     });
+    test("Unified region entry ignores long items attached to previous songs", [&] {
+        const auto media = directory.getChildFile("continuous-unified-audio");
+        media.createDirectory();
+        WavAudioFormat wav;
+        auto stream = media.getChildFile("tone.wav").createOutputStream();
+        std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(), 48000, 2, 24, {}, 0));
+        expect(bool(writer), "Cannot create continuous audio fixture"); stream.release();
+        AudioBuffer<float> tone(2, 48000 * 10);
+        for (int channel = 0; channel < 2; ++channel)
+            FloatVectorOperations::fill(tone.getWritePointer(channel), .1f, tone.getNumSamples());
+        expect(writer->writeFromAudioSampleBuffer(tone, 0, tone.getNumSamples()), "Cannot write audio fixture");
+        writer.reset();
+
+        auto project = Session::makeEmptyProject("Continuous audio");
+        auto &song = project.songs.front();
+        const auto intro = uuid(), group = uuid(), first = uuid(), next = uuid();
+        song.duration = 10;
+        song.parts = {{intro, "Intro", 0, 2}, {group, "Group", 3, 9}, {first, "First", 3, 7}, {next, "Next", 6, 9}};
+        song.parts[2].parentRegionID = group; song.parts[3].parentRegionID = group;
+        song.regionOwnershipInitialized = true; song.regionOwnershipVersion = 4;
+        jaras::Track track; track.id = uuid(); track.name = "Backing";
+        track.role.id = "other"; track.audioFile = jaras::AudioFile{"tone.wav"};
+        jaras::AudioClip backing; backing.id = uuid(); backing.name = "Whole show"; backing.duration = 10; backing.regionOwnerID = intro;
+        auto tail = backing; tail.id = uuid(); tail.name = "Previous song tail";
+        tail.startTime = 3; tail.duration = 4; tail.regionOwnerID = first; tail.gain = .5;
+        track.clips = {backing, tail}; song.tracks = {track};
+
+        const auto document = media.getChildFile("Show.jl");
+        ProjectCodec::write(document, ProjectCodec::encode(project));
+        jaras::Engine core; core.loadProject(ProjectCodec::decode(ProjectCodec::read(document)));
+        expect(core.currentSong()->tracks[0].clips[0].regionOwnerID == intro, "Playback must preserve saved placement");
+        AudioEngine audio; audio.prepareOffline(48000); audio.prepareSong(*core.currentSong(), media, {}, &core.project()); audio.setOffline(true);
+        AudioBuffer<float> output(2, 512);
+        const auto render = [&](float expected) {
+            const auto &transport = core.transport();
+            AudioEngine::State state; state.playing = transport.playing; state.position = transport.position;
+            state.scope[0] = jaras::playbackScope(*core.currentSong(), transport);
+            audio.transport(state);
+            for (int block = 0; block < 8; ++block) audio.render(output.getArrayOfWritePointers(), 2, 512);
+            expect(std::abs(output.getSample(0, 256) - expected) < .002f,
+                "Unexpected backing/tail mix at " + String(transport.position) + ": " + String(output.getSample(0, 256)));
+        };
+        core.execute({jaras::CommandKind::selectRegion, intro}); core.execute({jaras::CommandKind::play});
+        render(.1f);
+        core.execute({jaras::CommandKind::seek, {}, 3.25});
+        render(.05f);
+        core.execute({jaras::CommandKind::ignoreNext});
+        render(.05f);
+        core.execute({jaras::CommandKind::seek, {}, 6.25});
+        render(0);
+        core.execute({jaras::CommandKind::pause}); render(0);
+        core.execute({jaras::CommandKind::play}); render(0);
+    });
     test("Legacy 1.36 unified songs render majority-owned pickups after save and reopen", [&] {
         const auto media=directory.getChildFile("unified-legacy-pickup");media.createDirectory();
         WavAudioFormat wav;auto stream=media.getChildFile("tone.wav").createOutputStream();
@@ -5477,6 +5757,13 @@ int runTests(const File &directory) {
         expect(beatEnergy(.5) > 1 && beatEnergy(.9) == 0, "Metronome did not follow quarter notes");
         expect(beatEnergy(1) > 1 && beatEnergy(1.5) == 0 && beatEnergy(2) > 1,
                "Tempo marker did not reset beat origin or change spacing");
+        ClickProgram::EnableGate enable;
+        enable.update(false, true);
+        enable.update(true, true);
+        expect(program.sample(.501, 0, 1, 1, nullptr, &enable) == 0 &&
+               program.sample(.51, 0, 1, 1, nullptr, &enable) == 0 &&
+               std::abs(program.sample(1.001, 0, 1, 1, nullptr, &enable)) > .01,
+               "Enabling the click mid-beat must wait for the next beat");
         jaras::Track track;
         track.id = uuid();
         track.name = "Click";
@@ -5540,12 +5827,30 @@ int runTests(const File &directory) {
         state.position = 0;
         engine.transport(state);
         engine.render(output.getArrayOfWritePointers(), 4, 4800);
+        expect(output.getMagnitude(2, 0, 4800) == 0, "Enabling a running metronome must not replay the current beat");
+        for (int block = 1; block < 6; ++block) engine.render(output.getArrayOfWritePointers(), 4, 4800);
         expect(output.getMagnitude(0, 0, 4800) == 0 && output.getMagnitude(2, 0, 4800) > .1f,
                "Metronome ignored its independent output");
         engine.metronomeEnabled = false;
         engine.transport(state);
         engine.render(output.getArrayOfWritePointers(), 4, 4800);
-        expect(output.getMagnitude(0, 4800) == 0, "Metronome toggle did not silence output");
+        expect(output.getMagnitude(2, 0, 4800) == 0, "Metronome toggle did not silence output");
+    });
+    test("Windows project writes automation defaults required by Mac", [&] {
+        auto project = projectFixture();
+        auto& track = project.songs.front().tracks.front();
+        automation::toggle(track);
+        expect(get(JSON::parse(text(*track.automationJSON)), "mode").isVoid(), "Fixture must reproduce a legacy track");
+        project.masterAutomationJSON = R"({"mode":"read","enabled":false})";
+        const auto saved = ProjectCodec::encode(project);
+        const auto root = list(get(saved, "songs"))[0];
+        const auto settings = get(list(get(root, "tracks"))[0], "automation");
+        expect(str(settings, "mode") == "trimRead" && flag(settings, "enabled") &&
+               list(get(settings, "envelopes")).size() == 1 && flag(settings, "lanesVisible"),
+               "Save changed playback or failed to serialize the default automation mode");
+        const auto master = get(saved, "masterAutomation");
+        expect(str(master, "mode") == "read" && !flag(master, "enabled", true) && get(master, "envelopes").isArray(),
+               "Explicit automation flags and modes must survive normalization");
     });
     test("Automation sample playback keeps main and Sub Play envelopes independent", [&] {
         auto envelope = automation::envelope("volume", AutomationCurve::normalized(1));
@@ -5882,6 +6187,14 @@ int runTests(const File &directory) {
         expect(state.notice == "Stopped message" && state.pinned, "Stop did not restore the captured notice");
         const auto sent = state.noticeSent; state.observe(transport);
         expect(state.noticeSent == sent, "Stopped ticks retriggered the notice");
+        state.sendNotice("Temporary");
+        expect(state.notice == "Temporary" && !state.pinned, "The stopped message prevented a timed notice");
+        state.clearNotice();
+        expect(state.notice == "Stopped message" && state.stoppedNoticeActive, "Cancel did not restore the stopped message");
+        state.sendNotice("Temporary");
+        state.noticeDeadline = StageState::now() - 1;
+        state.observe(transport);
+        expect(state.notice == "Stopped message" && state.stoppedNoticeActive, "Expiry did not restore the stopped message");
         state.setPinWhenStopped(false); expect(!state.noticeActive(), "Disable did not clear the automatic notice");
         state.sendNotice("Manual"); transport.playing = true; state.observe(transport);
         expect(state.notice == "Manual", "Play cleared a manual notice"); state.clearNotice();
@@ -5907,7 +6220,10 @@ int runTests(const File &directory) {
         TrackCapture::Target stereo{uuid(), folder.getChildFile("stereo.aiff"), 3, 2};
         TrackCapture::Target synth{uuid(), folder.getChildFile("synth.wav"), 1, 1, true};
         TrackCapture::Target midi{uuid(), {}, 1, 2, false, true};
-        TrackCapture capture({mono, stereo, synth, midi}, 48000, 24, 120);
+        TrackCapture::Target silent{uuid(), {}, 1, 2};
+        silent.silent = true;
+        silent.preview = std::make_shared<RecordingPreview>(48000, 2);
+        TrackCapture capture({mono, stereo, synth, midi, silent}, 48000, 24, 120);
         std::array<int, 128> mapping;
         mapping.fill(-1);
         mapping[2] = 0;
@@ -5940,7 +6256,11 @@ int runTests(const File &directory) {
             capture.advance(480);
         }
         auto takes = capture.finish();
-        expect(takes.size() == 4 && capture.overflows() == 0, "Capture count/overflows");
+        expect(takes.size() == 5 && capture.overflows() == 0, "Capture count/overflows");
+        silent.preview->drain();
+        expect(takes[4].track == silent.track && takes[4].file == File{} && !takes[4].midi &&
+                   std::abs(takes[4].duration - .1) < 1e-9 && silent.preview->frames.load() == 4800 &&
+                   silent.preview->history.empty(), "A recording without an input must grow without audio or waveform");
         AudioFormatManager formats;
         registerAudioFormats(formats);
         for (size_t i = 0; i < 3; ++i) {
@@ -5971,6 +6291,8 @@ int runTests(const File &directory) {
         session.cycleRecordArm(a);
         expect(session.recordingArmed(a), "Manual arm");
         session.cycleRecordArm(a);
+        expect(!session.recordingArmed(a), "Plain click disarms manual recording");
+        session.cycleRecordArm(a, {}, true);
         session.setRecordingSelection(b);
         expect(!session.recordingArmed(a), "Auto arm unselected");
         session.setRecordingSelection(a);

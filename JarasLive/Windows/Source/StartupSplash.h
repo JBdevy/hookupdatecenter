@@ -15,11 +15,16 @@ class StartupSplash final : public Component, private Timer {
         setOpaque(false);
         setInterceptsMouseClicks(false, false);
         setAlwaysOnTop(true);
-        setSize(600, 280);
-        addToDesktop(ComponentPeer::windowIsTemporary | ComponentPeer::windowIgnoresMouseClicks);
         auto &displays = Desktop::getInstance().getDisplays();
         auto *display = ownerBounds.isEmpty() ? displays.getPrimaryDisplay()
                                              : displays.getDisplayForRect(ownerBounds);
+        if (display) {
+            const auto usable = display->userBounds.reduced(24);
+            artworkScale = std::max(0.1f, std::min({1.f, (float)usable.getWidth() / artworkWidth,
+                                                   (float)usable.getHeight() / artworkHeight}));
+        }
+        setSize(roundToInt(artworkWidth * artworkScale), roundToInt(artworkHeight * artworkScale));
+        addToDesktop(ComponentPeer::windowIsTemporary | ComponentPeer::windowIgnoresMouseClicks);
         if (display) setCentrePosition(display->userBounds.getCentre().roundToInt());
         setVisible(true);
         if (!closingMode) {
@@ -36,22 +41,24 @@ class StartupSplash final : public Component, private Timer {
         repaint();
     }
     void paint(Graphics &g) override {
+        g.addTransform(AffineTransform::scale(artworkScale));
+        const juce::Rectangle<float> artwork(0.f, 0.f, (float)artworkWidth, (float)artworkHeight);
         g.setOpacity(1.f);
         g.setColour(theme::panel);
-        g.fillRoundedRectangle(getLocalBounds().toFloat(), 12.f);
+        g.fillRoundedRectangle(artwork, 12.f);
         g.setColour(Colours::white.withAlpha(.12f));
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(.5f), 12.f, 1.f);
+        g.drawRoundedRectangle(artwork.reduced(.5f), 12.f, 1.f);
         // The content row uses the same 40/60 split as the native Mac card.
-        const int logoWidth = roundToInt(getWidth() * .4f);
-        const int contentWidth = getWidth() - logoWidth - 49;
+        const int logoWidth = roundToInt(artworkWidth * .4f);
+        const int contentWidth = artworkWidth - logoWidth - 49;
         g.setColour(Colours::white.withAlpha(.12f));
-        g.fillRect(logoWidth, 0, 1, getHeight());
+        g.fillRect(logoWidth, 0, 1, artworkHeight);
         // Image drawing also uses the current graphics opacity.
         g.setOpacity(1.f);
-        g.drawImageWithin(logo, 24, 24, logoWidth - 48, getHeight() - 48, RectanglePlacement::centred);
+        g.drawImageWithin(logo, 24, 24, logoWidth - 48, artworkHeight - 48, RectanglePlacement::centred);
         const int titleLeft = 25 + logoWidth;
         g.setGradientFill(ColourGradient(Colour(0xff72ffb3), (float)titleLeft, 79.f,
-                                        Colour(0xff00cf64), (float)getWidth() - 24, 145.f, false));
+                                        Colour(0xff00cf64), (float)artworkWidth - 24, 145.f, false));
         const float waveHeights[] = {10, 20, 30, 38, 26, 18, 8};
         for (int bar = 0; bar < 7; ++bar)
             g.fillRoundedRectangle((float)titleLeft + bar * 5, 112.f - waveHeights[bar] / 2,
@@ -77,6 +84,8 @@ class StartupSplash final : public Component, private Timer {
     }
 
   private:
+    static constexpr int artworkWidth = 600, artworkHeight = 280;
+    float artworkScale = 1.f;
     Image logo =
         ImageCache::getFromMemory(BinaryData::CatLiveSplash_png, BinaryData::CatLiveSplash_pngSize);
     double elapsed = 0;

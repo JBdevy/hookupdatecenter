@@ -118,3 +118,56 @@ print("TIMELINE_RULER_FAR_DENSITY_GLOBAL_REGIONS_ZERO_HOURS_AND_CLIPPING_OK")
 // Mid-zoom beat groups must fill gaps before individual beats fit.
 let medium = TimelineTimeRuler.ticks(in: simple, from: 0, to: 4, pixelsPerSecond: 20, divisions: 4)
 precondition(medium.map(\.time) == [0, 1, 2, 3, 4], "half-bar lines appear before quarter-note lines")
+
+let musicalSections = [
+    TimelineTempoSection(start: 0, end: 5.25, bpm: 120, beats: 4, unit: 4, timebase: .free),
+    TimelineTempoSection(start: 5.25, end: 25, bpm: 120, beats: 6, unit: 8, timebase: .free)
+]
+let musical = TimelineTimeRuler.MusicalLabels(sections: musicalSections)
+func visibleMusicalLabels(scale: Double, from start: Double = 0, to end: Double = 20) -> [Double: String] {
+    Dictionary(uniqueKeysWithValues: TimelineTimeRuler.ticks(in: musicalSections, from: start, to: end,
+        pixelsPerSecond: scale, divisions: 8, musical: musical).filter { !$0.label.isEmpty }.map { ($0.time, $0.label) })
+}
+let distantMusic = visibleMusicalLabels(scale: 10)
+precondition(distantMusic[0] == "1" && distantMusic.values.allSatisfy { !$0.contains(".") })
+let closeMusic = visibleMusicalLabels(scale: 400)
+precondition(closeMusic[0.25] == "1.1.2" && closeMusic[0.5] == "1.2")
+precondition(closeMusic[5.25] == "4" && closeMusic[5.5] == "4.2", "A new meter starts the next numbered measure")
+precondition(visibleMusicalLabels(scale: 400, from: 5.25, to: 10) == closeMusic.filter { (5.25...10).contains($0.key) },
+             "Musical labels remain stable while scrolling")
+print("DESKTOP_RULER_REVEALS_MEASURES_BEATS_AND_DIVISIONS_BY_ZOOM_OK")
+
+let wideGrid = TimelineTimeRuler.ticks(in: simple, from: 0, to: 8, pixelsPerSecond: 6)
+precondition(wideGrid.filter(\.drawsInGrid).map(\.time) == [0, 4, 8],
+             "Bar lines are thinned for the grid at a distant zoom")
+precondition(wideGrid.contains { $0.time == 2 && !$0.drawsInGrid }, "Intermediate bars still have ruler marks")
+let focusedGrid = TimelineTimeRuler.ticks(in: simple, from: 0, to: 2, pixelsPerSecond: 200, divisions: 8)
+precondition(focusedGrid.filter(\.drawsInGrid).map(\.time) == [0, 2] &&
+             focusedGrid.contains { $0.time == 0.25 && !$0.drawsInGrid },
+             "Beat and subdivision ticks stay in the ruler at detailed zoom")
+
+let desktop = TimelineTimeRuler.MusicalLabels(sections: simple)
+func desktopGrid(_ scale: Double, from start: Double = 0, to end: Double = 32) -> [TimelineTimeRuler.Tick] {
+    TimelineTimeRuler.ticks(in: simple, from: start, to: end, pixelsPerSecond: scale,
+                            divisions: 8, musical: desktop)
+}
+precondition(desktopGrid(0.76).filter(\.drawsInGrid).map(\.time) == [0, 8, 16, 24, 32],
+             "Distant zoom preserves regular four-bar lines even between sparse labels")
+let intermediate = desktopGrid(10.5, to: 4)
+precondition(intermediate.filter(\.drawsInGrid).map(\.time) == [0, 2, 4],
+             "All visible bars span the grid before there is room for beat lines")
+precondition(intermediate.contains { $0.time == 0.5 && !$0.drawsInGrid },
+             "Individual beats already appear as short ruler marks")
+let nearby = desktopGrid(87, to: 4)
+precondition(nearby.filter(\.drawsInGrid).map(\.time) == (0...8).map { Double($0) / 2 },
+             "Closer zoom promotes each beat to a vertical line")
+precondition(nearby.contains { $0.time == 0.25 && !$0.drawsInGrid },
+             "Finer subdivisions still stay in the ruler")
+for scale in [0.76, 10.5, 87.0, 500] {
+    let visible = desktopGrid(scale)
+    let tile = desktopGrid(scale, from: 1.24, to: 21.6)
+    let expected = visible.filter { (1.24...21.6).contains($0.time) }
+    precondition(tile.map(\.time) == expected.map(\.time) && tile.map(\.drawsInGrid) == expected.map(\.drawsInGrid),
+                 "Grid line density must not change while scrolling")
+}
+print("MUSICAL_GRID_DISTANT_BARS_CLOSE_BEATS_AND_SHORT_SUBDIVISION_TICKS_OK")

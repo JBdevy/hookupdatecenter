@@ -54,6 +54,7 @@ struct RecordingGridOverlay: View {
     let rulerHeight: CGFloat
     let scale: CGFloat
     var alignsToViewport = false
+    var itemInset = GridSelectionItem.verticalInset
     @ObservedObject private var preview = LiveRecordingPreview.shared
     var body: some View {
         // An idle recorder has no pixels. Keep its subscription, but do not
@@ -69,7 +70,9 @@ struct RecordingGridOverlay: View {
                 // is bounded by the same presentation clock as the playhead.
                 let duration = min(take.duration, TrackRecording.shared.recordingDisplayPosition.map { max(0, $0 - take.start) } ?? take.duration)
                 guard duration > 0 else { continue }
-                let rect = CGRect(x: take.start*scale,y: rulerHeight+offsets[index]+CGFloat(reservation.clip.recordingLane ?? 0)*laneHeight+3,width: duration*scale,height: laneHeight-6)
+                let y = rulerHeight + offsets[index] + CGFloat(reservation.clip.recordingLane ?? 0) * laneHeight + itemInset
+                let rect = CGRect(x: take.start * scale, y: y, width: duration * scale,
+                                  height: max(0, laneHeight - 2 * itemInset))
                 guard rect.intersects(visibleRect) else { continue }
                 let shape = Path(roundedRect: rect, cornerRadius: 3)
                 let color = JarasTheme.track(tracks[index], emphasized: false)

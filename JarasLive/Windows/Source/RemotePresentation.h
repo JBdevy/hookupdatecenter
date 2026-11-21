@@ -15,6 +15,24 @@ class Presentation final {
     std::function<void()> save;
     std::function<void(bool)> fadeout;
     ID fadeoutCommand;
+    static std::optional<int> desktopBatteryPercent() {
+        #if JUCE_WINDOWS
+        static double sampledAt = -60000.;
+        static std::optional<int> percent;
+        const double now = Time::getMillisecondCounterHiRes();
+        if (now - sampledAt >= 60000.) {
+            sampledAt = now;
+            SYSTEM_POWER_STATUS status{};
+            percent.reset();
+            if (::GetSystemPowerStatus(&status) && status.BatteryFlag != 255 &&
+                (status.BatteryFlag & 128) == 0 && status.BatteryLifePercent <= 100)
+                percent = int(status.BatteryLifePercent);
+        }
+        return percent;
+        #else
+        return {};
+        #endif
+    }
     int patchOutputChannels() const {
         auto* device = session.audio.devices.getCurrentAudioDevice();
         return device ? std::min(1024, device->getOutputChannelNames().size()) : 0;
@@ -43,6 +61,7 @@ class Presentation final {
         put(result, "sequence", (int64)0);
         put(result, "project", wireID(p.id));
         put(result, "projectName", text(p.name));
+        if (const auto battery = desktopBatteryPercent()) put(result, "desktopBatteryPercent", *battery);
         if (const auto notice = session.liveCapacityWarning(); notice.isNotEmpty()) put(result, "footerInformation", notice);
         else if(t.automaticSectionNotice) put(result, "footerInformation", text(*t.automaticSectionNotice));
         if (song)
@@ -211,6 +230,7 @@ class Presentation final {
         if (t.loop.end)
             put(result, "loopEnd", *t.loop.end);
         put(result, "masterVolume", p.masterVolume);
+        put(result, "masterColor", int(theme::mixerStripeSurface.getARGB() & 0xffffffu));
         put(result, "masterPan", p.masterPan);
         put(result, "patchOutputChannels", patchOutputChannels());
         put(result, "masterOutputRoutes", outputRoutes(masterOutputRoutes(p)));
@@ -649,7 +669,7 @@ class Presentation final {
         return result;
     }
     var teleprompter(int index) {
-        auto result = StageContent::make(session,stage,index).payload;
+        auto result = StageContent::make(session,stage,index,true).payload;
         const auto settings=stage.settings(index);
         auto style = object();
         for (auto key : {"textColor", "chordColor", "clockColor", "localClockColor", "borderColor",

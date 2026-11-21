@@ -101,15 +101,31 @@ MainActor.assumeIsolated {
     anchor.login = false; anchor.update(); settle(window)
     precondition(window.frame.size == NSSize(width: 600, height: 460), "authorized browser restores its own size")
     documents.folderReview = true; anchor.update(); settle(window)
-    precondition(window.frame.size == NSSize(width: 840, height: 540))
+    precondition(window.frame.size == NSSize(width: 600, height: 460) && !window.styleMask.contains(.resizable),
+                 "Home keeps its fixed frame when browsing folders")
+    let homeSize = window.frame.size
+    var transitionSizes: [NSSize] = []
+    let observer = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { _ in
+        transitionSizes.append(window.frame.size)
+    }
     anchor.editor = true; anchor.update(); settle(window)
+    NotificationCenter.default.removeObserver(observer)
+    precondition(window.styleMask.contains(.resizable), "The loaded editor must allow manual resizing")
+    precondition(transitionSizes.allSatisfy { $0 == homeSize || $0 == window.frame.size },
+                 "Home-to-editor transition displayed an intermediate size: \(transitionSizes)")
     let available = window.screen?.visibleFrame.size ?? ProjectWindowAnchor.editorFrameSize
+    let editorMinimum = NSSize(width: min(1162, available.width), height: min(757, available.height))
+    precondition(window.minSize == editorMinimum, "outer minimum \(window.minSize) expected \(editorMinimum), frame \(window.frame)")
     precondition(window.frame.size == NSSize(width: min(1440, available.width), height: min(791, available.height)))
     anchor.editor = false; documents.folderReview = nil; anchor.update(); settle(window)
     precondition(window.frame.size == NSSize(width: 600, height: 460), "returning to the browser must restore its original outer size")
-    let resized = NSRect(origin: window.frame.origin, size: NSSize(width: 720, height: 510))
+    let resized = window.frame.offsetBy(dx: 12, dy: 12)
     window.setFrame(resized, display: false); anchor.update(); settle(window)
-    precondition(window.frame == resized, "ordinary view updates must not reset a resized window")
+    precondition(window.frame == resized, "ordinary view updates must not recenter a moved Home window")
+    let lightDarkTitlebar = NSColor(srgbRed: 36.0 / 255, green: 36.0 / 255, blue: 36.0 / 255, alpha: 1)
+    anchor.titlebarColor = lightDarkTitlebar; anchor.update(); settle(window)
+    precondition(window.backgroundColor == lightDarkTitlebar && window.frame == resized,
+                 "switching the titlebar palette must repaint the existing window without resizing it")
     let replacement = makeWindow(size: NSSize(width: 700, height: 500))
     anchor.removeFromSuperview(); replacement.contentView!.addSubview(anchor); settle(replacement)
     precondition(!replacement.styleMask.contains(.fullSizeContentView) && replacement.frame.size == NSSize(width: 600, height: 460))
@@ -120,7 +136,7 @@ MainActor.assumeIsolated {
     let screen = NSScreen.screens.last!.visibleFrame
     // The flexible fixture host has no MainView minimum-width constraint.
     // Use a legal editor width directly rather than its transient minSize.
-    let rememberedSize = NSSize(width: min(ProjectWindowAnchor.editorFrameSize.width, screen.width), height: min(700, screen.height))
+    let rememberedSize = NSSize(width: min(ProjectWindowAnchor.editorFrameSize.width, screen.width), height: min(ProjectWindowAnchor.editorMinimumFrameSize.height, screen.height))
     let rememberedOrigin = NSPoint(x: screen.minX + min(15, screen.width - rememberedSize.width),
                                     y: screen.minY + min(20, screen.height - rememberedSize.height))
     let remembered = NSRect(origin: rememberedOrigin, size: rememberedSize)
@@ -141,7 +157,9 @@ MainActor.assumeIsolated {
     editorWindow.close()
     let reopened = makeWindow(size: NSSize(width: 600, height: 460))
     let reopenedAnchor = ProjectWindowAnchor(); reopenedAnchor.editor = true
-    reopened.contentView!.addSubview(reopenedAnchor); reopenedAnchor.update(); settle(reopened)
+    reopened.contentView!.addSubview(reopenedAnchor); reopenedAnchor.update()
+    precondition(reopened.frame == remembered, "The very first editor layout must already have the final frame")
+    settle(reopened)
     precondition(reopened.frame == remembered, "reopening restores the editor size and position on its previous screen")
     reopened.close()
     UserDefaults.standard.removeObject(forKey: "jaras.editorWindowFrame")

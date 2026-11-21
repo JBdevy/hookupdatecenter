@@ -1,0 +1,89 @@
+[
+  {
+    "name": "Drums",
+    "legacy": [
+      "drums"
+    ]
+  },
+  {
+    "name": "Percussion",
+    "legacy": [
+      "conga",
+      "bongo",
+      "surdo",
+      "cowbell",
+      "jamblock",
+      "tambourine",
+      "triangle",
+      "maracas",
+      "shaker",
+      "agogo",
+      "cajon",
+      "guiro",
+      "timbales"
+    ]
+  },
+  {
+    "name": "Bass",
+    "legacy": [
+      "bass"
+    ]
+  },
+  {
+    "name": "Guitar",
+    "legacy": [
+      "electricGuitar",
+      "acousticGuitar"
+    ]
+  },
+  {
+    "name": "Keyboards",
+    "legacy": [
+      "keyboard",
+      "piano",
+      "synthesizer",
+      "accordion",
+      "organ"
+    ]
+  },
+  {
+    "name": "Strings",
+    "legacy": [
+      "cello",
+      "violin"
+    ]
+  },
+  {
+    "name": "Wind",
+    "legacy": [
+      "saxophone",
+      "flute",
+      "clarinet"
+    ]
+  },
+  {
+    "name": "Brass",
+    "legacy": [
+      "trombone",
+      "trumpet"
+    ]
+  },
+  {
+    "name": "Sound Effects",
+    "legacy": [
+      "fx"
+    ]
+  },
+  {
+    "name": "Other",
+    "legacy": [
+      "microphone",
+      "backingVocals",
+      "click",
+      "guide",
+      "voice",
+      "backs",
+      "vocal"
+    ]
+  }
+]

@@ -379,7 +379,7 @@ private struct LocalizedTeleprompterConfig: View {
                 Text("Teleprompter 2").tag(2)
                 Text("Messages").tag(3)
             }.pickerStyle(.segmented).padding(12)
-            TeleprompterConfig(showingNotices: slot == 3, preferences: slot == 2 ? .second : .shared, close: close)
+            TeleprompterConfig(showingNotices: slot == 3, showsClose: false, preferences: slot == 2 ? .second : .shared, close: close)
         }.onAppear { slot = initialSlot }
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
     }
@@ -399,9 +399,6 @@ private struct LocalizedTeleprompterConfig: View {
     private let display = TPProjectionDisplay()
     private let preferences: TeleprompterPreferences
     private var video: VideoPlayback { index == 1 ? .teleprompter : .teleprompter2 }
-    private var minimizeObservation: NSObjectProtocol?
-    private var restoreObservation: NSObjectProtocol?
-    private var minimizedWithMain = false
     private var preferenceObservation: AnyCancellable?
     private var cachedProject: UUID?, cachedSong: UUID?
     private var cachedRevision: UInt64?
@@ -413,22 +410,6 @@ private struct LocalizedTeleprompterConfig: View {
         self.index = index
         preferences = index == 1 ? .shared : .second
         super.init()
-        minimizeObservation = NotificationCenter.default.addObserver(forName: NSWindow.didMiniaturizeNotification,object: nil,queue: .main) { [weak self] notice in
-            guard let parent = notice.object as? NSWindow, parent.title == "CatLive" else { return }
-            MainActor.assumeIsolated {
-                guard let self, let window = self.window, !window.isProjectionFullscreen else { return }
-                self.minimizedWithMain = true
-                window.orderOut(nil)
-            }
-        }
-        restoreObservation = NotificationCenter.default.addObserver(forName: NSWindow.didDeminiaturizeNotification,object: nil,queue: .main) { [weak self] notice in
-            guard let parent = notice.object as? NSWindow, parent.title == "CatLive" else { return }
-            MainActor.assumeIsolated {
-                guard let self, self.minimizedWithMain else { return }
-                self.minimizedWithMain = false
-                self.window?.order(.above, relativeTo: parent.windowNumber)
-            }
-        }
         preferenceObservation = preferences.$settings.dropFirst().sink { [weak self] _ in
             guard self?.visible == true || (self.map { TeleprompterRemote.panel($0.index).enabled } ?? false) else { return }
             // Published sends before the stored profile changes. Read it on the
@@ -575,11 +556,9 @@ private struct LocalizedTeleprompterConfig: View {
             ProjectionWindow.presentWorkspaceWindow(configuration)
             return
         }
-        let panel = NSPanel(contentRect: NSRect(x: 0,y: 0,width: 760,height: 700),styleMask: [.titled,.closable,.utilityWindow],backing: .buffered,defer: false)
-        panel.title = JarasLocalization.string("Teleprompter settings")
-        panel.contentMinSize = NSSize(width: 500,height: 520)
-        panel.isReleasedWhenClosed = false; panel.isFloatingPanel = false; panel.hidesOnDeactivate = false
-        panel.level = .normal; panel.delegate = self
+        let panel = makeWorkspacePanel(title: JarasLocalization.string("Teleprompter settings"),
+            size: NSSize(width: 760, height: 700), minimum: NSSize(width: 500, height: 520))
+        panel.delegate = self
         let host = NSHostingView(rootView: LocalizedTeleprompterConfig(initialSlot: initialSlot, close: { [weak panel] in panel?.close() }).interfaceScaled())
         if #available(macOS 13, *) { host.sizingOptions = [] }
         panel.contentView = host
@@ -611,7 +590,6 @@ private struct LocalizedTeleprompterConfig: View {
     func windowWillClose(_ notification: Notification) {
         guard let closed = notification.object as? NSWindow else { return }
         if closed === window {
-            minimizedWithMain = false
             visible = false; window?.contentView = nil; window = nil
             video.setProjectionEnabled(false)
             cachedPreview = []; cachedRevision = nil
@@ -622,7 +600,6 @@ private struct LocalizedTeleprompterConfig: View {
 }
 
 struct TeleprompterToggleButton: View {
-    @Environment(\.transportControlWidth) private var buttonWidth
     let show: ShowController
     var directory: URL? = nil
     let index: Int
@@ -635,35 +612,22 @@ struct TeleprompterToggleButton: View {
     }
     var body: some View {
         Button { controller.toggle(show: show) } label: {
-            Label("TP-\(index)",systemImage: "text.alignleft").font(.jarasSystem(size: TransportControlMetrics.font,weight: .semibold))
-                    .lineLimit(1).minimumScaleFactor(0.8)
-                    .frame(width: buttonWidth, height: TransportControlMetrics.height)
-                .foregroundStyle(Color.black)
-                .background(RoundedRectangle(cornerRadius: 5).fill(controller.visible ? JarasTheme.green : JarasTheme.liveOffRed))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(controller.visible ? JarasTheme.green : JarasTheme.liveOffRed))
-                .contentShape(Rectangle())
+            DesktopToolbarLabel(title: Text(verbatim: "TP\(index)"), tone: controller.visible ? .live : .neutral)
         }.buttonStyle(.plain)
             .contextMenu {
                 Button("Configurações") { controller.showSettings() }
                 Button("TP Remoto") { controller.showRemote(show: show, directory: directory) }
             }
-            .jarasHelp(index == 1 ? ControlMappings.shared.shortcutHelp(.toggleTeleprompter) : "Teleprompter 2")
             .accessibilityLabel("Teleprompter \(index)")
     }
 }
 struct TeleprompterPreviewButton: View {
-    @Environment(\.transportControlWidth) private var buttonWidth
     @ObservedObject private var controller = TeleprompterWindow.shared
     @State private var choosingPage = false
     var body: some View {
         Button { controller.togglePreview() } label: {
-            Text("Preview").font(.jarasSystem(size: TransportControlMetrics.font,weight: .semibold))
-                .frame(width: buttonWidth, height: TransportControlMetrics.height)
-                .foregroundStyle(Color.black)
-                .background(RoundedRectangle(cornerRadius: 5).fill(controller.previewActive ? JarasTheme.green : JarasTheme.liveOffRed))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(controller.previewActive ? JarasTheme.green : JarasTheme.liveOffRed))
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain).jarasHelp("Show blocks in the teleprompter")
+            DesktopToolbarLabel(title: Text("Preview"), tone: controller.previewActive ? .live : .neutral)
+        }.buttonStyle(.plain)
             .overlay(TeleprompterRightClick(action: { choosingPage = true }))
             .popover(isPresented: $choosingPage) {
                 VStack(alignment: .leading,spacing: 12) {
@@ -764,7 +728,7 @@ struct TPNoticeAppearance: Codable {
         guard playing != playbackRunning else { return }
         playbackRunning = playing
         if playing { if stoppedNoticeActive { clear() } }
-        else if pinWhenStopped { presentStoppedNotice() }
+        else if pinWhenStopped && !active { presentStoppedNotice() }
     }
     private func presentStoppedNotice() {
         let previousDraft = draft, previousSlot = slot
@@ -784,6 +748,7 @@ struct TPNoticeAppearance: Codable {
     private var pausedRemaining = 20.0
     private var expiry: Task<Void, Never>?
     private var panel: NSWindow?
+    @Published private(set) var editorOpen = false
     private var globalDraft = ""
     private let defaults: UserDefaults
     init(defaults: UserDefaults = .standard) {
@@ -818,6 +783,7 @@ struct TPNoticeAppearance: Codable {
         let value = String(draft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
         let selectedImage = slot >= 0 ? images[slot].flatMap(NSImage.init(data:)) : nil
         guard !value.isEmpty || selectedImage != nil else { return false }
+        if stoppedNoticeActive { pinned = false }
         stoppedNoticeActive = false
         message = value; image = selectedImage; sentAt = Date(); pausedRemaining = 20
         remoteImage = slot >= 0 ? images[slot].map { "data:image/jpeg;base64," + $0.base64EncodedString() } : nil
@@ -842,7 +808,12 @@ struct TPNoticeAppearance: Codable {
         pinned.toggle(); pausedRemaining = seconds
         if active { schedule(seconds: seconds) }
     }
-    func clear() { stoppedNoticeActive = false; expiry?.cancel(); expiry = nil; flashTask?.cancel(); flashing = false; message = ""; image = nil; remoteImage = nil; deadline = nil; pinned = false }
+    func clear() {
+        let restore = active && !stoppedNoticeActive && pinWhenStopped && !playbackRunning
+        stoppedNoticeActive = false; expiry?.cancel(); expiry = nil; flashTask?.cancel(); flashing = false
+        message = ""; image = nil; remoteImage = nil; deadline = nil; pinned = false
+        if restore { presentStoppedNotice() }
+    }
     func chooseImage(for index: Int? = nil) {
         let imageSlot = index ?? slot
         guard images.indices.contains(imageSlot) else { return }
@@ -868,24 +839,13 @@ struct TPNoticeAppearance: Codable {
         window.contentView = host
         InterfaceScaling.shared.register(window)
         window.center(); ProjectionWindow.presentWorkspaceWindow(window); panel = window
+        editorOpen = true
     }
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window === panel else { return }
         if !stoppedNoticeActive { clear() }
         panel = nil
-    }
-}
-struct TPNoticeButton: View {
-    @Environment(\.transportControlWidth) private var buttonWidth
-    var body: some View {
-        Button { TPNoticeController.shared.open() } label: {
-            HStack(spacing: 3) {
-                Image(systemName: "text.bubble")
-                Text("Messages")
-            }
-        }
-            .buttonStyle(TransportButtonStyle(color: JarasTheme.liveOffRed, active: true, fontSize: TransportControlMetrics.font, width: buttonWidth, height: TransportControlMetrics.height))
-            .jarasHelp("Messages")
+        editorOpen = false
     }
 }
 // Keep SwiftUI's editor and its selection/focus intact; only make its native
@@ -947,8 +907,13 @@ private struct TPNoticeEditor: View {
                 Text("Global").tag(-1)
                 ForEach(0..<3) { index in Text("Message \(index + 1)").tag(index) }
             }.pickerStyle(.segmented)
-            TextEditor(text: $model.draft).font(.jarasSystem(size: 18))
-                .background(NoticeEditorBackground())
+            Group {
+                if #available(macOS 13, *) {
+                    TextEditor(text: $model.draft).scrollContentBackground(.hidden)
+                } else {
+                    TextEditor(text: $model.draft).background(NoticeEditorBackground())
+                }
+            }.font(.jarasSystem(size: 18))
                 .padding(8).background(Color(hex: 0x101010))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.14), lineWidth: 1).allowsHitTesting(false))

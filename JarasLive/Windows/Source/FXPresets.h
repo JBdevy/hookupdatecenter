@@ -1,19 +1,32 @@
 #pragma once
 #include "Common.h"
+#include "../../Core/Audio/CreativeEffects.hpp"
 namespace catlive::fxpresets {
 inline void erase(var &value, const Identifier &key) {
     if (auto *object = value.getDynamicObject()) object->removeProperty(key);
+}
+inline String channelsField(const String &kind) {
+    if (kind == "EQ" || kind == "Compressor" || kind == "Delay" || kind == "Reverb")
+        return kind.toLowerCase() + "Channels";
+    return {};
+}
+inline unsigned channels(const var &value, const String &kind) {
+    const auto field = channelsField(kind);
+    return field.isEmpty() ? 3u : unsigned(jlimit(0., 3., num(value, Identifier(field), 3.)));
 }
 inline const StringArray &fields(const String &kind) {
     static const std::map<String, StringArray> values{
         {"CatStemSeparation 5", {"stemSeparatorEnabled", "stemMix"}},
         {"CatLive Trigger", {"triggerEnabled", "trigger"}},
         {"Cat Gate", {"gateEnabled", "gate"}},
-        {"EQ", {"eqEnabled", "bands"}},
-        {"Compressor", {"compressorEnabled", "threshold", "ratio", "attack", "release", "makeup"}},
-        {"Limiter", {"limiterEnabled", "limiter"}}, {"Pitch", {"pitchEnabled", "pitchSemitones"}},
-        {"Delay", {"delayEnabled", "delayTime", "feedback", "delayMix"}},
-        {"Reverb", {"reverbEnabled", "reverbRoom", "reverbMix", "reverbDecay", "reverbLowCut", "reverbHighCut"}},
+        {"EQ", {"eqEnabled", "bands", "eqChannels"}},
+        {"Compressor", {"compressorEnabled", "threshold", "ratio", "attack", "release", "makeup", "compressorChannels"}},
+        {"Limiter", {"limiterEnabled", "limiter"}}, {"Pitch", {"pitchEnabled", "pitchSemitones", "pitchFormant"}},
+        {"Delay", {"delayEnabled", "delayTime", "feedback", "delayMix", "delayChannels"}},
+        {"Reverb", {"reverbEnabled", "reverbRoom", "reverbMix", "reverbDecay", "reverbLowCut", "reverbHighCut", "reverbChannels"}},
+        {"Chorus", {"chorusEnabled", "chorus"}}, {"Phaser", {"phaserEnabled", "phaser"}},
+        {"Drummer Pad 16", {"drummer16Enabled", "drummer16"}}, {"Drummer Pad 48", {"drummer48Enabled", "drummer48"}},
+        {"Arpeggiator", {"arpeggiatorEnabled"}}, {"Amp", {"ampEnabled", "amp"}}, {"Soft Clipper", {"softClipperEnabled", "softClipper"}}, {"Gate Divisor", {"divisionGateEnabled", "divisionGate"}},
         {"Instruments", {"instrumentID", "instrumentParameters", "instrumentBypassed"}}};
     static const StringArray empty;
     const auto found = values.find(kind);

@@ -32,7 +32,6 @@ import UniformTypeIdentifiers
     @State private var progress = 0.0
     @State private var progressMessage = ""
     @State private var error = ""
-    @State private var result: URL?
     @State private var cancellation = AudioExportCancellation()
     @State private var addingSpecialTracks = false
     @State private var selectedSpecialTracks: Set<UUID> = []
@@ -50,7 +49,13 @@ import UniformTypeIdentifiers
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if choosingFormat { formatSelection } else {
-            Text("Reduzir projeto").font(.jarasTitle2.bold())
+            HStack {
+                Text("Reduzir projeto").font(.jarasTitle2.bold())
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").frame(width: 30, height: 30).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel("Close").keyboardShortcut(.cancelAction).disabled(busy)
+            }
             if !ready {
                 Text("Salve o projeto antes de reduzir.").foregroundStyle(JarasTheme.yellow)
                 Button("Salvar") { Task { await show.save(); ready = !needsSave } }.disabled(documents.show.saving)
@@ -136,11 +141,10 @@ import UniformTypeIdentifiers
                     Text(verbatim: progressMessage).font(.jarasCaption)
                         .frame(maxWidth: .infinity, alignment: .leading).lineLimit(3)
                 }
-                if let result { Button("Mostrar no Finder") { NSWorkspace.shared.activateFileViewerSelecting([result]) } }
             }
             if !error.isEmpty { Text(verbatim: error).foregroundStyle(.red).font(.jarasCaption) }
             HStack {
-                Button("Cancelar") { if busy { cancellation.cancel() } else { dismiss() } }.keyboardShortcut(.cancelAction)
+                if busy { Button("Cancelar") { cancellation.cancel() } }
                 Spacer()
                 Button("Reduzir", action: reduce).buttonStyle(StageButtonStyle(color: JarasTheme.green))
                     .disabled(!ready || busy || reductionGroups.isEmpty || TrackRecording.shared.recording)
@@ -322,7 +326,7 @@ import UniformTypeIdentifiers
         let project = snapshot, media = document.deletingLastPathComponent(), definitions = reductionGroups
         let instruments = Dictionary(uniqueKeysWithValues: project.songs.flatMap(\.tracks).filter { $0.clips.contains { $0.midi != nil } }.map { ($0.id, ItemReRender.midiInstruments(for: $0, projectDirectory: media)) })
         cancellation = AudioExportCancellation(); let token = cancellation
-        busy = true; progress = 0; progressMessage = "Preparando redução…"; error = ""; result = nil
+        busy = true; progress = 0; progressMessage = "Preparando redução…"; error = ""
         Task {
             defer { busy = false }
             do {
@@ -336,7 +340,8 @@ import UniformTypeIdentifiers
                         }
                     }
                 }.value
-                result = target
+                show.message = "Projeto reduzido salvo: " + target.lastPathComponent
+                dismiss()
             } catch { self.error = error.localizedDescription }
         }
     }

@@ -353,17 +353,22 @@ private final class SourcePlayer: @unchecked Sendable {
         func record(_ amplitude: Double) {
             guard amplitude.isFinite, amplitude >= Self.displayThreshold, amplitude > maximum else { return }
             maximum = amplitude
-            let db = (20 * log10(amplitude) * 100).rounded() / 100
+            let rounded = (20 * log10(amplitude) * 100).rounded() / 100
+            let db = amplitude == 1 ? 0 : amplitude < 1 ? min(-0.01, rounded) : max(0.01, rounded)
             if decibels != db { decibels = db }
         }
         func clear() { maximum = 0; if decibels != nil { decibels = nil } }
     }
     let peakHold = PeakHold()
     @Published private(set) var levels = SIMD2<Double>(repeating: 0)
+    @Published private(set) var gainReduction: Double?
     var level: Double { max(levels.x, levels.y) }
-    // Instant attack and a short falling envelope: 60 dB in half a
-    // second. No peak-hold delay; the numeric maximum is separate.
-    static let releaseDecibelsPerSecond = 120.0
+    func updateGainReduction(_ db: Double?) {
+        let next = db.map { (min(24, max(0, $0)) * 10).rounded() / 10 }
+        if gainReduction != next { gainReduction = next }
+    }
+    // Instant attack and a 60 dB fall over 1.5 s. The numeric peak stays independent.
+    static let releaseDecibelsPerSecond = 40.0
     private var envelope = SIMD2<Double>(repeating: 0)
     func reset() { envelope = .zero; if levels != .zero { levels = .zero } }
     func update(peak: Double, elapsed: Double) { update(left: peak, right: peak, elapsed: elapsed) }
@@ -377,6 +382,224 @@ private final class SourcePlayer: @unchecked Sendable {
             if envelope[channel] < 0.001 { envelope[channel] = 0 }
         }
         if levels != envelope { levels = envelope }
+    }
+}
+
+enum MixerMeterStyle {
+    static let railThickness: CGFloat = 14
+    static let railRadius = railThickness / 2
+    private static let lightRail = cgColor(JarasTheme.lightDarkBackgroundHex)
+    private static let darkRail = cgColor(0x0a0a0a)
+    static func railBackground(for theme: JarasInterfaceTheme) -> CGColor {
+        theme == .dark ? darkRail : lightRail
+    }
+    static let railBorder = cgColor(0x2D3236)
+    static let linkedBackground = cgColor(0x423B24)
+    static let compactSize = CGSize(width: 8, height: 20)
+    private static let signalColors: [UInt32] = [0x239653, 0xFFDC52]
+    static let clippingColor = cgColor(0xF44336)
+    static func fraction(decibels: Double) -> CGFloat {
+        min(1, max(0, (decibels + 60) / 72))
+    }
+    static let clippingStart = fraction(decibels: 0)
+    static let gradientStops: [CGFloat] = [0, fraction(decibels: -20), fraction(decibels: -17), 1]
+    static let gradientColors = signalColors.flatMap { [cgColor($0), cgColor($0)] }
+
+    static func gradientAxis(in rail: CGRect, vertical: Bool) -> (start: CGPoint, end: CGPoint) {
+        if vertical {
+            return (CGPoint(x: rail.midX, y: rail.maxY), CGPoint(x: rail.midX, y: rail.minY))
+        }
+        return (CGPoint(x: rail.minX, y: rail.midY), CGPoint(x: rail.maxX, y: rail.midY))
+    }
+
+    static func cgColor(_ hex: UInt32) -> CGColor {
+        CGColor(srgbRed: Double(hex >> 16 & 255) / 255,
+                green: Double(hex >> 8 & 255) / 255, blue: Double(hex & 255) / 255, alpha: 1)
+    }
+
+    static func fraction(_ amplitude: Double) -> CGFloat {
+        guard amplitude.isFinite, amplitude > 0 else { return 0 }
+        return fraction(decibels: 20 * log10(amplitude))
+    }
+
+    static func gainReductionRail(in bounds: CGRect, near rail: CGRect, vertical: Bool) -> CGRect {
+        if vertical {
+            let left = rail.maxX + 3
+            let inset = min(6, rail.height / 8)
+            return CGRect(x: left, y: rail.minY + inset, width: max(0, min(3, bounds.maxX - left)), height: rail.height - 2 * inset)
+        }
+        return CGRect(x: rail.minX, y: min(bounds.maxY - 2, rail.maxY + 1), width: rail.width, height: 2)
+    }
+    static func gainReductionFill(in rail: CGRect, db: Double) -> CGRect {
+        let fraction = min(1, max(0, db / 24))
+        if rail.height > rail.width {
+            return CGRect(x: rail.minX, y: rail.minY, width: rail.width, height: rail.height * fraction)
+        }
+        let width = rail.width * fraction
+        return CGRect(x: rail.maxX - width, y: rail.minY, width: width, height: rail.height)
+    }
+    static func clippingTip(_ fullChannel: CGRect, vertical: Bool) -> CGRect {
+        if vertical {
+            return CGRect(x: fullChannel.minX, y: fullChannel.minY,
+                          width: fullChannel.width, height: fullChannel.height * (1 - clippingStart))
+        }
+        let width = fullChannel.width * (1 - clippingStart)
+        return CGRect(x: fullChannel.maxX - width, y: fullChannel.minY, width: width, height: fullChannel.height)
+    }
+
+    static func fill(in rail: CGRect, channel: Int, level: CGFloat, vertical: Bool) -> CGRect {
+        if vertical {
+            let gap = min(1, rail.width)
+            let width = (rail.width - gap) / 2
+            let height = rail.height * level
+            return CGRect(x: rail.minX + CGFloat(channel) * (width + gap), y: rail.maxY - height,
+                          width: width, height: height)
+        }
+        let gap = min(1, rail.height)
+        let height = (rail.height - gap) / 2
+        return CGRect(x: rail.minX, y: rail.minY + CGFloat(channel) * (height + gap),
+                      width: rail.width * level, height: height)
+    }
+}
+
+/// A rounded rail clips the two channels while the gradient stays fixed to the dB scale.
+final class MixerRailLayers {
+    let layer = CALayer()
+    private let gradient = CAGradientLayer()
+    private let ink = CALayer()
+    private let channels = [CALayer(), CALayer()]
+    private let clippingTips = [CALayer(), CALayer()]
+    private let flipped: Bool
+    private var size = CGSize.zero
+    private var lastLevels: SIMD2<Double>?
+    private var previousCompact = false
+    private var previousLinked = false
+    private var previousTheme: JarasInterfaceTheme?
+
+    init(flipped: Bool) {
+        self.flipped = flipped
+        layer.masksToBounds = true
+        layer.borderWidth = 0.75
+        layer.borderColor = MixerMeterStyle.railBorder
+        gradient.colors = MixerMeterStyle.gradientColors
+        gradient.locations = MixerMeterStyle.gradientStops.map { NSNumber(value: Double($0)) }
+        gradient.mask = ink
+        for channel in channels {
+            channel.backgroundColor = CGColor(gray: 1, alpha: 1)
+            ink.addSublayer(channel)
+        }
+        layer.addSublayer(gradient)
+        for tip in clippingTips {
+            tip.backgroundColor = MixerMeterStyle.clippingColor
+            tip.isHidden = true
+            layer.addSublayer(tip)
+        }
+    }
+
+    func update(size nextSize: CGSize, levels: SIMD2<Double>, compact: Bool = false, linked: Bool = false,
+                theme: JarasInterfaceTheme = .current) {
+        let styleChanged = previousCompact != compact || previousLinked != linked || previousTheme != theme
+        guard size != nextSize || lastLevels != levels || styleChanged else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        if size != nextSize || lastLevels == nil || styleChanged {
+            let width = compact ? min(MixerMeterStyle.compactSize.width, nextSize.width) : nextSize.width
+            let height = compact ? min(MixerMeterStyle.compactSize.height, nextSize.height) : nextSize.height
+            let rail = CGRect(x: 0, y: 0, width: width, height: height)
+            layer.frame = rail.offsetBy(dx: (nextSize.width - width) / 2, dy: (nextSize.height - height) / 2)
+            layer.cornerRadius = min(MixerMeterStyle.railRadius, width / 2, height / 2)
+            layer.backgroundColor = linked ? MixerMeterStyle.linkedBackground : MixerMeterStyle.railBackground(for: theme)
+            gradient.frame = rail
+            ink.frame = rail
+            gradient.startPoint = compact ? CGPoint(x: 0.5, y: flipped ? 1 : 0) : CGPoint(x: 0, y: 0.5)
+            gradient.endPoint = compact ? CGPoint(x: 0.5, y: flipped ? 0 : 1) : CGPoint(x: 1, y: 0.5)
+        }
+        size = nextSize; lastLevels = levels; previousCompact = compact; previousLinked = linked; previousTheme = theme
+        for (index, channel) in channels.enumerated() {
+            var fill = MixerMeterStyle.fill(in: layer.bounds, channel: index,
+                level: MixerMeterStyle.fraction(levels[index]), vertical: compact)
+            if compact && !flipped { fill.origin.y = 0 }
+            channel.frame = fill
+            let tip = clippingTips[index]
+            tip.isHidden = levels[index] <= 1
+            if !tip.isHidden {
+                let full = MixerMeterStyle.fill(in: layer.bounds, channel: index, level: 1, vertical: compact)
+                var redZone = MixerMeterStyle.clippingTip(full, vertical: compact)
+                if compact && !flipped { redZone.origin.y = full.maxY - redZone.maxY }
+                tip.frame = redZone.intersection(fill)
+            }
+        }
+    }
+}
+
+struct MixerFaderMeter: View {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
+    @ObservedObject var meter: TrackMeterLevel
+    var vertical = false
+    var showsGainReduction = true
+
+    private static let gradient = Gradient(stops: zip(MixerMeterStyle.gradientColors, MixerMeterStyle.gradientStops).map {
+        Gradient.Stop(color: Color(cgColor: $0.0), location: $0.1)
+    })
+
+    var body: some View {
+        Canvas { context, size in
+            let rail = CGRect(origin: .zero, size: size)
+            let radius = min(MixerMeterStyle.railRadius, rail.width / 2, rail.height / 2)
+            let shape = Path(roundedRect: rail, cornerRadius: radius)
+            let background = MixerMeterStyle.railBackground(for: theme)
+            context.fill(shape, with: .color(Color(cgColor: background)))
+            context.clip(to: shape)
+            var ink = Path()
+            for channel in 0..<2 {
+                ink.addRect(MixerMeterStyle.fill(in: rail, channel: channel,
+                    level: MixerMeterStyle.fraction(meter.levels[channel]), vertical: vertical))
+            }
+            let axis = MixerMeterStyle.gradientAxis(in: rail, vertical: vertical)
+            context.fill(ink, with: .linearGradient(Self.gradient, startPoint: axis.start, endPoint: axis.end))
+            for channel in 0..<2 where meter.levels[channel] > 1 {
+                let full = MixerMeterStyle.fill(in: rail, channel: channel, level: 1, vertical: vertical)
+                let signal = MixerMeterStyle.fill(in: rail, channel: channel,
+                                                  level: MixerMeterStyle.fraction(meter.levels[channel]), vertical: vertical)
+                let red = MixerMeterStyle.clippingTip(full, vertical: vertical).intersection(signal)
+                context.fill(Path(red), with: .color(Color(cgColor: MixerMeterStyle.clippingColor)))
+            }
+            let border = Path(roundedRect: rail.insetBy(dx: 0.5, dy: 0.5), cornerRadius: max(0, radius - 0.5))
+            context.stroke(border, with: .color(Color(cgColor: MixerMeterStyle.railBorder)), lineWidth: 1)
+        }
+        .overlay(alignment: .trailing) {
+            if showsGainReduction && vertical {
+                GainReductionBar(db: meter.gainReduction ?? 0).frame(width: 3).padding(.vertical, 6).offset(x: 6)
+            }
+        }
+        .allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+struct GainReductionBar: View {
+    let db: Double
+
+    var body: some View {
+        Canvas { context, size in
+            let rail = CGRect(origin: .zero, size: size)
+            context.fill(Path(roundedRect: rail, cornerRadius: 1), with: .color(.black.opacity(0.6)))
+            let fill = MixerMeterStyle.gainReductionFill(in: rail, db: db)
+            if !fill.isEmpty {
+                context.fill(Path(roundedRect: fill, cornerRadius: 1),
+                             with: .color(Color(cgColor: MixerMeterStyle.clippingColor)))
+            }
+        }.allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+
+struct CompactMixerMeter: View {
+    @ObservedObject var meter: TrackMeterLevel
+
+    var body: some View {
+        MixerFaderMeter(meter: meter, vertical: true, showsGainReduction: false)
+            .frame(width: MixerMeterStyle.compactSize.width)
+            .frame(maxHeight: MixerMeterStyle.compactSize.height)
     }
 }
 
@@ -438,6 +661,8 @@ struct TimecodePlaybackSpan {
     private var outputIsRunning: Bool {
         #if os(macOS)
         if let bufferedOutput { return engine.isRunning && bufferedOutput.hardwareEngine.isRunning }
+        #elseif os(iOS)
+        if let mobileOutput { return engine.isRunning && mobileOutput.isRunning }
         #endif
         return engine.isRunning
     }
@@ -632,7 +857,7 @@ struct TimecodePlaybackSpan {
     private var subplayPreparationGeneration = UUID()
     private var subplayPreparedKey: String?
     private var subplayReserved: [UUID: [Voice]] = [:]
-    private var subplayPreparedSources: [ObjectIdentifier: Double] = [:]
+    private var readySourcePreparations: [ObjectIdentifier: SourcePreparation] = [:]
     /// File sources still retained by the graph must survive timeline cleanup,
     /// including voices retiring after an edit and voices prepared for a seek.
     var activeMediaURLs: Set<URL> {
@@ -704,6 +929,9 @@ struct TimecodePlaybackSpan {
         var result: (Double, Double, UUID?, UUID?)?
         if transport.loop.enabled, let a = transport.loop.start, let b = transport.loop.end, b > a, b > transport.position,
            transport.multiLoop?.released != true { result = (b, a, nil, nil) }
+        if let seek = transport.beatSeek, result == nil || seek.boundary <= result!.0 {
+            return (seek.boundary, seek.destination, nil, nil)
+        }
         // Queues share the sample-clock scheduling/promotion used for section
         // jumps. A loop still owns its boundary; an already-running Sub Play
         // owns its handoff. Prepare-only must never schedule incoming audio.
@@ -768,6 +996,10 @@ struct TimecodePlaybackSpan {
         }
         let masterSend = AVAudioMixerNode()
         let groupSend = AVAudioMixerNode()
+        var preFXSend: AVAudioMixerNode?
+        var preFaderSend: AVAudioMixerNode?
+        var hasPreFXSend = false
+        var hasPreFaderSend = false
         let internalSend = AVAudioMixerNode()
         // One existing native kernel applies fader, stereo balance, phase and
         // mute/solo. It also captures peaks directly from the post-control PCM.
@@ -777,21 +1009,40 @@ struct TimecodePlaybackSpan {
     }
     private var trackBuses: [UUID: TrackBus] = [:]
     private var recordingTaps: [UUID: AVAudioNode] = [:]
-    func attachOutputCapture(_ track: UUID, postFX: Bool, postFader: Bool, ring: JarasCaptureRing) throws -> AVAudioFormat {
+    private var mainCaptureRings: [UUID: JarasCaptureRing] = [:]
+    private var mainCaptureTapInstalled = false
+    func attachOutputCapture(_ track: UUID, postFX: Bool, postFader: Bool, main: Bool = false, ring: JarasCaptureRing) throws -> AVAudioFormat {
         try prepareDevice()
         detachOutputCapture(track)
-        let bus = trackBus(for: track)
-        let node: AVAudioNode = postFX ? (postFader ? bus.controls : bus.processedMix) : bus.mix
-        let format = node.outputFormat(forBus: 0)
-        node.installTap(onBus: 0, bufferSize: 512, format: format) { buffer, _ in ring.push(buffer) }
+        let node: AVAudioNode
+        if main {
+            node = masterGain
+            mainCaptureRings[track] = ring
+            updateMainCaptureTap()
+        } else {
+            let bus = trackBus(for: track)
+            node = postFX ? (postFader ? bus.controls : bus.processedMix) : bus.mix
+            node.installTap(onBus: 0, bufferSize: 512, format: node.outputFormat(forBus: 0)) { buffer, _ in ring.push(buffer) }
+        }
         recordingTaps[track] = node
         refreshGraphRendering()
         if !engine.isRunning { try engine.start() }
-        return format
+        return node.outputFormat(forBus: 0)
     }
     func detachOutputCapture(_ track: UUID) {
-        recordingTaps.removeValue(forKey: track)?.removeTap(onBus: 0)
+        let node = recordingTaps.removeValue(forKey: track)
+        if mainCaptureRings.removeValue(forKey: track) != nil { updateMainCaptureTap() }
+        else { node?.removeTap(onBus: 0) }
         refreshGraphRendering()
+    }
+    private func updateMainCaptureTap() {
+        if mainCaptureTapInstalled { masterGain.removeTap(onBus: 0); mainCaptureTapInstalled = false }
+        let rings = Array(mainCaptureRings.values)
+        guard !rings.isEmpty else { return }
+        masterGain.installTap(onBus: 0, bufferSize: 512, format: masterGain.outputFormat(forBus: 0)) { buffer, _ in
+            for ring in rings { ring.push(buffer) }
+        }
+        mainCaptureTapInstalled = true
     }
     var processingSampleRate: Double { preparedOutputFormat?.sampleRate ?? AudioDeviceSettings.shared.sampleRate }
     var outputCaptureFormat: AVAudioFormat { AVAudioFormat(standardFormatWithSampleRate: hardwareFormat.sampleRate, channels: 2)! }
@@ -802,11 +1053,24 @@ struct TimecodePlaybackSpan {
     private var padVoices: [UUID: PadVoice] = [:]
     private var padTracks: [UUID: UUID] = [:]
     private var padCompletions: [UUID: @MainActor () -> Void] = [:]
+    private var librarySamplerSource: JarasPadSource?
+
+    func playLibrarySampler(_ id: UUID, buffer: AVAudioPCMBuffer, gain: Float, finished: @escaping @MainActor () -> Void) throws {
+        guard outputAllowed, licenseAllowed, let librarySamplerSource else {
+            throw ProjectError.invalid(JarasLocalization.string("Audio output is unavailable"))
+        }
+        try startPadVoice(id, source: librarySamplerSource, buffer: buffer, gain: gain, track: nil, finished: finished)
+    }
+
     func playPad(_ id: UUID, buffer: AVAudioPCMBuffer, gain: Float, track: UUID?, finished: @escaping @MainActor () -> Void) throws {
         guard let track, let playback = latestPlayback,
               playback.snapshot.project.songs.first(where: { $0.id == playback.snapshot.transport.songId })?
                 .tracks.contains(where: { $0.id == track && $0.role.rawValue == "vinhetas" }) == true,
               let source = trackBuses[track]?.padSource else { finished(); return }
+        try startPadVoice(id, source: source, buffer: buffer, gain: gain, track: track, finished: finished)
+    }
+    private func startPadVoice(_ id: UUID, source: JarasPadSource, buffer: AVAudioPCMBuffer, gain: Float, track: UUID?,
+                               finished: @escaping @MainActor () -> Void) throws {
         // The running device is already prepared. Starting the pad must not
         // wait for a session check, meter scan or cleanup of unrelated tracks.
         if !engine.isRunning || !deviceSessionActive { try prepareDevice() }
@@ -839,6 +1103,7 @@ struct TimecodePlaybackSpan {
     func finishReleasedPads() {
         for (id, voice) in Array(padVoices) where !voice.source.isPlaying(voice.token) { stopPad(id) }
         for bus in trackBuses.values { bus.padSource?.reclaimFinishedBuffers() }
+        librarySamplerSource?.reclaimFinishedBuffers()
     }
     func setPadGain(_ id: UUID, gain: Float) {
         guard let voice = padVoices[id] else { return }
@@ -909,10 +1174,14 @@ struct TimecodePlaybackSpan {
     }
     func hasInputMonitor(_ track: UUID) -> Bool { inputMonitors[track] != nil }
     private var armedInstrumentTracks: Set<UUID> = []
+    var hasInstrumentMonitoring: Bool { !armedInstrumentTracks.isEmpty }
     func setArmedInstrumentTracks(_ armed: Set<UUID>) {
         guard armedInstrumentTracks != armed else { return }
         let changed = armedInstrumentTracks.symmetricDifference(armed)
         armedInstrumentTracks = armed
+        #if os(macOS)
+        bufferedOutput?.setLiveInstrumentMonitoring(!armed.isEmpty)
+        #endif
         if !armed.isEmpty { instrumentRenderPending = true }
         setGraphRenderEnabled(transportWasRunning || instrumentRenderPending)
         if deviceSessionActive { startMeterClock() }
@@ -950,7 +1219,7 @@ struct TimecodePlaybackSpan {
         setGraphRenderEnabled(transportWasRunning)
     }
     private var groupConnections: [UUID: UUID] = [:]
-    private var trackConnections: Set<TrackConnection> = []
+    private var trackConnections: [TrackConnection: TrackSendTap] = [:]
     private var tracks: [UUID: Track] = [:]
     // Keep routing connections stable for Undo, but release deleted tracks'
     // processors and model workers once instead of resetting them on every edit.
@@ -1163,7 +1432,6 @@ struct TimecodePlaybackSpan {
     private var lastPosition: [Int: Double] = [:]
     private var headAudioClock: [Int: (position: Double, host: UInt64)] = [:]
     private var headPresentationClocks: [Int: AudioPresentationClock] = [:]
-    #if os(macOS)
     private var pluginTempoRevision: UInt64?
     private var pluginTempoSong: UUID?
     private var pluginBaseTempo: Double?
@@ -1178,7 +1446,7 @@ struct TimecodePlaybackSpan {
         }
         let mainHead = transport.playing || !transport.subPlay.playing ? 0 : 1
         func publish(_ chain: NativeEffectsChain, head: Int) {
-            guard !chain.externalNodes.isEmpty else { return }
+            guard chain.hasClockedEffects else { return }
             chain.externalTimeline(pluginTempoSections)
             let running = head == 2 ? headAudioClock[2] != nil : (head == 0 ? transport.playing : transport.subPlay.playing)
             let position = running ? (head == 0 ? transport.position : transport.subPlay.position) : transport.editPosition ?? transport.position
@@ -1196,7 +1464,6 @@ struct TimecodePlaybackSpan {
         for (key, voice) in voices { if let effects = voice.effects { publish(effects, head: key.head) } }
         for (key, voice) in midiTakeVoices { publish(voice.effects, head: key.head) }
     }
-    #endif
 
     /// Position scheduled at the output, expressed at the UI sample epoch.
     /// The transport is ahead while players fill their processing latency.
@@ -1552,10 +1819,15 @@ struct TimecodePlaybackSpan {
     }
     func setMissingAudioPaths(_ paths: Set<String>) { missingAudioPaths = paths }
     private func configureGraph(directory: URL?, resetProject: Bool = false, prepareMaster: Bool = true) {
+        #if os(iOS)
+        // Stop RemoteIO before replacing the graph it renders into. Otherwise
+        // the old callback can pull from an engine while its nodes are detached.
+        mobileOutput?.stop()
+        #endif
         stopEngine()
         subplayPreparation?.cancel(); subplayPreparation = nil; subplayPreparedKey = nil
         subplayPreparationGeneration = UUID()
-        subplayPreparedSources.removeAll()
+        readySourcePreparations.removeAll()
         for reserved in subplayReserved.values { for voice in reserved { detach(voice) } }
         subplayReserved.removeAll()
         drainDeletedVoices()
@@ -1583,7 +1855,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             if resetProject { bus.effects.releaseExternal() }
             #endif
             if let source = bus.padSource { engine.detach(source.node) }
-            engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend); engine.detach(bus.controls); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
+            engine.detach(bus.silence); engine.detach(bus.mix); engine.detach(bus.processedMix); engine.detach(bus.masterSend); engine.detach(bus.groupSend); engine.detach(bus.internalSend)
+            if let send = bus.preFXSend { engine.detach(send) }
+            if let send = bus.preFaderSend { engine.detach(send) }
+            engine.detach(bus.controls); for route in bus.hardware { engine.detach(route) }; bus.effects.detach(from: engine)
         }
         #if os(macOS)
         for branches in trackInputBranches.values {
@@ -1602,6 +1877,8 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             #if os(macOS)
             if resetProject { masterEffects.releaseExternal() }
             #endif
+            if let librarySamplerSource { engine.detach(librarySamplerSource.node) }
+            librarySamplerSource = nil
             for route in masterRoutes { engine.detach(route) }
             masterEffects.detach(from: engine); engine.detach(masterGain); engine.detach(masterChannelMode); engine.detach(masterBus)
             masterConfigured = false
@@ -1735,7 +2012,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         let destinations = [AVAudioConnectionPoint(node: bus.masterSend, bus: 0), AVAudioConnectionPoint(node: bus.groupSend, bus: 0), AVAudioConnectionPoint(node: bus.internalSend, bus: 0)] + bus.hardware.map { AVAudioConnectionPoint(node: $0, bus: 0) }
         engine.connect(bus.processedMix, to: bus.controls, format: format)
         bus.effects.mediaDirectory = directory
-        bus.effects.attach(to: engine, input: bus.mix, format: format, destinations: [AVAudioConnectionPoint(node: bus.processedMix, bus: 0)])
+        // Terminate the silent FX clock branch at Main. Rejoining processedMix
+        // here gives Core Audio two paths through every track in a send chain.
+        // A diagonal Matrix Patch then multiplies the paths at each hop.
+        bus.effects.attach(to: engine, input: bus.mix, format: format,
+                           destinations: [AVAudioConnectionPoint(node: bus.processedMix, bus: 0)],
+                           clockDestination: bus.masterSend)
         engine.connect(bus.silence, to: bus.mix, fromBus: 0, toBus: 0, format: format)
         if tracks[id]?.role.rawValue == "vinhetas" {
             let source = JarasPadSource(format: format)
@@ -1790,7 +2072,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             let source = tracks[$0.source]
             return source?.parentTrackID != $0.destination || (source?.outputPatches.contains(.masterGroup) != true)
         }
-        let changed = Set(trackConnections.symmetricDifference(next).map(\.source))
+        let taps = Dictionary(uniqueKeysWithValues: next.map { edge in
+            (edge, tracks[edge.source]?.routing?.sendTap(to: edge.destination) ?? .postFader)
+        })
+        let changed = Set(Set(taps.keys).union(trackConnections.keys).compactMap { edge in
+            taps[edge] == trackConnections[edge] ? nil : edge.source
+        })
         guard !changedGroups.isEmpty || !changed.isEmpty else { return }
         // Monterey must not reconnect a live mixer fanout. Pause only for an
         // actual topology edit, keeping scheduled players and FX state intact.
@@ -1808,24 +2095,71 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // Remove both kinds of old edges before adding either kind of new
         // edge: a valid final routing must never pass through a feedback loop.
         for id in changedGroups { if let bus = trackBuses[id] { engine.disconnectNodeOutput(bus.groupSend) } }
-        for id in changed { if let bus = trackBuses[id] { engine.disconnectNodeOutput(bus.internalSend) } }
+        for id in changed {
+            guard let bus = trackBuses[id] else { continue }
+            for send in [bus.internalSend, bus.preFXSend, bus.preFaderSend].compactMap({ $0 }) {
+                engine.disconnectNodeOutput(send)
+            }
+        }
         for id in changedGroups {
             guard let bus = trackBuses[id] else { continue }
             let destination = groups[id].flatMap { trackBuses[$0]?.mix } ?? masterBus
             engine.connect(bus.groupSend, to: destination, fromBus: 0, toBus: destination.nextAvailableInputBus, format: format)
         }
         for id in changed {
-            guard let bus = trackBuses[id] else { continue }
-            var destinations: [AVAudioConnectionPoint] = []
-            for edge in next where edge.source == id {
-                if let target = trackBuses[edge.destination] { destinations.append(AVAudioConnectionPoint(node: target.mix, bus: target.mix.nextAvailableInputBus)) }
+            guard var bus = trackBuses[id] else { continue }
+            let edges = taps.filter { $0.key.source == id }
+            func connectSend(_ send: AVAudioMixerNode, to matches: (TrackSendTap) -> Bool) {
+                var destinations = edges.compactMap { edge, tap -> AVAudioConnectionPoint? in
+                    guard matches(tap), let target = trackBuses[edge.destination] else { return nil }
+                    return AVAudioConnectionPoint(node: target.mix, bus: target.mix.nextAvailableInputBus)
+                }
+                send.outputVolume = destinations.isEmpty ? 0 : 1
+                if destinations.isEmpty {
+                    destinations = [AVAudioConnectionPoint(node: masterBus, bus: masterBus.nextAvailableInputBus)]
+                }
+                engine.connect(send, to: destinations, fromBus: 0, format: format)
             }
-            bus.internalSend.outputVolume = destinations.isEmpty ? 0 : 1
-            if destinations.isEmpty { destinations = [AVAudioConnectionPoint(node: masterBus, bus: masterBus.nextAvailableInputBus)] }
-            engine.connect(bus.internalSend, to: destinations, fromBus: 0, format: format)
+            func connectTap(_ existing: AVAudioMixerNode?, source: AVAudioMixerNode,
+                            matching: (TrackSendTap) -> Bool) -> AVAudioMixerNode? {
+                guard existing != nil || edges.values.contains(where: matching) else { return nil }
+                let send = existing ?? AVAudioMixerNode()
+                if existing == nil { engine.attach(send) }
+                connectSend(send, to: matching)
+                if existing == nil {
+                    let connections = engine.outputConnectionPoints(for: source, outputBus: 0)
+                    let volumes = connections.map { point in
+                        point.node.flatMap { source.destination(forMixer: $0, bus: point.bus)?.volume }
+                    }
+                    engine.connect(source, to: connections + [AVAudioConnectionPoint(node: send, bus: 0)],
+                                   fromBus: 0, format: format)
+                    for (point, volume) in zip(connections, volumes) {
+                        if let node = point.node, let volume { source.destination(forMixer: node, bus: point.bus)?.volume = volume }
+                    }
+                }
+                return send
+            }
+            connectSend(bus.internalSend, to: { $0 == .postFader })
+            let isPreFX: (TrackSendTap) -> Bool = { $0 == .preFX }
+            let isPreFader: (TrackSendTap) -> Bool = { $0 == .preFader || $0 == .postFX }
+            bus.preFXSend = connectTap(bus.preFXSend, source: bus.mix, matching: isPreFX)
+            bus.preFaderSend = connectTap(bus.preFaderSend, source: bus.processedMix, matching: isPreFader)
+            bus.hasPreFXSend = edges.values.contains(where: isPreFX)
+            bus.hasPreFaderSend = edges.values.contains(where: isPreFader)
+            trackBuses[id] = bus
+            applyTrackGain(id)
         }
         groupConnections = groups
-        trackConnections = next
+        trackConnections = taps
+    }
+    func previewMatrixPatch(routes: [UUID: TrackRouting], outputs: [UUID: [OutputPatch]], master: [OutputPatch]?) {
+        // Group and send edges must describe the same final graph before reconnecting.
+        for (id, patches) in outputs { tracks[id]?.outputs = patches }
+        previewRouting(routes)
+        for id in outputs.keys {
+            if let row = tracks[id], let bus = trackBuses[id] { applyTrackRoutes(row, bus: bus) }
+        }
+        if let master { masterPatches = master; applyMasterRoutes() }
     }
     func previewRouting(_ routes: [UUID: TrackRouting]) {
         for (id, routing) in routes { tracks[id]?.routing = routing }
@@ -1868,6 +2202,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         masterEffects.mediaDirectory = directory
         masterEffects.attach(to: engine, input: masterBus, format: format)
+        if realtime {
+            let source = JarasPadSource(format: format)
+            engine.attach(source.node)
+            engine.connect(source.node, to: masterBus, fromBus: 0, toBus: masterBus.nextAvailableInputBus, format: format)
+            librarySamplerSource = source
+        }
         engine.connect(masterEffects.output, to: masterChannelMode, format: format)
         engine.connect(masterChannelMode, to: masterGain, format: format)
         for route in masterRoutes {
@@ -2055,6 +2395,15 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         startMeterClock()
     }
     #if os(iOS)
+    func requireMobilePlaybackOutput() throws {
+        guard outputAllowed else {
+            throw ProjectError.invalid(JarasLocalization.string("Audio output is unavailable"))
+        }
+        if !outputIsRunning {
+            try configureMaster()
+            try startEngineIfNeeded()
+        }
+    }
     private func prepareChangedMobileTrackGraph() throws {
         guard mobileTrackGraphNeedsRestart, let mobileOutput, outputAllowed,
               !transportWasRunning, voices.isEmpty, padVoices.isEmpty,
@@ -2125,6 +2474,17 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         #if os(macOS)
         if usesSelectedHardware, !AudioDeviceSettings.shared.outputDeviceIsBound {
             scheduleDeviceRecovery()
+            return
+        }
+        #endif
+        #if os(iOS)
+        if let mobileOutput, usesSelectedHardware {
+            if !outputIsRunning || outputFormatChanged || (renderEnabled && mobileOutput.hasStalled()) {
+                // NativeProjectTabs already coordinates the shared AVAudioSession.
+                // Use the same recovery as a route change and stop the timeline
+                // while that hardware is unavailable.
+                AudioDeviceSettings.shared.mobileSessionEvent?(.routeChanged(outputRemoved: false))
+            }
             return
         }
         #endif
@@ -2203,6 +2563,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     }
     func effectSampleError(_ target: UUID?, effect: String) -> String? { effects(for: target)?.sampleErrors[effect] }
     func effectPeaks(_ track: UUID?, effect: String) -> [Float] { effects(for: track)?.effectPeaks(effect) ?? [0,0,0,0] }
+    func compressorReduction(_ track: UUID?, effect: String) -> Double {
+        effects(for: track)?.compressorReduction(for: effect) ?? 0
+    }
     func compressorPeaks(for target: UUID?) -> [Float] { effects(for: target)?.compressorPeaks() ?? [0,0,0,0] }
     func meter(for id: UUID) -> TrackMeterLevel {
         if let meter = meters[id] { return meter }
@@ -2320,7 +2683,14 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         voicePreparation?.cancel(); voicePreparation = nil; preparationKey = nil
     }
     func pendingPlaybackPreparation(_ snapshot: ShowSnapshot, revision: UInt64) throws -> Task<Void, Never>? {
-        guard realtime, !snapshot.transport.playing, !snapshot.transport.subPlay.playing else { return nil }
+        let transport = snapshot.transport
+        guard realtime, !transport.playing, !transport.subPlay.playing else { return nil }
+        let position = transport.editPosition ?? transport.position
+        let key = idlePreparationKey(song: transport.songId, position: position, revision: revision)
+        if preparationKey == key, let latestPlayback, latestPlayback.revision == revision,
+           latestPlayback.snapshot.transport == transport, lastVideoNoAudio == VideoMediaSettings.shared.noAudio {
+            return voicePreparation
+        }
         try update(snapshot, revision: revision)
         return voicePreparation
     }
@@ -2331,7 +2701,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     }
     private func recycle(_ voice: Voice) {
         var voice = voice
-        if let source = voice.prepared { subplayPreparedSources[ObjectIdentifier(source)] = nil }
+        if let source = voice.prepared { readySourcePreparations[ObjectIdentifier(source)] = nil }
         clockedIdlePlayers.remove(ObjectIdentifier(voice.player))
         restoreItemAutomation(&voice)
         // A deleted track cannot reuse its item pool. Detaching also cancels
@@ -2388,24 +2758,37 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         onError(error)
     }
-    private func makeVoice(track: UUID, clip: AudioClip, file: AVAudioFile, preparedPlaybackFile: AVAudioFile? = nil) throws -> Voice {
-        // Prepared sources use independent cursors over the shared immutable
-        // PCM cache. Only AVAudioPlayerNode's legacy path needs a private file.
+    // Built by one producer, handed to the graph owner once. No node has an
+    // engine while the worker owns it, including on cancellation.
+    private struct UnattachedVoice: @unchecked Sendable {
+        let player: SourcePlayer
+        let gain: AVAudioUnitEffect
+        let stretch: AVAudioUnitTimePitch?
+        let rateClock: AVAudioUnitVarispeed?
+        let prepared: JarasPreparedClip?
+        let mixer: AVAudioMixerNode?
+
+        init(format: AVAudioFormat, timing: JarasPreparedClipTiming, preparedSource: Bool) {
+            player = SourcePlayer(legacy: !preparedSource)
+            gain = JarasVoiceGain.makeNode()
+            stretch = preparedSource ? nil : AVAudioUnitTimePitch()
+            rateClock = preparedSource ? nil : AVAudioUnitVarispeed()
+            prepared = preparedSource ? JarasPreparedClip(format: format, timing: timing) : nil
+            mixer = preparedSource ? AVAudioMixerNode() : nil
+            for node in ([player.node, stretch, rateClock, gain] as [AVAudioNode?]).compactMap({ $0 }) {
+                node.auAudioUnit.maximumFramesToRender = 8192
+            }
+            player.volume = 0
+            mixer?.outputVolume = 0
+        }
+    }
+
+    private func makeVoice(track: UUID, clip: AudioClip, file: AVAudioFile, preparedPlaybackFile: AVAudioFile? = nil,
+                           nodes: UnattachedVoice? = nil) throws -> Voice {
         let usesPreparedSource = preparedSourceEnabled && file.processingFormat.channelCount <= 2
         let playbackFile = try usesPreparedSource ? file : preparedPlaybackFile ?? AVAudioFile(forReading: file.url)
-        let player = SourcePlayer(legacy: !usesPreparedSource)
-        let gain = JarasVoiceGain.makeNode()
-        // Prepared PCM already owns pitch/rate processing. Unconnected legacy
-        // units still allocate resources and enlarge every engine graph rebuild.
-        let stretch: AVAudioUnitTimePitch? = usesPreparedSource ? nil : AVAudioUnitTimePitch()
-        let rateClock: AVAudioUnitVarispeed? = usesPreparedSource ? nil : AVAudioUnitVarispeed()
-        // Rate conversion may request more input frames than the device's
-        // output block. Reserve the upstream capacity before allocating the
-        // live graph so a BPM edit cannot exceed a processor's default slice.
-        for node in ([player.node, stretch, rateClock, gain] as [AVAudioNode?]).compactMap({ $0 }) {
-            node.auAudioUnit.maximumFramesToRender = 8192
-        }
-        player.volume = 0
+        let parts = nodes ?? UnattachedVoice(format: file.processingFormat, timing: preparedTiming, preparedSource: usesPreparedSource)
+        let player = parts.player, gain = parts.gain, stretch = parts.stretch, rateClock = parts.rateClock
         let pitch = clipPitches[clip.id] ?? 0
         let usesStretch = allowsTempoChanges || abs(clip.audioRate - 1) >= 0.000001 || abs(pitch) >= 0.000001
         if let node = player.node { engine.attach(node) }
@@ -2417,16 +2800,13 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         let bus = trackBus(for: track).input(for: clip)
         let inputBus = availableInputBus(track: track, node: bus)
-        let prepared = usesPreparedSource ? JarasPreparedClip(format: file.processingFormat, timing: preparedTiming) : nil
         if usesStretch, let stretch, let rateClock {
             engine.connect(player.requiredNode, to: stretch, format: file.processingFormat)
             engine.connect(stretch, to: rateClock, format: file.processingFormat)
         }
         var voice = Voice(player: player, gain: gain, stretch: stretch, rateClock: rateClock, pitch: pitch, usesStretch: usesStretch, track: track, clip: clip, file: playbackFile)
         voice.mixInputBus = inputBus
-        if let prepared {
-            let mix = AVAudioMixerNode()
-            mix.outputVolume = 0
+        if let prepared = parts.prepared, let mix = parts.mixer {
             engine.attach(prepared.node); engine.attach(mix)
             engine.connect(prepared.node, to: mix, format: file.processingFormat)
             JarasVoiceGain.setStartHostTime(gain, hostTime: UInt64.max)
@@ -2453,7 +2833,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         while occupied.contains(inputBus) || engine.inputConnectionPoint(for: node, inputBus: inputBus) != nil { inputBus += 1 }
         return inputBus
     }
-    private func takeVoice(track: UUID, clip: AudioClip, file: AVAudioFile) throws -> Voice {
+    private func takeVoice(track: UUID, clip: AudioClip, file: AVAudioFile, position: Double? = nil) throws -> Voice {
         func matches(_ voice: Voice) -> Bool {
             guard (voice.clip.frozenMIDI == true) == (clip.frozenMIDI == true),
                   voice.file.processingFormat.isEqual(file.processingFormat) else { return false }
@@ -2472,9 +2852,18 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             recycle(retiredVoices.remove(at: retired))
         }
         let pool = idleVoices[track] ?? []
+        let ready = position.flatMap { position in
+            pool.firstIndex { candidate in
+                guard matches(candidate), let source = candidate.prepared,
+                      let warmed = readySourcePreparations[ObjectIdentifier(source)] else { return false }
+                var voice = candidate
+                voice.clip = clip; voice.file = file
+                return sourcePreparation(voice, position: position) == warmed
+            }
+        }
         let preferred = pool.firstIndex { $0.clip.id == clip.id && matches($0) }
         let reusable = pool.firstIndex { matches($0) && analysisEffects[$0.clip.id.uuidString]?.isEmpty != false }
-        if let index = preferred ?? reusable {
+        if let index = ready ?? preferred ?? reusable {
             // A cached AVAudioFile can outlive a removed/disconnected media
             // path. Open its replacement before taking ownership of the pooled
             // graph; a failed read must leave all attached nodes tracked so
@@ -2508,10 +2897,14 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         return try makeVoice(track: track, clip: clip, file: file)
     }
-    private struct SourcePreparation: @unchecked Sendable {
+    private struct SourcePreparation: @unchecked Sendable, Equatable {
         let source: JarasPreparedClip
         let url: URL
         let first: Double, end: Double, rate: Double, pitch: Double, loopFirst: Double, loopEnd: Double
+        static func == (left: Self, right: Self) -> Bool {
+            left.source === right.source && left.url == right.url && left.first == right.first && left.end == right.end &&
+                left.rate == right.rate && left.pitch == right.pitch && left.loopFirst == right.loopFirst && left.loopEnd == right.loopEnd
+        }
         func perform() throws {
             try source.prepare(url, sourceFrame: first, endFrame: end, rate: rate,
                                pitch: pitch, loopStart: loopFirst, loopEnd: loopEnd)
@@ -2530,10 +2923,9 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             loopFirst: loopFirst, loopEnd: loopEnd)
     }
     private func prepareSource(_ voice: Voice, position: Double) throws {
-        if let source = voice.prepared,
-           let prepared = subplayPreparedSources.removeValue(forKey: ObjectIdentifier(source)),
-           abs(prepared - position) < 0.000001 { return }
-        try sourcePreparation(voice, position: position)?.perform()
+        guard let request = sourcePreparation(voice, position: position) else { return }
+        if readySourcePreparations.removeValue(forKey: ObjectIdentifier(request.source)) == request { return }
+        try request.perform()
     }
     /// Prime the silent incoming head off the main actor while Play continues.
     /// Reserve its nodes until every decoder has finished; the audio callback
@@ -2596,8 +2988,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                     if let request = self.sourcePreparation(voice, position: position) {
                         // Await the child even after cancellation: a reserved
                         // source cannot return to the pool while its DSP changes.
-                        try await Task.detached(priority: .utility) { try request.perform() }.value
-                        self.subplayPreparedSources[ObjectIdentifier(request.source)] = position
+                        self.readySourcePreparations[ObjectIdentifier(request.source)] = nil
+                        try await Task.detached(priority: .userInitiated) { try request.perform() }.value
+                        guard !Task.isCancelled, self.subplayPreparationGeneration == generation else { return }
+                        self.readySourcePreparations[ObjectIdentifier(request.source)] = request
                     }
                 } catch {
                     if error is CancellationError { return }
@@ -2609,21 +3003,35 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
         return subplayPreparation
     }
+    private func idlePreparationKey(song: UUID?, position: Double, revision: UInt64) -> String {
+        "\(song?.uuidString ?? "")/\(revision)/\(position)"
+    }
     private func prepareIdleVoices(position: Double, revision: UInt64) {
-        let key = "\(songID?.uuidString ?? "")/\(revision)/\(position)"
+        let key = idlePreparationKey(song: songID, position: position, revision: revision)
         guard preparationKey != key else { return }
         cancelVoicePreparation(); preparationKey = key
         let generation = preparationGeneration
         if onsetPreparationKey != key { preparedOnsets.removeAll(keepingCapacity: true); onsetPreparationKey = key }
-        let candidates = clips.filter { $0.1.startTime <= position + 2 && $0.1.startTime + $0.1.duration > position && $0.1.audioFile != nil }
+        let candidates: [(UUID, AudioClip)] = playbackClipIndex.candidates(at: position).compactMap { index in
+            let entry = clips[index]
+            guard let path = entry.1.audioFile?.path, !failedPlaybackFiles.contains(path),
+                  !entry.1.isProjectionMedia || !silentVideoFiles.contains(path) else { return nil }
+            return entry
+        }
         #if os(macOS)
         bufferedOutput?.setPlaybackSourceCount(UInt(candidates.count))
         #endif
+        if candidates.isEmpty && clockedIdlePlayers.isEmpty { return }
         // Large sessions need both sides of the next transition ready before
         // playback. Preparing a second graph at a short loop boundary is late.
         let reserveTransition = preparedSourceEnabled && candidates.count >= 32
         let upcoming = reserveTransition ? candidates.flatMap { [$0, $0] } : candidates
         voicePreparation = Task { @MainActor [weak self] in
+            #if os(macOS)
+            let logTiming = ProcessInfo.processInfo.environment["CATLIVE_BUFFERED_MAC_AUDIO_DIAGNOSTICS"] == "1"
+            let startedAt = ProcessInfo.processInfo.systemUptime
+            var mediaTime = 0.0, sourceTime = 0.0, allocationTime = 0.0, graphTime = 0.0
+            #endif
             defer {
                 if let self {
                     for voice in self.subplayReserved.removeValue(forKey: generation) ?? [] where voice.gain.engine === self.engine {
@@ -2641,6 +3049,13 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                 #endif
                 if self?.preparationGeneration == generation { self?.voicePreparation = nil }
                 self?.refreshGraphRendering()
+                #if os(macOS)
+                if logTiming {
+                    NSLog("CATLIVE_PLAY_PREPARATION sources=%d slots=%d total=%.1fms media=%.1fms source=%.1fms allocation=%.1fms graph=%.1fms cancelled=%@",
+                          candidates.count, upcoming.count, (ProcessInfo.processInfo.systemUptime - startedAt) * 1000,
+                          mediaTime * 1000, sourceTime * 1000, allocationTime * 1000, graphTime * 1000, Task.isCancelled ? "yes" : "no")
+                }
+                #endif
             }
             #if os(macOS)
             if let self, self.preparedSourceEnabled, self.bufferedOutput != nil,
@@ -2686,6 +3101,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                         // serial disk-queue round trip for every reserved voice.
                         media = IdleMedia(file: file, playbackFile: file, first: 0, frames: 0)
                     } else {
+                    #if os(macOS)
+                    let mediaStarted = logTiming ? ProcessInfo.processInfo.systemUptime : 0
+                    defer { if logTiming { mediaTime += ProcessInfo.processInfo.systemUptime - mediaStarted } }
+                    #endif
                     media = try await AudioFileRead.prepare { cancelled in
                         let file = try cachedFile ?? AudioFileRead.openMedia(url, cancelled: cancelled)
                         let rate = file.processingFormat.sampleRate
@@ -2741,7 +3160,23 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                         #endif
                     }
                     if ready < count {
-                        let voice = try self.makeVoice(track: track, clip: clip, file: file, preparedPlaybackFile: media.playbackFile)
+                        let format = file.processingFormat
+                        let timing = self.preparedTiming
+                        let preparedSource = allowsPreparedSource && format.channelCount <= 2
+                        #if os(macOS)
+                        let allocationStarted = logTiming ? ProcessInfo.processInfo.systemUptime : 0
+                        #endif
+                        let nodes = await Task.detached(priority: .userInitiated) {
+                            UnattachedVoice(format: format, timing: timing, preparedSource: preparedSource)
+                        }.value
+                        guard !Task.isCancelled, self.preparationGeneration == generation, self.preparationKey == key,
+                              self.directory == directory, !self.transportWasRunning else { return }
+                        #if os(macOS)
+                        if logTiming { allocationTime += ProcessInfo.processInfo.systemUptime - allocationStarted }
+                        let graphStarted = logTiming ? ProcessInfo.processInfo.systemUptime : 0
+                        defer { if logTiming { graphTime += ProcessInfo.processInfo.systemUptime - graphStarted } }
+                        #endif
+                        let voice = try self.makeVoice(track: track, clip: clip, file: file, preparedPlaybackFile: media.playbackFile, nodes: nodes)
                         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
                         self.idleVoices[track, default: []].append(voice)
                         #if os(iOS)
@@ -2758,7 +3193,17 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                         }
                         self.subplayReserved[generation, default: []].append(voice)
                         if let request = self.sourcePreparation(voice, position: max(position, clip.startTime)) {
-                            try await Task.detached(priority: .utility) { try request.perform() }.value
+                            let source = ObjectIdentifier(request.source)
+                            if self.readySourcePreparations[source] != request {
+                                #if os(macOS)
+                                let sourceStarted = logTiming ? ProcessInfo.processInfo.systemUptime : 0
+                                defer { if logTiming { sourceTime += ProcessInfo.processInfo.systemUptime - sourceStarted } }
+                                #endif
+                                self.readySourcePreparations[source] = nil
+                                try await Task.detached(priority: .userInitiated) { try request.perform() }.value
+                                guard !Task.isCancelled, self.preparationGeneration == generation else { return }
+                                self.readySourcePreparations[source] = request
+                            }
                         }
                         // Only a completed decoder can return its source to the
                         // control-side pool, including after a canceled Play.
@@ -2933,7 +3378,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         }
     }
     private func detach(_ voice: Voice) {
-        if let source = voice.prepared { subplayPreparedSources[ObjectIdentifier(source)] = nil }
+        if let source = voice.prepared { readySourcePreparations[ObjectIdentifier(source)] = nil }
         clockedIdlePlayers.remove(ObjectIdentifier(voice.player))
         voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
         suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain))
@@ -3191,6 +3636,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                     previous.isEnabled(key) != settings.isEnabled(key)
             }
             for (key, sampler) in samplers where key.track == track && !settings.isEnabled(key.effect) { sampler.silence() }
+            if previous.arpeggiatesMIDI != settings.arpeggiatesMIDI {
+                releaseTrackMIDI(track)
+                midiPlanRevision = nil
+            }
             tracks[track]?.fx = settings
             trackBuses[track]?.effects.apply(settings)
             if instrumentsChanged {
@@ -3419,6 +3868,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         tracks[id]?.midiChannel = selected
     }
     private func releaseTrackMIDI(_ id: UUID) {
+        stopLiveArpeggiator(id)
         // Queue releases ahead of the new input, without flushing new notes.
         for channel in 0..<16 {
             let status = UInt8(0xb0 | channel)
@@ -3465,8 +3915,16 @@ for (key, sampler) in samplers where key.track == id {
     private func applyTrackGain(_ id: UUID) {
         guard let track = tracks[id], let bus = trackBuses[id] else { return }
         let gain = effectiveLoopGain(id, manual: automationGain(id, manual: track.volume))
-        let audible = !(automatedMix[id]?.mute ?? track.mute) && (soloAudibleTracks?.contains(id) ?? true) && gain > 0
+        let audible = !(automatedMix[id]?.mute ?? track.mute) && (soloAudibleTracks?.contains(id) ?? true)
         JarasEqualizer.setInputGain(bus.controls, gain: audible ? min(pow(10, 12.0 / 20), gain) : 0)
+        if let send = bus.preFXSend {
+            let level: Float = audible && bus.hasPreFXSend ? 1 : 0
+            if send.outputVolume != level { send.outputVolume = level }
+        }
+        if let send = bus.preFaderSend {
+            let level: Float = audible && bus.hasPreFaderSend ? 1 : 0
+            if send.outputVolume != level { send.outputVolume = level }
+        }
     }
     private func applyTrackGate(_ id: UUID) {
         guard let track = tracks[id], let bus = trackBuses[id] else { return }
@@ -3619,9 +4077,12 @@ for (key, sampler) in samplers where key.track == id {
         let tracks: Set<UUID>
     }
     private var sharedMIDIIsolation: SharedMIDIIsolation?
-    private func sharedMIDIValues(song: Song, clip: AudioClip) -> [[String: Double]] {
+    private func arpeggiatedNotes(song: Song, track: UUID, clip: AudioClip) -> [MIDIPlaybackNote] {
+        song.instrumentPlaybackNotes(in: clip, track: tracks[track])
+    }
+    private func sharedMIDIValues(song: Song, track: UUID, clip: AudioClip) -> [[String: Double]] {
         let owner = song.parts.firstIndex { $0.id == clip.regionOwnerID }.map { $0 + 1 } ?? 0
-        return song.midiPlaybackNotes(in: clip).map { note in
+        return arpeggiatedNotes(song: song, track: track, clip: clip).map { note in
             var value = note.sequenceValues; value["ownerIndex"] = Double(owner); return value
         }
     }
@@ -3648,6 +4109,7 @@ for (key, sampler) in samplers where key.track == id {
             guard appliedSharedMIDIValues[track] != values else { continue }
             appliedSharedMIDIValues[track] = values
             for (key, sampler) in samplers where key.track == track { sampler.setSequenceNotes(values) }
+            trackBuses[track]?.effects.setDrumSequence(values)
             #if os(macOS)
             trackBuses[track]?.effects.setMIDISequence(values)
             #endif
@@ -3769,14 +4231,16 @@ for (key, sampler) in samplers where key.track == id {
             if source.clip.hasTakeInstrument && (midiTakePlans[id] == nil || refreshNotes) {
                 var notes = source.clip; notes.gain = 1
                 midiTakePlans[id] = MIDITakePlan(track: source.track, clip: source.clip,
-                    segments: song.tempoAudioSegments(source.clip), notes: song.midiPlaybackNotes(in: notes).map(\.sequenceValues))
+                    segments: song.tempoAudioSegments(source.clip), notes: arpeggiatedNotes(song: song, track: source.track, clip: notes).map(\.sequenceValues))
             }
             if wasInstrument != source.clip.hasTakeInstrument || refreshNotes {
                 let notes = midiTakeSources.values.filter { $0.track == source.track && !$0.clip.hasTakeInstrument }
-                    .flatMap { sharedMIDIValues(song: song, clip: $0.clip) }
+                    .flatMap { sharedMIDIValues(song: song, track: source.track, clip: $0.clip) }
                 midiPlans[source.track] = notes; appliedSharedMIDIValues[source.track] = notes; sharedMIDIIsolation = nil
 
 for (key, sampler) in samplers where key.track == source.track { sampler.setSequenceNotes(notes) }
+
+                trackBuses[source.track]?.effects.setDrumSequence(notes)
 
                 #if os(macOS)
                 trackBuses[source.track]?.effects.setMIDISequence(notes)
@@ -3901,17 +4365,18 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
                 midiTakeSources[clip.id] = (track.id, clip)
                 if clip.hasTakeInstrument {
                     var source = clip; source.gain = 1
-                    let notes = song.midiPlaybackNotes(in: source).map(\.sequenceValues)
+                    let notes = arpeggiatedNotes(song: song, track: track.id, clip: source).map(\.sequenceValues)
                     midiTakePlans[clip.id] = MIDITakePlan(track: track.id, clip: clip, segments: song.tempoAudioSegments(clip), notes: notes)
                     return []
                 }
-                return sharedMIDIValues(song: song, clip: clip)
+                return sharedMIDIValues(song: song, track: track.id, clip: clip)
             }
             plans[track.id] = values
             if midiPlans[track.id] != values {
                 appliedSharedMIDIValues[track.id] = values
                 for (key, sampler) in samplers where key.track == track.id { sampler.setSequenceNotes(values) }
             }
+            trackBuses[track.id]?.effects.setDrumSequence(appliedSharedMIDIValues[track.id] ?? values)
             #if os(macOS)
             trackBuses[track.id]?.effects.setMIDISequence(appliedSharedMIDIValues[track.id] ?? values)
             #endif
@@ -3931,7 +4396,9 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
             let start = head == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0
             let end = head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0
 
-for (key, sampler) in samplers { sampler.sequenceHead(Int32(head), position: position, clock: clock, running: running && !recordingItemTracks.contains(key.track), loopStart: start, loopEnd: end) }
+            for (key, sampler) in samplers { sampler.sequenceHead(Int32(head), position: position, clock: clock, running: running && !recordingItemTracks.contains(key.track), loopStart: start, loopEnd: end) }
+
+            for (id, bus) in trackBuses { bus.effects.drumClock(head: head, position: position, clock: clock, running: running && !recordingItemTracks.contains(id), loopStart: start, loopEnd: end) }
 
             #if os(macOS)
             for (id, bus) in trackBuses { bus.effects.setMIDISequenceClock(head: head, position: position, clock: clock, running: running && !recordingItemTracks.contains(id), loopStart: start, loopEnd: end) }
@@ -3953,21 +4420,98 @@ for (key, sampler) in samplers { sampler.sequenceHead(Int32(head), position: pos
 
 for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0) }
 
+            for bus in trackBuses.values { bus.effects.drumClock(head: head, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0) }
+
             #if os(macOS)
             for bus in trackBuses.values { bus.effects.setMIDISequenceClock(head: head, position: 0, clock: 0, running: false, loopStart: 0, loopEnd: 0) }
             #endif
         }
     }
     private var virtualNoteTargets: [UInt8: [UUID: UInt8]] = [:]
+    private struct LiveArpeggiator {
+        var held: [UInt16: UInt8] = [:]
+        var previousPitch = -1
+        var sounding: UInt16?
+        var task: Task<Void, Never>?
+    }
+    private var liveArpeggiators: [UUID: LiveArpeggiator] = [:]
+
+    func playDrumPad(_ track: UUID?, effect: String, index: Int) {
+        guard let voice = effects(for: track)?.drummerVoices[effect], voice.enabled else { return }
+        do { if !engine.isRunning { try prepareDevice() }; setGraphRenderEnabled(true); voice.source.hit(UInt(index)) }
+        catch { onError(error) }
+    }
+    static let drumLearningNote = Notification.Name("CatLive.Drummer.learn")
+    private func sendInstrumentMIDI(_ track: UUID, status: UInt8, number: UInt8, value: UInt8) {
+        trackBuses[track]?.effects.drumMIDI(status, number, value)
+        #if os(macOS)
+        trackBuses[track]?.effects.sendExternalMIDI(status: status, number: number, value: value)
+        #endif
+        for (key, sampler) in samplers where key.track == track && tracks[track]?.fx?.isEnabled(key.effect) == true {
+            sampler.sendStatus(status, data1: number, data2: value)
+        }
+    }
+    private func stopArpeggioNote(_ id: UUID) {
+        guard let note = liveArpeggiators[id]?.sounding else { return }
+        liveArpeggiators[id]?.sounding = nil
+        sendInstrumentMIDI(id, status: 0x80 | UInt8(note >> 7), number: UInt8(note & 127), value: 0)
+    }
+    private func stopLiveArpeggiator(_ id: UUID) {
+        stopArpeggioNote(id)
+        liveArpeggiators.removeValue(forKey: id)?.task?.cancel()
+    }
+
+    private func arpeggiatorMIDI(_ id: UUID, status: UInt8, number: UInt8, value: UInt8) {
+        let kind = status & 0xf0
+        let key = (UInt16(status & 0x0f) << 7) | UInt16(number & 127)
+        if kind == 0x90, value > 0 {
+            liveArpeggiators[id, default: LiveArpeggiator()].held[key] = value
+        } else if kind == 0x80 || kind == 0x90 {
+            liveArpeggiators[id]?.held[key] = nil
+            if liveArpeggiators[id]?.held.isEmpty == true { stopLiveArpeggiator(id) }
+            return
+        } else {
+            if kind == 0xb0 && (number == 120 || number == 123) { stopLiveArpeggiator(id) }
+            sendInstrumentMIDI(id, status: status, number: number, value: value)
+            return
+        }
+        guard liveArpeggiators[id]?.task == nil else { return }
+        liveArpeggiators[id]?.task = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled, let state = self.liveArpeggiators[id], !state.held.isEmpty {
+                guard self.armedInstrumentTracks.contains(id), self.tracks[id]?.fx?.arpeggiatesMIDI == true else {
+                    self.stopLiveArpeggiator(id); return
+                }
+                let notes = state.held.keys.sorted {
+                    ($0 & 127, $0 >> 7) < ($1 & 127, $1 >> 7)
+                }
+                guard let note = notes.first(where: { Int($0 & 127) > state.previousPitch }) ?? notes.first,
+                      let velocity = state.held[note] else { return }
+                let snapshot = self.latestPlayback?.snapshot
+                let song = snapshot?.project.songs.first { $0.id == snapshot?.transport.songId }
+                let bpm = song?.tempoSection(at: snapshot?.transport.position ?? 0).bpm ?? self.tempo ?? 120
+                let length = MIDIArpeggiator.interval(bpm: bpm)
+                self.liveArpeggiators[id]?.previousPitch = Int(note & 127)
+                self.liveArpeggiators[id]?.sounding = note
+                self.sendInstrumentMIDI(id, status: 0x90 | UInt8(note >> 7), number: UInt8(note & 127), value: velocity)
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(length * MIDIArpeggiator.gate * 1e9))
+                    self.stopArpeggioNote(id)
+                    try await Task.sleep(nanoseconds: UInt64(length * (1 - MIDIArpeggiator.gate) * 1e9))
+                } catch { return }
+            }
+        }
+    }
     var onLiveKeyboardMIDI: ((UUID, UInt8, UInt8, UInt8) -> Void)?
     func releaseMIDINotes() {
         releaseKeyboardNotes()
+        for id in Array(liveArpeggiators.keys) { stopLiveArpeggiator(id) }
         virtualNoteTargets.removeAll(); InstrumentKeyboardState.shared.reset()
         #if os(macOS)
         for bus in trackBuses.values { bus.effects.silenceExternal() }
         #endif
 
-for sampler in samplers.values { sampler.silence() }
+        for bus in trackBuses.values { bus.effects.drumMIDI(0xb0, 123, 0) }
+        for sampler in samplers.values { sampler.silence() }
 
     }
     var midiSlotsProvider: () -> [Int32] = { AudioDeviceSettings.shared.midiSlots }
@@ -3976,27 +4520,34 @@ for sampler in samplers.values { sampler.silence() }
         guard !usesSelectedHardware || (deviceSessionActive && outputAllowed) else { return }
         #endif
         let slots = midiSlotsProvider()
-        for (id, row) in tracks {
-            guard row.acceptsMIDI(status: status), let slot = row.midiInput, (1...6).contains(slot), slots.indices.contains(slot - 1), slots[slot - 1] == device,
-                  armedInstrumentTracks.contains(id) || status & 0xf0 != 0x90 || value == 0 else { continue }
-            InstrumentKeyboardState.shared.receive(track: id, source: device, status: status, number: number, value: value)
+        let noteOn = status & 0xf0 == 0x90 && value > 0
+        if noteOn && DrummerMIDILearn.pending { NotificationCenter.default.post(name: Self.drumLearningNote, object: self, userInfo: ["note": Int(number)]) }
+        func accepts(_ track: Track) -> Bool {
+            guard track.acceptsMIDI(status: status), let slot = track.midiInput,
+                  (1...6).contains(slot), slots.indices.contains(slot - 1) else { return false }
+            return slots[slot - 1] == device
         }
-        #if os(macOS)
-        for (id, row) in tracks {
-            guard row.acceptsMIDI(status: status), let slot = row.midiInput, (1...6).contains(slot), slots.indices.contains(slot-1), slots[slot-1] == device, let bus = trackBuses[id] else { continue }
-            bus.effects.sendExternalMIDI(status: status, number: number, value: value)
-        }
-        #endif
 
-for (key,sampler) in samplers {
-            let id = key.track
-            guard tracks[id]?.acceptsMIDI(status: status) == true, tracks[id]?.fx?.isEnabled(key.effect) == true, let slot = tracks[id]?.midiInput, (1...6).contains(slot), slots.indices.contains(slot-1), slots[slot-1] == device else { continue }
-            guard armedInstrumentTracks.contains(id) || status & 0xf0 != 0x90 || value == 0 else { continue }
+        for (id, row) in tracks where accepts(row) {
+            if row.fx?.arpeggiatesMIDI == true {
+                if armedInstrumentTracks.contains(id) { arpeggiatorMIDI(id, status: status, number: number, value: value) }
+            } else {
+                #if os(macOS)
+                trackBuses[id]?.effects.sendExternalMIDI(status: status, number: number, value: value)
+                #endif
+                if armedInstrumentTracks.contains(id) { trackBuses[id]?.effects.drumMIDI(status, number, value) }
+            }
+        }
+        for (key, sampler) in samplers {
+            guard let row = tracks[key.track], accepts(row), row.fx?.arpeggiatesMIDI != true,
+                  row.fx?.isEnabled(key.effect) == true, !noteOn || armedInstrumentTracks.contains(key.track) else { continue }
             sampler.sendStatus(status, data1: number, data2: value)
         }
-
-
-}
+        // Submit the audio events before publishing key highlights and meter activity.
+        for (id, row) in tracks where accepts(row) && (!noteOn || armedInstrumentTracks.contains(id)) {
+            InstrumentKeyboardState.shared.receive(track: id, source: device, status: status, number: number, value: value)
+        }
+    }
     func playKeyboardNote(_ note: UInt8, velocity: UInt8 = 100) {
         #if os(iOS)
         guard !usesSelectedHardware || (deviceSessionActive && outputAllowed) else { return }
@@ -4011,11 +4562,9 @@ for (key,sampler) in samplers {
             guard tracks[id]?.acceptsMIDI(status: status) == true else { continue }
             virtualNoteTargets[note, default: [:]][id] = channel
             onLiveKeyboardMIDI?(id, status, note, velocity)
-            #if os(macOS)
-            trackBuses[id]?.effects.sendExternalMIDI(status: status, number: note, value: velocity)
-            #endif
-
-for (key, sampler) in samplers where key.track == id && tracks[id]?.fx?.isEnabled(key.effect) == true { sampler.sendStatus(status, data1: note, data2: velocity) }
+            guard armedInstrumentTracks.contains(id) else { continue }
+            if tracks[id]?.fx?.arpeggiatesMIDI == true { arpeggiatorMIDI(id, status: status, number: note, value: velocity) }
+            else { sendInstrumentMIDI(id, status: status, number: note, value: velocity) }
 
             InstrumentKeyboardState.shared.receive(track: id, source: Int32.min, status: status, number: note, value: velocity)
         }
@@ -4025,11 +4574,8 @@ for (key, sampler) in samplers where key.track == id && tracks[id]?.fx?.isEnable
         for (id, channel) in virtualNoteTargets.removeValue(forKey: note) ?? [:] {
             let status: UInt8 = 0x80 | channel
             onLiveKeyboardMIDI?(id, status, note, 0)
-            #if os(macOS)
-            trackBuses[id]?.effects.sendExternalMIDI(status: status, number: note, value: 0)
-            #endif
-
-for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status, data1: note, data2: 0) }
+            if tracks[id]?.fx?.arpeggiatesMIDI == true { arpeggiatorMIDI(id, status: status, number: note, value: 0) }
+            else { sendInstrumentMIDI(id, status: status, number: note, value: 0) }
 
             InstrumentKeyboardState.shared.receive(track: id, source: Int32.min, status: status, number: note, value: 0)
         }
@@ -4955,7 +5501,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                 let count = min(file.length - first, AVAudioFramePosition(sourceEnd * file.processingFormat.sampleRate) - first)
                 guard clip.loopLength != nil || (first >= 0 && count > 0 && count <= Int64(UInt32.max)) else { continue }
                 var voice: Voice
-                do { voice = try takeVoice(track: track, clip: clip, file: file) }
+                do { voice = try takeVoice(track: track, clip: clip, file: file, position: schedulingPosition) }
                 catch { try handlePlaybackMediaFailure(error, audio: audio); continue }
                 voice.continuousSource = contiguousSourceEnd[clip.id] != nil
                 let player = voice.player
@@ -5256,9 +5802,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         }
         updateMIDISequenceClocks(transport)
         updateMIDITakes(transport, song: song, preserveHeld: tempoChanged || markerTempoChanged)
-        #if os(macOS)
         updateExternalTransports(song: song, transport: transport, revision: revision)
-        #endif
         if !transport.playing && !transport.subPlay.playing {
             prepareIdleVoices(position: transport.editPosition ?? transport.position, revision: revision)
             for voice in retiredVoices { recycle(voice) }
@@ -5331,8 +5875,12 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
         // its short release even when no audio callback is running.
         let elapsed = lastMeterUpdate == 0 ? 1.0 / 30 : max(0, now - lastMeterUpdate)
         lastMeterUpdate = now
-        for meter in meters.values { meter.update(peak: 0, elapsed: elapsed) }
+        for (id, meter) in meters {
+            meter.update(peak: 0, elapsed: elapsed)
+            meter.updateGainReduction(trackBuses[id]?.effects.gainReduction(silent: true))
+        }
         masterMeter.update(peak: 0, elapsed: elapsed)
+        masterMeter.updateGainReduction(masterEffects.gainReduction(silent: true))
         for bank in trackPeaks.values { _ = bank.takePeak(0); _ = bank.takePeak(1) }
         _ = peaks.takePeak(masterSlot); _ = peaks.takePeak(masterSlot + 1)
         // Return to the low-frequency idle clock once every bar reaches zero.
@@ -5352,6 +5900,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
             lastMeterUpdate = now
             drainNativeMeterPeaks()
             masterMeter.update(left: Double(peaks.takePeak(masterSlot)), right: Double(peaks.takePeak(masterSlot + 1)), elapsed: elapsed)
+            masterMeter.updateGainReduction(masterEffects.gainReduction(silent: false))
             for (id, bank) in trackPeaks {
                 var left = Double(bank.takePeak(0)), right = Double(bank.takePeak(1))
                 if let monitor = inputMonitors[id], let input = monitor.input {
@@ -5360,6 +5909,7 @@ for (key, sampler) in samplers where key.track == id { sampler.sendStatus(status
                     left = max(left, rawLeft); right = max(right, rawRight)
                 }
                 observeTrackPeak(id, left: left, right: right, elapsed: elapsed)
+                meters[id]?.updateGainReduction(trackBuses[id]?.effects.gainReduction(silent: false))
             }
         }
     }
@@ -5479,8 +6029,19 @@ struct VerticalTrackMeter: NSViewRepresentable {
     private let backgrounds = [CALayer(), CALayer()]
     private let levelClips = [CALayer(), CALayer()]
     private let gradients = [CAGradientLayer(), CAGradientLayer()]
+    private let barClippingTips = [CALayer(), CALayer()]
     private let scaleLabels = [CATextLayer(), CATextLayer(), CATextLayer()]
     private let peakLabel = CATextLayer()
+    private let compactRail = MixerRailLayers(flipped: false)
+    enum Presentation { case bars, peak, peakLabel, compact }
+    var presentation = Presentation.bars {
+        didSet {
+            guard presentation != oldValue else { return }
+            geometryScale = 0
+            pendingDrawing = true; pendingPeak = true
+            refreshVisibleDrawing()
+        }
+    }
     private var geometrySize = CGSize.zero
     private var geometryScale: CGFloat = 0
     private var geometryShowsScale: Bool?
@@ -5494,7 +6055,7 @@ struct VerticalTrackMeter: NSViewRepresentable {
         super.init(frame: frameRect)
         let actions = Dictionary(uniqueKeysWithValues:
             ["position", "bounds", "hidden", "string", "contentsScale", "colors", "locations", "opacity", "backgroundColor", "borderColor"].map { ($0, NSNull()) })
-        for content in backgrounds + levelClips + gradients + scaleLabels + [peakLabel] { content.actions = actions }
+        for content in backgrounds + levelClips + gradients + barClippingTips + scaleLabels + [compactRail.layer, peakLabel] { content.actions = actions }
         wantsLayer = true
         layer?.masksToBounds = true
         // All visible content belongs to retained sublayers; the NSView itself
@@ -5506,10 +6067,13 @@ struct VerticalTrackMeter: NSViewRepresentable {
             background.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
             clip.name = "meter-level-\(channel)"; clip.masksToBounds = true
             gradient.name = "meter-gradient-\(channel)"
-            gradient.colors = [NSColor(Color(hex: 0x0a84ff)).cgColor, NSColor(Color.yellow).cgColor, NSColor(Color.red).cgColor]
-            gradient.locations = [0, 0.5, 1]
+            gradient.colors = MixerMeterStyle.gradientColors
+            gradient.locations = MixerMeterStyle.gradientStops.map { NSNumber(value: Double($0)) }
             gradient.startPoint = CGPoint(x: 0.5, y: 0); gradient.endPoint = CGPoint(x: 0.5, y: 1)
             clip.addSublayer(gradient)
+            let tip = barClippingTips[channel]
+            tip.backgroundColor = MixerMeterStyle.clippingColor; tip.isHidden = true
+            clip.addSublayer(tip)
             layer?.addSublayer(background); layer?.addSublayer(clip)
         }
         for (index, text) in ["0", "−24", "−∞"].enumerated() {
@@ -5521,6 +6085,9 @@ struct VerticalTrackMeter: NSViewRepresentable {
         peakLabel.name = "meter-peak"; peakLabel.isHidden = true
         peakLabel.alignmentMode = .center
         layer?.addSublayer(peakLabel)
+        compactRail.layer.name = "meter-compact"
+        compactRail.layer.isHidden = true
+        layer?.addSublayer(compactRail.layer)
         installedLayer = layer
         setAccessibilityRole(.image)
         setAccessibilityLabel("Stereo meter, L and R")
@@ -5627,27 +6194,36 @@ struct VerticalTrackMeter: NSViewRepresentable {
         for channel in 0..<2 {
             let rect = CGRect(x: CGFloat(channel) * (width + 1), y: 0, width: width, height: barHeight)
             backgrounds[channel].frame = rect
+            backgrounds[channel].isHidden = presentation != .bars
             levelClips[channel].frame = rect
+            levelClips[channel].isHidden = presentation != .bars
             // A fixed full-height gradient is clipped from the bottom. Scaling
             // the gradient with amplitude would turn quiet peaks red too.
             gradients[channel].frame = CGRect(origin: .zero, size: rect.size)
             gradients[channel].contentsScale = scale
+            let tipHeight = rect.height * (1 - MixerMeterStyle.clippingStart)
+            barClippingTips[channel].frame = CGRect(x: 0, y: rect.height - tipHeight, width: rect.width, height: tipHeight)
         }
+        compactRail.layer.isHidden = presentation != .compact
         for (index, fraction) in [1.0, 0.5, 0.0].enumerated() {
             let label = scaleLabels[index]
             let size = (label.string as! NSAttributedString).size()
             let x = 13 + max(0, (bounds.width - 13 - size.width) / 2)
             label.frame = CGRect(x: x, y: max(0, bounds.height - size.height) * fraction, width: size.width, height: size.height)
-            label.contentsScale = scale; label.isHidden = !showScale || peakOnly
+            label.contentsScale = scale; label.isHidden = !showScale || peakOnly || presentation != .bars
         }
         peakLabel.contentsScale = scale
         peakLabel.backgroundColor = nil
         // The meter starts 4pt below the row top. Its native coordinates
         // run upwards: center 33pt below its top aligns with the fader at y=37.
-        peakLabel.frame = sidePeak
-            ? CGRect(x: 21, y: max(0, bounds.height - 33 - peakHeight / 2), width: max(0, bounds.width - 21), height: peakHeight)
-            : CGRect(x: 13, y: max(0, bounds.height - peakHeight) * 0.75,
-                     width: max(0, bounds.width - 13), height: peakHeight)
+        if presentation == .peakLabel {
+            peakLabel.frame = bounds
+        } else {
+            peakLabel.frame = sidePeak
+                ? CGRect(x: 21, y: max(0, bounds.height - 33 - peakHeight / 2), width: max(0, bounds.width - 21), height: peakHeight)
+                : CGRect(x: 13, y: max(0, bounds.height - peakHeight) * 0.75,
+                         width: max(0, bounds.width - 13), height: peakHeight)
+        }
         pendingDrawing = true; pendingPeak = true
     }
     fileprivate func resumeVisibleDrawing() {
@@ -5660,7 +6236,9 @@ struct VerticalTrackMeter: NSViewRepresentable {
             layer.backgroundColor = nil
             for channel in 0..<2 { layer.addSublayer(backgrounds[channel]); layer.addSublayer(levelClips[channel]) }
             for label in scaleLabels { layer.addSublayer(label) }
-            layer.addSublayer(peakLabel); installedLayer = layer
+            layer.addSublayer(peakLabel)
+            layer.addSublayer(compactRail.layer)
+            installedLayer = layer
             geometryScale = 0; pendingDrawing = true; pendingPeak = true
         }
         guard pendingDrawing || pendingPeak || geometrySize != bounds.size || geometryShowsScale != showScale,
@@ -5670,24 +6248,27 @@ struct VerticalTrackMeter: NSViewRepresentable {
         // Let all meters share the window's display commit rather than forcing
         // a global layout/commit separately for every track's amplitude tick.
         updateLayerGeometry()
-        if pendingDrawing {
+        if pendingDrawing, presentation == .compact {
+            compactRail.update(size: CGSize(width: min(bounds.width, 10), height: bounds.height), levels: levels, compact: true)
+        }
+        if pendingDrawing, presentation == .bars {
             for channel in 0..<2 {
-                let level = levels[channel]
-                let fraction = level > 0 && level.isFinite ? min(1, max(0, (20 * log10(level) + 60) / 60)) : 0
+                let fraction = MixerMeterStyle.fraction(levels[channel])
                 var rect = levelClips[channel].frame
                 rect.size.height = backgrounds[channel].bounds.height * fraction
                 if levelClips[channel].frame != rect { levelClips[channel].frame = rect }
+                barClippingTips[channel].isHidden = levels[channel] <= 1
             }
-            pendingDrawing = false
         }
+        pendingDrawing = false
         if pendingPeak {
-            peakLabel.isHidden = !showScale
-            if showScale {
-                let clipping = (peakDB ?? -24) >= 0
+            peakLabel.isHidden = !showScale || presentation == .compact
+            if !peakLabel.isHidden {
+                let clipping = (peakDB ?? -24) > 0
                 let text = NSAttributedString(string: peakDB.map { String(format: "%+.2f", $0) } ?? "",
                     attributes: [.font: peakOnly ? Self.peakFont : Self.compactScalePeakFont,
                                  .foregroundColor: clipping ? NSColor.red : textColor])
-                let left: CGFloat = peakOnly ? 21 : 13
+                let left: CGFloat = presentation == .peakLabel ? 0 : (peakOnly ? 21 : 13)
                 let available = max(0, bounds.width - left)
                 let width = clipping ? min(available, ceil(text.size().width) + 4) : available
                 peakLabel.frame.origin.x = left + (available - width) / 2
@@ -5757,7 +6338,6 @@ struct TrackPeakReadout: View {
     @ObservedObject var peak: TrackMeterLevel.PeakHold
     var compact = false
     var foreground: Color = .white
-    var redAtZero = true
     private var fontSize: CGFloat {
         #if os(macOS)
         return 8
@@ -5777,9 +6357,9 @@ struct TrackPeakReadout: View {
             Text(verbatim: peak.decibels.map { String(format: "%+.2f", $0) } ?? "")
                 .font(.jarasSystem(size: fontSize, weight: .bold, design: .monospaced))
                 .lineLimit(1).minimumScaleFactor(0.8)
-                .foregroundStyle(redAtZero && (peak.decibels ?? -24) >= 0 ? Color.red : foreground)
+                .foregroundStyle((peak.decibels ?? -24) > 0 ? Color.red : foreground)
                 .padding(.horizontal, 2).padding(.vertical, 1)
-                .background(RoundedRectangle(cornerRadius: 2).fill((peak.decibels ?? -24) >= 0 ? Color.black : .clear))
+                .background(RoundedRectangle(cornerRadius: 2).fill((peak.decibels ?? -24) > 0 ? Color.black : .clear))
                 .frame(width: readoutWidth, height: 12)
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Reset peak")

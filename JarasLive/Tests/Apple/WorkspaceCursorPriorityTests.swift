@@ -70,7 +70,7 @@ private struct Fixture: View {
     let controller = SidebarScrollController()
     var body: some View {
         VStack(spacing: 0) {
-        NativeWorkspaceSplit(width: 280, restoreWidth: 280, minimum: 200, scrollController: controller,
+        NativeWorkspaceSplit(width: 280, restoreWidth: 280, minimum: 200, scrollController: controller, sidebarLeading: true,
                              onToggle: {}, onEnd: { _ in }) {
             VStack(spacing: 0) {
                 TextField("Track name", text: $leftText).frame(height: 36).padding(.horizontal, 20)
@@ -158,7 +158,7 @@ MainActor.assumeIsolated {
         WorkspaceArrowTestSwitch.enabled = enabled
         window.invalidateCursorRects(for: split); pump()
         move(native, NSPoint(x: 300, y: 40), expecting: .arrow, "mixer blank")
-        move(split, NSPoint(x: 760, y: 220), expecting: .arrow, "setlist blank")
+        move(split, NSPoint(x: 80, y: 220), expecting: .arrow, "setlist blank")
         move(externalFooter, expecting: .pointingHand, "external footer keeps its cursor")
         for field in fields {
             clickToEdit(field)

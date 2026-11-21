@@ -20,7 +20,9 @@ def declaration(needle):
     start = source.index(needle)
     return source[start:source.index('\n}', start) + 2]
 
-parts = ['import AppKit\nimport SwiftUI\n']
+bands_start = source.index('private let markerLaneHeight')
+bands_end = source.index('\nstruct TimelineBandsGlyph', bands_start)
+parts = ['import AppKit\nimport SwiftUI\n', source[bands_start:bands_end]]
 for begin, end in [
     ('public enum ProjectTimebase:', 'public enum TempoMarkerTimebase:'),
     ('public enum TimelineTempo {', 'public struct TapTempo {'),
@@ -30,7 +32,7 @@ for begin, end in [
     parts.append(tempo[start:tempo.index(end, start)])
 ticks = tempo[tempo.index('public enum TimelineTimeRuler {'):]
 ticks = ticks.replace('public enum TimelineTimeRuler {', 'public enum TimelineTimeRuler {\n    static var fixtureTickBuilds = 0')
-ticks = ticks.replace('minimumLabelSpacing: Double? = nil) -> [Tick] {', 'minimumLabelSpacing: Double? = nil) -> [Tick] {\n        fixtureTickBuilds += 1')
+ticks = ticks.replace('musical: MusicalLabels? = nil) -> [Tick] {', 'musical: MusicalLabels? = nil) -> [Tick] {\n        fixtureTickBuilds += 1')
 parts.append(ticks)
 for begin in ['private struct TimelineNativeGridBand {', 'private struct TimelineNativeRuler:']:
     start = source.index(begin)

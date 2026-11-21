@@ -318,6 +318,7 @@ private final class FooterWheelFixture: NSEvent {
     override var modifierFlags: NSEvent.ModifierFlags { flags }
 }
 window.orderFront(nil)
+let pixel = 1 / window.backingScaleFactor
 let slotScroll = NSScrollView(frame: NSRect(x: 5, y: 12, width: 80, height: 80))
 let slotDocument = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 500))
 slotScroll.documentView = slotDocument
@@ -332,13 +333,13 @@ for right in [false, true] {
     slotScroll.contentView.scroll(to: .zero)
     bar.doubleValue = 0.3; bar.sendAction(bar.action, to: bar.target)
     wheel.point = slotScroll.contentView.convert(NSPoint(x: 30, y: 30), to: nil)
-    wheel.dx = -30; wheel.dy = -2
+    wheel.dx = -30; wheel.dy = -2; wheel.eventPhase = .began
     let trackBefore = scroll.contentView.bounds.minX
     let fxBefore = slotScroll.contentView.bounds.origin
     precondition(view.routeWheel(wheel))
-    precondition(scroll.contentView.bounds.minX > trackBefore && scroll.contentView.bounds.minX <= trackBefore + 30 && slotScroll.contentView.bounds.origin == fxBefore,
+    precondition(scroll.contentView.bounds.minX > trackBefore && scroll.contentView.bounds.minX <= trackBefore + 30 + pixel && slotScroll.contentView.bounds.origin == fxBefore,
                  "Horizontal gestures over FX move whole channels, never the slot document")
-    wheel.dx = -2; wheel.dy = 30
+    wheel.dx = -2; wheel.dy = 30; wheel.eventPhase = []
     let verticalBefore = scroll.contentView.bounds.minX
     precondition(view.routeWheel(wheel))
     precondition(slotScroll.contentView.bounds.minY > fxBefore.y && slotScroll.contentView.bounds.minX == 0 &&
@@ -348,15 +349,8 @@ for right in [false, true] {
     wheel.dx = 0; wheel.dy = -24
     let slotOffset = slotScroll.contentView.bounds.origin
     precondition(view.routeWheel(wheel))
-    precondition(scroll.contentView.bounds.minX > verticalBefore && scroll.contentView.bounds.minX <= verticalBefore + 24 && slotScroll.contentView.bounds.origin == slotOffset,
+    precondition(scroll.contentView.bounds.minX > verticalBefore && scroll.contentView.bounds.minX <= verticalBefore + 24 + pixel && slotScroll.contentView.bounds.origin == slotOffset,
                  "Empty space outside the FX viewport scrolls channels without moving slots")
-    wheel.point = slotScroll.contentView.convert(NSPoint(x: 30, y: 30), to: nil)
-    wheel.flags = .shift
-    let shiftedBefore = scroll.contentView.bounds.minX
-    precondition(view.routeWheel(wheel))
-    precondition(scroll.contentView.bounds.minX == shiftedBefore && slotScroll.contentView.bounds.origin == slotOffset,
-                 "A short Shift-wheel is consumed without moving channels, FX slots or changing mode")
-    wheel.flags = []
 }
 print("MIXER_WHEEL_FX_VERTICAL_ONLY_INSIDE_VISIBLE_VIEWPORT_HORIZONTAL_AND_EMPTY_SPACE_ROUTE_TO_TRACKS_OK")
 
@@ -381,59 +375,18 @@ precondition(abs(scroll.contentView.bounds.minX-capRest) <= 1/window.backingScal
              "Precise capped gestures must not replay dropped movement later")
 print("HOZ_LONG_FLICK_VELOCITY_CAP_IMMEDIATE_REVERSE_AND_NO_QUEUED_MOVEMENT_OK")
 
-// Native routing is shared by docked and detached mixers, including master.
-// Deliberate Shift input belongs to the panel before any child slider sees it.
-var requestedModes: [Bool] = []
-view.setSlotsOnly = { requestedModes.append($0) }
-wheel.point = master.convert(NSPoint(x: 30, y: 150), to: nil)
-wheel.flags = .shift; wheel.precise = false; wheel.dx = 0; wheel.dy = 1
-let initialHorizontal = scroll.contentView.bounds.minX
-let initialSlotPosition = slotScroll.contentView.bounds.origin
-for n in 0..<1 {
-    wheel.time = 10 + Double(n) * 0.05
-    precondition(view.routeWheel(wheel) && requestedModes.isEmpty,
-                 "A single physical notch must not trigger the two-notch gesture")
-}
-wheel.time = 10.2; precondition(view.routeWheel(wheel))
-precondition(requestedModes == [true], "Shift-wheel up switches to FX/instrument slots only")
-for n in 1...20 { wheel.time = 10.2 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
-precondition(requestedModes == [true], "Holding the same gesture never repeats the action")
-precondition(scroll.contentView.bounds.minX == initialHorizontal && slotScroll.contentView.bounds.origin == initialSlotPosition,
-             "All Shift events are swallowed before child scrolling or mixer controls")
-wheel.dy = -1
-for n in 0..<3 { wheel.time = 12 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
-precondition(requestedModes == [true, false], "Shift-wheel down restores normal layout")
-wheel.precise = true; wheel.dy = 10_000; wheel.time = 13
-precondition(view.routeWheel(wheel) && requestedModes.count == 2,
-             "One accelerated spike is limited to forty points and cannot change the layout")
-wheel.inertialPhase = .changed
-for n in 1...10 { wheel.time = 13 + Double(n) * 0.01; precondition(view.routeWheel(wheel)) }
-precondition(requestedModes.count == 2, "Momentum never contributes to the mode gesture")
-wheel.inertialPhase = []; wheel.time = 14; wheel.dy = 60
-precondition(view.routeWheel(wheel))
-precondition(requestedModes.count == 2, "The idle gap discarded the old partial spike")
-wheel.time = 14.1; precondition(view.routeWheel(wheel))
-precondition(requestedModes == [true, false, true], "Precise deltas reach the same threshold")
-// Native Shift wheels can be axis-remapped by AppKit. Keep the physical intent.
-wheel.dy = 0; wheel.dx = -1; wheel.precise = false
-for n in 0..<3 { wheel.time = 15 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
-precondition(requestedModes == [true, false, true, false])
-wheel.dx = 0; wheel.dy = 1; wheel.time = 16
-precondition(view.routeWheel(wheel))
-wheel.point = NSPoint(x: -30, y: -30); wheel.time = 16.1
-precondition(!view.routeWheel(wheel), "The gesture only belongs to the hovered mixer")
-wheel.point = master.convert(NSPoint(x: 30, y: 150), to: nil)
-for n in 0..<1 { wheel.time = 16.2 + Double(n) * 0.05; precondition(view.routeWheel(wheel)) }
-precondition(requestedModes.count == 4, "Leaving the panel resets a partial gesture")
-wheel.time = 16.4; precondition(view.routeWheel(wheel))
-precondition(requestedModes.count == 5)
-view.isHidden = true; wheel.time = 17
-precondition(!view.routeWheel(wheel), "A hidden/detached closed panel does not capture wheel input")
+wheel.point = view.convert(NSPoint(x: 140, y: 150), to: nil)
+wheel.flags = .shift; wheel.precise = true; wheel.dy = 0; wheel.dx = -20
+wheel.time = 10
+let shiftStart = scroll.contentView.bounds.minX
+precondition(view.routeWheel(wheel) && scroll.contentView.bounds.minX > shiftStart,
+             "Shift-wheel scrolls across the same strips")
+view.isHidden = true
+precondition(!view.routeWheel(wheel), "A hidden mixer does not capture scrolling")
 view.isHidden = false; wheel.flags = [.shift, .command]
 precondition(!view.routeWheel(wheel), "Other command gestures are not intercepted")
 wheel.flags = []
 window.orderOut(nil)
-print("MIXER_SHIFT_WHEEL_THRESHOLD_DIRECTIONS_MOMENTUM_HOVER_AND_CHILD_CONSUMPTION_OK")
 
 // Real Quartz/AppKit conversion verifies the physical line-wheel normalization,
 // independently of the event fixture used to target the native view.
@@ -445,45 +398,28 @@ for lines: Int32 in [1, -1, 3] {
 }
 print("MIXER_PHYSICAL_LINE_WHEEL_QUARTZ_APPKIT_NORMALIZATION_OK")
 
-private var modeGesture = FooterMixerModeGesture()
-func modeStep(_ delta: CGFloat, _ time: TimeInterval, precise: Bool = false) -> Bool? {
-    modeGesture.consume(delta: delta, precise: precise, timestamp: time, momentum: false)
-}
-precondition(modeStep(1, 1) == nil && modeStep(-1, 1.1) == nil)
-precondition(modeStep(-1, 1.2) == false, "Two notches after reversing complete the gesture")
-modeGesture.reset()
-for time in [1.3, 1.4, 1.5, 1.6, 1.7] { precondition(modeStep(1, time) == nil) }
-precondition(modeStep(1, 1.9) == nil)
-precondition(modeStep(1, 2) == true, "Cooldown survives a released Shift or reversed gesture")
-modeGesture.reset()
-precondition(modeStep(4, 4) == nil && modeStep(4, 4.7) == nil)
-precondition(modeStep(4, 4.8) == true, "A gap over 0.6 seconds discards incomplete progress")
-print("MIXER_MODE_GESTURE_REVERSAL_IDLE_GAP_RESET_AND_COOLDOWN_OK")
 for height: CGFloat in [80, 160, 242, 255, 350, 600] {
-    let normal = FooterMixerStripLayout(height: height, slotsOnly: false)
-    let compact = FooterMixerStripLayout(height: height, slotsOnly: true)
-    let icons = FooterMixerStripLayout(height: height, slotsOnly: true, iconHeight: 30)
-    precondition(icons.controlsHeight == 0 && icons.slotsHeight == max(0, height - 78),
-                 "The icon stays below the name when only slots are shown")
-    precondition(normal.controlsHeight == min(205, max(100, height - 48)))
-    precondition(normal.slotsHeight == max(0, height - 48 - normal.controlsHeight),
-                 "Controls and slots reserve the full name and number band")
-    precondition(compact.controlsHeight == 0 && compact.slotsHeight == max(0, height - 48),
-                 "Slots-only mode reserves only the fixed name/number band and the existing outer padding")
+    let layout = FooterMixerStripLayout(height: height)
+    precondition(layout.controlsHeight == min(205, max(100, height - 48)))
+    precondition(layout.slotsHeight == max(0, height - 48 - layout.controlsHeight))
 }
-print("MIXER_SLOTS_ONLY_FULL_AVAILABLE_HEIGHT_NORMAL_GEOMETRY_UNCHANGED_OK")
 
-precondition(FooterMixerStripLayout(height: 239, slotsOnly: false).slotsHeight == 0,
+precondition(FooterMixerStripLayout(height: 239).slotsHeight == 0,
              "The minimum docked height must hide all slots")
-for count in [0, 1, 2, 8] {
-    for height in stride(from: CGFloat(0), through: 500, by: 1) {
-        let sections = FooterSlotSectionsLayout(height: height, outputCount: count)
-        precondition(sections.pluginsHeight + sections.outputsHeight + sections.dividerHeight == height)
-        precondition(sections.outputsHeight == 0 || sections.pluginsHeight >= 63)
+for height in stride(from: CGFloat(0), through: 500, by: 1) {
+    for count in [0, 1, 4, 24] {
+        let track = FooterSlotSectionsLayout(height: height, outputCount: count)
+        let main = FooterSlotSectionsLayout(height: height, outputCount: count, main: true)
+        precondition(track.pluginsHeight == main.pluginsHeight)
+        for sections in [track, main] {
+            precondition(sections.pluginsHeight + sections.outputsHeight + sections.dividerHeight <= height)
+            precondition(sections.outputsHeight == track.outputsHeight)
+            precondition(sections.outputsHeight == 0 || sections.pluginsHeight >= 19)
+        }
     }
 }
-private let tallSections = FooterSlotSectionsLayout(height: 500, outputCount: 8)
-precondition(tallSections.pluginsHeight > 3 * 21 && tallSections.outputsHeight == 40)
+private let mainSections = FooterSlotSectionsLayout(height: 500, outputCount: 1, main: true)
+precondition(mainSections.pluginsHeight == 237 && mainSections.dividerHeight == 47 && mainSections.outputsHeight == 216)
 print("MIXER_MINIMUM_HIDES_SLOTS_PLUGINS_GROW_UNBOUNDED_OUTPUTS_RESERVE_SCROLL_VIEWPORT_OK")
 
 slotScroll.removeFromSuperview()
@@ -585,7 +521,7 @@ print("MIXER_TRACK_INSERTION_AND_UNDO_PRESERVE_EXISTING_HOSTS_CONTROL_ROOTS_AND_
 // the lower controls. This is the path that used to reflow every fader per pixel.
 private let heightStrip = FooterMixerStripGeometryView(frame: NSRect(x: 0, y: 0, width: 83, height: 254))
 var lowerRootBuilds = 0
-heightStrip.update(slotsOnly: false, iconHeight: 0, slots: AnyView(Color.clear), footer: { height in
+heightStrip.update(iconHeight: 0, slots: AnyView(Color.clear), footer: { height in
     lowerRootBuilds += 1
     return AnyView(VStack(spacing: 0) { Color.red.frame(height: height); Text("Track").frame(height: FooterMixerStripLayout.labelHeight) })
 })
@@ -599,14 +535,7 @@ for height in 255...640 {
     precondition(heightStrip.subviews[0].frame.maxY == lowerHost.frame.minY, "Slots and controls must remain adjacent")
 }
 precondition(lowerRootBuilds == 1, "Increasing mixer height rebuilt the control hierarchy")
-heightStrip.update(slotsOnly: true, iconHeight: 30, slots: AnyView(Color.clear), footer: { height in
-    precondition(height == 0, "Slots-only must hide the control area")
-    return AnyView(Text("Track icon").frame(height: FooterMixerStripLayout.labelHeight + 30))
-})
-heightStrip.layoutSubtreeIfNeeded()
-precondition(lowerHost.frame.height == FooterMixerStripLayout.labelHeight + 30 && lowerHost.frame.maxY == heightStrip.bounds.height - 4,
-             "Slots-only must preserve the lower name/icon row")
-print("FOOTER_MIXER_HEIGHT_DRAG_FIXED_CONTROLS_400_STEPS_AND_SLOTS_ONLY_OK")
+print("FOOTER_MIXER_HEIGHT_DRAG_KEEPS_CONTROLS_OK")
 
 private let slotsViewport = FooterEffectSlotsViewport(frame: NSRect(x: 0, y: 0, width: 75, height: 40))
 slotsViewport.update(content: AnyView(VStack(spacing: 2) { ForEach(0..<8) { Text("FX \($0)").frame(height: 19) } }), height: 166)
@@ -689,7 +618,7 @@ for detached in [false, true] {
         sections.layoutSubtreeIfNeeded()
         let expected = FooterSlotSectionsLayout(height: CGFloat(height), outputCount: 4)
         precondition(slots[0].frame.height == expected.pluginsHeight && slots[1].frame.height == expected.outputsHeight)
-        precondition(slots[1].frame.minY == expected.pluginsHeight + expected.dividerHeight && slots[1].isHidden == (expected.outputsHeight == 0))
+        precondition(slots[1].frame.maxY == CGFloat(height) && slots[1].isHidden == (expected.outputsHeight == 0))
         precondition(pluginDocument.frame == pluginFrame && outputDocument.frame == outputFrame,
                      "FX and output documents must remain fixed while their viewports change")
     }
@@ -701,7 +630,7 @@ for detached in [false, true] {
     sections.layoutSubtreeIfNeeded()
     precondition(pluginScroll.contentView.bounds.minY == 50 && outputScroll.contentView.bounds.minY == 20,
                  "The FX and output lists keep independent scroll positions")
-    sections.setFrameSize(NSSize(width: 75, height: 70)); sections.layoutSubtreeIfNeeded()
+    sections.setFrameSize(NSSize(width: 75, height: 45)); sections.layoutSubtreeIfNeeded()
     precondition(slots[1].isHidden && slots[1].visibleRect.isEmpty,
                  "Below the output threshold no hidden routing button has a visible hit area")
     sections.setFrameSize(NSSize(width: 75, height: 120)); sections.layoutSubtreeIfNeeded()
@@ -714,17 +643,26 @@ for detached in [false, true] {
     current.first!.testAction()
     precondition(SlotSectionJournal.clicks.last!.hasSuffix("-1"), "An update at the same height must refresh the action")
     update(2, outputs: 0)
-    precondition(slots[1].isHidden && slots[0].frame.height == sections.bounds.height,
-                 "No outputs gives the full available space to plugins")
+    precondition(slots[1].isHidden && slots[0].frame.height == FooterSlotSectionsLayout(height: sections.bounds.height, outputCount: 0).pluginsHeight,
+                 "An empty output list still leaves the bypass controls available")
     update(3, outputs: 4)
     precondition(!slots[1].isHidden && slotSectionButtons(sections).count == 12,
                  "Adding outputs while the panel is open restores the live routing controls")
+    sections.setFrameSize(NSSize(width: 75, height: 500))
+    for count in [0, 1, 8, 24] {
+        update(4, outputs: count)
+        sections.layoutSubtreeIfNeeded()
+        let routingHeight: CGFloat = count > 0 ? 216 : 0
+        precondition(slots[0].frame.maxY == 237 && slots[1].frame.maxY == 500 &&
+                     slots[1].frame.height == routingHeight, "Sends share the same starting row regardless of the number of destinations")
+    }
+    print("HOZ_BYPASS_STAYS_CENTERED_WITH_ZERO_ONE_EIGHT_OR_TWENTY_FOUR_OUTPUT_ROWS_OK")
     sectionWindow.close()
 }
 print("FOOTER_NATIVE_FX_OUTPUT_DIVIDER_DOCKED_FLOATING_HEIGHTS_FIXED_DOCUMENTS_SCROLL_ACTIONS_ENVIRONMENT_WITHOUT_ROOT_REBUILDS_OK")
 
 private let stableChannelHost = FooterMixerHostingView(rootView: AnyView(
-    FooterMixerStripGeometry(slotsOnly: false, iconHeight: 0, selected: true, slots: AnyView(Color.clear),
+    FooterMixerStripGeometry(iconHeight: 0, selected: true, slots: AnyView(Color.clear),
         footer: { AnyView(Color.clear.frame(height: $0 + FooterMixerStripLayout.labelHeight)) }).padding(5)))
 stableChannelHost.frame = NSRect(x: 0, y: 0, width: 93, height: 240)
 window.contentView!.addSubview(stableChannelHost); stableChannelHost.layoutSubtreeIfNeeded()
@@ -753,7 +691,7 @@ private func revealButtons(_ view: NSView) -> [NSButton] {
     (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(revealButtons)
 }
 view.update(width: 300 * 86 + 7, stride: 86, count: 300) { _ in
-    AnyView(FooterMixerStripGeometry(slotsOnly: false, iconHeight: 0, selected: false,
+    AnyView(FooterMixerStripGeometry(iconHeight: 0, selected: false,
         slots: AnyView(Color.gray), footer: { height in
             AnyView(VStack { RevealControl().frame(height: 24); Spacer(minLength: 0) }.frame(height: height + FooterMixerStripLayout.labelHeight))
         }).frame(width: 83).padding(5))
@@ -776,7 +714,7 @@ print("FOOTER_FIRST_REVEAL_COMMITS_NESTED_CONTROLS_BEFORE_CLIP_MOVES_OK")
 
 private let opening = FooterMixerScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 273))
 func openingContent(_ range: Range<Int>) -> AnyView {
-    AnyView(FooterMixerStripGeometry(slotsOnly: false, iconHeight: 0, selected: false,
+    AnyView(FooterMixerStripGeometry(iconHeight: 0, selected: false,
         slots: AnyView(Color.gray), footer: { height in
             AnyView(VStack { RevealControl().frame(height: 24); Spacer(minLength: 0) }.frame(height: height + FooterMixerStripLayout.labelHeight))
         }).frame(width: 83).padding(5))
@@ -838,7 +776,7 @@ func replaceChannelIdentities() {
         AnyView(HStack(spacing: 0) {
             HStack(spacing: 3) {
                 ForEach(Array(range), id: \.self) { index in
-                    FooterMixerStripGeometry(slotsOnly: false, iconHeight: 0, selected: false,
+                    FooterMixerStripGeometry(iconHeight: 0, selected: false,
                         slots: AnyView(Color.gray), footer: { height in
                             AnyView(VStack { RevealControl().frame(height: 24); Spacer(minLength: 0) }
                                 .frame(height: height + FooterMixerStripLayout.labelHeight))

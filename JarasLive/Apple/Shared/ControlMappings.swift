@@ -143,7 +143,13 @@ struct MappingTransferRequest: Identifiable {
                     packet = UnsafePointer(MIDIEventPacketNext(packet))
                 }
                 let received = messages
-                if !received.isEmpty { Task { @MainActor [weak self] in for message in received { self?.receive(endpoint: endpoint, status: message.0, number: message.1, value: message.2, timestamp: message.3) } } }
+                if !received.isEmpty {
+                    DispatchQueue.main.async { [weak self] in
+                        for (status, number, value, timestamp) in received {
+                            self?.receive(endpoint: endpoint, status: status, number: number, value: value, timestamp: timestamp)
+                        }
+                    }
+                }
             }
             if resultPort != noErr { error = "MIDI input failed (\(resultPort))" }
         }
@@ -191,7 +197,7 @@ struct MappingTransferRequest: Identifiable {
         }
         if command == "tempoUp" { return "BPM +" }
         if command == "tempoDown" { return "BPM −" }
-        let name = track.flatMap { id in show?.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == id })?.name } ?? JarasLocalization.string(track == nil ? "Master" : "Track unavailable")
+        let name = track.flatMap { id in show?.snapshot.project.songs.flatMap(\.tracks).first(where: { $0.id == id })?.name } ?? JarasLocalization.string(track == nil ? "Main" : "Track unavailable")
         return name + " · " + JarasLocalization.string(command == "volume" ? "Volume" : command == "mute" ? "Mute" : "Solo")
     }
     func beginFX(track: UUID?, parameter: FXParameterMapping) {
@@ -247,7 +253,7 @@ struct MappingTransferRequest: Identifiable {
         return title + " · #" + String(trackNumber) + (name.map { " " + $0 } ?? "")
     }
     func editTitle(_ edit: MappingEdit) -> String {
-        if let fx = edit.fxParameter { return fx.parameter.effect + " · " + JarasLocalization.string(fx.parameter.name) }
+        if let fx = edit.fxParameter { return fx.parameter.effect + " · " + fx.parameter.displayName }
         guard let action = edit.action else { return title(track: edit.track, command: edit.command) }
         return actionTitle(action, trackNumber: edit.trackNumber)
     }
@@ -298,7 +304,7 @@ struct MappingTransferRequest: Identifiable {
         }
         if !replacingConflicts && (!actionConflicts.isEmpty || !controlConflicts.isEmpty || !vinhetasConflicts.isEmpty) {
             let titles = actionConflicts.map { actionTitle($0.action, trackNumber: $0.trackNumber) } + controlConflicts.map {
-                $0.fxParameter.map { $0.parameter.effect + " · " + JarasLocalization.string($0.parameter.name) } ?? title(track: $0.track, command: $0.command)
+                $0.fxParameter.map { $0.parameter.effect + " · " + $0.parameter.displayName } ?? title(track: $0.track, command: $0.command)
             }
             let conflictTitles = titles + vinhetasConflicts
             error = conflictTitles.joined(separator: ", ") + " — " + JarasLocalization.string("This control is already mapped.")
@@ -421,7 +427,7 @@ struct MappingTransferRequest: Identifiable {
             return
         }
         guard transferRequest == nil else { return }
-        KeyboardMIDIMonitor.shared.receive(source: source.id, status: status, number: number, value: value)
+        defer { KeyboardMIDIMonitor.shared.receive(source: source.id, status: status, number: number, value: value) }
         if editing == nil { onMIDIReceived?(source.id, status, number, value, timestamp) }
         let kind: UInt8 = status & 0xf0 == 0xb0 ? 0xb0 : 0x90
         let channel = status & 0x0f
@@ -609,7 +615,7 @@ struct ControlMappingsList: View {
         ForEach(mappings.current) { item in
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(item.fxParameter.map { $0.parameter.effect + " · " + JarasLocalization.string($0.parameter.name) } ?? mappings.title(track: item.track, command: item.command)).font(.jarasHeadline)
+                    Text(item.fxParameter.map { $0.parameter.effect + " · " + $0.parameter.displayName } ?? mappings.title(track: item.track, command: item.command)).font(.jarasHeadline)
                     Text(item.input.label).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 }
                 Spacer()

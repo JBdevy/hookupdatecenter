@@ -37,9 +37,22 @@ try MainActor.assumeIsolated {
     func peak(_ blocks: Int = 12) -> Float { do { return try render(blocks) } catch { fatalError(error.localizedDescription) } }
     @MainActor func midi(_ status: UInt8, _ number: UInt8, _ value: UInt8) { audio.receiveMIDI(device: 123, status: status, number: number, value: value) }
     midi(0x90, 60, 100)
-    precondition(peak() < 0.000001, "SF2 rejects note-on without Rec arm")
-    audio.setArmedInstrumentTracks([track.id]); midi(0x90, 60, 100)
-    precondition(peak() > 0.0001, "SF2 accepts notes while armed")
+    precondition(peak() < 0.000001, "SF2 rejects note-on with monitoring off")
+    precondition(!track.monitorsInput(armed: false) && track.monitorsInput(armed: true))
+    track.inputMonitoring = true
+    precondition(track.monitorsInput(armed: false) && audio.armedMIDIRecordingTracks.isEmpty)
+    audio.setArmedInstrumentTracks(track.monitorsMIDIInstrument(armed: false) ? [track.id] : [])
+    midi(0x90, 60, 100)
+    precondition(peak() > 0.0001, "SF2 accepts monitored MIDI with REC off")
+    midi(0x80, 60, 0)
+    precondition(peak(50) < 0.00001)
+    track.inputMonitoring = false
+    precondition(!track.monitorsInput(armed: true) && track.monitorsMIDIInstrument(armed: true))
+    precondition(!track.monitorsMIDIInstrument(armed: false))
+    audio.setArmedInstrumentTracks(track.monitorsMIDIInstrument(armed: true) ? [track.id] : [])
+    midi(0x90, 60, 100)
+    precondition(peak(1) > 0.0001, "REC with I off must sound in the first audio buffer")
+    print("SF2_HARDWARE_MIDI_REC_ON_MONITOR_OFF_FIRST_BUFFER_OK")
     audio.setArmedInstrumentTracks([])
     precondition(peak() > 0.0001, "disarming SF2 does not cut the playing note")
     midi(0x80, 60, 0)
@@ -72,11 +85,17 @@ try MainActor.assumeIsolated {
         else { UserDefaults.standard.removeObject(forKey: "jaras.keyboard.channel") }
     }
     audio.setArmedInstrumentTracks([])
+    audio.armedMIDIRecordingTracks = [track.id]
+    var recorded: [UInt8] = []
+    audio.onLiveKeyboardMIDI = { _, status, _, _ in recorded.append(status & 0xf0) }
     audio.playKeyboardNote(60)
-    precondition(peak() < 0.00001, "The virtual keyboard also requires REC arm")
+    audio.releaseKeyboardNote(60)
+    precondition(recorded == [0x90, 0x80], "Virtual MIDI recording receives both events")
+    precondition(peak() < 0.00001, "Recording virtual MIDI with monitoring off stays silent")
+    audio.armedMIDIRecordingTracks = []
     audio.setArmedInstrumentTracks([track.id])
     audio.playKeyboardNote(60)
-    precondition(peak() > 0.0001, "The virtual keyboard reaches an armed native instrument")
+    precondition(peak() > 0.0001, "The virtual keyboard reaches a monitored native instrument with REC off")
     audio.setArmedInstrumentTracks([])
     audio.releaseKeyboardNote(60)
     precondition(peak(50) < 0.00001, "The virtual key-up releases its old target after REC disarm")

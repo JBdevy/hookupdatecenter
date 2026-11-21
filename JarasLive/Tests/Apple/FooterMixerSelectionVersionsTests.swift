@@ -2,14 +2,14 @@ import Foundation
 private struct Track: Equatable { var id = UUID(); var value = 0; var instrumentIcon: String? }
 private typealias NativeFXSettings = Int
 private struct OutputPatch: Equatable { var firstChannel: Int; var channelCount: Int }
-private enum TrackInstrumentIcon: String { case piano }
+private enum TrackIconCatalog { static func contains(_ icon: String?) -> Bool { icon != nil } }
 // INSERT_RENDER_STATE
 // INSERT_STRIP_VERSIONS
 private let tracks = (0..<100).map { _ in Track() }
 let project = UUID()
 private func state(_ selection: Set<UUID>, items: [Track] = tracks) -> FooterMixerRenderState {
     FooterMixerRenderState(project: project, tracks: items, masterFX: nil, masterVolume: 1, masterPan: 0,
-                          masterMute: false, masterSolo: false, masterMono: false, masterColor: nil, selection: selection)
+                          masterMute: false, masterSolo: false, masterMono: false, selection: selection)
 }
 private let versions = FooterMixerStripVersions()
 let original = versions.update(state([]), active: true, locale: "pt_BR")
@@ -27,6 +27,10 @@ precondition(versions.masterVersion == master, "track selection cannot replace t
 private var routed = state([tracks[5].id, tracks[9].id]); routed.masterOutputs = [.init(firstChannel: 3, channelCount: 2)]
 let routeChanged = versions.update(routed, active: true, locale: "pt_BR")
 precondition(routeChanged == group && versions.masterVersion != master, "Master output changes must refresh its routing slots without replacing track controls")
+let beforeMainSend = versions.masterVersion
+routed.mainSends = [tracks[0].id]
+routed.mainSendNames = [tracks[0].id: "Piano"]
+precondition(versions.update(routed, active: true, locale: "pt_BR") == group && versions.masterVersion != beforeMainSend)
 let translated = versions.update(state([tracks[5].id, tracks[9].id]), active: true, locale: "en")
 precondition(original.indices.allSatisfy { translated[$0] != group[$0] }, "locale changes still update every channel")
 print("FOOTER_SELECTION_UPDATES_ONLY_AFFECTED_CHANNELS_AND_PRESERVES_CURRENT_GROUP_TARGETS_OK")

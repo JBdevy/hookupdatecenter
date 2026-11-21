@@ -208,7 +208,25 @@ func descendants<T: NSView>(_ type: T.Type,_ view: NSView) -> [T] { (view as? T)
     precondition(clip.isHidden && view.drawingCount == drawings, "Inactive selected rows hide the strip and release playback updates")
     print("NATIVE_SETLIST_RETAINED_PROGRESS_NO_STATIC_REDRAW_COUNTDOWN_QUEUE_LOOP_RESIZE_BACKING_AND_PROMOTION_OK")
 }
+@MainActor func testHeavyTitleFaces() {
+    let view = NativeRegionSetlistLabelView(frame: CGRect(x: 0, y: 0, width: 240, height: 34))
+    for style in SetlistTypeface.allCases where style.rawValue >= 3 {
+        view.configure(number: 3, name: "Bênçãos sem fim", duration: "3m", color: 0x44ff88,
+                       selected: false, active: false, queued: false, prepareOnly: false,
+                       progress: 0, queueProgress: 0, fontStyle: style.rawValue)
+        let line = Mirror(reflecting: view).children.first { $0.label == "nameLine" }!.value as! CTLine
+        let runs = CTLineGetGlyphRuns(line) as! [CTRun]
+        precondition(!runs.isEmpty)
+        for run in runs {
+            let attributes = CTRunGetAttributes(run) as NSDictionary
+            let font = attributes[kCTFontAttributeName] as! CTFont
+            precondition(CTFontCopyPostScriptName(font) as String == style.face, "Unexpected fallback for " + style.face)
+        }
+    }
+    print("SETLIST_HEAVY_FACES_NATIVE_TITLES_AND_ACCENTS_OK")
+}
 MainActor.assumeIsolated {
+ testHeavyTitleFaces()
  testFocusPreservesManualDrawerState()
  testLiveMarkKeepsCachedTextAndPlaybackFeedback()
  testSetlistFooterActionsAndCollapse()

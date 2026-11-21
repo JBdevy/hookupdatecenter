@@ -1,216 +1,5 @@
 import SwiftUI
 
-struct FXInsertEditor: View {
-    let show: ShowController
-    let track: UUID?
-    let targets: [UUID?]
-    var clip: UUID? = nil
-    var inserted: ((String) -> Void)? = nil
-    var resize: (CGFloat) -> Void = { _ in }
-    let dismiss: () -> Void
-    private let project: UUID
-    private let isActive: () -> Bool
-    init(show: ShowController, track: UUID?, targets: [UUID?], clip: UUID? = nil,
-         inserted: ((String) -> Void)? = nil, isActive: @escaping () -> Bool = { true },
-         resize: @escaping (CGFloat) -> Void = { _ in },
-         dismiss: @escaping () -> Void) {
-        self.show = show; self.track = track; self.targets = targets; self.clip = clip
-        self.inserted = inserted; self.isActive = isActive; self.resize = resize; self.dismiss = dismiss
-        project = show.snapshot.project.id
-    }
-    private var targetIsCurrent: Bool {
-        guard isActive(), show.snapshot.project.id == project else { return false }
-        if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project) != nil }
-        return targets.allSatisfy { target in
-            target == nil || target.flatMap { FXModelLookup.track($0, in: show.snapshot.project) } != nil
-        }
-    }
-    @Environment(\.openFX) private var open
-    @State private var effect = "EQ"
-    @State private var instrument: String?
-    @ObservedObject private var library = InstrumentLibrary.shared
-    #if os(macOS)
-    @ObservedObject private var plugins = PluginCatalog.shared
-    @State private var external: String?
-    @State private var externalError = ""
-    @State private var browsingExternal = false
-    #endif
-    private var vinhetasTarget: Bool {
-        guard clip == nil else { return false }
-        return (targets.isEmpty ? [track] : targets).contains { target in
-            target.flatMap { FXModelLookup.track($0, in: show.snapshot.project) }?.role.rawValue == "vinhetas"
-        }
-    }
-    private var availableEffects: [String] {
-        var result = vinhetasTarget ? ["Reverb", "EQ", "Delay", "Limiter"] :
-            NativeFXSettings.order.filter { $0 != "Instruments" || (clip == nil && track != nil && targets.count == 1) }
-        #if os(macOS)
-        result.insert("External", at: 0)
-        #endif
-        return result
-    }
-    private var cannotApply: Bool {
-        if effect == "Instruments" { return !library.downloaded.contains(instrument ?? "") }
-        #if os(macOS)
-        if effect == "External" { return external == nil || plugins.scanning }
-        #endif
-        return false
-    }
-    private func finishInsertion(_ key: String, track target: UUID?) {
-        guard targetIsCurrent else { dismiss(); return }
-        dismiss()
-        if let inserted { inserted(key) }
-        else if clip == nil { open(target, key) }
-    }
-    @State private var applying = false
-    private func applyEffect() {
-        guard !applying else { return }
-        applying = true
-        defer { applying = false }
-
-        guard targetIsCurrent else { dismiss(); return }
-        guard availableEffects.contains(effect) else { return }
-        #if os(macOS)
-        if effect == "External" {
-            guard let chosen = plugins.plugins.first(where: { $0.id == external }) else { return }
-            guard !vinhetasTarget || !chosen.isInstrument else { return }
-            if let clip {
-                var prepared: [(UUID, NativeFXSettings, String)] = []
-                do {
-                    for target in show.clipFXTargets(clip) {
-                        let preparation = NativeEffectsChain()
-                        defer { preparation.releaseExternal() }
-                        var settings = show.clipFXSettings(target)
-                        var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
-                        instance.id = UUID().uuidString
-                        settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
-                        settings.inserted.append(instance.effectKey)
-                        try settings.validateForClip()
-                        let node = try preparation.prepareExternal(instance)
-                        if let state = JarasVST3.state(node, identifier: instance.id) {
-                            instance.componentState = state["componentState"] as? String
-                            instance.controllerState = state["controllerState"] as? String
-                            let index = settings.externalPlugins!.count - 1
-                            settings.externalPlugins?[index] = instance
-                        }
-                        prepared.append((target, settings, instance.effectKey))
-                    }
-                    for (target, settings, _) in prepared { show.previewClipFX(target, settings: settings) }
-                    show.commitFX()
-                    guard let key = prepared.first(where: { $0.0 == clip })?.2,
-                          show.clipFXSettings(clip).inserted.contains(key) else {
-                        externalError = show.message
-                        return
-                    }
-                    finishInsertion(key, track: nil)
-                } catch { externalError = error.localizedDescription }
-                return
-            }
-            var prepared: [(UUID?, NativeFXSettings, String)] = []
-            do {
-                for target in targets {
-                    guard let chain = StemAudioPlayback.shared.effects(for: target) else { continue }
-                    var settings = show.fxSettings(target)
-                    var instance = try FXPresetStore.shared.applyingDefault(to: chosen.instance)
-                    settings.externalPlugins = (settings.externalPlugins ?? []) + [instance]
-                    settings.inserted.append(instance.effectKey)
-                    try settings.validate()
-                    let node = try chain.prepareExternal(instance)
-                    if let state = JarasVST3.state(node, identifier: instance.id) {
-                        instance.componentState = state["componentState"] as? String; instance.controllerState = state["controllerState"] as? String
-                        let index = settings.externalPlugins!.count - 1
-                        settings.externalPlugins?[index] = instance
-                    }
-                    prepared.append((target, settings, instance.effectKey))
-                }
-                for (target, settings, _) in prepared { show.previewFX(target, settings: settings) }
-                show.commitFX()
-                if let own = prepared.first(where: { $0.0 == track }) ?? prepared.first { finishInsertion(own.2, track: own.0) }
-            } catch {
-                for target in targets {
-                    StemAudioPlayback.shared.effects(for: target)?.apply(show.fxSettings(target))
-                }
-                externalError = error.localizedDescription
-            }
-            return
-        }
-        #endif
-        var insertedKey: String?
-        if let clip {
-            insertedKey = show.insertClipFX(clip, effect: effect)
-        } else if effect == "Instruments" {
-            guard targets.count == 1, let instrument, library.downloaded.contains(instrument) else { return }
-            var settings = show.fxSettings(track)
-            insertedKey = settings.appendNative(effect, instrument: instrument, parameters: InstrumentLibrary.parameters(instrument))
-            do { settings = try FXPresetStore.shared.applyingDefault(to: settings, effect: insertedKey!) }
-            catch { show.message = error.localizedDescription; return }
-            show.previewFX(track, settings: settings); show.commitFX()
-        } else {
-            insertedKey = show.insertFX(targets, effect: effect)[track]
-        }
-        let settings = clip.map(show.clipFXSettings) ?? show.fxSettings(track)
-        guard let insertedKey, settings.inserted.contains(insertedKey) else { return }
-        finishInsertion(insertedKey, track: track)
-
-    }
-    var body: some View {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Insert effect").font(.jarasHeadline)
-                    Picker("Effect", selection: $effect) {
-                        ForEach(availableEffects, id: \.self) { Text(LocalizedStringKey($0 == "Limiter" ? "CatLive Limiter" : $0 == "External" ? "External (VST3)" : $0)).tag($0) }
-                    }.pickerStyle(.menu)
-                    #if os(iOS)
-                    .padding(12).frame(maxWidth: .infinity)
-                    .background(Color.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.white.opacity(0.25)))
-                    .tint(JarasTheme.green)
-                    #endif
-                    if effect == "Instruments" { InstrumentBrowser(selected: $instrument).frame(height: 330) }
-                    #if os(macOS)
-                    if effect == "External" {
-                        Button { browsingExternal = true } label: {
-                            HStack {
-                                Image(systemName: "magnifyingglass")
-                                Text(external.flatMap { id in plugins.plugins.first { $0.id == id }?.name } ?? JarasLocalization.string("Choose a plugin"))
-                                    .lineLimit(1)
-                                Spacer()
-                                Image(systemName: "square.grid.2x2")
-                            }.frame(maxWidth: .infinity).padding(8)
-                        }.buttonStyle(.bordered)
-                        HStack { Button("Scan plugins") { plugins.scan() }.disabled(plugins.scanning); if plugins.scanning { ProgressView().controlSize(.small) } }
-                        if plugins.scanning { PluginScanProgress(catalog: plugins) }
-                        if !externalError.isEmpty { Text(verbatim: externalError).font(.jarasCaption).foregroundStyle(.red) }
-                    }
-                    #endif
-                    HStack {
-                        Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                        Spacer()
-                        if effect != "External" {
-                            Button("Apply", action: applyEffect).keyboardShortcut(.defaultAction).disabled(cannotApply)
-                        }
-
-                    }
-                    #if os(iOS)
-                    .buttonStyle(StageButtonStyle(color: JarasTheme.green))
-                    #endif
-                }.padding(20)
-                #if os(macOS)
-                .frame(width: effect == "Instruments" ? 440 : 360)
-                #else
-                .frame(maxWidth: .infinity)
-                #endif
-                .foregroundStyle(JarasTheme.text)
-        .onAppear { instrument = (clip.map(show.clipFXSettings) ?? show.fxSettings(track)).instrumentID; resize(210) }
-        .onChange(of: effect) { value in resize(value == "Instruments" ? 500 : value == "External" ? 310 : 210) }
-        #if os(macOS)
-        .onChange(of: effect) { value in if value == "External" { browsingExternal = true } }
-        .onChange(of: external) { value in if value != nil && effect == "External" { applyEffect() } }
-        .onChange(of: plugins.scanning) { scanning in if effect == "External" { resize(scanning ? 370 : 310) } }
-        .background(ExternalPluginBrowserPresenter(isPresented: $browsingExternal, selected: $external,
-                                                  allowsInstruments: !vinhetasTarget && (clip.map { FXModelLookup.clip($0, in: show.snapshot.project)?.midi != nil } ?? (targets.count == 1 && track != nil))))
-        #endif
-    }
-}
 #if os(macOS)
 import AppKit
 import Combine
@@ -246,7 +35,7 @@ final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
     override var fittingSize: NSSize { frame.size }
 }
 
-@MainActor private func makeWorkspacePanel(title: String, size: NSSize, minimum: NSSize, matrixPatch: Bool = false) -> NSPanel {
+@MainActor func makeWorkspacePanel(title: String, size: NSSize, minimum: NSSize, matrixPatch: Bool = false) -> NSPanel {
     let rect = NSRect(origin: .zero, size: size)
     let style: NSWindow.StyleMask = [.titled, .closable, .resizable]
     let panel = matrixPatch
@@ -271,7 +60,7 @@ final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
 @MainActor final class FXWindows: NSObject, NSWindowDelegate {
     static let shared = FXWindows()
     private enum Target: Hashable {
-        case track(UUID?)
+        case plugin(UUID?, String)
         case clip(UUID)
     }
     private struct WindowKey: Hashable {
@@ -282,40 +71,45 @@ final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
     private var projectObservation: AnyCancellable?
     private weak var show: ShowController?
     func open(show: ShowController, track: UUID?, effect: String, language: String) {
-        open(show: show, target: WindowKey(project: show.snapshot.project.id, target: .track(track)), preferredEffect: effect)
+        open(show: show, target: WindowKey(project: show.snapshot.project.id, target: .plugin(track, effect)))
     }
-    func openClipChain(show: ShowController, clip: UUID) {
-        open(show: show, target: WindowKey(project: show.snapshot.project.id, target: .clip(clip)))
+    func openClipChain(show: ShowController, clip: UUID, openLibrary: @escaping () -> Void) {
+        open(show: show, target: WindowKey(project: show.snapshot.project.id, target: .clip(clip)), openLibrary: openLibrary)
     }
     private func targetExists(_ key: WindowKey, in show: ShowController) -> Bool {
         guard key.project == show.snapshot.project.id else { return false }
         switch key.target {
         case .clip(let clip): return FXModelLookup.clip(clip, in: show.snapshot.project) != nil
-        case .track(let track):
-            return track == nil || track.map { FXModelLookup.track($0, in: show.snapshot.project)?.kind == .standard } == true
+        case .plugin(let track, let effect):
+            return show.fxSettings(track).effectKeys.contains(effect) &&
+                (track == nil || track.map { FXModelLookup.track($0, in: show.snapshot.project)?.kind == .standard } == true)
         }
     }
     private func title(_ key: WindowKey, in show: ShowController) -> String {
         switch key.target {
         case .clip(let clip): return JarasLocalization.string("FX Manager") + " - " + (FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—")
-        case .track(let track):
-            let name = track.flatMap { id in FXModelLookup.track(id, in: show.snapshot.project)?.name } ?? "Master"
-            return JarasLocalization.string("FX Manager") + " - " + name
+        case .plugin(let track, let effect):
+            let name = track.flatMap { id in FXModelLookup.track(id, in: show.snapshot.project)?.name } ?? "Main"
+            let settings = show.fxSettings(track)
+            let plugin = settings.externalPlugins?.first(where: { $0.effectKey == effect })?.name ??
+                JarasLocalization.string(settings.kind(of: effect))
+            return plugin + " - " + name
         }
     }
-    private func content(_ key: WindowKey, show: ShowController, panel: NSPanel, preferredEffect: String?) -> NSView {
+    private func content(_ key: WindowKey, show: ShowController, panel: NSPanel, openLibrary: @escaping () -> Void) -> NSView {
         switch key.target {
         case .clip(let clip):
-            let view = TrackFXChainView(show: show, track: nil, clip: clip, effect: preferredEffect ?? show.clipFXSettings(clip).clipEffectKeys.first ?? "", panel: panel)
+            let view = TrackFXChainView(show: show, track: nil, clip: clip, effect: show.clipFXSettings(clip).clipEffectKeys.first ?? "",
+                                        panel: panel, openLibrary: openLibrary)
             panel.setContentSize(view.preferredContentSize)
             return view
-        case .track(let track):
-            let view = TrackFXChainView(show: show, track: track, effect: preferredEffect ?? show.fxSettings(track).effectKeys.first ?? "EQ", panel: panel)
+        case .plugin(let track, let effect):
+            let view = TrackFXChainView(show: show, track: track, effect: effect, panel: panel, singlePlugin: true)
             panel.setContentSize(view.preferredContentSize)
             return view
         }
     }
-    private func open(show: ShowController, target key: WindowKey, preferredEffect: String? = nil) {
+    private func open(show: ShowController, target key: WindowKey, openLibrary: @escaping () -> Void = {}) {
         guard !ProjectSyncControl.following else { return }
         guard targetExists(key, in: show) else { return }
         if self.show !== show {
@@ -323,7 +117,6 @@ final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
             projectObservation = show.$snapshot.map { $0.project.id }.removeDuplicates().dropFirst().sink { [weak self] _ in self?.closeAll() }
         }
         if let panel = windows[key] {
-            if let preferredEffect { (panel.contentView as? TrackFXChainView)?.select(preferredEffect) }
             ProjectionWindow.presentWorkspaceWindow(panel); return
         }
         // The normal titlebar provides full-size native window controls for
@@ -332,7 +125,7 @@ final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
                                        size: NSSize(width: 740, height: 560),
                                        minimum: NSSize(width: 640, height: 540))
         panel.delegate = self
-        panel.contentView = content(key, show: show, panel: panel, preferredEffect: preferredEffect)
+        panel.contentView = content(key, show: show, panel: panel, openLibrary: openLibrary)
         InterfaceScaling.shared.register(panel)
         panel.center()
         let stagger = CGFloat(windows.count % 5) * 26
@@ -344,8 +137,8 @@ final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
     func windowWillClose(_ notification: Notification) {
         guard let panel = notification.object as? NSPanel else { return }
         if let show, let key = windows.first(where: { $0.value === panel })?.key,
-           case .track(let track) = key.target {
-            for plugin in show.fxSettings(track).externalPlugins ?? [] {
+           case .plugin(let track, let effect) = key.target {
+            for plugin in show.fxSettings(track).externalPlugins ?? [] where plugin.effectKey == effect {
                 ExternalPluginState.capture(show: show, track: track, identifier: plugin.id)
             }
         }
@@ -402,12 +195,13 @@ private struct WorkspaceAdvancedContent: View {
 }
 
 private struct WorkspaceToolContent<Content: View>: View {
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage("jaras.language") private var language = "en"
     let content: Content
     let updateTitle: () -> Void
     var body: some View {
         content
-            .background(JarasTheme.background).foregroundStyle(JarasTheme.text)
+            .background(interfaceTheme.background).foregroundStyle(JarasTheme.text)
             .environment(\.locale, Locale(identifier: language)).preferredColorScheme(.dark)
             .onChange(of: language) { _ in updateTitle() }
     }
@@ -418,6 +212,7 @@ private struct WorkspaceToolContent<Content: View>: View {
 @MainActor final class WorkspaceToolWindows: NSObject, ObservableObject, NSWindowDelegate {
     private enum Tool: String { case advanced, settings, textItem, fullLyrics, matrixPatch }
     @Published private(set) var settingsOpen = false
+    @Published private(set) var advancedOpen = false
     @Published private(set) var matrixPatchOpen = false
     private var windows: [Tool: NSPanel] = [:]
     private var settingsSelection: WorkspaceSettingsSelection?
@@ -461,6 +256,7 @@ private struct WorkspaceToolContent<Content: View>: View {
             WorkspaceAdvancedContent(show: show, documents: documents,
                 close: { [weak panel] in panel?.close() }, presentation: advancedPresentation)
         }
+        advancedOpen = true
     }
     func openMatrixPatch(show: ShowController) {
         bind(show)
@@ -535,6 +331,7 @@ private struct WorkspaceToolContent<Content: View>: View {
         panel.parent?.removeChildWindow(panel)
         if tool == .settings { settingsOpen = false; ControlMappings.shared.editing = nil }
         if tool == .matrixPatch { matrixPatchOpen = false }
+        if tool == .advanced { advancedOpen = false }
         if !discardingWindows && tool != .textItem && tool != .fullLyrics {
             // Keep the hosting tree and native window; hide it from layout,
             // hit testing and accessibility until the next presentation.
@@ -551,6 +348,7 @@ private struct WorkspaceToolContent<Content: View>: View {
         discardingWindows = false
         settingsOpen = false
         matrixPatchOpen = false
+        advancedOpen = false
         settingsSelection = nil
     }
 }

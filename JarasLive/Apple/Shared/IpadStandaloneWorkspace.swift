@@ -143,7 +143,7 @@ import Combine
 @MainActor struct IpadStandaloneWorkspace: View {
     let show: ShowController
     let documents: ProjectDocuments
-    let auth: AuthService
+    @ObservedObject var auth: AuthService
     let backend: any BackendClient
     let onExit: () -> Void
     @StateObject private var local: IpadStandalonePresentation
@@ -153,25 +153,27 @@ import Combine
         let id = UUID()
         var track: UUID?
         var clip: UUID?
-        var targets: [UUID?] = []
+        var effect: String?
     }
     private struct PatchTarget: Identifiable {
         let id = UUID()
         var track: UUID?
         var targets: [UUID?] = []
     }
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @State private var remoteSettingsOpen = false
+    @State private var meterEditorOpen = false
     @State private var remoteTeleprompter: Int?
     @State private var settingsOpen = false
     @State private var settingsSection: SettingsView.Section = .general
     @State private var metronomeOpen = false
     @State private var regionActions: UUID?
     @State private var detectingRegion: UUID?
+    @State private var homeOpen = false
     @State private var addingTrack = false
     @State private var advancedOpen = false
     @AppStorage("jaras.native.hozMixer.open") private var hozMixerOpen = false
-    @State private var exportingProject = false
-    @State private var saveOptions = false
+    @State private var sharingProject = false
     @State private var regionLoops: FXTarget?
     @State private var itemMenu: FXTarget?
     @State private var itemMenuAction: String?
@@ -183,7 +185,6 @@ import Combine
     @State private var fx: FXTarget?
     @State private var automationTrack: UUID?
     @State private var patch: PatchTarget?
-    @State private var missingOutput: PatchTarget?
     init(show: ShowController, documents: ProjectDocuments, auth: AuthService,
          backend: any BackendClient, onExit: @escaping () -> Void) {
         self.show = show; self.documents = documents; self.auth = auth
@@ -191,33 +192,20 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || exportingProject || saveOptions || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
+        homeOpen || clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || meterEditorOpen || regionActions != nil || detectingRegion != nil || sharingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
     }
     var body: some View {
         VStack(spacing: 0) {
-            if let missingOutput {
-                HStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                    Text("Some output channels are unavailable on this iPad.")
-                        .font(.jarasCallout).frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Patch") { patch = missingOutput }.buttonStyle(.bordered)
-                }.padding(10).foregroundStyle(JarasTheme.yellow).background(JarasTheme.panel)
-            }
             if let state = local.state {
                 NativeRemoteWorkspace(state: state, computerName: UIDevice.current.name,
                     timer: local.timer, send: local.send, exitRemote: {
                         onExit()
-                    }, local: true, localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openTrackFX: { fx = .init(track: $0) },
+                    }, local: true, openHome: { homeOpen = true }, localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openPlugin: { fx = .init(track: $0, effect: $1) },
                     openSelectedPatch: { patch = .init(track: $0.first, targets: $0.map { Optional($0) }) },
-                    openSelectedFX: { fx = .init(track: $0.first, targets: $0.map { Optional($0) }) },
                     openTrackAutomation: { automationTrack = $0 },
                     openTrackDetails: { presentTrackDetails($0) },
                     openTrackIcon: { presentTrackDetails($0, iconOnly: true) },
                     openClickSound: { clickSoundTrack = $0 },
-                    openMasterDetails: {
-                        trackEdit = .init(project: show.snapshot.project.id, tracks: [], name: "Master",
-                            color: show.snapshot.project.masterColor ?? 0x414141, nameEditable: false)
-                    },
                     openItemMenu: { presentItemMenu($0, targets: [$0]) }, openSelectedItemMenu: { presentItemMenu($0, targets: $1) },
                     processSelectedItems: { ids, action in
                         guard let id = show.current?.tracks.filter({ $0.kind == .standard }).flatMap(\.clips).first(where: { ids.contains($0.id) })?.id else { return }
@@ -231,21 +219,15 @@ import Combine
                     createPlaylist: { show.createRegionPlaylist(name: $0, selected: $1) },
                     addBlock: { show.addSetlistBlock(namePrefix: JarasLocalization.string("Bloco")) },
                     toggleRegionStop: { show.toggleRegionStop() }, stopsAtRegionEnd: local.stopsAtRegionEnd,
-                    exportProject: { saveOptions = true },
-                    groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, toggleHozMixer: { hozMixerOpen.toggle() }, hozMixerOpen: hozMixerOpen, openSettings: { settingsSection = .general; settingsOpen = true }, openAudioSettings: { settingsSection = .audio; settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
+                    shareProject: { sharingProject = true },
+                    groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, nativeAdvancedOpen: advancedOpen,
+                    openMeterEditor: { if show.transportMeterEditingAllowed { meterEditorOpen = true } },
+                    toggleHozMixer: { hozMixerOpen.toggle() }, hozMixerOpen: hozMixerOpen, openSettings: { settingsSection = .general; settingsOpen = true }, nativeSettingsOpen: settingsOpen, openAudioSettings: { settingsSection = .audio; settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
-            if hozMixerOpen {
-                FooterHorizontalMixer(show: show)
-                    .environment(\.openFX, { track, _ in fx = .init(track: track) })
-                    .frame(height: 273)
-            }
         }
-        .background(RemoteSurface.background).preferredColorScheme(.dark)
-        .onAppear { local.start(); inspectOutputRoutes(); IpadItemContextMenu.commands = itemMenuCommands; IpadTimelinePointerContextMenu.contains = IpadItemMenuAnchorView.contains }
+        .background(interfaceTheme.background).preferredColorScheme(.dark)
+        .onAppear { local.start(); IpadItemContextMenu.commands = itemMenuCommands; IpadTimelinePointerContextMenu.contains = IpadItemMenuAnchorView.contains }
         .onDisappear { local.stop(); IpadItemContextMenu.commands = { _, _ in [] }; IpadTimelinePointerContextMenu.contains = { _ in false } }
-        .onChange(of: local.projectRevision) { _ in inspectOutputRoutes() }
-        .onChange(of: local.state?.project) { _ in inspectOutputRoutes() }
-        .onChange(of: audio.channels) { _ in inspectOutputRoutes() }
         .disabled(dialogOpen || audio.localSessionReconfiguring).accessibilityHidden(dialogOpen)
         .overlay { workspaceDialogs }
         .overlay(alignment: .bottom) {
@@ -269,7 +251,6 @@ import Combine
         guard let first = tracks.first else { return }
         trackEdit = .init(project: show.snapshot.project.id, tracks: Set(tracks.map(\.id)),
             name: first.name, color: first.color ?? JarasTheme.roleHex(first.role),
-            nameEditable: tracks.count == 1 && first.kind == .standard && first.role.rawValue != "vinhetas",
             instrumentIcon: first.instrumentIcon, iconOnly: iconOnly)
     }
     private func presentItemMenu(_ id: UUID, targets: Set<UUID>) {
@@ -331,7 +312,15 @@ import Combine
     }
 
     @ViewBuilder private var workspaceDialogs: some View {
-        if remoteSettingsOpen {
+        if homeOpen {
+            IpadCompactModal(preferredSize: CGSize(width: 840, height: 640)) {
+                VStack(spacing: 0) {
+                    IpadModalHeader(title: "Home", close: { homeOpen = false })
+                    ProjectBrowserView(documents: documents, completed: { homeOpen = false }, homeModal: true)
+                    Button("Modes") { homeOpen = false; onExit() }.padding(.bottom, 8)
+                }.background(JarasTheme.homeBackground)
+            }
+        } else if remoteSettingsOpen {
             IpadCompactModal(preferredSize: CGSize(width: 440, height: 600)) {
                 VStack(spacing: 0) {
                     IpadModalHeader(title: "Remote", close: { remoteSettingsOpen = false })
@@ -355,16 +344,9 @@ import Combine
                     TrackInstrumentPickerModal(show: show, request: edit, close: { trackEdit = nil }).id(edit.id)
                 }
             } else { IpadCompactModal {
-                NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color, save: { name, color in
-                    guard edit.project == show.snapshot.project.id else { return }
-                    if edit.tracks.isEmpty {
-                        show.editMasterColor(color)
-                    } else if edit.nameEditable, let track = edit.tracks.first {
-                        show.editTrack(track, name: name, color: color)
-                    } else {
-                        show.editTrackColors(edit.tracks, color: color, project: edit.project)
-                    }
-                }, close: { trackEdit = nil }, nameEditable: edit.nameEditable, showsName: edit.nameEditable)
+                NameColorEditor(title: "Editar pista", initialName: edit.name, initialColor: edit.color, save: { _, color in
+                    show.editTrackColors(edit.tracks, color: color, project: edit.project)
+                }, close: { trackEdit = nil }, nameEditable: false, showsName: false)
                 .id(edit.id)
             } }
         } else if let target = fullLyricsTarget {
@@ -375,6 +357,18 @@ import Combine
             IpadCompactModal(preferredSize: CGSize(width: 560, height: 360)) {
                 TextItemEditor(text: show.current?.tracks.flatMap(\.clips).first(where: { $0.id == item })?.text ?? "",
                     apply: { show.updateTextItem(item, text: $0) }, close: { editingTextItem = nil })
+            }
+        } else if meterEditorOpen, let song = show.current, let meter = show.transportMeter {
+            IpadCompactModal(preferredSize: CGSize(width: 360, height: 182)) {
+                IpadTimeSignatureEditor(beats: meter.beats, unit: meter.unit,
+                    apply: { beats, unit in
+                        guard let current = show.current, current.id == song.id else { return false }
+                        if show.setTransportMeter(beats: beats, unit: unit) {
+                            meterEditorOpen = false
+                            return true
+                        }
+                        return false
+                    }, close: { meterEditorOpen = false })
             }
         } else if metronomeOpen {
             IpadCompactModal(preferredSize: CGSize(width: 620, height: 520)) {
@@ -394,7 +388,7 @@ import Combine
         } else if let target = patch {
             IpadCompactModal(preferredSize: CGSize(width: 620, height: 540)) {
                 VStack(spacing: 0) {
-                    IpadModalHeader(title: "Patch", subtitle: target.track.flatMap { FXModelLookup.track($0, in: show.snapshot.project)?.name } ?? "Master", close: { patch = nil })
+                    IpadModalHeader(title: "Patch", subtitle: target.track.flatMap { FXModelLookup.track($0, in: show.snapshot.project)?.name } ?? "Main", close: { patch = nil })
                     PatchEditor(show: show, track: target.track, targets: target.targets.isEmpty ? [target.track] : target.targets)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -410,17 +404,9 @@ import Combine
                     SettingsView(auth: auth, show: show, backend: backend, selection: $settingsSection)
                 }
             }
-        } else if saveOptions {
-            IpadCompactModal(preferredSize: CGSize(width: 440, height: 192), onDismiss: { saveOptions = false }) {
-                VStack(alignment: .leading, spacing: 20) {
-                    Text("Salvar / Exportar").font(.jarasTitle2.bold())
-                    Button("Exportar projeto completo") { saveOptions = false; exportingProject = true }
-                    Button("Fechar") { saveOptions = false }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(24)
-            }
-        } else if exportingProject {
+        } else if sharingProject {
             IpadCompactModal(preferredSize: CGSize(width: 580, height: 400)) {
-                ScrollView { PortableProjectExportView(documents: documents, close: { exportingProject = false }) }
+                ScrollView { PortableProjectExportView(documents: documents, close: { sharingProject = false }) }
             }
         } else if advancedOpen {
             IpadCompactModal(preferredSize: CGSize(width: 760, height: 500)) {
@@ -442,65 +428,53 @@ import Combine
             }
         } else if let target = fx {
             IpadCompactModal(preferredSize: CGSize(width: 980, height: 640)) {
-                IpadStandaloneFXManager(show: show, track: target.track, clip: target.clip, targets: target.targets, close: { fx = nil })
+                if let effect = target.effect {
+                    FXEditor(show: show, track: target.track, effect: effect, close: { fx = nil })
+                } else if let clip = target.clip {
+                    IpadStandaloneFXManager(show: show, clip: clip, close: { fx = nil })
+                }
             }
         }
     }
 
-    /// Preserve imported hardware routing and let the user choose a connected
-    /// output explicitly. Cache this check on edits/device changes, not meters.
-    private func inspectOutputRoutes() {
-        guard audio.channels > 0 else { missingOutput = nil; return }
-        let unavailable: ([OutputPatch]) -> Bool = { patches in
-            patches.contains { $0.firstChannel > 0 && $0.firstChannel + $0.channelCount - 1 > audio.channels }
-        }
-        if unavailable(show.snapshot.project.masterOutputPatches) {
-            missingOutput = .init(track: nil)
-        } else if let track = show.current?.tracks.first(where: { unavailable($0.outputPatches) }) {
-            missingOutput = .init(track: track.id)
-        } else { missingOutput = nil }
-    }
+
 }
 
-/// Track, master and item effects share the same Add / bypass / Remove manager.
 @MainActor struct IpadStandaloneFXManager: View {
     @ObservedObject var show: ShowController
-    let track: UUID?
-    let clip: UUID?
-    let targets: [UUID?]
+    let clip: UUID
     let close: () -> Void
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var theme = JarasInterfaceTheme.defaultTheme
     @State private var selected: String?
     @State private var adding = false
-    private var settings: NativeFXSettings { clip.map(show.clipFXSettings) ?? show.fxSettings(track) }
-    private var effects: [String] { clip == nil ? settings.effectKeys : settings.clipEffectKeys }
-    private var targetName: String {
-        if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—" }
-        return track.flatMap { FXModelLookup.track($0, in: show.snapshot.project)?.name } ?? "Master"
-    }
+    @State private var libraryWidth = 310.0
+    private var settings: NativeFXSettings { show.clipFXSettings(clip) }
+    private var effects: [String] { settings.clipEffectKeys }
+    private var targetName: String { FXModelLookup.clip(clip, in: show.snapshot.project)?.name ?? "—" }
     var body: some View {
         VStack(spacing: 12) {
             IpadModalHeader(title: "FX Manager", subtitle: targetName, close: close)
             HStack(spacing: 10) {
+                if adding {
+                    ResizableWorkspaceLibrary(theme: theme, show: show, width: libraryWidth, maximumWidth: 385,
+                                     preferredWidth: $libraryWidth).frame(width: libraryWidth)
+                }
                 VStack(spacing: 8) {
                     ScrollView {
                         LazyVStack(spacing: 4) {
                             ForEach(effects, id: \.self) { effect in
                                 HStack(spacing: 3) {
-                                    Button("By") {
-                                        if let clip { show.toggleClipFXBypass(clip, effect: effect) }
-                                        else { show.toggleFXBypass(track, effect: effect) }
-                                    }.frame(width: 36, height: 38).background(settings.isEnabled(effect) ? Color.white.opacity(0.12) : Color.red)
+                                    Button("By") { show.toggleClipFXBypass(clip, effect: effect) }
+                                        .frame(width: 36, height: 38).background(settings.isEnabled(effect) ? Color.white.opacity(0.12) : Color.red)
                                     Button { selected = effect } label: {
                                         Text(LocalizedStringKey(settings.kind(of: effect)))
                                             .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading).contentShape(Rectangle())
                                     }
-                                    if let clip {
-                                        Image(systemName: "line.3.horizontal")
-                                            .foregroundStyle(JarasTheme.secondary)
-                                            .frame(width: 28, height: 38).contentShape(Rectangle())
-                                            .onDrag { ClipFXReorderPayload(project: show.snapshot.project.id, clip: clip, effect: effect).provider() }
-                                            .accessibilityLabel("Reorder effect")
-                                    }
+                                    Image(systemName: "line.3.horizontal")
+                                        .foregroundStyle(JarasTheme.secondary)
+                                        .frame(width: 28, height: 38).contentShape(Rectangle())
+                                        .onDrag { ClipFXReorderPayload(project: show.snapshot.project.id, clip: clip, effect: effect).provider() }
+                                        .accessibilityLabel("Reorder effect")
                                 }.font(.jarasSystem(size: 12, weight: .semibold)).buttonStyle(.plain)
                                     .background(selected == effect ? JarasTheme.green.opacity(0.3) : Color.clear).cornerRadius(4)
                                     .onDrop(of: [ClipFXReorderPayload.type], delegate: ClipFXReorderDrop(
@@ -508,12 +482,10 @@ import Combine
                                         target: effect, next: effects.drop(while: { $0 != effect }).dropFirst().first,
                                         rowHeight: 38, selected: $selected))
                             }
-                            if let clip {
-                                Color.clear.frame(height: 24).contentShape(Rectangle())
-                                    .onDrop(of: [ClipFXReorderPayload.type], delegate: ClipFXReorderDrop(
-                                        show: show, project: show.snapshot.project.id, clip: clip,
-                                        target: nil, next: nil, selected: $selected))
-                            }
+                            Color.clear.frame(height: 24).contentShape(Rectangle())
+                                .onDrop(of: [ClipFXReorderPayload.type], delegate: ClipFXReorderDrop(
+                                    show: show, project: show.snapshot.project.id, clip: clip,
+                                    target: nil, next: nil, selected: $selected))
                         }
                     }
                     HStack(spacing: 6) {
@@ -521,30 +493,24 @@ import Combine
                             Text("Add").frame(maxWidth: .infinity, minHeight: 38).contentShape(Rectangle())
                         }.buttonStyle(.borderedProminent).tint(JarasTheme.green)
                         Button {
-                            guard let selected else { return }
-                            if let clip { show.removeClipFX(clip, effect: selected) }
-                            else { show.removeFX(track, effect: selected) }
+                            if let selected { show.removeClipFX(clip, effect: selected) }
                         } label: {
                             Text("Remove").frame(maxWidth: .infinity, minHeight: 38).contentShape(Rectangle())
                         }.buttonStyle(.bordered).disabled(selected == nil)
                     }.font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.85)
                 }.frame(width: 142)
+                    .contentShape(Rectangle())
+                    .modifier(LibraryItemEffectDrop(show: show, clip: clip, selected: $selected))
                 Divider()
                 ScrollView {
                     if let selected, effects.contains(selected) {
-                        FXEditor(show: show, track: track, clip: clip, clipChainEditor: true, effect: selected, close: close).id(selected)
+                        FXEditor(show: show, track: nil, clip: clip, clipChainEditor: true, effect: selected, close: close).id(selected)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }.padding(14)
         }.background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { selected = effects.first }
             .onChange(of: effects) { values in if !values.contains(selected ?? "") { selected = values.first } }
-            .overlay {
-                if adding { IpadCompactModal {
-                FXInsertEditor(show: show, track: track, targets: targets.isEmpty ? [track] : targets, clip: clip,
-                    inserted: { selected = $0 }, isActive: { adding }, dismiss: { adding = false })
-                } }
-            }
     }
 }
 
@@ -581,7 +547,7 @@ struct TPNoticeAppearance: Codable {
         guard playing != playbackRunning else { return }
         playbackRunning = playing
         if playing { if stoppedNoticeActive { clear() } }
-        else if pinWhenStopped { presentStoppedNotice() }
+        else if pinWhenStopped && !active { presentStoppedNotice() }
     }
     private func presentStoppedNotice() {
         let previousDraft = draft, previousSlot = slot
@@ -616,6 +582,7 @@ struct TPNoticeAppearance: Codable {
         let text = String(draft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
         let image = slot >= 0 ? images[slot].flatMap { UIImage(data: $0) == nil ? nil : $0 } : nil
         guard !text.isEmpty || image != nil else { return false }
+        if stoppedNoticeActive { pinned = false }
         remoteImage = image.map { "data:image/jpeg;base64," + $0.base64EncodedString() }
         stoppedNoticeActive = false
         message = text; sentAt = Date(); pausedRemaining = 20
@@ -636,9 +603,11 @@ struct TPNoticeAppearance: Codable {
         if active { schedule(seconds: remaining) }
     }
     func clear() {
+        let restore = active && !stoppedNoticeActive && pinWhenStopped && !playbackRunning
         stoppedNoticeActive = false
         expiry?.cancel(); expiry = nil; remoteImage = nil; deadline = nil
         message = ""; pinned = false
+        if restore { presentStoppedNotice() }
     }
 }
 #endif
@@ -1367,6 +1336,37 @@ final class IpadRegionHeaderTouchView: UIView {
 }
 
 /// One desktop-style panel directly on the workspace. No UIKit sheet behind it.
+private struct IpadTimeSignatureEditor: View {
+    @State private var beats: String
+    @State private var unit: String
+    @State private var invalid = false
+    let apply: (Int, Int) -> Bool
+    let close: () -> Void
+
+    init(beats: Int, unit: Int, apply: @escaping (Int, Int) -> Bool, close: @escaping () -> Void) {
+        _beats = State(initialValue: String(beats))
+        _unit = State(initialValue: String(unit))
+        self.apply = apply; self.close = close
+    }
+    var body: some View {
+        VStack(spacing: 12) {
+            IpadModalHeader(title: "Time signature", close: close)
+            HStack(spacing: 12) {
+                TextField("Beats per bar", text: $beats)
+                Text(verbatim: "/")
+                TextField("Beat unit", text: $unit)
+            }.textFieldStyle(.roundedBorder).keyboardType(.numberPad).multilineTextAlignment(.center)
+                .frame(maxWidth: 160)
+            if invalid { Text("Invalid time signature.").foregroundStyle(Color.red) }
+            Spacer(minLength: 0)
+            Button("Apply") {
+                guard let beats = Int(beats), (1...32).contains(beats), let unit = Int(unit),
+                      TimelineTempo.beatUnits.contains(unit) else { invalid = true; return }
+                invalid = !apply(beats, unit)
+            }.padding(.bottom, 12).keyboardShortcut(.defaultAction)
+        }
+    }
+}
 struct IpadCompactModal<Content: View>: View {
     var preferredSize: CGSize? = nil
     var onDismiss: (() -> Void)? = nil
@@ -1453,9 +1453,15 @@ struct IpadDialogButtonStyle: ButtonStyle {
         HStack(spacing: 4) {
             if only == nil || only == .record {
             Button { recorder.toggle(show: show) } label: {
-                Label("REC", systemImage: recorder.recording ? "stop.circle.fill" : "record.circle")
+                Label {
+                    if (controlWidth ?? 47) >= 42 { Text(verbatim: "REC") }
+                } icon: {
+                    Image(systemName: recorder.recording ? "stop.circle.fill" : "record.circle")
+                        .foregroundStyle(recorder.recording ? Color.black : JarasTheme.liveOffRed)
+                }
             }.buttonStyle(RecordingButtonStyle(active: recorder.recording, width: controlWidth ?? 47,
-                    height: 28, fontSize: 10, cornerRadius: 6, transport: true))
+                    height: 28, fontSize: 10, cornerRadius: 6, transport: true,
+                    idleTransportBackground: Color(hex: 0x454545), idleTransportForeground: .white))
                 .overlay {
                     IpadTapHoldTouchSurface(tap: { recorder.toggle(show: show) }, hold: { recordingSettings = true })
                 }
@@ -1515,7 +1521,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
     @State private var uppercase = true
     var body: some View {
         if let region = show.current?.parts.first(where: { $0.id == id }) {
-            NameColorEditor(title: "Edit song", initialName: region.name, initialColor: region.color ?? 0x705264,
+            NameColorEditor(title: "Editar região", initialName: region.name, initialColor: region.color ?? 0x705264,
                 save: { name, color in
                     show.editRegion(id, name: name, color: color, uppercaseName: uppercase)
                 }, close: close, uppercaseName: $uppercase)
@@ -1609,7 +1615,7 @@ struct IpadLeadOptions: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Detect BPM from the Click track?").font(.jarasHeadline)
-            if working { ProgressView("Detecting BPM…") }
+            if working { BPMDetectionProgress() }
             else {
                 if !error.isEmpty { Text(verbatim: error).foregroundStyle(.red) }
                 HStack { Button("Cancel", action: close); Spacer(); Button("Detect BPM", action: detect) }
@@ -2065,7 +2071,7 @@ struct IpadTimelinePlaybackSurface<Content: View>: UIViewControllerRepresentable
     private func draw(_ needle: IpadPlaybackNeedle, time: Double, running: Bool, visible: Bool, color: UInt32, start: Double) {
         guard let viewport = configuredViewport else { return }
         let x = (time - start) / viewport.span * viewportSize.width
-        needle.update(x: x, top: running ? gridTop : gridTop - timeHeight,
+        needle.update(x: x, top: gridTop - timeHeight, headHeight: timeHeight,
             height: viewportSize.height, color: color, running: running,
             visible: visible && time.isFinite && x >= 0 && x <= viewportSize.width)
     }
@@ -2083,33 +2089,34 @@ struct IpadTimelinePlaybackSurface<Content: View>: UIViewControllerRepresentable
 private final class IpadPlaybackNeedle {
     let layer = CALayer()
     private let line = CALayer(), head = CAShapeLayer(), core = CALayer(), trail = CAGradientLayer()
-    private struct Appearance: Equatable { let top: CGFloat; let height: CGFloat; let color: UInt32; let running: Bool }
+    private struct Appearance: Equatable { let top: CGFloat; let headHeight: CGFloat; let height: CGFloat; let color: UInt32; let running: Bool }
     private var signature: Appearance?
     init() {
         layer.anchorPoint = .zero
         for child in [trail, line, core, head] { layer.addSublayer(child) }
         trail.startPoint = CGPoint(x: 0, y: 0.5); trail.endPoint = CGPoint(x: 1, y: 0.5)
     }
-    func update(x: CGFloat, top: CGFloat, height: CGFloat, color: UInt32, running: Bool, visible: Bool) {
+    func update(x: CGFloat, top: CGFloat, headHeight: CGFloat, height: CGFloat, color: UInt32, running: Bool, visible: Bool) {
         layer.isHidden = !visible
         guard visible else { return }
         layer.position = CGPoint(x: x, y: top)
-        let next = Appearance(top: top, height: height, color: color, running: running)
+        let next = Appearance(top: top, headHeight: headHeight, height: height, color: color, running: running)
         guard signature != next else { return }; signature = next
         let ink = UIColor(red: CGFloat((color >> 16) & 255) / 255, green: CGFloat((color >> 8) & 255) / 255,
                           blue: CGFloat(color & 255) / 255, alpha: 1)
         let h = max(0, height - top), w: CGFloat = running ? 3 : 2
         layer.bounds = CGRect(x: 0, y: 0, width: 1, height: h)
-        line.frame = CGRect(x: 0, y: 0, width: w, height: h); line.backgroundColor = ink.cgColor
+        let stemHeight = max(0, h - headHeight)
+        line.frame = CGRect(x: 0, y: headHeight, width: w, height: stemHeight); line.backgroundColor = ink.cgColor
         line.shadowColor = ink.cgColor; line.shadowOpacity = running ? 1 : 0.55
         line.shadowRadius = running ? 4 : 3; line.shadowOffset = .zero
         line.shadowPath = CGPath(rect: line.bounds, transform: nil)
-        core.isHidden = !running; core.frame = CGRect(x: 1, y: 0, width: 1, height: h)
+        core.isHidden = !running; core.frame = CGRect(x: 1, y: headHeight, width: 1, height: stemHeight)
         core.backgroundColor = UIColor.white.withAlphaComponent(0.8).cgColor
-        trail.isHidden = !running; trail.frame = CGRect(x: -38, y: 0, width: 38, height: h)
+        trail.isHidden = !running; trail.frame = CGRect(x: -38, y: headHeight, width: 38, height: stemHeight)
         trail.colors = [ink.withAlphaComponent(0).cgColor, ink.withAlphaComponent(0.16).cgColor, ink.withAlphaComponent(0.65).cgColor]
-        let path = CGMutablePath(); path.move(to: CGPoint(x: w / 2 - 7, y: 0))
-        path.addLine(to: CGPoint(x: w / 2 + 7, y: 0)); path.addLine(to: CGPoint(x: w / 2, y: 9)); path.closeSubpath()
+        head.frame = CGRect(x: w / 2 - 7, y: 0, width: 14, height: headHeight)
+        let path = TimelineNeedleHead.path(centerX: 7, top: 0, tip: headHeight)
         head.path = path; head.fillColor = ink.cgColor; head.shadowPath = path
         head.shadowColor = ink.cgColor; head.shadowOpacity = running ? 0.9 : 0.4
         head.shadowRadius = running ? 4 : 2; head.shadowOffset = .zero
@@ -2120,10 +2127,10 @@ private final class IpadPlaybackNeedle {
 
 
 private struct NativeGridFileDropKey: EnvironmentKey {
-    static let defaultValue: (([NSItemProvider], Double) -> Bool)? = nil
+    static let defaultValue: (([NSItemProvider], Double, UUID?) -> Bool)? = nil
 }
 extension EnvironmentValues {
-    var nativeGridFileDrop: (([NSItemProvider], Double) -> Bool)? {
+    var nativeGridFileDrop: (([NSItemProvider], Double, UUID?) -> Bool)? {
         get { self[NativeGridFileDropKey.self] }
         set { self[NativeGridFileDropKey.self] = newValue }
     }

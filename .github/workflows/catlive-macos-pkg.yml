@@ -6,7 +6,11 @@ on:
       version:
         description: 'Versão pública do CatLive (ex.: 1.25)'
         required: true
-        default: '1.37'
+        default: '2.00'
+      publish_release:
+        description: 'Publicar os instaladores validados'
+        type: boolean
+        default: false
       audio_only:
         description: 'Executar somente os testes de áudio do macOS (sem publicar)'
         type: boolean
@@ -496,7 +500,7 @@ jobs:
           if-no-files-found: error
 
   publish-validated-packages:
-    if: ${{ inputs.reuse_build_run != '' }}
+    if: ${{ inputs.publish_release && inputs.reuse_build_run != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -582,7 +586,7 @@ jobs:
           if-no-files-found: warn
 
   release:
-    if: ${{ always() && !cancelled() && !inputs.audio_only && !inputs.windows_only && needs.windows.result == 'success' && needs.macos-pkg.result == 'success' && needs.compatibility.result == 'success' && needs.integration.result == 'success' && (needs.audio-audit.result == 'success' || (!inputs.audio_tests && !inputs.full_fx_tests && needs.audio-audit.result == 'skipped')) }}
+    if: ${{ inputs.publish_release && always() && !cancelled() && !inputs.audio_only && !inputs.windows_only && needs.windows.result == 'success' && needs.macos-pkg.result == 'success' && needs.compatibility.result == 'success' && needs.integration.result == 'success' && (needs.audio-audit.result == 'success' || (!inputs.audio_tests && !inputs.full_fx_tests && needs.audio-audit.result == 'skipped')) }}
     needs: [windows, macos-pkg, compatibility, integration, audio-audit]
     runs-on: ubuntu-latest
     steps:

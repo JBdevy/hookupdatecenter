@@ -11,6 +11,7 @@ import sys
 folder = Path(sys.argv[1])
 source = Path('Apple/Shared/AdvancedView.swift').read_text()
 root = source[source.index('struct AdvancedView:'):source.index('\nstruct TempoMarkerEditor:')]
+root += '\n' + source[source.index('private struct AdvancedMixerSettings:'):source.index('private struct AdvancedTimelineSettings:')]
 timeline = source[source.index('private struct AdvancedTimelineSettings:'):source.index('\nprivate struct AdvancedSetlistColors:')]
 root = root.replace('    var body: some View {', '''    var body: some View {
         let _ = { AdvancedPresentationProbe.root += 1; AdvancedPresentationProbe.draft = bpm

@@ -6,7 +6,7 @@ public struct NativeFXParameter: Codable, Equatable, Sendable {
     public enum Key: String, Codable, Sendable {
         case triggerThreshold, triggerRetrigger, triggerGain, triggerMix, triggerAttack, triggerDecay, triggerSustain, triggerRelease, gateThreshold, gateAttack, gateDecay, gateHold, gateRelease, gateHighPass, gateLowPass
         case limiterGain, limiterCeiling, limiterRelease
-        case pitchSemitones
+        case pitchSemitones, pitchFormant
         case enabled, threshold, ratio, makeup, attack, release
         case delayTime, feedback, delayMix, reverbMix, reverbDecay, reverbLowCut, reverbHighCut, reverbRoom
         case bandFrequency, bandGain, bandQ, bandType, bandSlope
@@ -20,6 +20,7 @@ public struct NativeFXParameter: Codable, Equatable, Sendable {
     public var band: UUID?
     public var source: Int?
     public var name: String
+    public var displayName: String { key == .limiterGain ? "Gain" : name }
     public var minimum: Double
     public var maximum: Double
     public var logarithmic: Bool
@@ -75,6 +76,7 @@ public struct NativeFXParameter: Codable, Equatable, Sendable {
             if key == .stemSolo { mix.sources[source].solo = enabled }
             settings.stemParameters = mix
         case .enabled: settings.setEnabled(effect, enabled: enabled)
+        case .pitchFormant: settings.pitchFormant = min(12, max(-12, value))
         case .pitchSemitones: settings.pitchSemitones = min(12, max(-12, value.rounded()))
         case .limiterGain: settings.limiterParameters.inputGain = min(24, max(-24, value))
         case .limiterCeiling: settings.limiterParameters.ceiling = min(0, max(-24, value))
@@ -178,6 +180,7 @@ public extension NativeFXParameter {
             let item = s.stemParameters.sources[source]
             return key == .stemGain ? item.gain : (key == .stemMute ? item.mute : item.solo) ? 1 : 0
         case .enabled: return chain.isEnabled(effect) ? 1 : 0
+        case .pitchFormant: return s.formantSemitones
         case .pitchSemitones: return s.semitones
         case .limiterGain: return s.limiterParameters.inputGain
         case .limiterCeiling: return s.limiterParameters.ceiling
@@ -264,8 +267,10 @@ public extension NativeFXParameter {
                 add(.threshold, "Threshold", -60...0); add(.ratio, "Ratio", 1...20); add(.makeup, "Gain", -12...24)
                 add(.attack, "Attack", 0.0001...0.2, log: true); add(.release, "Release", 0.01...3, log: true)
             case "Limiter":
-                add(.limiterGain, "Input gain", -24...24); add(.limiterCeiling, "Ceiling", -24...0); add(.limiterRelease, "Release", 0.01...3, log: true)
-            case "Pitch": add(.pitchSemitones, "Semitones", -12...12)
+                add(.limiterGain, "Gain", -24...24); add(.limiterCeiling, "Ceiling", -24...0); add(.limiterRelease, "Release", 0.01...3, log: true)
+            case "Pitch":
+                add(.pitchSemitones, "Semitones", -12...12)
+                add(.pitchFormant, "Formant", -12...12)
             case "Delay": add(.delayTime, "Time", 0.01...2, log: true); add(.feedback, "Feedback", 0...90); add(.delayMix, "Mix", 0...100)
             case "Reverb":
                 add(.reverbMix, "Mix", 0...100); add(.reverbDecay, "Decay", 0.1...20, log: true)

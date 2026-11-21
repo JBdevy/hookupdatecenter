@@ -814,7 +814,7 @@ private enum MultitrackRenderer {
                     var jobs: [AudioExportFormat: [AudioExportJob]] = [:]
                     var sourceItems: [AudioExportFormat: Set<UUID>] = [:]
                     var mixedTracks = Set<UUID>()
-                    var unbakedItemPitch = Set<UUID>()
+                    var printedRateChange = false
                     var renderedStems: [MultitrackRegionData.RenderedStem] = []
                     var lyricsFiles: [String] = []
                     var savedTracks: [UUID: Track] = [:]
@@ -842,9 +842,12 @@ private enum MultitrackRenderer {
                                 }
                             }
                             func stemItem(_ clip: AudioClip) -> MultitrackRegionData.RenderedStem.Item {
-                                .init(offset: clip.startTime - part.startTime, duration: clip.duration,
-                                    rate: song.tempoAudioSegments(clip).first?.audioRate ?? clip.audioRate,
-                                    pitchSemitones: clip.pitchSemitones)
+                                let segments = song.tempoAudioSegments(clip)
+                                if abs(clip.audioRate - 1) > 1e-7 || segments.contains(where: { abs($0.audioRate - 1) > 1e-7 }) {
+                                    printedRateChange = true
+                                }
+                                return .init(offset: clip.startTime - part.startTime, duration: clip.duration,
+                                    rate: segments.first?.audioRate ?? clip.audioRate)
                             }
                             let label = safeName(track.name + " – " + part.displayName)
                             if fullItems {
@@ -854,7 +857,6 @@ private enum MultitrackRenderer {
                                     jobs[encoding, default: []].append(AudioExportJob(id: clip.id.uuidString, fileName: filename,
                                         start: clip.startTime, end: clip.startTime + clip.duration, track: track.id, clip: clip.id))
                                     renderedStems.append(.init(file: filename, track: track.id, items: [stemItem(clip)]))
-                                    unbakedItemPitch.insert(clip.id)
                                 }
                             } else {
                                 let grouped = Dictionary(grouping: items, by: format(for:))
@@ -862,7 +864,6 @@ private enum MultitrackRenderer {
                                 for encoding in AudioExportFormat.allCases {
                                     guard let matching = grouped[encoding] else { continue }
                                     sourceItems[encoding, default: []].formUnion(matching.map(\.id))
-                                    if matching.count == 1 { unbakedItemPitch.insert(matching[0].id) }
                                     let filename = names.allocate(label + "." + encoding.fileExtension)
                                     jobs[encoding, default: []].append(AudioExportJob(id: track.id.uuidString, fileName: filename,
                                         start: part.startTime, end: part.endTime, track: track.id, clip: nil))
@@ -906,7 +907,7 @@ private enum MultitrackRenderer {
                     }
                     let ordered = config.song.tracks.compactMap { savedTracks[$0.id] }
                     let manifest = try MultitrackRegionData.snapshot(song: config.song, region: part, tracks: ordered,
-                        renderedStems: renderedStems, lyricsFiles: lyricsFiles, fullItems: fullItems, tunerUnbaked: true)
+                        renderedStems: renderedStems, lyricsFiles: lyricsFiles, fullItems: fullItems, tunerUnbaked: true, printedRateChange: printedRateChange)
                     if fullItems {
                         let flag = song.markers?.first { $0.sourceRegionID == part.id && $0.unifiedRegionID == root.id }
                         entries.append(.init(folder: folder.lastPathComponent, offset: part.startTime - root.startTime,
@@ -927,10 +928,6 @@ private enum MultitrackRenderer {
                             if splitTracks.contains(renderingSong.tracks[row].id) {
                                 renderingSong.tracks[row].clips.removeAll { !regionItems.contains($0.id) }
                                 if renderingSong.tracks[row].clips.isEmpty { renderingSong.tracks[row].audioFile = nil }
-                            }
-                            for index in renderingSong.tracks[row].clips.indices
-                            where unbakedItemPitch.contains(renderingSong.tracks[row].clips[index].id) {
-                                renderingSong.tracks[row].clips[index].pitchSemitones = nil
                             }
                         }
                         try OfflineAudioExport.run(project: project, song: renderingSong, plan: AudioExportPlan(jobs: batch),

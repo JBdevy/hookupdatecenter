@@ -116,8 +116,22 @@ struct MultitrackRegionData: Codable, Sendable {
               }) else { throw ProjectError.invalid("Invalid Multitrack region data.") }
     }
 
+    fileprivate static func explicitTransportPitchTargets(song: Song, region: Part, tracks: [Track]) -> [UUID]? {
+        guard region.pitchTrackIDs != nil || region.pitchGroupIDs != nil else { return nil }
+        let selected = song.pitchTargets(region)
+        let hierarchy = TrackHierarchy(song.tracks)
+        return tracks.filter {
+            $0.kind == .standard && (selected.tracks.contains($0.id) || selected.groups.contains($0.id) ||
+                !selected.groups.isDisjoint(with: hierarchy.ancestors(of: $0.id)))
+        }.map(\.id)
+    }
+
     static func snapshot(song: Song, region: Part, tracks: [Track],
-                         renderedStems: [RenderedStem], lyricsFiles: [String], fullItems: Bool = false, tunerUnbaked: Bool = false) throws -> Self {
+                         renderedStems: [RenderedStem], lyricsFiles: [String], fullItems: Bool = false,
+                         tunerUnbaked: Bool = false, printedRateChange: Bool = false) throws -> Self {
+        let includesTempoMarkers = !printedRateChange && !renderedStems.contains { stem in
+            stem.items.contains { abs($0.rate - 1) > 1e-7 }
+        }
         let origin = region.startTime
         let printedItems = fullItems ? renderedStems.flatMap(\.items) : []
         var first = min(origin, tracks.flatMap(\.clips).map(\.startTime).min() ?? origin,
@@ -127,8 +141,13 @@ struct MultitrackRegionData: Codable, Sendable {
         var part = region
         part.parentRegionID = nil
         part.multiLoops = nil
-        part.pitchTrackIDs = tunerUnbaked ? nil : region.pitchTrackIDs?.filter(trackIDs.contains)
-        part.pitchGroupIDs = tunerUnbaked ? nil : region.pitchGroupIDs?.filter(trackIDs.contains)
+        if tunerUnbaked {
+            part.pitchTrackIDs = explicitTransportPitchTargets(song: song, region: region, tracks: tracks)
+            part.pitchGroupIDs = part.pitchTrackIDs == nil ? nil : []
+        } else {
+            part.pitchTrackIDs = region.pitchTrackIDs?.filter(trackIDs.contains)
+            part.pitchGroupIDs = region.pitchGroupIDs?.filter(trackIDs.contains)
+        }
         var snapshot = project.songs[0]
         snapshot.bpm = song.bpm
         snapshot.beatsPerBar = song.beatsPerBar; snapshot.beatUnit = song.beatUnit
@@ -137,7 +156,7 @@ struct MultitrackRegionData: Codable, Sendable {
         let siblings = root.map { parent in song.parts.filter { $0.parentRegionID == parent.id } } ?? []
         let siblingIDs = Set(siblings.map(\.id))
         var markers = (song.markers ?? []).filter { marker in
-            guard marker.sourceRegionID == nil else { return false }
+            guard marker.sourceRegionID == nil, includesTempoMarkers || !marker.isTempo else { return false }
             if let root {
                 guard marker.position >= root.startTime, marker.position < root.endTime else { return false }
                 if let owner = marker.regionOwnerID, siblingIDs.contains(owner) { return owner == region.id }
@@ -153,7 +172,7 @@ struct MultitrackRegionData: Codable, Sendable {
         let shift = -first
         part.startTime += shift; part.endTime += shift
         snapshot.parts = [part]
-        if !markers.contains(where: { $0.isTempo && abs($0.position - origin) < 1e-7 }) {
+        if includesTempoMarkers, !markers.contains(where: { $0.isTempo && abs($0.position - origin) < 1e-7 }) {
             let section = song.tempoSection(at: origin)
             markers.append(TimelineMarker(id: UUID(), name: "TEMPO", position: origin, color: 0x999999,
                 tempoBPM: section.bpm, tempoBeats: section.beats, tempoUnit: section.unit,
@@ -187,8 +206,10 @@ struct MultitrackRegionData: Codable, Sendable {
             }
             if track.stereoLink.map({ !trackIDs.contains($0.partner) }) == true { track.stereoLink = nil }
             if var routing = track.routing {
-                routing.receives = routing.receives.filter { $0.map(trackIDs.contains) ?? false }
+                if routing.mainReceiveSlot != nil { routing.receives = routing.receives.map { $0.flatMap { trackIDs.contains($0) ? $0 : nil } } }
+                else { routing.receives = routing.receives.filter { $0.map(trackIDs.contains) ?? false } }
                 routing.transmitters = routing.transmitters.filter { $0.map(trackIDs.contains) ?? false }
+                routing.removeUnusedSendTaps()
                 track.routing = routing
             }
             track.automation?.mapTimelineTimes { max(0, $0 + shift) }
@@ -208,7 +229,12 @@ struct MultitrackRegionData: Codable, Sendable {
                                 snapshot.markers?.map(\.position).max() ?? 0)
         project.songs = [snapshot]
         try project.validate()
-        return Self(version: 1, project: project, renderedStems: renderedStems, lyricsFiles: lyricsFiles, tunerUnbaked: tunerUnbaked ? true : nil)
+        let stems = renderedStems.map { stem in
+            RenderedStem(file: stem.file, track: stem.track, items: stem.items.map { item in
+                RenderedStem.Item(offset: item.offset, duration: item.duration, rate: item.rate)
+            })
+        }
+        return Self(version: 1, project: project, renderedStems: stems, lyricsFiles: lyricsFiles, tunerUnbaked: tunerUnbaked ? true : nil)
     }
 }
 
@@ -439,8 +465,16 @@ enum StemProjectImporter {
                 } catch is CancellationError { throw CancellationError() }
                 catch { warnings.append("\(file.lastPathComponent): \(error.localizedDescription)") }
             }
-            if files.isEmpty && regionData == nil { warnings.append("\(url.lastPathComponent): no readable WAV, AIFF or MP3 files") }
-            else { folders.append(ImportSourceFolder(url: url, files: files, regionData: regionData, accessRoot: accessRoot, drawer: drawer)) }
+            if files.isEmpty && regionData == nil {
+                let containsProject = entries.contains { file in
+                    file.pathExtension.lowercased() == "jl" &&
+                        (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+                }
+                let reason = containsProject ? "contains a CatLive project" : "no readable WAV, AIFF or MP3 files"
+                warnings.append("\(url.lastPathComponent): \(reason)")
+            } else {
+                folders.append(ImportSourceFolder(url: url, files: files, regionData: regionData, accessRoot: accessRoot, drawer: drawer))
+            }
         }
         guard !folders.isEmpty else { throw ProjectError.invalid(warnings.joined(separator: "\n")) }
         let js = try context()
@@ -533,6 +567,7 @@ enum StemProjectImporter {
         let duration: Double
         let fileName: String
         let renderedRegion: UUID?
+        let renderedSourceTrack: UUID?
         let pitchSemitones: Double?
     }
     /// Only a few bounded decode buffers exist at once. The result slots retain
@@ -589,6 +624,7 @@ enum StemProjectImporter {
     }
     private static func restoreMultitrack(_ data: MultitrackRegionData, folder: URL, accessRoot: URL?, arrangement: inout Song,
                                           regionIndex: Int, directory: URL, lyrics: [JLLyricsDocument], drawerMarkerIDs: [UUID: UUID]?,
+                                          renderedTracks: [UUID: Set<UUID>],
                                           videoNames: inout MediaFileNames, copied: inout [URL],
                                           progress: (@Sendable (Int, Int, String) -> Void)?,
                                           onUnreadable: ((String, Error) -> Void)?) throws {
@@ -699,9 +735,13 @@ enum StemProjectImporter {
                     }
                     track.stereoLink = nil
                     if let routing = track.routing {
-                        track.routing = TrackRouting(
+                        var mapped = TrackRouting(
                             receives: routing.receives.compactMap { $0.flatMap { rawTargets.contains($0) ? targets[$0] : nil } }.map(Optional.some),
                             transmitters: routing.transmitters.compactMap { $0.flatMap { rawTargets.contains($0) ? targets[$0] : nil } }.map(Optional.some))
+                        for source in routing.transmitters.compactMap({ $0 }) where rawTargets.contains(source) {
+                            if let destination = targets[source] { mapped.setSendTap(routing.sendTap(to: source), to: destination) }
+                        }
+                        track.routing = mapped
                     }
                     track.automation?.mapTimelineTimes { $0 + origin }
                     insertTrack(track, into: &arrangement)
@@ -710,8 +750,19 @@ enum StemProjectImporter {
         }
         for document in lyrics { try arrangement.insertLyrics(document, at: part.startTime, region: regionID) }
         if data.tunerUnbaked == true {
-            arrangement.parts[regionIndex].pitchTrackIDs = nil
-            arrangement.parts[regionIndex].pitchGroupIDs = nil
+            let selected = MultitrackRegionData.explicitTransportPitchTargets(song: snapshot, region: data.region, tracks: snapshot.tracks)
+            let mapped = selected.map { ids -> Set<UUID> in
+                var destinations = Set<UUID>()
+                for source in ids {
+                    destinations.formUnion(renderedTracks[source] ?? [])
+                    if rawTargets.contains(source), let id = targets[source] { destinations.insert(id) }
+                }
+                return destinations
+            }
+            arrangement.parts[regionIndex].pitchTrackIDs = mapped.map { ids in
+                arrangement.tracks.compactMap { ids.contains($0.id) ? $0.id : nil }
+            }
+            arrangement.parts[regionIndex].pitchGroupIDs = mapped == nil ? nil : []
         } else {
             arrangement.parts[regionIndex].pitchTrackIDs = pitch.tracks.compactMap { id in
                 rawClips[id] == nil ? nil : targets[id]
@@ -873,12 +924,13 @@ enum StemProjectImporter {
                         jobs.append(MediaImportJob(source: source.url, copied: media.appendingPathComponent(name), relative: relativeFolder + "/" + name,
                             stem: stem, track: track, start: region.startTime + (metadata?.region.startTime ?? 0) + (item?.offset ?? 0),
                             duration: item?.duration ?? source.duration, fileName: filename, renderedRegion: rendered == nil ? nil : region.id,
-                            pitchSemitones: metadata?.tunerUnbaked == true && rendered?.items.count == 1
+                            renderedSourceTrack: rendered?.track, pitchSemitones: metadata?.tunerUnbaked == true && rendered?.items.count == 1
                                 ? rendered?.items.first?.pitchSemitones : nil))
                     }
                 }
             }
             let prepared = try prepareMedia(jobs, progress: progress)
+            var renderedTracks: [UUID: [UUID: Set<UUID>]] = [:]
             for (job, result) in zip(jobs, prepared) {
                 guard case .success(let overview) = result else {
                     if case .failure(let error) = result { onUnreadable?(job.source.path, error) }
@@ -889,7 +941,10 @@ enum StemProjectImporter {
                 let gain = internalTrack && overview.peak > 0 ? pow(10, -1.0 / 20) / overview.peak : 1
                 var clip = AudioClip(id: UUID(), name: job.fileName, startTime: job.start, duration: job.duration,
                     waveform: overview.waveform, audioFile: AudioFile(path: job.relative), gain: gain, waveformChannels: overview.channels)
-                if let region = job.renderedRegion { clip.renderedTempo = true; clip.regionOwnerID = region }
+                if let region = job.renderedRegion, let source = job.renderedSourceTrack {
+                    clip.renderedTempo = true; clip.regionOwnerID = region
+                    renderedTracks[region, default: [:]][source, default: []].insert(arrangement.tracks[job.track].id)
+                }
                 clip.pitchSemitones = job.pitchSemitones
                 arrangement.tracks[job.track].clips.append(clip)
             }
@@ -979,7 +1034,7 @@ enum StemProjectImporter {
                     let markerIDs = child.flatMap { drawerMarkerIDs[$0.parent] }
                     try restoreMultitrack(data, folder: folder.url, accessRoot: folder.accessRoot, arrangement: &arrangement, regionIndex: regionIndex,
                         directory: destination.deletingLastPathComponent(), lyrics: lyrics, drawerMarkerIDs: markerIDs,
-                        videoNames: &videoNames, copied: &copiedVideo, progress: progress, onUnreadable: onUnreadable)
+                        renderedTracks: renderedTracks[region.id] ?? [:], videoNames: &videoNames, copied: &copiedVideo, progress: progress, onUnreadable: onUnreadable)
                     if let child, let parent = arrangement.parts.first(where: { $0.id == child.parent }) {
                         arrangement.parts[regionIndex].parentRegionID = child.parent
                         arrangement.parts[regionIndex].startTime = max(parent.startTime, arrangement.parts[regionIndex].startTime)

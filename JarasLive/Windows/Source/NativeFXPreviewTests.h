@@ -1,6 +1,9 @@
 #pragma once
 #include "NativeFX.h"
+#include "DrummerPadAssets.h"
+#include "FXDefaults.h"
 #include "FXSchema.h"
+#include "FXPresets.h"
 #include "TrackCapture.h"
 namespace catlive::nativePreviewTests {
 template<class Test, class Require>
@@ -14,6 +17,89 @@ void run(Test test, Require require, const File &directory) {
         for(int ch=0;ch<buffer.getNumChannels();++ch) for(int n=0;n<buffer.getNumSamples();++n)
             buffer.setSample(ch,n,level*std::sin(float((start+n)*MathConstants<double>::twoPi*1000/rate)));
     };
+    test("Drummer Pad MIDI offset, stereo gain and pad activity", [&] {
+        for (auto kind : {String("Drummer Pad 16"), String("Drummer Pad 48")}) {
+            const int last = drummer::count(kind) - 1;
+            auto settings = fxschema::defaults(true);
+            put(settings, "inserted", Array<var>{kind});
+            put(settings, fxui::enabledKey(kind), true);
+            auto kit = drummer::kit(settings, last+1);
+            auto pad = get(kit, "pads")[last];
+            put(pad, "note", 100);
+            put(pad, "volume", .5);
+            put(kit, "volume", .5);
+            put(settings, drummer::field(last+1), kit);
+            NativeFX effect;
+            effect.prepare(settings, 48000);
+            auto voice = effect.drummerVoice(kind);
+            require(voice != nullptr, kind + " was not instantiated");
+            auto source = std::make_shared<jaras::audio::DrumSample>();
+            source->left.assign(256, .5f);
+            source->right.assign(256, .25f);
+            voice->setSample(unsigned(last), source);
+            AudioBuffer<float> buffer(2,128); buffer.clear();
+            MidiBuffer events;
+            events.addEvent(MidiMessage::noteOn(1,100,(uint8)127),37);
+            effect.process(buffer,128,0,false,&events);
+            require(buffer.getSample(0,36)==0 && std::abs(buffer.getSample(0,37)-.125f)<.0001f &&
+                    std::abs(buffer.getSample(1,37)-.0625f)<.0001f, kind+" sample offset or gain");
+            require(voice->flashes()==(uint64_t(1)<<last) && voice->flashes()==0, kind+" pad light");
+        }
+    });
+    test("Native creative inserts and per-channel dry bypass", [&] {
+        for (const auto &spec : jaras::audio::creativeEffects) {
+            const auto name = String::fromUTF8(spec.name.data(), int(spec.name.size()));
+            auto settings = fxschema::defaults(true);
+            put(settings, "inserted", Array<var>{name});
+            put(settings, Identifier(spec.enabledField), true);
+            NativeFX effect;
+            if (spec.kind == jaras::audio::CreativeEffect::divisionGate) {
+                auto gate = object();
+                put(gate, "steps", 1);
+                put(settings, "divisionGate", gate);
+            } else if (spec.kind == jaras::audio::CreativeEffect::softClipper) {
+                auto clipper = object(); put(clipper, "drive", 18.); put(settings, "softClipper", clipper);
+            }
+            effect.prepare(settings, 48000);
+            AudioBuffer<float> input(2, 2048), dry(2, 2048);
+            tone(dry, 48000, 0, .3f);
+            input.makeCopyOf(dry);
+            // Quarter-note position 0.25 selects the second gate step.
+            const jaras::PluginTempoMap map(std::vector<jaras::PluginTempoMap::Point>{{0, 60, 4, 4}});
+            effect.process(input, 2048, .25, true, nullptr, .25, &map);
+            float delta = 0;
+            for (int n = 0; n < 2048; ++n) {
+                require(std::isfinite(input.getSample(0, n)), name + " rendered invalid PCM");
+                delta += std::abs(input.getSample(0, n) - dry.getSample(0, n));
+            }
+            require(delta > 1, name + " did not affect PCM");
+            if (spec.kind == jaras::audio::CreativeEffect::softClipper)
+                require(effect.gainReduction() > 0 && input.getMagnitude(0, 2048) <= 1.f,
+                        "Soft Clipper must publish the measured reduction and respect its ceiling");
+        }
+        for (const String kind : {"EQ", "Compressor", "Delay", "Reverb"}) {
+            auto settings = make(kind);
+            put(settings, "makeup", -6.);
+            put(settings, "delayMix", 100.);
+            put(settings, "reverbMix", 100.);
+            for (int channel = 0; channel < 2; ++channel) {
+                put(settings, Identifier(fxpresets::channelsField(kind)), 1 << channel);
+                NativeFX effect;
+                effect.prepare(settings, 48000);
+                AudioBuffer<float> dry(2, 2048), input(2, 2048);
+                tone(dry, 48000, 0, .3f);
+                input.makeCopyOf(dry);
+                effect.process(input, 2048);
+                float delta = 0;
+                for (int n = 0; n < 2048; ++n) {
+                    require(input.getSample(1 - channel, n) == dry.getSample(1 - channel, n),
+                            kind + " modified the unselected channel");
+                    delta += std::abs(input.getSample(channel, n) - dry.getSample(channel, n));
+                }
+                require(delta > .1f, kind + " did not process the selected channel");
+            }
+        }
+    });
     test("Native EQ drag changes the live response before committing",[&] {
         for(double rate:{44100.,48000.}) {
             auto settings=make("EQ"), band=object();

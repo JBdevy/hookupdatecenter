@@ -95,6 +95,42 @@ try audioAutoreleasepool {
     for c in 0..<2 { for i in 0..<441000 { buffer.floatChannelData![c][i] = 0.1 } }
     try file.write(from: buffer)
 }
+// One diagonal stroke can make a long chain of sends. Exercise the real graph
+// and check that its inaudible clock branches do not leak or double the signal.
+try audioAutoreleasepool {
+    let engine = AVAudioEngine()
+    try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+    let audio = StemAudioPlayback(engine: engine, realtime: false)
+    audio.open(directory: directory)
+    defer { audio.prepareForClosing() }
+    var project = Project.empty(name: "Matrix send chain")
+    var rows = (0..<26).map { Track(id: UUID(), name: "Track \($0)", role: .other) }
+    for i in rows.indices { rows[i].outputs = i == rows.count - 1 ? [.master] : [.none] }
+    rows[0].clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 10, audioFile: AudioFile(path: "tone.wav"))]
+    project.songs[0].tracks = rows
+    let state = ShowSnapshot(project: project, transport: TransportState(playing: true, songId: project.songs[0].id,
+        position: 0, queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
+    try audio.update(state, revision: 1)
+    let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+    func check(_ expected: Float) throws {
+        for _ in 0..<12 { let status = try engine.renderOffline(512, to: pcm); precondition(status == .success) }
+        let peak = UnsafeBufferPointer(start: pcm.floatChannelData![0], count: Int(pcm.frameLength)).map(abs).max()!
+        precondition(abs(peak - expected) < 0.003, "Matrix output \(peak), expected \(expected)")
+    }
+    try check(0)
+    let routes = Dictionary(uniqueKeysWithValues: zip(rows, rows.dropFirst()).map {
+        ($0.id, TrackRouting(transmitters: [$1.id]))
+    })
+    let start = ProcessInfo.processInfo.systemUptime
+    audio.previewMatrixPatch(routes: routes, outputs: [:], master: nil)
+    let elapsed = ProcessInfo.processInfo.systemUptime - start
+    precondition(elapsed < 2, "Matrix send chain took \(elapsed) seconds")
+    try check(0.1)
+    audio.previewMatrixPatch(routes: routes.mapValues { _ in TrackRouting() }, outputs: [:], master: nil)
+    try check(0)
+    print("MATRIX_LONG_SEND_CHAIN_PCM_OK", elapsed)
+}
+
 // First use of dormant group/internal sends must preserve scheduled file
 // position, item tails and the continuously attached live input.
 try audioAutoreleasepool {
@@ -2423,6 +2459,10 @@ try audioAutoreleasepool {
             return noErr
         }
     }
+    func waitForMeterRelease(from peak: Double) {
+        let release = 20 * log10(peak / 0.001) / TrackMeterLevel.releaseDecibelsPerSecond
+        RunLoop.main.run(until: Date().addingTimeInterval(release + 0.15))
+    }
     playback.setInputMonitor(track.id, source: monitor(), format: outputFormat)
     // Raw input metering bypasses the idle playback graph. Seed the received
     // input sample; the regression is freezing the final sample on detach.
@@ -2432,7 +2472,7 @@ try audioAutoreleasepool {
     playback.setInputMonitor(track.id, source: nil)
     precondition(meter.level > 0 && playback.masterMeter.level > 0,
         "disarm preserves the display release instead of abruptly clearing bars")
-    RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+    waitForMeterRelease(from: 0.4)
     precondition(meter.level == 0 && playback.masterMeter.level == 0,
         "last disarm finishes the meter release instead of freezing the last sample")
     precondition(meter.peakHold.decibels == peak, "disarm preserves the independent held peak readout")
@@ -2442,7 +2482,7 @@ try audioAutoreleasepool {
     playback.setInputMonitor(track.id, source: nil)
     precondition(otherMeter.level > 0.01, "disarming one track preserves another armed input's metering")
     playback.setInputMonitor(other.id, source: nil)
-    RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+    waitForMeterRelease(from: 0.2)
     precondition(otherMeter.level == 0 && meter.level == 0)
     playback.prepareForClosing()
 }

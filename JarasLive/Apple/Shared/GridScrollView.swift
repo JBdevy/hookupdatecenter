@@ -98,11 +98,27 @@ import UIKit
     }
 }
 
+struct TimelineSetlistResize {
+    let change: (CGFloat) -> Void
+    let finish: () -> Void
+}
+private struct TimelineSetlistResizeKey: EnvironmentKey {
+    static let defaultValue: TimelineSetlistResize? = nil
+}
+extension EnvironmentValues {
+    var timelineSetlistResize: TimelineSetlistResize? {
+        get { self[TimelineSetlistResizeKey.self] }
+        set { self[TimelineSetlistResizeKey.self] = newValue }
+    }
+}
+
 struct TimelineTouchScrollBar: UIViewRepresentable {
+    @Environment(\.timelineSetlistResize) private var resize
     let connection: TimelineTouchScrollConnection
     let move: (CGFloat) -> Void
     func makeUIView(context: Context) -> TimelineTouchScrollBarView { TimelineTouchScrollBarView() }
     func updateUIView(_ view: TimelineTouchScrollBarView, context: Context) {
+        view.resize = resize
         view.move = move
         if connection.bar !== view { connection.bar = view }
     }
@@ -176,13 +192,39 @@ final class TimelineTouchScrollBarView: UIView {
         move?(min(range, max(0, y)) - scroll.adjustedContentInset.top)
     }
 
+    var resize: TimelineSetlistResize?
+    private var startPoint: CGPoint?
+    private enum DragAxis { case pending, scroll, resize }
+    private var dragAxis = DragAxis.pending
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let y = touches.first?.location(in: self).y else { return }
+        guard let touch = touches.first else { return }
+        let y = touch.location(in: self).y
         grabOffset = (knob.frame.minY...knob.frame.maxY).contains(y) ? y - knob.frame.minY : knob.frame.height / 2
-        drag(to: y)
+        startPoint = touch.location(in: window)
+        dragAxis = resize == nil ? .scroll : .pending
+        if dragAxis == .scroll { drag(to: y) }
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if let y = touches.first?.location(in: self).y { drag(to: y) }
+        guard let touch = touches.first, let startPoint else { return }
+        let point = touch.location(in: window)
+        let dx = point.x - startPoint.x, dy = point.y - startPoint.y
+        if dragAxis == .pending {
+            guard max(abs(dx), abs(dy)) >= 3 else { return }
+            dragAxis = abs(dx) > abs(dy) ? .resize : .scroll
+        }
+        if dragAxis == .resize { resize?.change(dx) }
+        else { drag(to: touch.location(in: self).y) }
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        touchesMoved(touches, with: event)
+        if dragAxis == .pending, let touch = touches.first { drag(to: touch.location(in: self).y) }
+        if dragAxis == .resize { resize?.finish() }
+        startPoint = nil
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if dragAxis == .resize { resize?.finish() }
+        startPoint = nil
     }
     private func drag(to y: CGFloat) {
         let distance = bounds.height - knob.frame.height
@@ -663,6 +705,16 @@ struct NativeTimelineMixerRowSpec<Version: Equatable> {
     let frame: CGRect
     let version: Version
     var retained = false
+    var libraryDrop: NativeLibraryTrackDrop?
+}
+
+@MainActor private protocol TimelineMixerLibraryDropRows: AnyObject {
+    func libraryDropOperation(_ sender: NSDraggingInfo) -> NSDragOperation
+    func acceptLibraryDrop(_ sender: NSDraggingInfo) -> Bool
+}
+
+@MainActor private protocol TimelineMixerLibraryDropHost: AnyObject {
+    var libraryDropRows: TimelineMixerLibraryDropRows? { get set }
 }
 
 /// Independently retained row roots prevent selection/layout changes in one
@@ -702,13 +754,14 @@ struct NativeTimelineMixerRows<Version: Equatable, Content: View>: NSViewReprese
         CGSize(width: followsContainerWidth ? (proposal.width ?? size.width) : size.width, height: size.height)
     }
 }
-private final class TimelineMixerRowsNativeView<Version: Equatable>: NSView {
+private final class TimelineMixerRowsNativeView<Version: Equatable>: NSView, TimelineMixerLibraryDropRows {
     let actions = GridHostedActions()
     private struct Row {
         let host: WorkspaceHostingView<AnyView>
         var version: Version
         var environment: AnyHashable
         var retained: Bool
+        var libraryDrop: NativeLibraryTrackDrop?
     }
     private var mounted: [Int: Row] = [:]
     var followsContainerWidth = false
@@ -732,6 +785,20 @@ private final class TimelineMixerRowsNativeView<Version: Equatable>: NSView {
     }
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    private func libraryRow(at windowPoint: NSPoint) -> Row? {
+        mounted.values.first { row in
+            let point = row.host.convert(windowPoint, from: nil)
+            return row.libraryDrop != nil && !row.host.isHiddenOrHasHiddenAncestor && row.host.visibleRect.contains(point)
+        }
+    }
+    func libraryDropOperation(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard let row = libraryRow(at: sender.draggingLocation) else { return [] }
+        return row.libraryDrop?.operation(for: sender, in: row.host) ?? []
+    }
+    func acceptLibraryDrop(_ sender: NSDraggingInfo) -> Bool {
+        guard let row = libraryRow(at: sender.draggingLocation) else { return false }
+        return row.libraryDrop?.perform(sender, in: row.host) ?? false
+    }
     func update(rows: [NativeTimelineMixerRowSpec<Version>], environment: AnyHashable, content: (Int) -> AnyView) {
         let wanted = Set(rows.map(\.id))
         for id in Array(mounted.keys) where !wanted.contains(id) { mounted.removeValue(forKey: id)?.host.removeFromSuperview() }
@@ -741,6 +808,7 @@ private final class TimelineMixerRowsNativeView<Version: Equatable>: NSView {
                 frame.size.width = followsWidth(at: frame) ? bounds.width : (mounted[spec.id]?.host.frame.width ?? frame.width)
             }
             if var row = mounted[spec.id] {
+                row.libraryDrop = spec.libraryDrop
                 if row.version != spec.version || row.environment != environment {
                     row.host.updateRowContent(content(index)); row.version = spec.version; row.environment = environment
                 }
@@ -752,7 +820,7 @@ private final class TimelineMixerRowsNativeView<Version: Equatable>: NSView {
                 if #available(macOS 13, *) { host.sizingOptions = [] }
                 if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
                 host.frame = frame; addSubview(host)
-                mounted[spec.id] = Row(host: host, version: spec.version, environment: environment, retained: spec.retained)
+                mounted[spec.id] = Row(host: host, version: spec.version, environment: environment, retained: spec.retained, libraryDrop: spec.libraryDrop)
             }
         }
         placeRowWidths()
@@ -761,8 +829,18 @@ private final class TimelineMixerRowsNativeView<Version: Equatable>: NSView {
         super.layout()
         placeRowWidths()
     }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); observeWidthClip() }
-    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); observeWidthClip() }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); observeWidthClip(); registerLibraryDropHost() }
+    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); observeWidthClip(); registerLibraryDropHost() }
+    private func registerLibraryDropHost() {
+        var ancestor = superview
+        while let view = ancestor {
+            if let host = view as? TimelineMixerLibraryDropHost {
+                host.libraryDropRows = self
+                return
+            }
+            ancestor = view.superview
+        }
+    }
     private func observeWidthClip() {
         let clip = window == nil ? nil : enclosingScrollView?.contentView
         guard widthClip !== clip else { return }
@@ -877,7 +955,11 @@ struct NativeWorkspaceSplit<Leading: View, Trailing: View>: NSViewRepresentable 
     }
 }
 
-private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, NativeTimelineBodyInputHost, NativeTimelineInputObserver, NativeTimelineDefaultCursorHost {
+private protocol TimelineSetlistResizeHost: AnyObject {
+    var trailingSetlistDivider: MixerDividerView? { get }
+}
+
+private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, TimelineSetlistResizeHost, NativeTimelineBodyInputHost, NativeTimelineInputObserver, NativeTimelineDefaultCursorHost {
     override func resetCursorRects() {
         guard let window, window.attachedSheet == nil, !NativeTimelineInputGate.shared.isBlocked(window),
               !isHiddenOrHasHiddenAncestor else { return }
@@ -919,6 +1001,9 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
     private var resizing = false
     private var applyingFrames = false
     private var onEnd: (CGFloat) -> Void = { _ in }
+    fileprivate var trailingSetlistDivider: MixerDividerView? {
+        !sidebarLeading && !sidebarDetached ? divider : nil
+    }
     private let dividerWidth: CGFloat = 6
 
     init(actions: GridHostedActions, leading: GridHostedContent<Leading>, trailing: GridHostedContent<Trailing>) {
@@ -939,6 +1024,7 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         addSubview(self.leading); addSubview(divider); addSubview(self.trailing)
         divider.direction = -1
         divider.showsScrollRail = false
+        divider.showsRail = false
         divider.setAccessibilityElement(true)
         divider.setAccessibilityRole(.splitter)
         divider.setAccessibilityLabel("Resize setlist")
@@ -1035,7 +1121,7 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
         let maximum = max(0, min(486.5, available.width - 420))
         func bounded(_ width: CGFloat) -> CGFloat { width <= 0 ? 0 : min(maximum, max(minimum, width)) }
         let visibleWidth = sidebarDetached ? 0 : bounded((resizing ? liveWidth : nil) ?? pendingSavedWidth ?? savedWidth)
-        let barWidth = sidebarDetached ? 0 : dividerWidth
+        let barWidth = sidebarLeading && !sidebarDetached ? dividerWidth : 0
         let primaryWidth = max(0, available.width - visibleWidth - barWidth)
         let mountedWidth = visibleWidth > 0 ? visibleWidth : bounded(max(minimum, restoreWidth))
         divider.minimum = minimum; divider.maximum = maximum; divider.columnWidth = visibleWidth
@@ -1059,7 +1145,7 @@ private final class WorkspaceSplitView<Leading: View, Trailing: View>: NSView, N
             trailing.needsLayout = true
         }
         trailing.isHidden = visibleWidth <= 0
-        divider.isHidden = sidebarDetached
+        divider.isHidden = barWidth == 0
         if layoutHosts {
             leading.layoutSubtreeIfNeeded()
             if !trailing.isHidden { trailing.layoutSubtreeIfNeeded() }
@@ -1164,7 +1250,9 @@ private final class TimelineMixerOverlayView<Header: View>: NSView, NativeTimeli
         addSubview(self.header); addSubview(divider)
         divider.setAccessibilityElement(true); divider.setAccessibilityRole(.splitter)
         divider.setAccessibilityLabel("Resize mixer")
-        divider.showsScrollRail = false; divider.maximumResizeFrequency = 60
+        divider.showsScrollRail = false
+        divider.showsRail = false
+        divider.maximumResizeFrequency = 60
         divider.onStart = { [weak self] in
             guard let self else { return }
             self.widthMode = self.divider.columnWidth >= 180
@@ -1251,6 +1339,7 @@ struct NativeTimelineColumns<Mixer: View, Divider: View, Timeline: View, Identit
     @Environment(\.gridInteractionBlocked) private var gridInteractionBlocked
     @Environment(\.locale) private var locale
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(JarasInterfaceTheme.preferenceKey) private var mixerTheme = JarasInterfaceTheme.defaultTheme
 
     private func hosted<Content: View>(_ content: Content, actions: GridHostedActions) -> GridHostedContent<Content> {
         GridHostedContent(content: content, gridInteractionBlocked: gridInteractionBlocked,
@@ -1273,6 +1362,7 @@ struct NativeTimelineColumns<Mixer: View, Divider: View, Timeline: View, Identit
         let view = TimelineColumnsNativeView(actions: actions,
             mixer: hosted(mixer(), actions: actions), divider: hosted(divider(), actions: actions),
             timeline: hosted(timeline(), actions: actions), identity: identity)
+        view.setMixerBackground(mixerTheme.panelHex)
         view.configure(mixerWidth: mixerWidth, viewportWidth: viewportWidth, height: height, dividerWidth: dividerWidth, liveWidth: liveWidth)
         return view
     }
@@ -1282,6 +1372,7 @@ struct NativeTimelineColumns<Mixer: View, Divider: View, Timeline: View, Identit
         view.updateContent(mixer: hosted(mixer(), actions: view.actions),
             divider: hosted(divider(), actions: view.actions), timeline: hosted(timeline(), actions: view.actions),
             identity: identity)
+        view.setMixerBackground(mixerTheme.panelHex)
         view.configure(mixerWidth: mixerWidth, viewportWidth: viewportWidth, height: height, dividerWidth: dividerWidth, liveWidth: liveWidth)
     }
     @available(macOS 13, *)
@@ -1299,8 +1390,22 @@ private struct TimelineColumnsMixerIdentity<Content: Equatable>: Equatable {
     let visible: Bool
 }
 
-private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeline: View, Identity: Equatable>: NSView, NativeTimelineBodyInputHost, NativeTimelineMixerWidthTarget {
+private final class TimelineMixerBackingView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeline: View, Identity: Equatable>: NSView, NativeTimelineBodyInputHost, NativeTimelineMixerWidthTarget, TimelineMixerLibraryDropHost {
+    weak var libraryDropRows: TimelineMixerLibraryDropRows?
     weak var timelineBodyInput: (NSView & NativeTimelineBodyInput)?
+    // Keep the drag target outside the individual hosting views. AppKit can
+    // hit a row's native control directly, including recycled row controls.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        libraryDropRows?.libraryDropOperation(sender) ?? []
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        libraryDropRows?.acceptLibraryDrop(sender) ?? false
+    }
     override func hitTest(_ point: NSPoint) -> NSView? {
         timelineBodyHit(at: point) ?? timelineControlHit(at: point) ?? super.hitTest(point)
     }
@@ -1309,6 +1414,8 @@ private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeli
     let dividerHost: WorkspaceHostingView<GridHostedContent<Divider>>
     let timelineHost: WorkspaceHostingView<GridHostedContent<Timeline>>
     private var mixerIdentity: TimelineColumnsMixerIdentity<Identity>
+    private let mixerBacking = TimelineMixerBackingView()
+    private var mixerBackground: UInt32?
     private var mixerWidth: CGFloat = 0
     private var viewportWidth: CGFloat = 0
     private var documentHeight: CGFloat = 0
@@ -1323,7 +1430,11 @@ private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeli
         dividerHost = WorkspaceHostingView(rootView: divider)
         timelineHost = WorkspaceHostingView(rootView: timeline)
         super.init(frame: .zero)
+        registerForDraggedTypes([NativeLibraryTrackDrop.type])
         wantsLayer = true; autoresizesSubviews = false
+        mixerBacking.identifier = NSUserInterfaceItemIdentifier("track-mixer-background")
+        mixerBacking.wantsLayer = true
+        addSubview(mixerBacking)
         for (host, role) in [(mixerHost as NSView, "columns-mixer"), (dividerHost as NSView, "columns-divider"), (timelineHost as NSView, "columns-timeline")] {
             host.identifier = NSUserInterfaceItemIdentifier(role)
             addSubview(host)
@@ -1345,6 +1456,16 @@ private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeli
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
     override var fittingSize: NSSize { CGSize(width: bounds.width > 0 ? bounds.width : viewportWidth, height: documentHeight) }
+
+    func setMixerBackground(_ color: UInt32) {
+        guard mixerBackground != color else { return }
+        mixerBackground = color
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mixerBacking.layer?.backgroundColor = NSColor(srgbRed: CGFloat(color >> 16 & 255) / 255,
+            green: CGFloat(color >> 8 & 255) / 255, blue: CGFloat(color & 255) / 255, alpha: 1).cgColor
+        CATransaction.commit()
+    }
 
     func updateContent(mixer: GridHostedContent<Mixer>, divider: GridHostedContent<Divider>,
                        timeline: GridHostedContent<Timeline>, identity: TimelineColumnsMixerIdentity<Identity>) {
@@ -1382,7 +1503,9 @@ private final class TimelineColumnsNativeView<Mixer: View, Divider: View, Timeli
             host.layoutProfile?.sizeChanged(host, from: host.frame.size, to: frame.size)
             host.frame = frame
         }
-        update(mixerHost, frame: CGRect(x: 0, y: 0, width: max(0, mixerWidth), height: documentHeight))
+        let mixerFrame = CGRect(x: 0, y: 0, width: max(0, mixerWidth), height: documentHeight)
+        if mixerBacking.frame != mixerFrame { mixerBacking.frame = mixerFrame }
+        update(mixerHost, frame: mixerFrame)
         update(dividerHost, frame: CGRect(x: mixerWidth, y: 0, width: dividerWidth, height: documentHeight))
         update(timelineHost, frame: CGRect(x: mixerWidth + dividerWidth, y: 0,
             width: max(0, viewportWidth - mixerWidth - dividerWidth), height: documentHeight))
@@ -1443,7 +1566,7 @@ private struct NativeGridScroll<Content: View>: NSViewRepresentable {
         scroll.wantsLayer = true
         scroll.contentView = TimelineClipView(leadingSpace: horizontal ? TimelineAppearanceDefaults.leadingSpace : 0)
         if horizontal {
-            scroll.registerForDraggedTypes([.fileURL])
+            scroll.registerForDraggedTypes([.fileURL, NSPasteboard.PasteboardType(LibrarySamplerTransfer.type.identifier)])
             SidebarScrollController.registerTimelineWheelClip(scroll.contentView)
         }
         scroll.fileDrop = fileDrop
@@ -1742,7 +1865,10 @@ private final class GridHostingView<Content: View>: NSHostingView<Content> {
     override var fittingSize: NSSize { frame.size }
 }
 final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, NativeTimelineSelectionScrollHost, NativeTimelineFollowPresentation {
-    final class GreenScroller: NSScroller {
+    class GreenScroller: NSScroller {
+        var slotColor = NSColor(white: 0.12, alpha: 1) {
+            didSet { if oldValue != slotColor { needsDisplay = true } }
+        }
         private func drawBar(_ rect: NSRect, color: NSColor) {
             let bar = bounds.height > bounds.width
                 ? NSRect(x: bounds.midX - 3, y: rect.minY, width: 6, height: rect.height)
@@ -1752,7 +1878,7 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
         }
 
         override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
-            drawBar(slotRect, color: NSColor(white: 0.12, alpha: 1))
+            drawBar(slotRect, color: slotColor)
         }
 
         override func drawKnob() {
@@ -1760,14 +1886,55 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
         }
     }
 
-    private var timelineVerticalBar: GreenScroller?
+    private final class SetlistGridScroller: GreenScroller {
+        private weak var resizing: MixerDividerView?
+        var divider: MixerDividerView? {
+            var next = superview
+            while let view = next {
+                if let host = view as? TimelineSetlistResizeHost { return host.trailingSetlistDivider }
+                next = view.superview
+            }
+            return nil
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            guard let divider, let window, event.clickCount == 1 else { super.mouseDown(with: event); return }
+            let origin = event.locationInWindow
+            // Let AppKit track the original scrollbar click or vertical drag.
+            // Only take ownership after the user has chosen the horizontal axis.
+            while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp],
+                                              until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+                let dx = abs(next.locationInWindow.x - origin.x)
+                let dy = abs(next.locationInWindow.y - origin.y)
+                if next.type == .leftMouseDragged && max(dx, dy) < 3 { continue }
+                if next.type == .leftMouseDragged && dx > dy {
+                    resizing = divider
+                    divider.mouseDown(with: event)
+                    divider.mouseDragged(with: next)
+                } else {
+                    window.postEvent(next, atStart: true)
+                    super.mouseDown(with: event)
+                }
+                return
+            }
+        }
+        override func mouseDragged(with event: NSEvent) {
+            if let resizing { resizing.mouseDragged(with: event) } else { super.mouseDragged(with: event) }
+        }
+        override func mouseUp(with event: NSEvent) {
+            if let resizing { resizing.mouseUp(with: event); self.resizing = nil }
+            else { super.mouseUp(with: event) }
+        }
+    }
+
+    private var timelineVerticalBar: SetlistGridScroller?
     private var timelineVerticalBarTop: CGFloat?
 
     func showTimelineVerticalBar(inset: CGFloat) {
         guard timelineVerticalBarTop != inset else { syncTimelineVerticalBar(); return }
         timelineVerticalBarTop = inset
         if timelineVerticalBar == nil {
-            let bar = GreenScroller(frame: NSRect(x: 0, y: 0, width: TimelineVerticalBar.width, height: 200))
+            let bar = SetlistGridScroller(frame: NSRect(x: 0, y: 0, width: TimelineVerticalBar.width, height: 200))
             bar.scrollerStyle = .legacy
             bar.controlSize = .small
             bar.target = self
@@ -1786,7 +1953,8 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
         let range = max(0, height - clip.bounds.height)
         let value = range > 0 ? min(1, max(0, clip.bounds.minY / range)) : 0
         let proportion = height > 0 ? min(1, clip.bounds.height / height) : 1
-        if bar.isEnabled != (range > 0) { bar.isEnabled = range > 0 }
+        let interactive = range > 0 || bar.divider != nil
+        if bar.isEnabled != interactive { bar.isEnabled = interactive }
         if bar.knobProportion != proportion { bar.knobProportion = proportion }
         if bar.doubleValue != value { bar.doubleValue = value }
     }
@@ -1984,18 +2152,23 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
         fileDropPreview?(point == nil ? [] : fileDropURLs, point)
         if point == nil { fileDropURLs = []; fileDropPasteboardChange = nil }
     }
+    private func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let sampleType = NSPasteboard.PasteboardType(LibrarySamplerTransfer.type.identifier)
+        if let sample = LibrarySamplerTransfer.url(pasteboard.data(forType: sampleType)) { return [sample] }
+        return pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard fileDrop != nil, let documentView,
-              sender.draggingSourceOperationMask.contains(.copy),
-              sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) else {
+              sender.draggingSourceOperationMask.contains(.copy) else {
             updateFileDropPreview(nil)
             return []
         }
         if fileDropPasteboardChange != sender.draggingPasteboard.changeCount {
-            fileDropURLs = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+            fileDropURLs = fileURLs(from: sender.draggingPasteboard)
             fileDropPasteboardChange = sender.draggingPasteboard.changeCount
             lastFileDropPreview = nil
         }
+        guard !fileDropURLs.isEmpty else { updateFileDropPreview(nil); return [] }
         updateFileDropPreview(documentView.convert(sender.draggingLocation, from: nil))
         return .copy
     }
@@ -2014,9 +2187,9 @@ final class GridNativeScrollView: NSScrollView, NativeTimelineBodyInputHost, Nat
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         acceptedFileDrop = false
         defer { updateFileDropPreview(nil) }
-        guard let documentView, let fileDrop,
-              sender.draggingSourceOperationMask.contains(.copy),
-              let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return false }
+        guard let documentView, let fileDrop, sender.draggingSourceOperationMask.contains(.copy) else { return false }
+        let urls = fileURLs(from: sender.draggingPasteboard)
+        guard !urls.isEmpty else { return false }
         acceptedFileDrop = fileDrop(urls, documentView.convert(sender.draggingLocation, from: nil))
         restoreFileDropFocus()
         return acceptedFileDrop

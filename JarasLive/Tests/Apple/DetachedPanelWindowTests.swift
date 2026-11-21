@@ -21,7 +21,8 @@ for name in ["Mixer", "Parts"] {
         mixer.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: panel))
         precondition(DetachedSaveProbe.mixer == saved + 2, "Programmatic resize and maximize must still save their geometry")
     }
-    let frame = NSRect(x: 80, y: 90, width: 620, height: 410)
+    let visible = (current().screen ?? NSScreen.main)!.visibleFrame
+    let frame = NSRect(x: (visible.midX - 310).rounded(), y: (visible.midY - 205).rounded(), width: 620, height: 410)
     current().setFrame(frame, display: true); pump(); hide(); open(); pump()
     precondition(current().frame == frame, "Hidden window must retain frame")
     close(); open(); pump()

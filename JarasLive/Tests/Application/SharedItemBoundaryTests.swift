@@ -42,7 +42,7 @@ final class SharedItemBoundaryTests: XCTestCase {
         XCTAssertEqual(result[0].text, "Verse"); XCTAssertEqual(result[1].text, "Chorus")
         XCTAssertEqual(left.startTime, 10); XCTAssertEqual(right.startTime, 20)
     }
-    func testOnlyTeleprompterTextCanShareBoundary() throws {
+    func testAdjacentItemsShareBoundaryAcrossTrackKinds() throws {
         for role in ["other", "teleprompt", "teleprompt2", "chords", "timecode", "video"] {
             var project = Project.empty(name: "Boundary")
             var track = Track(id: UUID(), name: role, role: TrackRole(rawValue: role))
@@ -52,10 +52,9 @@ final class SharedItemBoundaryTests: XCTestCase {
             if role == "video" { a.audioFile = AudioFile(path: "a.mp4"); b.audioFile = AudioFile(path: "b.mp4") }
             if role == "other" { a.midi = MIDIItem(); b.midi = MIDIItem() }
             track.clips = [a,b]; project.songs[0].tracks = [track]
-            let allowed = role == "teleprompt" || role == "teleprompt2"
-            XCTAssertEqual(project.resizeSharedItemBoundary(left: a.id, right: b.id, position: 3, sourceDurations: [a.id: 10,b.id: 10]), allowed, role)
-            XCTAssertEqual(project.songs[0].tracks[0].clips[0].duration, allowed ? 3 : 5, role)
-            XCTAssertEqual(project.songs[0].tracks[0].clips[1].duration, allowed ? 7 : 5, role)
+            XCTAssertTrue(project.resizeSharedItemBoundary(left: a.id, right: b.id, position: 3, sourceDurations: [a.id: 10,b.id: 10]), role)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[0].duration, 3, role)
+            XCTAssertEqual(project.songs[0].tracks[0].clips[1].duration, 7, role)
             let saved = project
             XCTAssertFalse(project.resizeSharedItemBoundary(left: b.id, right: a.id, position: 4))
             XCTAssertEqual(project, saved, "Invalid pairs must not partially edit the document")

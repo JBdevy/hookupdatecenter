@@ -26,7 +26,7 @@ class PatchPanel final : public Component, private Timer {
     }
     String windowTitle() const {
         if(targets.size()>1)return localization::translate("Patch");
-        return localization::translate("Patch")+" · "+(track()?text(track()->name):String("Master"));
+        return localization::translate("Patch")+" · "+(track()?text(track()->name):String("Main"));
     }
     void paint(Graphics &g) override {
         g.setColour(Colour(0xff1f1f1f)); g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(.5f),18);
@@ -65,6 +65,7 @@ class PatchPanel final : public Component, private Timer {
                 result += text(track.id) + "="; append(track.outputPatches());
                 if (track.routing) {
                     result += "R"; for (const auto& route : track.routing->receives) result += route ? text(*route) : "-";
+                    if (track.routing->mainReceiveSlot) result += "Main" + String(*track.routing->mainReceiveSlot);
                     result += "S"; for (const auto& route : track.routing->transmitters) result += route ? text(*route) : "-";
                 }
             }
@@ -125,7 +126,13 @@ class PatchPanel final : public Component, private Timer {
                         auto all=was;all.insert(is.begin(),is.end());
                         for(auto &other:s.tracks)if(other.id!=id&&all.count(other.id)){
                             auto mirror=other.routing.value_or(jaras::TrackRouting{});auto &slots=receive?mirror.transmitters:mirror.receives;
-                            if(is.count(other.id)){if(std::find(slots.begin(),slots.end(),std::optional<ID>{id})==slots.end()){auto empty=std::find(slots.begin(),slots.end(),std::nullopt);if(empty==slots.end())slots.push_back(id);else *empty=id;}}
+                            if(is.count(other.id)){
+                                if(std::find(slots.begin(),slots.end(),std::optional<ID>{id})==slots.end()){
+                                    auto empty=slots.begin();
+                                    while(empty!=slots.end() && (*empty || (!receive && mirror.mainReceiveSlot == int(empty-slots.begin())))) ++empty;
+                                    if(empty==slots.end())slots.push_back(id);else *empty=id;
+                                }
+                            }
                             else for(auto &slot:slots)if(slot==id)slot.reset();
                             other.routing=std::move(mirror);
                         }
@@ -298,8 +305,8 @@ class PatchPanel final : public Component, private Timer {
         if(batchCategory==1){names.addArray({"MIDI 1","MIDI 2","MIDI 3","MIDI 4","MIDI 5","MIDI 6"});}
         else{
             const int count=device?(batchCategory==0?device->getInputChannelNames().size():device->getOutputChannelNames().size()):(batchCategory==0?0:2);
-            if(batchCategory==2 && allStandard){names.add("Master");patches.push_back({0,2});}
-            if(batchCategory==2 && allGrouped){names.add("Master Group");patches.push_back({-2,2});}
+            if(batchCategory==2 && allStandard){names.add("Main");patches.push_back({0,2});}
+            if(batchCategory==2 && allGrouped){names.add("Main Group");patches.push_back({-2,2});}
             for(int i=1;i<=count;++i){names.add(String(batchCategory==0?"In ":"Out ")+String(i));patches.push_back({i,1});}
             for(int i=1;i<count;i+=2){names.add(String(batchCategory==0?"In ":"Out ")+String(i)+" / "+String(i+1));patches.push_back({i,2});}
         }
@@ -417,10 +424,10 @@ class PatchPanel final : public Component, private Timer {
                 t.secondaryPatch.reset();
             });
         });
-        StringArray destinations{"Master", "Nenhum"};
+        StringArray destinations{"Main", "Nenhum"};
         std::vector<jaras::OutputPatch> patches{{0, 2}, {-1, 2}};
         if (t->parentTrackID) {
-            destinations.add("Master Group");
+            destinations.add("Main Group");
             patches.push_back({-2, 2});
         }
         const int outputCount = std::max(2, device ? device->getOutputChannelNames().size() : 2);
@@ -488,6 +495,7 @@ class PatchPanel final : public Component, private Timer {
                                : std::vector<std::optional<ID>>();
                 StringArray names{"Nenhum"};
                 std::vector<ID> ids{ID{}};
+                if (receive) { names.add("Main"); ids.push_back({}); }
                 if (auto *song = session.song())
                     for (const auto &other : song->tracks)
                         if (other.id != id && jaras::fixedTrackName(other.role).empty()) {
@@ -496,26 +504,45 @@ class PatchPanel final : public Component, private Timer {
                         }
                 for (size_t row = 0; row < routes.size(); ++row) {
                     int selected = 1;
+                    if (receive && t->routing->mainReceiveSlot == int(row)) selected = 2;
                     for (size_t i = 1; i < ids.size(); ++i)
                         if (routes[row] && *routes[row] == ids[i])
                             selected = (int)i + 1;
                     choice(0, y, 244, names, selected, [this, receive, row, ids](int n) {
+                        if (receive && session.audio.isRecording()) return;
                         edit([&](auto &t) {
                             if (!t.routing)
                                 return;
                             auto &routes = receive ? t.routing->receives : t.routing->transmitters;
-                            if (row < routes.size())
-                                routes[row] =
-                                    n > 1 ? std::optional<ID>(ids[(size_t)n - 1]) : std::nullopt;
+                            if (row >= routes.size()) return;
+                            if (receive && n == 2) {
+                                t.routing->mainReceiveSlot = int(row);
+                                routes[row].reset();
+                                t.inputMonitoring = false;
+                                if (t.recordingChannels == 0) t.recordingChannels = 2;
+                            } else {
+                                if (receive && t.routing->mainReceiveSlot == int(row)) {
+                                    t.routing->mainReceiveSlot.reset(); t.routing->mainSendOrder.reset();
+                                }
+                                routes[row] = n > 1 ? std::optional<ID>(ids[(size_t)n - 1]) : std::nullopt;
+                            }
                         });
                     });
                     button(String::fromUTF8("⊖"), 264, y, 36, [this, receive, row] {
+                        if (receive && session.audio.isRecording()) return;
                         edit([&](auto &t) {
                             if (!t.routing)
                                 return;
                             auto &routes = receive ? t.routing->receives : t.routing->transmitters;
-                            if (row < routes.size())
+                            if (row < routes.size()) {
                                 routes.erase(routes.begin() + row);
+                                if (receive && t.routing->mainReceiveSlot) {
+                                    if (*t.routing->mainReceiveSlot == int(row)) {
+                                        t.routing->mainReceiveSlot.reset(); t.routing->mainSendOrder.reset();
+                                    }
+                                    else if (*t.routing->mainReceiveSlot > int(row)) --*t.routing->mainReceiveSlot;
+                                }
+                            }
                         });
                     });
                     y += 34;

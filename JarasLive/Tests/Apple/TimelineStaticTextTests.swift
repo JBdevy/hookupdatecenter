@@ -31,15 +31,19 @@ private struct RulerFixture: View {
             let label = TimelineStaticText.label("0st  01", style: .regionIdentifier, displayScale: scale)!
             precondition(label === TimelineStaticText.label("0st  01", style: .regionIdentifier, displayScale: scale))
             precondition(label !== TimelineStaticText.label("0st  01", style: .barNumber, displayScale: scale))
-            precondition(label.image.width == Int(ceil(label.size.width * scale)))
-            precondition(label.image.height == Int(ceil(label.size.height * scale)))
+            precondition(label.image.width == Int(ceil(label.size.width * label.rasterScale)))
+            precondition(label.image.height == Int(ceil(label.size.height * label.rasterScale)))
             precondition(label.width > 0 && label.size.height <= 16)
             let pixels = label.image.dataProvider!.data! as Data
             precondition(stride(from: 3, to: pixels.count, by: 4).contains { pixels[$0] > 0 }, "cached label must contain visible glyphs")
+            precondition(stride(from: 0, to: pixels.count, by: 4).allSatisfy { index in
+                pixels[index] == 0 && pixels[index + 1] == 0 && pixels[index + 2] == 0
+            }, "Region semitones and index use black ink")
             precondition(label !== TimelineStaticText.label("0st  02", style: .regionIdentifier, displayScale: scale))
         }
-        precondition(TimelineStaticText.label("123", style: .barNumber, displayScale: 1) !== TimelineStaticText.label("123", style: .barNumber, displayScale: 2),
-                     "moving the window between backing scales rebuilds text at the native resolution")
+        let standard = TimelineStaticText.label("123", style: .barNumber, displayScale: 1)!
+        precondition(standard.rasterScale == 2 && standard === TimelineStaticText.label("123", style: .barNumber, displayScale: 2),
+                     "A 1× display downsamples the cached Retina text")
         for cached in [false, true] {
             var durations: [Double] = []
             for iteration in 0..<24 {

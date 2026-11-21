@@ -39,6 +39,15 @@ public:
         return {seconds, s.quarter + offset, s.point.bpm, s.point.beats, s.point.unit, playing,
                 s.quarter + std::floor(offset / bar + 1e-10) * bar};
     }
+    double nextBeatAfter(double seconds) const noexcept {
+        constexpr double epsilon = 1e-9;
+        const auto next = std::upper_bound(sections.begin(), sections.end(), seconds + epsilon,
+            [](double time, const Section &section) { return time < section.point.seconds; });
+        const auto point = next == sections.begin() ? Point{} : (next - 1)->point;
+        const double beat = (60. / point.bpm) * (4. / point.unit);
+        const double boundary = point.seconds + (std::floor((seconds - point.seconds + epsilon) / beat) + 1) * beat;
+        return next == sections.end() ? boundary : std::min(boundary, next->point.seconds);
+    }
     void swap(PluginTempoMap& other) noexcept { sections.swap(other.sections); }
 private:
     struct Section { Point point; double quarter; };

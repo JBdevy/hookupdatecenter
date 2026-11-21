@@ -11,6 +11,7 @@ class TunerControl final : public Component, private Timer {
             addAndMakeVisible(button);
             button->setWantsKeyboardFocus(false);
             button->getProperties().set("plain", true);
+            button->getProperties().set("fontSize", 15);
             button->setColour(TextButton::textColourOffId, theme::green);
         }
         down.onClick = [step] { step(-1); };
@@ -20,30 +21,27 @@ class TunerControl final : public Component, private Timer {
         startTimerHz(8);
     }
     void resized() override {
-        down.setBounds(48, 0, 20, getHeight());
-        up.setBounds(getWidth() - 24, 0, 20, getHeight());
+        constexpr int stepWidth = 28, stepHeight = 28;
+        const int y = (getHeight() - stepHeight) / 2;
+        down.setBounds(38, y, stepWidth, stepHeight);
+        up.setBounds(getWidth() - stepWidth - 3, y, stepWidth, stepHeight);
     }
     const jaras::Part *region() const {
         const auto *song = session.song();
         return song ? regionPitch::target(*song, session.transport()) : nullptr;
     }
     void paint(Graphics &g) override {
-        auto bounds = getLocalBounds().toFloat().reduced(.5f);
-        g.setColour(theme::display);
-        g.fillRoundedRectangle(bounds, 4);
-        g.setColour(theme::line);
-        g.drawRoundedRectangle(bounds, 4, 1);
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(9));
-        g.drawText("Tuner", 5, 0, 42, getHeight(), Justification::centredLeft);
+        g.drawText("Tuner", 5, 0, down.getX() - 5, getHeight(), Justification::centredLeft);
         g.setColour(theme::green);
         g.setFont(theme::semiboldFont(11));
         auto *part = region();
-        g.drawText(String(part ? part->pitchSemitones.value_or(0) : 0) + "st", 68, 0,
-                   getWidth() - 92, getHeight(), Justification::centred);
+        g.drawText(String(part ? part->pitchSemitones.value_or(0) : 0) + "st", down.getRight(), 0,
+                   up.getX() - down.getRight(), getHeight(), Justification::centred);
     }
     void mouseDown(const MouseEvent &e) override {
-        if (e.mods.isPopupMenu() && e.x >= 68 && e.x < getWidth() - 24 && region())
+        if (e.mods.isPopupMenu() && e.x >= down.getRight() && e.x < up.getX() && region())
             configure();
     }
 
@@ -81,7 +79,7 @@ class PitchTargetsPanel final : public Component {
                         groups = asSet(*part.pitchGroupIDs);
                 }
         }
-        for (auto *button : {&tracksTab, &groupsTab, &all, &cancel, &apply}) {
+        for (auto *button : {&tracksTab, &groupsTab, &all, &apply}) {
             addAndMakeVisible(button);
             button->setWantsKeyboardFocus(false);
         }
@@ -93,7 +91,6 @@ class PitchTargetsPanel final : public Component {
             tab = 1;
             refresh();
         };
-        cancel.onClick = close;
         apply.onClick = [this] { commit(); };
         all.onClick = [this] {
             bool selected = false;
@@ -123,7 +120,6 @@ class PitchTargetsPanel final : public Component {
         content.setSize(view.getWidth() - 8, std::max(view.getHeight(), checks.size() * 31));
         for (int i = 0; i < checks.size(); ++i)
             checks[i]->setBounds(4, i * 31, content.getWidth() - 8, 28);
-        cancel.setBounds(getWidth() - 184, getHeight() - 43, 78, 28);
         apply.setBounds(getWidth() - 98, getHeight() - 43, 78, 28);
     }
     bool keyPressed(const KeyPress &key) override {
@@ -146,7 +142,7 @@ class PitchTargetsPanel final : public Component {
     Component content;
     OwnedArray<ToggleButton> checks;
     TextButton tracksTab{localization::translate("Pistas")}, groupsTab{localization::translate("Grupos")}, all{"Selecionar todas"},
-        cancel{"Cancelar"}, apply{"Aplicar"};
+        apply{"Aplicar"};
     static std::set<ID> asSet(const std::vector<ID> &values) {
         return {values.begin(), values.end()};
     }

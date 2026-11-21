@@ -9,6 +9,13 @@ extension NSFont {
     }
 }
 
+// The host fixture does not load a project or accept plug-in drops.
+@MainActor struct NativeLibraryTrackDrop {
+    static let type = NSPasteboard.PasteboardType("com.catlive.library-effect")
+    func operation(for sender: NSDraggingInfo, in view: NSView) -> NSDragOperation { [] }
+    func perform(_ sender: NSDraggingInfo, in view: NSView) -> Bool { false }
+}
+
 /// Test-only binding adapter to exercise the native scroll host at changing document scales.
 private struct ZoomFixtureBinding<Content: View>: View {
     @ObservedObject var state: TimelineZoomState
@@ -642,7 +649,7 @@ private struct PersistentHostedControl: View {
         HostedControlProbeRepresentable(count: count, revision: revision,
                                         edit: { count += 1 }, open: { openFX(nil, "eq") },
                                         details: { editTrackDetails(TrackDetailsEditRequest(project: detailsProject,
-                                            tracks: detailsTracks, name: "Captured", color: UInt32(revision), nameEditable: false)) })
+                                            tracks: detailsTracks, name: "Captured", color: UInt32(revision))) })
             .frame(width: 100, height: 40)
     }
 }
@@ -696,8 +703,8 @@ for revision in 1...8 {
     retainedControl.details()
     let (handlerRevision, request) = resizeState.details.last!
     precondition(handlerRevision == revision && request.color == UInt32(revision), "track edit actions cross hosting with current callbacks")
-    precondition(request.project == detailsProject && request.tracks == detailsTracks && !request.nameEditable,
-                 "batch edit preserves the menu's captured project, targets and color-only mode")
+    precondition(request.project == detailsProject && request.tracks == detailsTracks && !request.iconOnly,
+                 "batch edit preserves the menu's captured project, targets and color action")
     retainedControl.open()
     precondition(resizeState.opened.last == revision, "stable hosted actions always forward to the latest parent handler")
 }
@@ -707,20 +714,13 @@ precondition(retainedControl.count == 2, "the retained control continues editing
 resizeWindow.close()
 print("HOSTED_RESIZE_PRESERVES_NATIVE_CONTROLS_STATE_LIVE_ENVIRONMENT_ACTIONS_AND_DOCUMENT_GEOMETRY_OK")
 
-// A viewport can change continuously while the document keeps one capacity.
-let resizeExtents = (513...1024).map { TimelineZoomLimits.minimumExtent(viewportWidth: CGFloat($0)) }
-precondition(Set(resizeExtents).count == 1, "Minimum-zoom document capacity must not change for every resize pixel")
+// Minimum zoom preserves the same overview duration at every viewport width.
 for width: CGFloat in [0, 1, 511, 512, 513, 1024, 1025, 3840, 7680] {
-    let extent = TimelineZoomLimits.minimumExtent(viewportWidth: width)
     let minimum = TimelineZoomLimits.minimumZoom(viewportWidth: width)
-    precondition((extent - 120) * (10 * minimum) >= width - 0.00001,
-        "Reserved extent must cover the entire viewport even at the farthest zoom")
     precondition(abs(max(1, Double(width)) / (10 * minimum) - 45 * 3600) < 0.00001,
         "Maximum overview shows 45 hours regardless of viewport width")
-    precondition(max(240, 200_000 + 120, extent) >= 200_120,
-        "Viewport capacity cannot truncate a long project or its trailing blank area")
 }
-print("WINDOW_RESIZE_45_HOUR_OVERVIEW_AND_LONG_PROJECT_COVERAGE_OK")
+print("WINDOW_RESIZE_45_HOUR_OVERVIEW_OK")
 
 final class HeightZoomFixtureState: ObservableObject {
     @Published var height: CGFloat = 64

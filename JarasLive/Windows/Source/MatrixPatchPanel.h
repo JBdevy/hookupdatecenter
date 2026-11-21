@@ -5,7 +5,7 @@
 
 namespace catlive {
 class MatrixPatchPanel final : public Component, private Timer {
-    static constexpr int rowHeight = 32, columnWidth = 38, labelWidth = 236, headerHeight = 170, top = 84;
+    static constexpr int rowHeight = 20, columnWidth = 22, labelWidth = 158, headerHeight = 102, top = 46;
     struct Row {
         ID id; String name, number; Colour color; bool sends = false, master = false;
         std::vector<jaras::OutputPatch> outputs; std::set<ID> destinations;
@@ -22,7 +22,15 @@ class MatrixPatchPanel final : public Component, private Timer {
         void mouseEnter(const MouseEvent& e) override { mouseMove(e); }
         void mouseExit(const MouseEvent&) override { owner.clearHover(); }
         void mouseDown(const MouseEvent& e) override {
-            if (e.mods.isLeftButtonDown()) owner.toggle((int)e.position.y / rowHeight, (int)e.position.x / columnWidth);
+            if (e.mods.isLeftButtonDown()) owner.beginSelection((int)std::floor(e.position.y / rowHeight),
+                                                               (int)std::floor(e.position.x / columnWidth));
+        }
+        void mouseDrag(const MouseEvent &e) override {
+            owner.selectTo((int)std::floor(e.position.y / rowHeight), (int)std::floor(e.position.x / columnWidth), e.mods.isShiftDown());
+        }
+        void mouseUp(const MouseEvent &e) override {
+            mouseDrag(e);
+            owner.applySelection();
         }
     } body{*this};
     class Scroller final : public Viewport {
@@ -51,6 +59,9 @@ class MatrixPatchPanel final : public Component, private Timer {
     uint64 lastRevision = std::numeric_limits<uint64>::max();
     String lastDevice, failure;
     int hotRow = -1, hotColumn = -1, left = labelWidth;
+    std::optional<Point<int>> selectionAnchor;
+    std::optional<jaras::matrixPatch::Stroke> selection;
+    bool connects = false;
     Colour activeColor{0xff68df97};
     String deviceDescription() const {
         auto* device = session.audio.devices.getCurrentAudioDevice();
@@ -76,7 +87,7 @@ class MatrixPatchPanel final : public Component, private Timer {
         const auto& project = session.project();
         auto masterOutputs = project.masterOutputs.value_or(std::vector<jaras::OutputPatch>{project.masterPatch.value_or(jaras::OutputPatch{1,2})});
         if (!project.masterOutputs && project.masterSecondaryPatch) masterOutputs.push_back(*project.masterSecondaryPatch);
-        rows.push_back({{},"Master","M",activeColor,false,false,masterOutputs,{}});
+        rows.push_back({{},"Main","M",activeColor,false,false,masterOutputs,{}});
         std::map<ID,std::set<ID>> destinations;
         if (song) for (const auto& t : song->tracks) {
             if (t.routing) {
@@ -91,7 +102,7 @@ class MatrixPatchPanel final : public Component, private Timer {
             rows.push_back({t.id,text(t.name),String((int)i+1),Colour(0xff000000|t.color.value_or(0x888888)),
                 jaras::fixedTrackName(t.role).empty() && t.role.id!="vinhetas",t.role.id!="vinhetas",t.outputPatches(),destinations[t.id]});
         }
-        columns.push_back({{},{0,2},"Master","M",activeColor,true});
+        columns.push_back({{},{0,2},"Main","M",activeColor,true});
         auto* device=session.audio.devices.getCurrentAudioDevice();
         const auto names=device?device->getOutputChannelNames():StringArray{};
         std::vector<jaras::OutputPatch> patches;
@@ -119,22 +130,75 @@ class MatrixPatchPanel final : public Component, private Timer {
         body.setSize(std::max(viewport.getMaximumVisibleWidth(),(int)columns.size()*columnWidth),std::max(viewport.getMaximumVisibleHeight(),(int)rows.size()*rowHeight));
         body.repaint();repaint();
     }
-    void toggle(int row,int col) {
+    void beginSelection(int row, int col) {
         if(row<0||col<0||row>=(int)rows.size()||col>=(int)columns.size()||(!enabled(row,col)&&!active(row,col)))return;
+        selectionAnchor = Point<int>{col, row};
+        connects = !active(row, col);
+        selectTo(row, col, false);
+    }
+    void selectTo(int row, int col, bool diagonal) {
+        if (!selectionAnchor) return;
+        const auto anchor = *selectionAnchor;
+        if (!isPositiveAndBelow(anchor.y, int(rows.size())) || !isPositiveAndBelow(anchor.x, int(columns.size()))) {
+            selection.reset();
+            return;
+        }
+        row = jlimit(0, int(rows.size()) - 1, row);
+        col = jlimit(0, int(columns.size()) - 1, col);
+        connects = !active(anchor.y, anchor.x);
+        if (diagonal) {
+            const int horizontal = col - anchor.x;
+            const int step = jlimit(-anchor.y, int(rows.size()) - 1 - anchor.y, horizontal);
+            row = anchor.y + step;
+            col = anchor.x + step;
+            if (horizontal != 0) connects = horizontal > 0;
+        } else {
+            if (std::abs(col - anchor.x) >= std::abs(row - anchor.y)) row = anchor.y;
+            else col = anchor.x;
+        }
+        selection = jaras::matrixPatch::Stroke{{anchor.y, anchor.x}, {row, col}};
+        body.repaint();
+    }
+    void applySelection() {
+        if (!selectionAnchor) return;
+        selectionAnchor.reset();
+        const auto selected = selection;
+        selection.reset();
         if(!session.song()||session.song()->id!=songID){refresh();return;}
-        const auto source=rows[(size_t)row].id;
-        const auto destination=columns[(size_t)col];
+        if (!selected) { body.repaint(); return; }
+        std::vector<std::pair<ID, Column>> edits;
+        for (int step = 0; step <= selected->steps(); ++step) {
+            const auto [row, col] = selected->cellAt(step);
+            if (active(row, col) != connects && (enabled(row, col) || active(row, col)))
+                edits.emplace_back(rows[(size_t)row].id, columns[(size_t)col]);
+        }
+        if (edits.empty()) { body.repaint(); return; }
         failure.clear();
         try {
             session.editTrackSettings([&](jaras::Project& project){
-                if(source.empty()) {
-                    auto outputs=project.masterOutputs.value_or(std::vector<jaras::OutputPatch>{project.masterPatch.value_or(jaras::OutputPatch{1,2})});
-                    if(!project.masterOutputs && project.masterSecondaryPatch)outputs.push_back(*project.masterSecondaryPatch);
-                    project.masterOutputs=jaras::matrixPatch::toggled(outputs,destination.output);project.masterPatch.reset();project.masterSecondaryPatch.reset();return;
-                }
-                for(auto& song:project.songs)if(song.id==songID){
-                    if(!destination.track.empty())jaras::matrixPatch::toggleConnection(song,source,destination.track);
-                    else for(auto& track:song.tracks)if(track.id==source){track.outputs=jaras::matrixPatch::toggled(track.outputPatches(),destination.output);track.patch.reset();track.secondaryPatch.reset();}
+                for (const auto &[source, destination] : edits) {
+                    if (source.empty()) {
+                        auto outputs = project.masterOutputs.value_or(
+                            std::vector<jaras::OutputPatch>{project.masterPatch.value_or(jaras::OutputPatch{1, 2})});
+                        if (!project.masterOutputs && project.masterSecondaryPatch) outputs.push_back(*project.masterSecondaryPatch);
+                        project.masterOutputs = jaras::matrixPatch::toggled(outputs, destination.output);
+                        project.masterPatch.reset();
+                        project.masterSecondaryPatch.reset();
+                        continue;
+                    }
+                    for (auto& song : project.songs) {
+                        if (song.id != songID) continue;
+                        if (!destination.track.empty()) {
+                            jaras::matrixPatch::toggleConnection(song, source, destination.track);
+                        } else {
+                            for (auto& track : song.tracks) {
+                                if (track.id != source) continue;
+                                track.outputs = jaras::matrixPatch::toggled(track.outputPatches(), destination.output);
+                                track.patch.reset();
+                                track.secondaryPatch.reset();
+                            }
+                        }
+                    }
                 }
             },true);
         } catch(const std::exception& e){failure=localization::translate(String::fromUTF8(e.what()));}
@@ -157,36 +221,36 @@ class MatrixPatchPanel final : public Component, private Timer {
             g.setColour(Colours::white.withAlpha(row==hotRow?.07f:row%2==0?.025f:0.f));g.fillRect(clip.getX(),row*rowHeight,clip.getWidth(),rowHeight);
             for(int col=std::max(0,clip.getX()/columnWidth);col<std::min((int)columns.size(),clip.getRight()/columnWidth+1);++col){
                 if(col==hotColumn){g.setColour(Colour(0xff5985c2).withAlpha(.12f));g.fillRect(col*columnWidth,row*rowHeight,columnWidth,rowHeight);}
-                auto cell=juce::Rectangle<float>((float)(col*columnWidth+5),(float)(row*rowHeight+5),(float)(columnWidth-10),(float)(rowHeight-10));
-                if(active(row,col)){
-                    g.setColour(activeColor);g.fillRoundedRectangle(cell,5);g.setColour(Colours::black);
-                    Path tick;tick.startNewSubPath(cell.getCentreX()-5,cell.getCentreY());tick.lineTo(cell.getCentreX()-1,cell.getCentreY()+4);tick.lineTo(cell.getCentreX()+6,cell.getCentreY()-4);g.strokePath(tick,PathStrokeType(1.8f));
+                auto cell=juce::Rectangle<float>((float)(col*columnWidth+2),(float)(row*rowHeight+2),(float)(columnWidth-4),(float)(rowHeight-4));
+                if(selection && selection->contains({row, col}) && (enabled(row, col) || active(row, col)) ? connects : active(row,col)){
+                    g.setColour(activeColor);g.fillRoundedRectangle(cell,3);g.setColour(Colours::black);
+                    Path tick;tick.startNewSubPath(cell.getCentreX()-4,cell.getCentreY());tick.lineTo(cell.getCentreX()-1,cell.getCentreY()+3);tick.lineTo(cell.getCentreX()+5,cell.getCentreY()-3);g.strokePath(tick,PathStrokeType(1.8f));
                 }else if(enabled(row,col)){
-                    g.setColour(Colours::white.withAlpha(col==hotColumn?.11f:.035f));g.fillRoundedRectangle(cell,5);
-                    g.setColour(Colours::white.withAlpha(.1f));g.drawRoundedRectangle(cell,5,.5f);
+                    g.setColour(Colours::white.withAlpha(col==hotColumn?.11f:.035f));g.fillRoundedRectangle(cell,3);
+                    g.setColour(Colours::white.withAlpha(.1f));g.drawRoundedRectangle(cell,3,.5f);
                 }else {g.setColour(Colours::white.withAlpha(.12f));g.drawLine(cell.getCentreX()-3,cell.getCentreY()+3,cell.getCentreX()+3,cell.getCentreY()-3);}
-                if(row==hotRow&&col==hotColumn){g.setColour(activeColor);g.drawRoundedRectangle(cell,5,1.4f);}
+                if(row==hotRow&&col==hotColumn){g.setColour(activeColor);g.drawRoundedRectangle(cell,3,1.4f);}
             }
         }
     }
   public:
     explicit MatrixPatchPanel(Session& value):session(value){
         addAndMakeVisible(viewport);viewport.setViewedComponent(&body,false);viewport.setScrollBarsShown(true,true);viewport.setScrollBarThickness(6);
-        addAndMakeVisible(search);search.setTextToShowWhenEmpty(localization::translate("Search tracks"),Colours::grey);search.setFont(theme::font(13));
+        addAndMakeVisible(search);search.setTextToShowWhenEmpty(localization::translate("Search tracks"),Colours::grey);search.setFont(theme::font(11));
         search.setColour(TextEditor::backgroundColourId,Colour(0xff141517));search.onTextChange=[this]{refresh();};
         addChildComponent(tip);refresh();startTimerHz(5);
     }
     ~MatrixPatchPanel() override {stopTimer();viewport.setViewedComponent(nullptr,false);}
     void resized() override {
         left=std::min(labelWidth,std::max(120,roundToInt(getWidth()*.3f)));
-        search.setBounds(std::max(left,getWidth()-246),22,226,32);
-        viewport.setBounds(left,top+headerHeight,std::max(0,getWidth()-left-16),std::max(0,getHeight()-top-headerHeight-44));
+        search.setBounds(std::max(left,getWidth()-190),12,174,26);
+        viewport.setBounds(left,top+headerHeight,std::max(0,getWidth()-left-16),std::max(0,getHeight()-top-headerHeight-31));
         body.setSize(std::max(viewport.getMaximumVisibleWidth(),(int)columns.size()*columnWidth),std::max(viewport.getMaximumVisibleHeight(),(int)rows.size()*rowHeight));
     }
     void paint(Graphics& g) override {
-        g.fillAll(Colour(0xff1e1f21));g.setColour(Colours::white);g.setFont(theme::semiboldFont(22));g.drawText("Matrix Patch",20,16,std::max(1,search.getX()-36),28,Justification::centredLeft);
-        auto* device=session.audio.devices.getCurrentAudioDevice();g.setFont(theme::font(12));g.setColour(Colours::grey);
-        g.drawText(device?device->getName():localization::translate("No output device"),20,48,std::max(1,search.getX()-36),20,Justification::centredLeft);
+        g.fillAll(Colour(0xff1e1f21));g.setColour(Colours::white);g.setFont(theme::semiboldFont(15));g.drawText("Matrix Patch",16,7,std::max(1,search.getX()-32),19,Justification::centredLeft);
+        auto* device=session.audio.devices.getCurrentAudioDevice();g.setFont(theme::font(10));g.setColour(Colours::grey);
+        g.drawText(device?device->getName():localization::translate("No output device"),16,25,std::max(1,search.getX()-32),14,Justification::centredLeft);
         g.drawText(localization::translate("Sources"),28,top+headerHeight-30,left-40,24,Justification::centredLeft);
         g.drawText(localization::translate(String::fromUTF8("Destinations →")),28,top+12,left-40,24,Justification::centredLeft);
         const int xOffset=viewport.getViewPositionX(),yOffset=viewport.getViewPositionY();
@@ -195,9 +259,9 @@ class MatrixPatchPanel final : public Component, private Timer {
             for(int col=0;col<(int)columns.size();++col){const int x=left+col*columnWidth-xOffset; if(x+columnWidth<left||x>=viewport.getRight())continue;
                 const auto& c=columns[(size_t)col];
                 if(col==hotColumn){g.setColour(Colours::white.withAlpha(.07f));g.fillRect(x,top,columnWidth,headerHeight);}
-                g.setColour(c.color);g.fillRect(x+6,top+headerHeight-5,columnWidth-12,2);g.setFont(theme::semiboldFont(12));g.drawText(c.badge,x+6,top+headerHeight-26,columnWidth-6,18,Justification::centredLeft);
-                Graphics::ScopedSaveState rotated(g);g.addTransform(AffineTransform::rotation(-MathConstants<float>::halfPi).translated((float)x+10,(float)(top+headerHeight-34)));
-                g.setColour(c.available?Colours::white:Colours::grey);g.setFont(theme::font(12));g.drawText(c.name,0,0,headerHeight-42,20,Justification::centredLeft,true);
+                g.setColour(c.color);g.fillRect(x+4,top+headerHeight-4,columnWidth-8,2);g.setFont(theme::semiboldFont(10));g.drawText(c.badge,x+2,top+headerHeight-20,columnWidth-2,15,Justification::centredLeft);
+                Graphics::ScopedSaveState rotated(g);g.addTransform(AffineTransform::rotation(-MathConstants<float>::halfPi).translated((float)x+6,(float)(top+headerHeight-25)));
+                g.setColour(c.available?Colours::white:Colours::grey);g.setFont(theme::font(10));g.drawText(c.name,0,0,headerHeight-30,16,Justification::centredLeft,true);
             }
         }
         {
@@ -205,12 +269,13 @@ class MatrixPatchPanel final : public Component, private Timer {
             for(int row=std::max(0,yOffset/rowHeight);row<std::min((int)rows.size(),(yOffset+viewport.getHeight())/rowHeight+1);++row){
                 const auto& r=rows[(size_t)row];const int y=viewport.getY()+row*rowHeight-yOffset;
                 g.setColour(Colours::white.withAlpha(row==hotRow?.07f:row%2==0?.025f:0.f));g.fillRect(16,y,left-16,rowHeight);
-                g.setColour(r.color);g.fillRect(16,y+6,3,rowHeight-12);g.setColour(Colours::grey);g.setFont(theme::font(12));g.drawText(r.number,28,y+6,34,20,Justification::centredLeft);
-                g.setColour(Colours::white);g.setFont(r.id.empty()?theme::semiboldFont(12):theme::font(12));g.drawText(r.name,64,y+6,left-72,20,Justification::centredLeft,true);
+                g.setColour(r.color);g.fillRect(16,y+4,3,rowHeight-8);g.setColour(Colours::grey);g.setFont(theme::font(10));g.drawText(r.number,25,y,25,rowHeight,Justification::centredLeft);
+                g.setColour(Colours::white);g.setFont(r.id.empty()?theme::semiboldFont(10):theme::font(10));g.drawText(r.name,50,y,left-56,rowHeight,Justification::centredLeft,true);
             }
         }
-        g.setColour(activeColor);g.fillEllipse(20.f,(float)getHeight()-25,7,7);g.setColour(failure.isEmpty()?Colours::grey:Colours::red);g.setFont(theme::font(12));
-        g.drawText(failure.isEmpty()?localization::translate("Click a cell to connect or disconnect"):failure,36,getHeight()-38,getWidth()-56,32,Justification::centredLeft);
+        g.setColour(failure.isEmpty()?Colours::grey:Colours::red);g.setFont(theme::font(11));
+        g.drawText(failure.isEmpty()?(localization::english ? String("Drag along a row or column. Hold Shift and drag right to connect diagonally or left to disconnect.") : String::fromUTF8("Arraste em uma linha ou coluna. Com Shift, arraste para a direita para marcar em diagonal ou para a esquerda para desmarcar.")):failure,
+                   16,getHeight()-24,getWidth()-32,21,Justification::centredLeft);
     }
 };
 } // namespace catlive

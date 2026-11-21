@@ -64,7 +64,6 @@ struct TransportFadeoutSettings: View {
                     .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                 Text("Use the same key or MIDI control again to cancel Fadeout and restore the volumes.")
                     .font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
-                HStack { Spacer(); Button("Close") { (closeRequested ?? closeEditor ?? { dismiss() })() }.keyboardShortcut(.cancelAction) }
             }.padding(22).frame(width: 400).background(JarasTheme.panel)
                 .disabled(mappings.editing != nil || fadeout.run != nil)
             if mappings.editing?.action == .transportFadeout { ControlMappingEditor() }

@@ -50,6 +50,8 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     std::function<void(File)> open, openInNewTab, deleteProject;
     std::function<void(std::vector<File>)> openMultiple;
     void setProjectOpen(bool);
+    void showHome() { selectMode(none); }
+    void showRecents() { selectMode(opening); }
     void setPlaybackRunning(bool value) { playbackRunning = value; updateEnabled(); }
     void beginLoading(const File &);
     void setLoadingCancellation(std::function<void()>);
@@ -58,6 +60,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     bool isLoading() const { return loading; }
     String loadingMessage() const { return loadingStatus.getText(); }
     String loadingFailure() const { return loadingError.getText(); }
+    bool keyPressed(const KeyPress &) override;
 
   private:
     class Action final : public Button {
@@ -88,7 +91,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     Action recording{"REC Multitrack", Action::recording};
     Action package{"Add .ziplive", Action::archive};
     Action back{"Voltar ao projeto", Action::back};
-    TextButton browseButton{localization::translate(String::fromUTF8("Procurar…"))};
+    TextButton browseButton{"Open existing"};
     TextButton multipleButton{localization::translate("Open multiple projects")};
     TextButton cancelLoading{localization::translate("Cancelar")};
     std::function<void()> cancelLoadingAction;

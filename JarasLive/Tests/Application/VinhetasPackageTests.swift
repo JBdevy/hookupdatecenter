@@ -12,17 +12,19 @@ final class VinhetasPackageTests: XCTestCase {
         var library = VinhetasLibrary(); library.selectedPreset = 5; library.midiChannel = 16
         library.padMappings[0] = ControlInput(kind: "midi", label: "Flauta", device: 12, channel: 15, status: 0xb0, number: 22)
         library.presetMappings[5] = ControlInput(kind: "midi", label: "Banco", channel: 15, status: 0x90, number: 77)
-        let bytes = Data([4, 5, 6, 7]); try bytes.write(to: root.appendingPathComponent("shared.wav"))
+        let sharedPath = "Pads/shared.wav"
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Pads"), withIntermediateDirectories: true)
+        let bytes = Data([4, 5, 6, 7]); try bytes.write(to: root.appendingPathComponent(sharedPath))
         for p in 0..<6 {
             library.presets[p].name = "Banco \(p) · Ação"
-            for n in 0..<16 { library.presets[p].pads[n].audioFile = "shared.wav"; library.presets[p].pads[n].volume = Double(n) / 10; library.presets[p].pads[n].gate = n % 2 == 0 }
+            for n in 0..<16 { library.presets[p].pads[n].audioFile = sharedPath; library.presets[p].pads[n].volume = Double(n) / 10; library.presets[p].pads[n].gate = n % 2 == 0 }
         }
         try VinhetasPackage.export(library, directory: root, to: archive)
         let stage = root.appendingPathComponent("Imported")
         var restored = try VinhetasPackage.prepareImport(archive, into: stage)
         let files = try FileManager.default.contentsOfDirectory(atPath: stage.path)
         XCTAssertEqual(files.count, 1); XCTAssertEqual(try Data(contentsOf: stage.appendingPathComponent(files[0])), bytes)
-        for p in 0..<6 { for n in 0..<16 { XCTAssertEqual(restored.presets[p].pads[n].audioFile, files[0]); restored.presets[p].pads[n].audioFile = "shared.wav" } }
+        for p in 0..<6 { for n in 0..<16 { XCTAssertEqual(restored.presets[p].pads[n].audioFile, files[0]); restored.presets[p].pads[n].audioFile = sharedPath } }
         XCTAssertEqual(restored, library)
         // Re-exporting the same destination must replace it atomically.
         try VinhetasPackage.export(library, directory: root, to: archive)

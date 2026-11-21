@@ -1,5 +1,6 @@
 #include "Engine.hpp"
 #include "PlaybackScope.hpp"
+#include "SongPluginTempo.hpp"
 #include "../Songs/TempoEditMap.hpp"
 #include <algorithm>
 #include <cmath>
@@ -544,6 +545,7 @@ void Engine::setProjectTiming(double bpm, int beats, int unit, std::optional<Pro
         for (auto& track : song->tracks) {
             automationTiming::map(track.automationJSON, [&](double time){return time * scale;});
             for (auto& marker : track.programChanges) marker.position *= scale;
+            for (auto& marker : track.chordMarkers) marker.offset *= scale;
         }
         for (auto& track : song->tracks) for (auto& clip : track.clips) {
             const double end = (clip.startTime + clip.duration) * scale;
@@ -842,7 +844,10 @@ void Engine::setMIDIChannel(const ID& id, int channel) {
 }
 void Engine::setInputMonitoring(const ID& id, bool enabled) {
     projectSync::requireWritable();
-    for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) { track.inputMonitoring = enabled; return; }
+    for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
+        if (!track.receivesMain()) track.inputMonitoring = enabled;
+        return;
+    }
     throw std::invalid_argument("Unknown track");
 }
 void Engine::setRecordingChannels(const ID& id, int channel) {
@@ -850,7 +855,7 @@ void Engine::setRecordingChannels(const ID& id, int channel) {
     if(channel < 0 || channel > 2) throw std::invalid_argument("Invalid recording channel mode");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
         if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
-        track.recordingChannels = channel; return;
+        track.recordingChannels = channel == 0 && track.receivesMain() ? 2 : channel; return;
     }
     throw std::invalid_argument("Unknown MIDI track");
 }
@@ -1141,6 +1146,15 @@ void Engine::execute(const Command& c) {
         c.kind==CommandKind::mute || c.kind==CommandKind::solo || c.kind==CommandKind::phase || c.kind==CommandKind::masterMono;
     if (projectSync::internalDepth == 0 && !mixerControl) ++syncRevision_;
     if (!std::isfinite(c.value)) throw std::invalid_argument("Non-finite control value");
+    switch (c.kind) {
+        case CommandKind::editSeek: case CommandKind::seek: case CommandKind::select:
+        case CommandKind::selectRegion: case CommandKind::next: case CommandKind::previous:
+        case CommandKind::pause: case CommandKind::stop: case CommandKind::stopAll:
+        case CommandKind::queueSection: case CommandKind::tempo: case CommandKind::beatsPerBar:
+        case CommandKind::beatUnit: case CommandKind::toggleLoop: case CommandKind::loopStart: case CommandKind::loopEnd:
+            transport_.beatSeek.reset(); break;
+        default: break;
+    }
     if (c.kind == CommandKind::stop || c.kind == CommandKind::stopAll) {
         automaticSectionRuns_.clear(); transport_.automaticSectionNotice.reset(); automaticSectionNoticeRemaining_ = 0;
     }
@@ -1416,6 +1430,29 @@ void Engine::execute(const Command& c) {
     case CommandKind::queue:
         if (std::none_of(project_.songs.begin(), project_.songs.end(), [&](const auto& s) { return s.id == c.target; })) throw std::invalid_argument("Unknown queued song");
         transport_.queue.songId = c.target; break;
+    case CommandKind::queueBeatSeek: {
+        const auto *song = currentSong();
+        if (!song) break;
+        if (!transport_.playing) { execute({CommandKind::editSeek, {}, c.value}); break; }
+        const auto position = transport_.position;
+        const auto destination = std::clamp(c.value, 0., song->duration);
+        const auto tempo = pluginTempoMap(*song);
+        auto boundary = std::min(song->duration, tempo.nextBeatAfter(position));
+        if (transport_.loop.enabled && transport_.loop.start && transport_.loop.end &&
+            *transport_.loop.end > position && *transport_.loop.end < boundary &&
+            !(transport_.multiLoop && !transport_.multiLoop->released)) {
+            const auto firstBeat = tempo.nextBeatAfter(*transport_.loop.start - 1e-8);
+            if (firstBeat <= *transport_.loop.start + 1e-9 || firstBeat > *transport_.loop.end)
+                boundary = *transport_.loop.end;
+        }
+        transport_.editPosition = destination;
+        transport_.beatSeek = BeatSeek{std::max(position, boundary), destination};
+        cancelQueuedSection();
+        break;
+    }
+    case CommandKind::cancelBeatSeek:
+        transport_.beatSeek.reset();
+        break;
     case CommandKind::editSeek:
         if (currentSong()) {
             transport_.editPosition = std::max(0.0, c.value);
@@ -1436,6 +1473,7 @@ void Engine::execute(const Command& c) {
         if (!std::isfinite(c.value) || c.value < 0) throw std::invalid_argument("Invalid loop end");
         transport_.loop.end = c.value; break;
     case CommandKind::escape: {
+        if (transport_.beatSeek) { transport_.beatSeek.reset(); break; }
         // One cancellation per key press: section jump, loop, then song queue
         // together with Auto. Lower-priority actions stay armed until their turn.
         if (transport_.queuedSectionMarkerId) {
@@ -1673,6 +1711,11 @@ void Engine::advance(double elapsed) {
     }
     const auto before = transport_;
     advanceWithoutLiveTracking(elapsed);
+    if (transport_.beatSeek && (!transport_.playing || transport_.songId != before.songId ||
+        transport_.subPlayPromotion != before.subPlayPromotion ||
+        (transport_.sectionJumpSerial != before.sectionJumpSerial && before.beatSeek &&
+         transport_.beatSeek->boundary == before.beatSeek->boundary)))
+        transport_.beatSeek.reset();
     if (transport_.automaticSectionNotice && !transport_.automaticSectionTriggerId && automaticSectionNoticeRemaining_ == 0)
         automaticSectionNoticeRemaining_ = 2;
     if (project_.regionSetlist && project_.regionSetlist->liveEnabled.value_or(false)) recordLivePlayback(before,elapsed);
@@ -1680,6 +1723,42 @@ void Engine::advance(double elapsed) {
 void Engine::advanceWithoutLiveTracking(double elapsed) {
     projectSync::Internal syncTick;
     if (!std::isfinite(elapsed) || elapsed <= 0) return;
+    if (transport_.beatSeek && transport_.playing) {
+        const auto seek = *transport_.beatSeek;
+        if (transport_.loop.enabled && transport_.loop.end && *transport_.loop.end < seek.boundary &&
+            *transport_.loop.end > transport_.position && !(transport_.multiLoop && !transport_.multiLoop->released)) {
+            const double untilWrap = *transport_.loop.end - transport_.position;
+            if (elapsed >= untilWrap) {
+                const auto songID = transport_.songId;
+                transport_.beatSeek.reset();
+                advanceContinuous(untilWrap);
+                if (const auto *song = currentSong(); song && transport_.playing && songID == transport_.songId) {
+                    const auto beat = pluginTempoMap(*song).nextBeatAfter(transport_.position);
+                    transport_.beatSeek = BeatSeek{std::min(beat, transport_.loop.end.value_or(beat)), seek.destination};
+                }
+                advanceWithoutLiveTracking(elapsed - untilWrap);
+                return;
+            }
+        }
+        const double until = std::max(0., seek.boundary - transport_.position);
+        if (elapsed + 1e-9 >= until) {
+            transport_.beatSeek.reset();
+            if (transport_.loop.enabled && transport_.loop.start && transport_.loop.end &&
+                (seek.destination < *transport_.loop.start || seek.destination >= *transport_.loop.end))
+                transport_.loop = {};
+            transport_.queuedRegionId.reset(); transport_.queuedPlaylistEntryId.reset(); autoRegionQueue_ = false;
+            transport_.exclusivePlaybackRegionId.reset();
+            TimelineMarker destination;
+            destination.position = seek.destination;
+            if (until > 0) advanceContinuous(until, &destination);
+            else {
+                execute({CommandKind::seek, {}, seek.destination});
+                ++transport_.sectionJumpSerial;
+            }
+            advanceWithoutLiveTracking(std::max(0., elapsed - until));
+            return;
+        }
+    }
     // A delayed UI tick can enter and leave an entire region from empty space.
     // Visit its entrance before applying STOP, so the same queue/Subplay/loop
     // rules run as with ordinary short ticks. Consume each head's time once.
@@ -1993,6 +2072,10 @@ void Engine::setTrackRouting(const std::vector<std::pair<ID,TrackRouting>>& rout
         }
         for (const auto& song : project_.songs) validateRouting(song);
     } catch (...) {for (auto it=previous.rbegin();it!=previous.rend();++it)it->first->routing=it->second;throw;}
+    for (const auto& value : previous) if (value.first->receivesMain()) {
+        value.first->inputMonitoring = false;
+        if (value.first->recordingChannels == 0) value.first->recordingChannels = 2;
+    }
 }
 }
 

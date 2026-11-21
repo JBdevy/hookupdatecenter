@@ -21,6 +21,7 @@ clip = scroll[start:scroll.index('\n#endif', start)]
 start = scroll.index('final class NativeTimelinePinnedView: NSView')
 pin = scroll[start:scroll.index('\n#endif', start)]
 grid = Path('Apple/Shared/TimelineGridView.swift').read_text()
+head = grid[grid.index('private let markerLaneHeight:'):grid.index('struct TimelineHeaderBands')]
 start = grid.index('/// Moving needles update Core Animation layers')
 layer = grid[start:grid.index('private struct TimelineCursorAppearance<', start)].rsplit('#endif', 1)[0]
 models = Path('Application/Project/ProjectModels.swift').read_text()
@@ -77,7 +78,7 @@ tick = producer[tick_start:producer.index('    private var tempoControlRegion:',
 auto_fader = Path('Tests/Apple/NativeTimelineNeedlesAutoFaderTests.swift').read_text().replace('__PRODUCTION_FLAGS__', flags).replace('__PRODUCTION_GETTER__', getter).replace('__PRODUCTION_TICK__', tick)
 Path(sys.argv[1]).write_text('import AppKit\nimport SwiftUI\nimport Combine\n' +
     stub_track + transport + '\n' + multi + '\n' + diagnostics + '\n' + native + '\n' + clip + '\n' + pin + '\n' +
-    layer + '\n' + stubs + '\n' + Path('Tests/Apple/NativeTimelineNeedlesTests.swift').read_text() +
+    head + '\n' + layer + '\n' + stubs + '\n' + Path('Tests/Apple/NativeTimelineNeedlesTests.swift').read_text() +
     Path('Tests/Apple/NativeTimelineNeedlesCadenceTests.swift').read_text() + auto_fader)
 PY
 python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"

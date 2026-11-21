@@ -24,6 +24,6 @@ struct TrackMeterState {
     std::atomic<float> peak{0};
     PeakHold held;
     std::array<std::atomic<float>, 2> levels{};
-    std::atomic<float> fxInput{0}, fxOutput{0};
+    std::atomic<float> fxInput{0}, fxOutput{0}, gainReduction{-1};
 };
 }

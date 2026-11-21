@@ -58,7 +58,7 @@ private struct MIDIEditor: View {
                     Text(row?.name ?? "MIDI").fontWeight(.semibold).lineLimit(1)
                     Text(clip.name).foregroundStyle(JarasTheme.secondary).lineLimit(1)
                     Spacer()
-                    Button("FX da pista") { if let row { FXWindows.shared.open(show: show, track: row.id, effect: "Chain", language: UserDefaults.standard.string(forKey:"jaras.language") ?? "pt") } }
+                    Button("FX da pista") { if let row { show.showTrackFocus(row.id) } }
                     Button { show.undo() } label: { Image(systemName:"arrow.uturn.backward") }.jarasHelp("Desfazer")
                     Button { show.redo() } label: { Image(systemName:"arrow.uturn.forward") }.jarasHelp("Refazer")
                     Button(show.snapshot.transport.playing ? "Pausar" : "Play") { show.send(show.snapshot.transport.playing ? .pause : .play) }
@@ -231,6 +231,12 @@ final class MIDIPianoCanvas: NSView {
         guard position.isFinite else{return}
         cursorBeat=bounded*sourceBPM/60;seek(position);needsDisplay=true
     }
+    private static let velocityLabels = (0...127).map { velocity -> (NSAttributedString, CGFloat) in
+        let label = NSAttributedString(string: String(velocity), attributes: [
+            .font: NSFont.jarasSystemFont(ofSize: 10), .foregroundColor: NSColor.black
+        ])
+        return (label, ceil(label.size().width))
+    }
     override func draw(_ dirtyRect:NSRect) {
         let visible=visibleRect
         NSColor(JarasTheme.background).setFill();dirtyRect.fill()
@@ -252,7 +258,8 @@ final class MIDIPianoCanvas: NSView {
             NSColor(JarasTheme.green).withAlphaComponent(selected.contains(note.id) ? 1:0.55+Double(note.velocity)/127*0.25).setFill()
             NSBezierPath(roundedRect:r,xRadius:2,yRadius:2).fill()
             if selected.contains(note.id) {NSColor.white.setStroke();let border=NSBezierPath(rect:r.insetBy(dx:0.5,dy:0.5));border.lineWidth=1;border.stroke()}
-            if r.width>30 {("\(note.pitch)" as NSString).draw(at:CGPoint(x:r.minX+4,y:r.minY+1),withAttributes:[.font:NSFont.jarasSystemFont(ofSize:10),.foregroundColor:NSColor.black])}
+            let (label, width) = Self.velocityLabels[min(127, max(0, note.velocity))]
+            if r.width >= width + 6 { label.draw(at: CGPoint(x: r.minX + 3, y: r.minY + 1)) }
         }
         // Trim boundaries and transport cursor share the same source transform.
         for (value,color) in [(sourceStart,NSColor.yellow),(sourceEnd,NSColor.yellow),(cursorBeat,NSColor(JarasTheme.green))] {

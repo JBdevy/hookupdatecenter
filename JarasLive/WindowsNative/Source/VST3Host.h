@@ -41,6 +41,7 @@ public:
     bool automate(std::uint32_t parameter, double value) noexcept;
     bool consumeEdited() noexcept;
     unsigned latency() const noexcept;
+    float gainReduction() const noexcept;
     bool isInstrument() const noexcept;
     std::unique_ptr<Editor> openEditor(void *parentHWND, std::function<void(int,int)> resize);
 private:

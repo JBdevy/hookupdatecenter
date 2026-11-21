@@ -277,15 +277,17 @@ private final class FXChainEffectNameView: NSTextField {
     private let footer = NSView()
     private let addButton = NSButton()
     private let removeButton = NSButton()
-    private var insertionPanel: NSPanel?
+    private let openLibrary: () -> Void
     private var editor: NSView?
     private var rows: [Row] = []
     private var selection: String?
     private var observation: AnyCancellable?
     private var historyMonitor: Any?
     private var refreshing = false
-    private let sidebarWidth: CGFloat = 190
+    private let singleEffect: String?
+    private var sidebarWidth: CGFloat { singleEffect == nil ? 190 : 0 }
     private static let dragType = NSPasteboard.PasteboardType("com.jaras.fx-order")
+    private static let libraryType = NSPasteboard.PasteboardType(FooterEffectTransfer.libraryType.identifier)
     private(set) var preferredContentSize = NSSize(width: 930, height: 560)
     override var isFlipped: Bool { true }
     private var settings: NativeFXSettings { clip.map(show.clipFXSettings) ?? show.fxSettings(track) }
@@ -294,8 +296,10 @@ private final class FXChainEffectNameView: NSTextField {
         if let clip { return FXModelLookup.clip(clip, in: show.snapshot.project) != nil }
         return track == nil || track.flatMap { FXModelLookup.track($0, in: show.snapshot.project) } != nil
     }
-    init(show: ShowController, track: UUID?, clip: UUID? = nil, effect: String, panel: NSPanel) {
+    init(show: ShowController, track: UUID?, clip: UUID? = nil, effect: String, panel: NSPanel, singlePlugin: Bool = false, openLibrary: @escaping () -> Void = {}) {
         self.show = show; self.track = track; self.clip = clip; self.panel = panel; project = show.snapshot.project.id
+        self.openLibrary = openLibrary
+        singleEffect = singlePlugin ? effect : nil
         super.init(frame: NSRect(origin: .zero, size: preferredContentSize))
         NotificationCenter.default.addObserver(self, selector: #selector(pluginEditorSizeChanged(_:)),
             name: NSNotification.Name("CatLivePluginEditorSizeChanged"), object: nil)
@@ -314,13 +318,16 @@ private final class FXChainEffectNameView: NSTextField {
             guard let self, self.rows.indices.contains(row) else { return }
             self.removeEffect(self.rows[row].effect)
         }
-        list.registerForDraggedTypes([Self.dragType]); list.setDraggingSourceOperationMask(.move, forLocal: true)
+        list.registerForDraggedTypes(clip == nil ? [Self.dragType] : [Self.dragType, Self.libraryType])
+        list.setDraggingSourceOperationMask(.move, forLocal: true)
+        if clip != nil { registerForDraggedTypes([Self.libraryType]) }
         scroll.documentView = list; scroll.hasVerticalScroller = false; scroll.hasHorizontalScroller = false
         scroll.drawsBackground = false; scroll.automaticallyAdjustsContentInsets = false
         addButton.title = JarasLocalization.string("Add"); addButton.bezelStyle = .rounded; addButton.target = self; addButton.action = #selector(addEffect)
         removeButton.title = JarasLocalization.string("Remove"); removeButton.bezelStyle = .rounded; removeButton.target = self; removeButton.action = #selector(removeSelectedEffect)
         footer.addSubview(addButton); footer.addSubview(removeButton)
         addSubview(scroll); addSubview(editorArea); addSubview(footer)
+        scroll.isHidden = singlePlugin; footer.isHidden = singlePlugin
         presetBar = FXPresetBar(read: { [weak self] in self?.settings ?? NativeFXSettings() }, capture: { [weak self] effect in
             guard let self, self.targetIsCurrent else { throw ProjectError.invalid("Effect no longer exists") }
             var value = self.settings
@@ -370,12 +377,14 @@ private final class FXChainEffectNameView: NSTextField {
         addButton.frame = NSRect(x: 6, y: 6, width: 84, height: 28)
         removeButton.frame = NSRect(x: 96, y: 6, width: 88, height: 28)
         presetBar.frame = NSRect(x: sidebarWidth, y: 0, width: max(1, bounds.width - sidebarWidth), height: 36)
-        editorArea.frame = NSRect(x: sidebarWidth, y: 36, width: max(1, bounds.width - sidebarWidth), height: max(0, bounds.height - 36))
+        let top: CGFloat = presetBar.isHidden ? 0 : 36
+        editorArea.frame = NSRect(x: sidebarWidth, y: top, width: max(1, bounds.width - sidebarWidth), height: max(0, bounds.height - top))
         editor?.frame = editorArea.bounds
     }
     private func refresh(_ settings: NativeFXSettings, preferred: String? = nil) {
         guard targetIsCurrent else { return }
-        let effectKeys = clip == nil ? settings.effectKeys : settings.clipEffectKeys
+        let allEffects = clip == nil ? settings.effectKeys : settings.clipEffectKeys
+        let effectKeys = singleEffect.map { allEffects.contains($0) ? [$0] : [] } ?? allEffects
         let next = effectKeys.map { effect in
             Row(effect: effect, name: settings.externalPlugins?.first(where: { $0.effectKey == effect })?.name
                 ?? (settings.kind(of: effect) == "Instruments" ? InstrumentLibrary.displayName(settings.settings(for: effect).instrumentID) : JarasLocalization.string(settings.kind(of: effect))), enabled: settings.isEnabled(effect))
@@ -386,7 +395,11 @@ private final class FXChainEffectNameView: NSTextField {
             ?? selection.flatMap { value in rows.first(where: { $0.effect == value })?.effect } ?? rows.first?.effect
         removeButton.isEnabled = selected != nil
         presetBar.refresh(effect: selected, settings: settings)
-        guard let selected else { removeEditor(); selection = nil; return }
+        guard let selected else {
+            removeEditor(); selection = nil
+            if singleEffect != nil { panel?.performClose(nil) }
+            return
+        }
         select(selected)
         if let index = rows.firstIndex(where: { $0.effect == selected }) {
             refreshing = true; list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); refreshing = false
@@ -428,11 +441,12 @@ private final class FXChainEffectNameView: NSTextField {
             }
             let kind = settings.kind(of: effect)
             let compactControls = kind == "Delay" || kind == "Reverb"
-            size = NSSize(width: 740, height: compactControls ? 360 : 560)
+            size = NSSize(width: kind == DrummerPadKind.full.rawValue ? 1000 : 740, height: compactControls ? 360 : 560)
             panel?.contentMinSize = NSSize(width: sidebarWidth + 640, height: compactControls ? 340 : 540)
         }
         editor = content; editorArea.addSubview(content)
-        if let panel { panel.contentMinSize.height += 36 }
+        if let panel, !presetBar.isHidden { panel.contentMinSize.height += 36 }
+        needsLayout = true
         fitEditor(size)
         if let index = rows.firstIndex(where: { $0.effect == effect }) {
             refreshing = true; list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); refreshing = false
@@ -446,7 +460,7 @@ private final class FXChainEffectNameView: NSTextField {
     private func fitEditor(_ size: NSSize) {
         guard size.width > 0, size.height > 0, let panel else { return }
         preferredContentSize = NSSize(width: max(panel.contentMinSize.width, size.width + sidebarWidth),
-                                      height: max(panel.contentMinSize.height, size.height + 36))
+                                      height: max(panel.contentMinSize.height, size.height + (presetBar.isHidden ? 0 : 36)))
         var frame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: preferredContentSize))
         frame.origin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY - frame.height)
         if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
@@ -472,8 +486,6 @@ private final class FXChainEffectNameView: NSTextField {
         closed = true
         if let historyMonitor { NSEvent.removeMonitor(historyMonitor); self.historyMonitor = nil }
         observation = nil
-        if let insertionPanel { insertionPanel.parent?.removeChildWindow(insertionPanel); insertionPanel.close() }
-        insertionPanel = nil
         removeEditor()
     }
     func suspendAudioEditor() {
@@ -519,44 +531,27 @@ private final class FXChainEffectNameView: NSTextField {
         refresh(settings)
     }
     @objc private func addEffect() {
-        guard targetIsCurrent else { return }
-        if let insertionPanel, insertionPanel.isVisible { insertionPanel.makeKeyAndOrderFront(nil); return }
-        let insertionTargets: [UUID?]
-        if clip == nil, let track {
-            insertionTargets = show.mixerControlTargets(track).filter { $0.kind == .standard }.map { Optional($0.id) }
-        } else { insertionTargets = [track] }
-        let insert = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 500),
-                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        insert.title = JarasLocalization.string("Insert effect")
-        insert.isFloatingPanel = false
-        insert.hidesOnDeactivate = false
-        insert.contentView = NSHostingView(rootView:
-            FXInsertEditor(show: show, track: track, targets: insertionTargets, clip: clip, inserted: { [weak self] effect in
-                guard let self, self.targetIsCurrent else { return }
-                self.refresh(self.settings, preferred: effect)
-                self.panel?.makeKeyAndOrderFront(nil)
-            }, isActive: { [weak self, weak insert] in
-                self?.targetIsCurrent == true && insert?.isVisible == true
-            }, resize: { [weak insert] height in
-                guard let insert, abs(insert.contentLayoutRect.height - height) > 1 else { return }
-                let center = CGPoint(x: insert.frame.midX, y: insert.frame.midY)
-                insert.setContentSize(NSSize(width: 460, height: height))
-                insert.setFrameOrigin(CGPoint(x: center.x - insert.frame.width / 2, y: center.y - insert.frame.height / 2))
-            }, dismiss: { [weak insert] in insert?.close() })
-                .environment(\.locale, Locale(identifier: UserDefaults.standard.string(forKey: "jaras.language") ?? "en"))
-                .environment(\.openFX, { [weak self] target, effect in
-                    guard let self else { return }
-                    FXWindows.shared.open(show: self.show, track: target, effect: effect, language: UserDefaults.standard.string(forKey: "jaras.language") ?? "en")
-                }).preferredColorScheme(.dark).frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(JarasTheme.panel))
-        let owner = panel ?? window
-        if let owner {
-            insert.setFrameOrigin(CGPoint(x: owner.frame.midX - insert.frame.width / 2,
-                                          y: owner.frame.midY - insert.frame.height / 2))
-            ProjectionWindow.followWorkspaceWindow(insert)
-        } else { insert.center() }
-        insertionPanel = insert
-        insert.makeKeyAndOrderFront(nil)
+        guard targetIsCurrent, clip != nil else { return }
+        openLibrary()
+    }
+    private func libraryTransfer(_ sender: NSDraggingInfo) -> FooterEffectTransfer? {
+        guard targetIsCurrent, clip != nil,
+              let data = sender.draggingPasteboard.data(forType: Self.libraryType),
+              let transfer = try? JSONDecoder().decode(FooterEffectTransfer.self, from: data),
+              transfer.library, transfer.project == project else { return nil }
+        return transfer
+    }
+    private func insertLibraryEffect(_ transfer: FooterEffectTransfer) -> Bool {
+        guard let clip, let key = LibraryEffectInsertion.apply(identity: transfer.effect, presetID: transfer.presetID,
+                                                                to: nil, clip: clip, show: show) else { return false }
+        refresh(settings, preferred: key)
+        return true
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        libraryTransfer(sender) == nil ? [] : .copy
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        libraryTransfer(sender).map(insertLibraryEffect) ?? false
     }
     @objc private func removeSelectedEffect() {
         guard let selection else { return }
@@ -571,10 +566,12 @@ private final class FXChainEffectNameView: NSTextField {
         let item = NSPasteboardItem(); item.setString(rows[row].effect, forType: Self.dragType); return item
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
+        if libraryTransfer(info) != nil { tableView.setDropRow(rows.count, dropOperation: .above); return .copy }
         guard targetIsCurrent, info.draggingSource as? NSTableView === list, info.draggingPasteboard.string(forType: Self.dragType) != nil else { return [] }
         tableView.setDropRow(row, dropOperation: .above); return .move
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+        if let transfer = libraryTransfer(info) { return insertLibraryEffect(transfer) }
         guard info.draggingSource as? NSTableView === list,
               let effect = info.draggingPasteboard.string(forType: Self.dragType) else { return false }
         return moveEffect(effect, to: row)
@@ -585,7 +582,7 @@ private final class FXChainEffectNameView: NSTextField {
         let target = rows.indices.contains(row) ? rows[row].effect : nil
         if let clip {
             guard let moved = show.reorderClipFX(clip, effect: effect, before: target) else { return false }
-            refresh(settings, preferred: moved)
+            refresh(settings, preferred: selection == effect ? moved : selection)
         } else { show.reorderFX(track, effect: effect, before: target) }
         return true
     }

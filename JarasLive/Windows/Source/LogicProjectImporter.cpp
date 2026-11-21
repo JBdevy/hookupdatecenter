@@ -523,7 +523,7 @@ MigratedProject readLogicProject(const File &bundle) {
     uint64 root = roots.count(0x40000) ? 0x40000 : *roots.begin();
     std::vector<const Record *> rows;
     for (auto &r : all)
-        if (r.tag == "karT" && r.kind == 23 && r.owner == root)
+        if (r.tag == "karT" && r.kind == 23 && r.owner == root && r.body.count >= 57)
             rows.push_back(&r);
     std::sort(rows.begin(), rows.end(), [](auto *a, auto *b) { return a->index < b->index; });
     std::map<uint64, size_t> tracks;
@@ -533,7 +533,9 @@ MigratedProject readLogicProject(const File &bundle) {
         int kind = (int)row->body.integer(0, 1);
         if (kind == 3)
             continue;
-        require(kind == 1, migration::message("Logic: unsupported track kind."));
+        // Version 6 kind 10 uses the same arrangement channel and depth fields.
+        require(kind == 1 || (row->version == 6 && kind == 10),
+                migration::message("Logic: unsupported track kind."));
         auto channel = row->body.integer(6);
         int depth = (int)row->body.integer(14, 2);
         jaras::Track track;
@@ -715,7 +717,8 @@ MigratedProject readLogicProject(const File &bundle) {
 }
     struct Marker {
         std::string name;
-        double start, end;
+        double start;
+        std::optional<double> end;
     };
     std::vector<Marker> markers;
     for (auto &r : all)
@@ -729,8 +732,9 @@ MigratedProject readLogicProject(const File &bundle) {
                     auto title = markerNames[event.integer(16)];
                     if (title.isEmpty())
                         title = "Marker " + String(markers.size() + 1);
+                    // Logic uses a length of one tick to extend up to the next marker.
                     markers.push_back({utf8(title), std::max(0., seconds(tick)),
-                                       std::max(0., seconds(tick + length))});
+                                       length > 1 ? std::optional(std::max(0., seconds(tick + length))) : std::nullopt});
 
             } catch (const std::exception &error) { result.warnings.addIfNotAlreadyThere(migration::message("Logic marker ignored: ") + String::fromUTF8(error.what())); }
 }
@@ -739,22 +743,27 @@ MigratedProject readLogicProject(const File &bundle) {
     for (auto &t : song.tracks)
         for (auto &c : t.clips)
             song.duration = std::max(song.duration, c.startTime + c.duration);
-    for (auto &m : markers)
-        song.duration = std::max(song.duration, std::max(m.start, m.end));
+    for (const auto &marker : markers)
+        song.duration = std::max(song.duration, std::max(marker.start, marker.end.value_or(0.)));
     for (auto &p : music)
         song.duration = std::max(song.duration, p.endTime);
+    for (const auto &marker : *song.markers)
+        song.duration = std::max(song.duration, marker.position);
     for (size_t i = 0; i < markers.size(); ++i) {
-        auto &m = markers[i];
-        jaras::TimelineMarker flag;
-        flag.id = uuid();
-        flag.name = m.name;
-        flag.position = m.start;
-        flag.color = 0xc7ab40;
-        song.markers->push_back(flag);
-        double next = i + 1 < markers.size() ? markers[i + 1].start : song.duration,
-               end = std::min(next, m.end > m.start ? m.end : next);
-        if (end > m.start)
-            song.parts.push_back(part(m.name, m.start, end));
+        const auto &marker = markers[i];
+        const double next = i + 1 < markers.size() ? markers[i + 1].start : song.duration;
+        const bool hasExplicitEnd = marker.end && *marker.end > marker.start;
+        const double end = hasExplicitEnd ? *marker.end : next;
+        if (end > marker.start) {
+            song.parts.push_back(part(marker.name, marker.start, end));
+        } else {
+            jaras::TimelineMarker flag;
+            flag.id = uuid();
+            flag.name = utf8(text(marker.name).substring(0, 256));
+            flag.position = marker.start;
+            flag.color = 0xc7ab40;
+            song.markers->push_back(flag);
+        }
     }
     std::sort(music.begin(), music.end(),
               [](auto &a, auto &b) { return a.startTime < b.startTime; });
@@ -765,19 +774,13 @@ MigratedProject readLogicProject(const File &bundle) {
     auto rootsCopy = song.parts;
     std::vector<jaras::TimelineMarker> linked;
     std::set<ID> assigned;
-    for (size_t i = 0; i < rootsCopy.size(); ++i) {
-        auto &rootPart = rootsCopy[i];
-        double next = i + 1 < rootsCopy.size() ? rootsCopy[i + 1].startTime : song.duration;
+    for (const auto &rootPart : rootsCopy) {
         std::vector<jaras::Part> children;
-        for (auto p : music)
-            if (p.startTime >= rootPart.startTime - 1e-6 && p.startTime < rootPart.endTime - 1e-6 &&
-                p.endTime <= next + 1e-6) {
+        for (const auto &p : music)
+            if (!assigned.count(p.id) && p.startTime >= rootPart.startTime && p.endTime <= rootPart.endTime) {
                 assigned.insert(p.id);
                 children.push_back(p);
             }
-        if (children.empty())
-            continue;
-        song.parts[i].endTime = std::max(song.parts[i].endTime, children.back().endTime);
         if (children.size() > 1)
             for (auto p : children) {
                 p.parentRegionID = rootPart.id;
@@ -792,19 +795,15 @@ MigratedProject readLogicProject(const File &bundle) {
                 linked.push_back(m);
             }
     }
-    for (auto p : music)
-        if (!assigned.count(p.id)) {
-            song.parts.push_back(p);
-            jaras::TimelineMarker marker; marker.id=uuid(); marker.name=utf8(text(p.name).substring(0,256));
-            marker.position=p.startTime; marker.color=p.color.value_or(0xc7ab40); linked.push_back(marker);
-        }
+    for (const auto &p : music)
+        if (!assigned.count(p.id)) song.parts.push_back(p);
     if (!music.empty()) {
-        std::vector<jaras::TimelineMarker> tempos;
+        std::vector<jaras::TimelineMarker> tempoMarkers;
         for (const auto &marker : *song.markers) {
-            if (marker.tempoBPM) tempos.push_back(marker); else linked.push_back(marker);
+            if (marker.tempoBPM) tempoMarkers.push_back(marker); else linked.push_back(marker);
         }
         auto flags = migration::VSHookMigration::uniqueFlags(std::move(linked));
-        tempos.insert(tempos.end(), flags.begin(), flags.end()); song.markers=std::move(tempos);
+        tempoMarkers.insert(tempoMarkers.end(), flags.begin(), flags.end()); song.markers=std::move(tempoMarkers);
         migration::VSHookMigration::sortParts(song);
     }
     migration::finish(result);

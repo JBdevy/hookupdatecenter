@@ -655,7 +655,88 @@ static void testQueuedSubplayCancellationAndRequeue() {
     }
 }
 
+static void testBeatSeek() {
+    Project project; project.id = "beat-seek"; project.name = "Beat seek";
+    project.songs = {{"song", "Song", 60, 120, {}, {{"first", "First", 0, 12}, {"second", "Second", 12, 60}}}};
+    TimelineMarker tempo;
+    tempo.id = "tempo"; tempo.name = "Tempo"; tempo.position = .85;
+    tempo.tempoBPM = 90; tempo.tempoBeats = 6; tempo.tempoUnit = 8;
+    project.songs.front().markers = std::vector<TimelineMarker>{tempo};
+    Engine engine; engine.loadProject(project);
+    const auto queue = [&](double at) { engine.execute({CommandKind::queueBeatSeek, {}, at}); };
+    const auto near = [](double a, double b) { return std::abs(a - b) < 1e-8; };
+    queue(.63);
+    expect(!engine.transport().playing && !engine.transport().beatSeek && near(engine.transport().position, .63),
+           "A stopped ruler click should be an ordinary edit seek");
+    engine.execute({CommandKind::play});
+    engine.execute({CommandKind::editSeek, {}, 9});
+    expect(!engine.transport().beatSeek && near(engine.transport().position, .63) && near(engine.transport().editPosition, 9),
+           "Moving the edit cursor in the grid must leave the running transport alone");
+    queue(17);
+    queue(16);
+    auto state = engine.transport();
+    expect(state.beatSeek && near(state.beatSeek->boundary, .85) && near(state.beatSeek->destination, 16) &&
+           near(state.position, .63) && near(state.editPosition, 16),
+           "The last ruler click should arm the next beat while moving only the edit cursor immediately");
+    engine.advance(.21);
+    expect(engine.transport().beatSeek && near(engine.transport().position, .84), "Playback jumped before the beat");
+    engine.advance(.03);
+    state = engine.transport();
+    expect(!state.beatSeek && state.playing && state.regionId == "second" && near(state.position, 16.02) &&
+           near(state.editPosition, 16), "Playback must seek at the beat and consume the rest of the tick at its destination");
+
+    queue(28);
+    state = engine.transport();
+    expect(state.beatSeek && near(state.beatSeek->boundary, .85 + 46. / 3.),
+           "The next beat should follow eighth-note spacing after a meter change");
+    engine.execute({CommandKind::cancelBeatSeek});
+    engine.advance(.5);
+    expect(!engine.transport().beatSeek && near(engine.transport().position, 16.52),
+           "Disabling Edit should cancel a pending seek");
+    queue(32);
+    engine.execute({CommandKind::pause});
+    expect(!engine.transport().beatSeek, "Pause must discard a pending seek");
+
+    Engine loop; loop.loadProject(project);
+    loop.execute({CommandKind::editSeek, {}, 1.25});
+    loop.execute({CommandKind::play});
+    loop.execute({CommandKind::loopStart, {}, .9});
+    loop.execute({CommandKind::loopEnd, {}, 1.3});
+    loop.execute({CommandKind::toggleLoop});
+    loop.execute({CommandKind::queueBeatSeek, {}, 16});
+    loop.advance(.06);
+    state = loop.transport();
+    expect(state.beatSeek && near(state.beatSeek->boundary, .85 + 1. / 3.) && near(state.position, .91),
+           "An off-beat loop wrap should carry the jump to the next audible beat");
+    loop.advance(.3);
+    state = loop.transport();
+    expect(!state.beatSeek && !state.loop.enabled && near(state.position, 16 + .91 + .3 - (.85 + 1. / 3.)),
+           "Seeking out of a loop should leave it at the beat instead of wrapping the new position back");
+}
+
+static void testChordMarkers() {
+    Song song{"chord-song", "Chords", 40, 120, {}, {
+        {"first", "First", 10, 20}, {"second", "Second", 20, 30}, {"third", "Third", 35, 40}
+    }};
+    Track track{"chord-track", "Chords", {"chords"}};
+    track.chordMarkers = {{"b", "first", 5, "G7"}, {"a", "first", 2, "Am7"}, {"c", "second", 0, "Cmaj7"}};
+    song.tracks = {track};
+
+    expect(!chordRegion(song, 9) && !chordRegion(song, 30), "A chord can only be inserted inside a region");
+    expect(!chordAt(song, 11.9), "No chord is displayed until the first marker");
+    expect(chordAt(song, 12)->name == "Am7" && chordAt(song, 19)->name == "G7",
+           "The chord follows the latest marker at or before the needle");
+    expect(chordAt(song, 20)->name == "Cmaj7" && !chordAt(song, 30) && !chordAt(song, 36),
+           "A chord does not carry out of its own region");
+
+    song.parts[0].startTime = 0; song.parts[0].endTime = 10;
+    expect(chordAt(song, 2)->name == "Am7" && !chordAt(song, 12),
+           "Chord markers move with their region");
+}
+
 int main() try {
+    testBeatSeek();
+    testChordMarkers();
     testQueuedSubplayCancellationAndRequeue();
     testRepeatBetweenSectionMarkersAndStop();
     testPlayFromEmptyTimelineTail();
@@ -1672,6 +1753,21 @@ int main() try {
         TrackRouting cycle; cycle.transmitters={std::nullopt,std::nullopt,std::nullopt,"route-0"}; bool rejected=false;
         try { dynamic.setTrackRouting({{"route-5",cycle}}); } catch(...) { rejected=true; }
         expect(rejected && !dynamic.currentSong()->tracks[5].routing, "feedback in any slot is rejected atomically");
+        dynamic.setInputMonitoring("route-5", true);
+        dynamic.setRecordingChannels("route-5", 0);
+        TrackRouting mainCapture;
+        mainCapture.mainReceiveSlot = 0;
+        dynamic.setTrackRouting({{"route-5", mainCapture}});
+        dynamic.setInputMonitoring("route-5", true);
+        expect(dynamic.currentSong()->tracks[5].receivesMain() &&
+            !dynamic.currentSong()->tracks[5].inputMonitoring.value_or(true) &&
+            dynamic.currentSong()->tracks[5].recordingChannels == 2,
+            "Receiving Main records audio and keeps input monitoring locked off");
+        mainCapture.mainReceiveSlot = 10;
+        rejected = false;
+        try { dynamic.setTrackRouting({{"route-5", mainCapture}}); } catch (...) { rejected = true; }
+        expect(rejected && dynamic.currentSong()->tracks[5].routing->mainReceiveSlot == 0,
+            "An invalid Main receive leaves the previous source in place");
         dynamic.setOutputPatches("route-0", {}); expect(dynamic.currentSong()->tracks[0].outputPatches().empty(), "all outputs can be removed");
     }
     {

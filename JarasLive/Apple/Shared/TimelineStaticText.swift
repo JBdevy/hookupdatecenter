@@ -7,13 +7,12 @@ import UIKit
 #endif
 
 /// The ruler's small labels never scale with horizontal zoom. Shape and raster
-/// them once at the window's backing scale, then move the same image with the
+/// them once at the drawing scale, then move the same image with the
 /// timeline. This avoids text layout and glyph drawing on every zoom frame.
 final class TimelineStaticText: NSObject {
-    // Same green as the native timeline/setlist scroll knobs (#54FF93).
-    private static let rulerInk = CGColor(srgbRed: 84.0 / 255, green: 1, blue: 147.0 / 255, alpha: 1)
-    static let rulerColor = Color(.sRGB, red: 84.0 / 255, green: 1, blue: 147.0 / 255, opacity: 1)
-    enum Style: Int { case barNumber, regionIdentifier }
+    private static let rulerInk = CGColor(gray: 1, alpha: 1)
+    static let rulerColor = Color.white
+    enum Style: Int { case barNumber, regionIdentifier, timelineNumber, tempoMarker }
     private static let cache: NSCache<NSString, TimelineStaticText> = {
         let value = NSCache<NSString, TimelineStaticText>()
         value.countLimit = 4096
@@ -23,17 +22,18 @@ final class TimelineStaticText: NSObject {
     let image: CGImage
     let size: CGSize
     let width: CGFloat
-    private let scale: CGFloat
+    let rasterScale: CGFloat
 
     private init?(text: String, style: Style, scale: CGFloat) {
+        let fontSize: CGFloat = style == .timelineNumber ? 13 : 9
         #if os(macOS)
-        let font = NSFont.jarasMonospacedSystemFont(ofSize: 9, weight: style == .regionIdentifier ? .semibold : .medium)
+        let font = NSFont.jarasMonospacedSystemFont(ofSize: fontSize, weight: style == .barNumber ? .medium : .semibold)
         #else
-        let font = UIFont.monospacedSystemFont(ofSize: 9, weight: style == .regionIdentifier ? .semibold : .medium)
+        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: style == .barNumber ? .medium : .semibold)
         #endif
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
             kCTFontAttributeName as NSAttributedString.Key: font,
-            kCTForegroundColorAttributeName as NSAttributedString.Key: style == .barNumber ? Self.rulerInk : CGColor(gray: 1, alpha: 1)
+            kCTForegroundColorAttributeName as NSAttributedString.Key: style == .regionIdentifier ? CGColor(gray: 0, alpha: 1) : Self.rulerInk
         ]))
         var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
         width = ceil(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
@@ -43,16 +43,26 @@ final class TimelineStaticText: NSObject {
             bytesPerRow: pixelWidth * 4, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         bitmap.scaleBy(x: scale, y: scale)
+        bitmap.setAllowsAntialiasing(true)
         bitmap.setShouldAntialias(true)
         bitmap.setShouldSmoothFonts(false)
         bitmap.textPosition = CGPoint(x: 1, y: size.height - ascent)
         CTLineDraw(line, bitmap)
         guard let image = bitmap.makeImage() else { return nil }
-        self.image = image; self.size = size; self.scale = scale
+        self.image = image; self.size = size; self.rasterScale = scale
+    }
+
+    static func rasterScale(for displayScale: CGFloat) -> CGFloat {
+        #if os(macOS)
+        let minimum: CGFloat = 2
+        #else
+        let minimum: CGFloat = 1
+        #endif
+        return displayScale.isFinite ? min(4, max(minimum, displayScale)) : minimum
     }
 
     static func label(_ text: String, style: Style, displayScale: CGFloat) -> TimelineStaticText? {
-        let scale = displayScale.isFinite ? min(4, max(1, displayScale)) : 1
+        let scale = rasterScale(for: displayScale)
         let key = "\(style.rawValue)|\(scale)|\(text)" as NSString
         if let label = cache.object(forKey: key) { return label }
         guard let label = TimelineStaticText(text: text, style: style, scale: scale) else { return nil }
@@ -62,6 +72,6 @@ final class TimelineStaticText: NSObject {
 
     func draw(at point: CGPoint, trailing: Bool = false, context: inout GraphicsContext) {
         let origin = CGPoint(x: (trailing ? point.x - width : point.x) - 1, y: point.y)
-        context.draw(Image(decorative: image, scale: scale), in: CGRect(origin: origin, size: size))
+        context.draw(Image(decorative: image, scale: rasterScale).interpolation(.high), in: CGRect(origin: origin, size: size))
     }
 }

@@ -333,7 +333,7 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
             IpadCompactModal { ItemNormalizationEditor(show: show, documents: documents, items: audioIDs, close: { normalize = false }) }
         } else if fx {
             IpadCompactModal(preferredSize: CGSize(width: 980, height: 640)) {
-                IpadStandaloneFXManager(show: show, track: nil, clip: item, targets: [], close: { fx = false })
+                IpadStandaloneFXManager(show: show, clip: item, close: { fx = false })
             }
         } else if exporting, let song = show.current {
             IpadCompactModal(preferredSize: CGSize(width: 540, height: 480)) {

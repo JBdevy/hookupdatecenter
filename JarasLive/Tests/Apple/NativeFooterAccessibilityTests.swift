@@ -19,7 +19,7 @@ private struct FooterAXActions: View {
             Text("Native Locale \(locale.identifier)")
             Button("FX") { openFX(nil, "EQ") }.accessibilityLabel("Native FX")
             Button("Edit track") {
-                editTrackDetails(TrackDetailsEditRequest(project: UUID(), tracks: [], name: "Track", color: 0, nameEditable: true))
+                editTrackDetails(TrackDetailsEditRequest(project: UUID(), tracks: [], name: "Track", color: 0))
             }.accessibilityLabel("Native Edit track")
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }

@@ -12,6 +12,7 @@ class DragDivider final : public Component, private Timer {
     std::function<void(int)> moved, scrollTo;
     std::function<ScrollMetrics()> scrollMetrics;
     void setThinRail(bool value) { thinRail=value;repaint(); }
+    void setRailVisible(bool value) { railVisible=value;repaint(); }
     void setScrollRailVisible(bool value) { scrollRailVisible=value;repaint(); }
     void setCoalescedResize(bool value) { coalescedResize=value; }
     void refreshScroll() {
@@ -65,6 +66,7 @@ class DragDivider final : public Component, private Timer {
     void mouseEnter(const MouseEvent &) override { repaint(); }
     void mouseExit(const MouseEvent &) override { repaint(); }
     void paint(Graphics &g) override {
+        if (!railVisible) return;
         g.setColour(Colour::fromFloatRGBA(.18f,.18f,.18f,1));
         if(alongX) {
             const float width=thinRail?2.f:4.f;
@@ -96,28 +98,13 @@ class DragDivider final : public Component, private Timer {
     std::optional<int> pendingResize,lastResize;
     enum class Axis { pending, resize, scroll };
     Axis axis=Axis::pending;
-    bool alongX,thinRail=false,scrollRailVisible=true; Point<int> origin; ScrollMetrics metrics;
+    bool alongX,thinRail=false,scrollRailVisible=true,railVisible=true; Point<int> origin; ScrollMetrics metrics;
     int initialScroll=0;float scrollPerPoint=0;
     juce::Rectangle<float> thumbBounds() const {
         const float height=std::max(0,getHeight()-4),width=std::min(thinRail?2:6,getWidth());
         const float thumb=std::min(height,std::max(24.f,height*metrics.viewport/std::max(1,metrics.document)));
         const float fraction=jlimit(0.f,1.f,(float)metrics.offset/std::max(1,metrics.document-metrics.viewport));
         return {getWidth()/2.f-width/2,2+(height-thumb)*fraction,width,thumb};
-    }
-};
-class SongDisplayLabel final : public Label {
-  public:
-    void paint(Graphics &g) override {
-        g.fillAll(theme::display);
-        const auto text = getText();
-        const auto heading = text.upToFirstOccurrenceOf(String::fromUTF8("›"), false, false).trim();
-        const auto song = text.fromFirstOccurrenceOf(String::fromUTF8("›"), false, false).trim();
-        g.setFont(theme::font(10, true, true)); g.setColour(theme::secondary);
-        const auto width = std::min(getWidth() / 2, (int)std::ceil(GlyphArrangement::getStringWidth(g.getCurrentFont(), heading)) + 16);
-        g.drawText(heading, 8, 0, std::max(0, width - 16), getHeight(), Justification::centredLeft);
-        g.drawText(String::fromUTF8("›"), width, 0, 10, getHeight(), Justification::centred);
-        g.setFont(theme::semiboldFont(12)); g.setColour(findColour(Label::textColourId));
-        g.drawFittedText(song, width + 15, 0, std::max(0, getWidth() - width - 23), getHeight(), Justification::centredLeft, 1, .6f);
     }
 };
 // The footer previews only a later child of the current unified region.

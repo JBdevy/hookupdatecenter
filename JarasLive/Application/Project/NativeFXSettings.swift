@@ -172,6 +172,41 @@ public struct NativeGateSettings: Codable, Equatable, Sendable {
         else { throw ProjectError.invalid("Invalid gate settings") }
     }
 }
+public enum NativeCreativeEffect: String, CaseIterable, Sendable {
+    case chorus = "Chorus", phaser = "Phaser", amp = "Amp", divisionGate = "Gate Divisor", softClipper = "Soft Clipper"
+
+    public struct Parameter: Sendable {
+        public let key: String
+        public let title: String
+        public let range: ClosedRange<Double>
+        public let initial: Double
+        public let unit: String
+        init(_ key: String, _ title: String, _ range: ClosedRange<Double>, _ initial: Double, _ unit: String) {
+            self.key = key; self.title = title; self.range = range; self.initial = initial; self.unit = unit
+        }
+    }
+
+    public var parameters: [Parameter] {
+        switch self {
+        case .chorus: return [
+            .init("rate", "Rate", 0.05...8, 0.8, "Hz"), .init("depth", "Depth", 0...10, 3, "ms"),
+            .init("mix", "Mix", 0...100, 40, "%")]
+        case .phaser: return [
+            .init("rate", "Rate", 0.05...8, 0.4, "Hz"), .init("depth", "Depth", 0...100, 70, "%"),
+            .init("feedback", "Feedback", 0...85, 27, "%"), .init("mix", "Mix", 0...100, 50, "%")]
+        case .amp: return [
+            .init("drive", "Drive", 0...36, 12, "dB"), .init("tone", "Tone", 0...100, 55, "%"),
+            .init("output", "Output", -24...12, -6, "dB"), .init("mix", "Mix", 0...100, 100, "%")]
+        case .softClipper: return [
+            .init("drive", "Drive", 0...24, 0, "dB"), .init("ceiling", "Ceiling", -24...0, -0.1, "dB"),
+            .init("softness", "Softness", 1...100, 40, "%")]
+        case .divisionGate: return [
+            .init("division", "Division", 2...32, 16, ""), .init("depth", "Depth", 0...100, 100, "%"),
+            .init("smoothing", "Smoothing", 0.2...30, 4, "ms"), .init("steps", "Steps", 0...65535, 0x5b5b, "")]
+        }
+    }
+}
+
 public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instances: [NativeFXInstance]?
 
@@ -179,8 +214,72 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public var instrumentID: String?
     public var instrumentParameters: InstrumentParameters?
     public var inserted: [String] = []
-    public static let order = ["Instruments", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatLive Trigger", "Cat Gate"]
+    public static let order = ["Instruments", "Arpeggiator", "EQ", "Compressor", "Pitch", "Delay", "Reverb", "Limiter", "CatLive Trigger", "Cat Gate"] + DrummerPadKind.allCases.map(\.rawValue) + NativeCreativeEffect.allCases.map(\.rawValue)
     public static let stemSeparator = "CatStemSeparation 5"
+    public var drummer16: DrummerPadKit?
+    public var drummer48: DrummerPadKit?
+    public var drummer16Enabled: Bool?
+    public var drummer48Enabled: Bool?
+    public func drumKit(_ kind: DrummerPadKind) -> DrummerPadKit {
+        (kind == .compact ? drummer16 : drummer48) ?? DrummerPadKit(kind)
+    }
+    public mutating func setDrumKit(_ kit: DrummerPadKit, for kind: DrummerPadKind) {
+        if kind == .compact { drummer16 = kit } else { drummer48 = kit }
+    }
+    public var arpeggiatorEnabled: Bool?
+    public var chorusEnabled: Bool?
+    public var phaserEnabled: Bool?
+    public var ampEnabled: Bool?
+    public var softClipperEnabled: Bool?
+    public var softClipper: [String: Double]?
+    public var divisionGateEnabled: Bool?
+    public var chorus: [String: Double]?
+    public var phaser: [String: Double]?
+    public var amp: [String: Double]?
+    public var divisionGate: [String: Double]?
+    public var eqChannels: Int?
+    public var compressorChannels: Int?
+    public var delayChannels: Int?
+    public var reverbChannels: Int?
+
+    public var hasCreativeEffects: Bool { NativeCreativeEffect.allCases.contains { isEnabled($0.rawValue) } }
+    public func creativeParameters(_ effect: NativeCreativeEffect) -> [String: Double]? {
+        switch effect {
+        case .chorus: return chorus
+        case .phaser: return phaser
+        case .amp: return amp
+        case .softClipper: return softClipper
+        case .divisionGate: return divisionGate
+        }
+    }
+    public mutating func setCreativeParameters(_ values: [String: Double]?, for effect: NativeCreativeEffect) {
+        switch effect {
+        case .chorus: chorus = values
+        case .phaser: phaser = values
+        case .amp: amp = values
+        case .softClipper: softClipper = values
+        case .divisionGate: divisionGate = values
+        }
+    }
+    public func channels(for effect: String) -> Int {
+        switch effect {
+        case "EQ": return eqChannels ?? 3
+        case "Compressor": return compressorChannels ?? 3
+        case "Delay": return delayChannels ?? 3
+        case "Reverb": return reverbChannels ?? 3
+        default: return 3
+        }
+    }
+    public mutating func setChannels(_ mask: Int, for effect: String) {
+        let value = mask == 3 ? nil : mask
+        switch effect {
+        case "EQ": eqChannels = value
+        case "Compressor": compressorChannels = value
+        case "Delay": delayChannels = value
+        case "Reverb": reverbChannels = value
+        default: break
+        }
+    }
     public var triggerEnabled: Bool?
     public var trigger: NativeTriggerSettings?
     public var triggerParameters: NativeTriggerSettings {
@@ -199,6 +298,10 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
         get { stemMix ?? NativeStemMix() }
         set { stemMix = newValue }
     }
+    // A non-nil list distinguishes a bypassed strip, even when it had no active inserts.
+    public var mixerBypassRestore: [String]?
+    public var bypassAppliedBySession: Bool?
+    public var sessionFXBypassed: Bool?
     public var eqEnabled = false
     public var bands = [EQBand(frequency: 30, type: "lowCut"), EQBand(frequency: 200), EQBand(frequency: 1000), EQBand(frequency: 5000), EQBand(frequency: 18000, type: "highCut")]
     public var instrumentBypassed: Bool?
@@ -212,6 +315,8 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     }
     public var pitchEnabled: Bool?
     public var pitchSemitones: Double?
+    public var pitchFormant: Double?
+    public var formantSemitones: Double { min(12, max(-12, pitchFormant ?? 0)) }
     public var semitones: Double { pitchSemitones ?? 0 }
     public var delayEnabled = false
     public var delayTime = 0.25, feedback = 25.0, delayMix = 20.0
@@ -222,12 +327,26 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
     public init() {}
     public func validateForClip() throws {
         try validate()
-        guard inserted.allSatisfy({ key in Self.order.dropFirst().contains(key) || key == Self.stemSeparator || externalPlugins?.contains(where: { $0.effectKey == key }) == true || instances?.contains(where: { $0.effectKey == key }) == true }),
-              instrumentID == nil, instrumentParameters == nil, instrumentBypassed == nil
-        else { throw ProjectError.invalid("Items support native audio effects and VST3 effects, without native instruments") }
+        if inserted.contains("Instruments") {
+            guard instrumentID?.isEmpty == false else { throw ProjectError.invalid("Invalid instrument") }
+        } else if instrumentID != nil || instrumentParameters != nil || instrumentBypassed != nil {
+            throw ProjectError.invalid("Invalid instrument")
+        }
         for instance in instances ?? [] { try instance.settings.validateForClip() }
     }
     public func validate() throws {
+        for effect in NativeCreativeEffect.allCases {
+            guard let values = creativeParameters(effect) else { continue }
+            for (key, value) in values {
+                guard effect.parameters.first(where: { $0.key == key })?.range.contains(value) == true else {
+                    throw ProjectError.invalid("Invalid FX settings")
+                }
+            }
+        }
+        guard [eqChannels, compressorChannels, delayChannels, reverbChannels]
+            .compactMap({ $0 }).allSatisfy({ (0...3).contains($0) }) else { throw ProjectError.invalid("Invalid FX channel selection") }
+        try drummer16?.validate(.compact)
+        try drummer48?.validate(.full)
         try trigger?.validate()
         try gate?.validate()
         try stemMix?.validate()
@@ -256,7 +375,31 @@ public struct NativeFXSettings: Codable, Equatable, Sendable {
 
 extension NativeFXSettings {
     public var effectKeys: [String] { inserted.filter { kind(of: $0) != Self.stemSeparator } }
+    public var hasDrummerPad: Bool { effectKeys.contains { DrummerPadKind(rawValue: kind(of: $0)) != nil && isEnabled($0) } }
+    public var arpeggiatesMIDI: Bool {
+        effectKeys.contains { kind(of: $0) == "Arpeggiator" && isEnabled($0) }
+    }
     public var allBypassed: Bool { !inserted.isEmpty && inserted.allSatisfy { !isEnabled($0) } }
+    public mutating func setStripBypass(_ on: Bool, fromSession: Bool) {
+        if on {
+            guard mixerBypassRestore == nil else { return }
+            mixerBypassRestore = effectKeys.filter(isEnabled)
+            bypassAppliedBySession = fromSession ? true : nil
+            setAllBypassed(true)
+        } else if let restore = mixerBypassRestore {
+            mixerBypassRestore = nil
+            bypassAppliedBySession = nil
+            for key in restore where inserted.contains(key) { setEnabled(key, enabled: true) }
+        }
+    }
+    public mutating func maintainStripBypass() {
+        guard var restore = mixerBypassRestore else { return }
+        for key in effectKeys where isEnabled(key) {
+            if !restore.contains(key) { restore.append(key) }
+            setEnabled(key, enabled: false)
+        }
+        mixerBypassRestore = restore.filter { inserted.contains($0) }
+    }
     public mutating func setAllBypassed(_ bypassed: Bool) {
         for effect in inserted { setEnabled(effect, enabled: !bypassed) }
     }
@@ -328,12 +471,12 @@ extension NativeFXSettings {
     public func isEnabled(_ effect: String) -> Bool {
         if let instance = instances?.first(where: { $0.effectKey == effect }) { return instance.settings.isEnabled(instance.kind) }
         if let plugin = externalPlugins?.first(where: { $0.effectKey == effect }) { return !plugin.bypassed }
-        switch effect { case "CatLive Trigger": return triggerEnabled == true; case "Cat Gate": return gateEnabled == true; case Self.stemSeparator: return false; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
+        switch effect { case "Drummer Pad 16": return drummer16Enabled == true; case "Drummer Pad 48": return drummer48Enabled == true; case "Arpeggiator": return arpeggiatorEnabled == true; case "Chorus": return chorusEnabled == true; case "Phaser": return phaserEnabled == true; case "Amp": return ampEnabled == true; case "Soft Clipper": return softClipperEnabled == true; case "Gate Divisor": return divisionGateEnabled == true; case "CatLive Trigger": return triggerEnabled == true; case "Cat Gate": return gateEnabled == true; case Self.stemSeparator: return false; case "Instruments": return instrumentID != nil && instrumentBypassed != true; case "EQ": return eqEnabled; case "Compressor": return compressorEnabled; case "Limiter": return limiterEnabled == true; case "Pitch": return pitchEnabled == true; case "Delay": return delayEnabled; case "Reverb": return reverbEnabled; default: return false }
     }
     public mutating func setEnabled(_ effect: String, enabled: Bool) {
         if let index = instances?.firstIndex(where: { $0.effectKey == effect }), let kind = instances?[index].kind { instances?[index].settings.setEnabled(kind, enabled: enabled); return }
         if let index = externalPlugins?.firstIndex(where: { $0.effectKey == effect }) { externalPlugins?[index].bypassed = !enabled; return }
-        switch effect { case "CatLive Trigger": triggerEnabled = enabled; case "Cat Gate": gateEnabled = enabled; case Self.stemSeparator:
+        switch effect { case "Drummer Pad 16": drummer16Enabled = enabled; case "Drummer Pad 48": drummer48Enabled = enabled; case "Arpeggiator": arpeggiatorEnabled = enabled; case "Chorus": chorusEnabled = enabled; case "Phaser": phaserEnabled = enabled; case "Amp": ampEnabled = enabled; case "Soft Clipper": softClipperEnabled = enabled; case "Gate Divisor": divisionGateEnabled = enabled; case "CatLive Trigger": triggerEnabled = enabled; case "Cat Gate": gateEnabled = enabled; case Self.stemSeparator:
             stemSeparatorEnabled = enabled
             // Older projects used CatStem only as an offline editor. Opening
             // them must not silently insert a new high-latency audio processor.
@@ -347,7 +490,16 @@ extension NativeFXSettings {
             next.instances?[index].settings = instance.settings.merging(effect: instance.kind, from: draft.settings(for: effect))
             return next
         }
+        if let creative = NativeCreativeEffect(rawValue: effect) {
+            next.setEnabled(effect, enabled: draft.isEnabled(effect))
+            next.setCreativeParameters(draft.creativeParameters(creative), for: creative)
+            return next
+        }
+        next.setChannels(draft.channels(for: effect), for: effect)
         switch effect {
+        case "Drummer Pad 16": next.drummer16 = draft.drummer16; next.drummer16Enabled = draft.drummer16Enabled
+        case "Drummer Pad 48": next.drummer48 = draft.drummer48; next.drummer48Enabled = draft.drummer48Enabled
+        case "Arpeggiator": next.arpeggiatorEnabled = draft.arpeggiatorEnabled
         case "CatLive Trigger": next.triggerEnabled = draft.triggerEnabled; next.trigger = draft.trigger
         case "Cat Gate": next.gateEnabled = draft.gateEnabled; next.gate = draft.gate
         case Self.stemSeparator: next.stemSeparatorEnabled = draft.stemSeparatorEnabled; next.stemMix = draft.stemMix
@@ -357,7 +509,7 @@ extension NativeFXSettings {
             next.compressorEnabled = draft.compressorEnabled; next.threshold = draft.threshold; next.ratio = draft.ratio
             next.attack = draft.attack; next.release = draft.release; next.makeup = draft.makeup
         case "Limiter": next.limiterEnabled = draft.limiterEnabled; next.limiter = draft.limiter
-        case "Pitch": next.pitchEnabled = draft.pitchEnabled; next.pitchSemitones = draft.pitchSemitones
+        case "Pitch": next.pitchEnabled = draft.pitchEnabled; next.pitchSemitones = draft.pitchSemitones; next.pitchFormant = draft.pitchFormant
         case "Delay": next.delayEnabled = draft.delayEnabled; next.delayTime = draft.delayTime; next.feedback = draft.feedback; next.delayMix = draft.delayMix
         case "Reverb": next.reverbEnabled = draft.reverbEnabled; next.reverbRoom = draft.reverbRoom; next.reverbMix = draft.reverbMix; next.reverbDecay = draft.reverbDecay; next.reverbLowCut = draft.reverbLowCut; next.reverbHighCut = draft.reverbHighCut
         default: break
@@ -377,7 +529,8 @@ public enum EffectPresentation {
         case "Delay": return "CatLive Delay"
         case "Compressor": return "CatLive Compressor"
         case "Limiter": return "CatLive Limiter"
-        default: return "CatLive Instruments"
+        case "Instruments": return "CatLive Instruments"
+        default: return effect
         }
     }
 }

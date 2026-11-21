@@ -29,6 +29,13 @@ public struct ProgramChangeMarker: Codable, Identifiable, Equatable, Sendable {
     public var output: Int? = nil
     public var title: String { name.flatMap { $0.isEmpty ? nil : $0 } ?? "PC \(program + 1)" }
 }
+public struct ChordMarker: Codable, Identifiable, Equatable, Sendable {
+    public static let maximumNameLength = 12
+    public var id: UUID
+    public var regionID: UUID
+    public var offset: Double
+    public var name: String
+}
 public struct ProgramChangeLayout: Equatable, Sendable {
     public var lanes: [UUID: Int] = [:]
     public var count = 1
@@ -41,7 +48,33 @@ public struct ProgramChangeLayout: Equatable, Sendable {
         }
     }
 }
+public enum TrackMixerComponent: Int, CaseIterable, Sendable {
+    case patch = 1, fx = 2, envelope = 4, rec = 8, inputMonitor = 16, mute = 64, solo = 128, phase = 256
+    public static let compactMask = patch.rawValue | fx.rawValue | envelope.rawValue | rec.rawValue
+    public var title: String {
+        switch self {
+        case .patch: return "Patch"
+        case .fx: return "FX"
+        case .envelope: return "Envelope"
+        case .rec: return "Rec"
+        case .inputMonitor: return "Input Monitor"
+        case .mute: return "M"
+        case .solo: return "S"
+        case .phase: return "Phase"
+        }
+    }
+}
 public struct Track: Codable, Identifiable, Equatable, Sendable {
+    public var hiddenMixerComponents: Int? = nil
+    public var supportsMixerComponents: Bool { kind == .standard && role.rawValue != "vinhetas" }
+    public var mixerComponentMask: Int { supportsMixerComponents ? hiddenMixerComponents ?? 0 : 0 }
+    public func showsMixerComponent(_ component: TrackMixerComponent) -> Bool {
+        mixerComponentMask & component.rawValue == 0
+    }
+    public var compactMixerControls: Bool {
+        mixerComponentMask & TrackMixerComponent.compactMask == TrackMixerComponent.compactMask
+    }
+
     /// Applied only by creation paths. Decoded nil/custom colors stay unchanged.
     public static let defaultStandardColor: UInt32 = 0x828282
     public var id: UUID; public var name: String; public var role: TrackRole
@@ -50,7 +83,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     /// Visual row proportion; absent in existing projects means the standard height.
     public var heightScale: Double? = nil
     /// Optional visual identity; unknown future identifiers survive round trips.
-    public var instrumentIcon: String? = nil
+    public var instrumentIcon: String? = "png:Sound Effects/noise"
     public var mute = false, solo = false
     public var output = 1
     public var automation: TrackAutomation?
@@ -59,6 +92,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var midiChannel: Int?
     public var midiOutput: Int?
     public var programChanges: [ProgramChangeMarker]?
+    public var chordMarkers: [ChordMarker]? = nil
     public var programChangeLaneCount: Int { ProgramChangeLayout(programChanges ?? []).count }
     public func acceptsMIDI(status: UInt8) -> Bool {
         status >= 0x80 && status < 0xf0 && (midiChannel == nil || midiChannel == 0 || midiChannel == Int(status & 0x0f) + 1)
@@ -67,11 +101,21 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var stereoLink: TrackStereoLink?
     public var inputPatch: OutputPatch?
     public var inputMonitoring: Bool?
+    public func monitorsInput(armed: Bool) -> Bool {
+        !receivesMain && (inputMonitoring ?? armed)
+    }
+    public func monitorsMIDIInstrument(armed: Bool) -> Bool {
+        !receivesMain && (armed || inputMonitoring == true)
+    }
     public var recordingChannels: Int?
-    public var recordingMode: TrackRecordingMode { TrackRecordingMode(rawValue: recordingChannels ?? 2) ?? .stereo }
+    public var recordingMode: TrackRecordingMode {
+        let mode = TrackRecordingMode(rawValue: recordingChannels ?? 2) ?? .stereo
+        return receivesMain && mode == .midi ? .stereo : mode
+    }
     public var recordingFormat: String?
     public var recordingOutput: Bool? = nil
-    public var recordsOutput: Bool { role.rawValue == "vinhetas" || recordingOutput == true }
+    public var receivesMain: Bool { routing?.mainReceiveSlot != nil }
+    public var recordsOutput: Bool { receivesMain || role.rawValue == "vinhetas" || recordingOutput == true }
     public var recordingPostFader: Bool? = nil
     public var recordingPostFX: Bool? = nil
     public var timecode: TimecodeSettings?
@@ -127,18 +171,27 @@ public enum TrackHeightGeometry {
     public static let minimumScale = 0.1, maximumScale = 10.0
     public static func isValidScale(_ value: Double) -> Bool { value.isFinite && (minimumScale...maximumScale).contains(value) }
     public static func scale(_ value: Double?) -> Double { value.flatMap { isValidScale($0) ? $0 : nil } ?? 1 }
-    public static func laneLimits(count: Int) -> ClosedRange<Double> { count > 1 ? 26...168 : 24...240 }
-    public static func laneHeight(base: Double, scale: Double, count: Int) -> Double {
-        let limits = laneLimits(count: count)
+    public static let minimumLaneHeight = 66.0
+    public static let compactMinimumLaneHeight = 44.0
+    public static func laneLimits(count: Int, compact: Bool = false) -> ClosedRange<Double> {
+        let minimum = compact ? compactMinimumLaneHeight : minimumLaneHeight
+        return count > 1 ? max(26, minimum / Double(count))...168 : minimum...240
+    }
+    public static func laneHeight(base: Double, scale: Double, count: Int, compact: Bool = false) -> Double {
+        let limits = laneLimits(count: count, compact: compact)
         return min(limits.upperBound, max(limits.lowerBound, base * (count > 1 ? 0.7 : 1) * scale))
     }
     /// Stop a shared zoom at the first row limit, keeping all row proportions.
-    public static func globalLimits(scales: [Double], laneCounts: [Int], current: Double = 64) -> ClosedRange<Double> {
-        var lower = 24.0, upper = 240.0
+    public static func globalLimits(scales: [Double], laneCounts: [Int], current: Double = 64, compact: [Bool] = []) -> ClosedRange<Double> {
+        let hasCompact = compact.prefix(scales.count).contains(true)
+        var lower = hasCompact ? Double.infinity : minimumLaneHeight, upper = 240.0
         for (index, scale) in scales.enumerated() {
             let count = laneCounts.indices.contains(index) ? laneCounts[index] : 1
-            let limits = laneLimits(count: count), multiplier = scale * (count > 1 ? 0.7 : 1)
-            lower = max(lower, limits.lowerBound / multiplier)
+            let isCompact = compact.indices.contains(index) && compact[index]
+            let limits = laneLimits(count: count, compact: isCompact), multiplier = scale * (count > 1 ? 0.7 : 1)
+            // Full rows stop at their own floor while compact rows continue to shrink.
+            if !hasCompact { lower = max(lower, limits.lowerBound / multiplier) }
+            else if isCompact { lower = min(lower, limits.lowerBound / multiplier) }
             upper = min(upper, limits.upperBound / multiplier)
         }
         // A malformed combination from another editor still gets bounded rows.
@@ -296,6 +349,19 @@ public struct TimelineMarker: Codable, Identifiable, Equatable, Sendable {
 
 }
 public struct Song: Codable, Identifiable, Equatable, Sendable {
+    /// Limit empty space to 60 hours after the last item or region.
+    public var timelineScrollEnd: Double {
+        var end = 0.0
+        for region in parts where region.endTime.isFinite { end = max(end, region.endTime) }
+        for track in tracks {
+            for item in track.clips {
+                let itemEnd = item.startTime + item.duration
+                if itemEnd.isFinite { end = max(end, itemEnd) }
+            }
+        }
+        return end + 60 * 60 * 60
+    }
+
     /// Complete-project audio export includes leading silence and stops at the
     /// last audio item's end, independently of region or auxiliary-track bounds.
     public var completeAudioExportEnd: Double {
@@ -356,6 +422,22 @@ public struct Song: Codable, Identifiable, Equatable, Sendable {
         }.map(\.endTime).min() ?? .infinity
         let width = min(naturalWidth, (end - position) * scale)
         return width >= 18 ? width : 0
+    }
+    public func chordRegion(at position: Double) -> Part? {
+        guard let id = regionOwner(at: position) else { return nil }
+        return parts.first { $0.id == id && $0.startTime <= position && position < $0.endTime }
+    }
+    public func chord(at position: Double) -> String? {
+        guard tracks.contains(where: { $0.kind == .chords && $0.chordMarkers?.isEmpty == false }),
+              let region = chordRegion(at: position) else { return nil }
+        let offset = position - region.startTime
+        var current: ChordMarker?
+        for track in tracks where track.kind == .chords {
+            for marker in track.chordMarkers ?? [] where marker.regionID == region.id && marker.offset <= offset {
+                if current == nil || marker.offset > current!.offset { current = marker }
+            }
+        }
+        return current?.name
     }
     public var markerRegionEnds: [UUID: Double] {
         var result: [UUID: Double] = [:]
@@ -625,7 +707,8 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
     public var masterSolo: Bool?
     public var masterMono: Bool?
     public var masterPhaseInverted: Bool?
-    public var masterColor: UInt32? = 0x414141
+    public static let defaultMasterColor: UInt32 = 0x414141
+    public var masterColor: UInt32? = Project.defaultMasterColor
     public var masterAutomation: TrackAutomation?
     public var masterFX: NativeFXSettings?
     public var masterPatch: OutputPatch?
@@ -705,6 +788,11 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                         else { throw ProjectError.invalid("Invalid Program Change marker") }
                     }
                 } else if track.programChanges != nil || track.midiOutput != nil { throw ProjectError.invalid("Program Change settings require a Program Change track") }
+                if let chords = track.chordMarkers, !chords.isEmpty {
+                    guard track.kind == .chords, chords.allSatisfy({
+                        $0.offset.isFinite && $0.offset >= 0 && (1...ChordMarker.maximumNameLength).contains($0.name.count)
+                    }), Set(chords.map(\.id)).count == chords.count else { throw ProjectError.invalid("Invalid chord marker") }
+                }
                 guard track.midiOutput == nil || (1...6).contains(track.midiOutput!) else { throw ProjectError.invalid("Invalid MIDI output") }
                 try track.timecode?.validate()
                 guard track.color == nil || track.color! <= 0xffffff else { throw ProjectError.invalid("Invalid track color") }
@@ -874,6 +962,10 @@ public enum ProjectError: LocalizedError { case invalid(String); public var erro
 public struct QueueState: Codable, Equatable, Sendable { public var songId: UUID? }
 public struct LoopState: Codable, Equatable, Sendable { public var enabled: Bool; public var start: Double? = nil; public var end: Double? = nil }
 public struct SubPlayState: Codable, Equatable, Sendable { public var playing: Bool; public var position: Double }
+public struct TransportBeatSeek: Codable, Equatable, Sendable {
+    public var boundary: Double
+    public var destination: Double
+}
 public struct TransportState: Codable, Equatable, Sendable {
     public var playbackStartRegionId: UUID? = nil
     public var subPlaybackStartRegionId: UUID? = nil
@@ -885,6 +977,7 @@ public struct TransportState: Codable, Equatable, Sendable {
     public var automaticSectionNotice: String? = nil
     public var sectionQueueStartedAt: Double?
     public var sectionJumpSerial: UInt64?
+    public var beatSeek: TransportBeatSeek? = nil
     public var multiLoop: MultiLoopPlayback?
     public var ignoreNextAfter: Double?
     public var ignoreNextEnd: Double?
@@ -1003,6 +1096,8 @@ public struct PlaybackSnapshot: Codable, Sendable { public var transport: Transp
 
 /// Interval partitioning: adjacent items share a lane; simultaneous items never do.
 public struct TrackLanes: Equatable {
+    // Imports can round clip boundaries to the nearest audio sample.
+    private static let edgeTolerance = 1.0 / 44_100
     public var lanes: [UUID: Int] = [:]
     public var count: Int = 1
     private var localCounts: [UUID: Int] = [:]
@@ -1018,7 +1113,7 @@ public struct TrackLanes: Equatable {
         // Lay out existing material first. A new take stays below the material
         // it overlaps, even if recording starts before that material begins.
         for clip in ordered where clip.recordingLane == nil {
-            let lane = ends.firstIndex(where: { $0 <= clip.startTime + 1e-9 }) ?? ends.count
+            let lane = ends.firstIndex(where: { $0 <= clip.startTime + Self.edgeTolerance }) ?? ends.count
             if lane == ends.count { ends.append(0) }
             ends[lane] = clip.startTime + clip.duration
             lanes[clip.id] = lane
@@ -1051,7 +1146,7 @@ public struct TrackLanes: Equatable {
             component.removeAll(keepingCapacity: true)
         }
         for clip in ordered {
-            if clip.startTime >= componentEnd - 1e-9 { finishComponent() }
+            if clip.startTime >= componentEnd - Self.edgeTolerance { finishComponent() }
             if component.isEmpty { componentEnd = clip.startTime + clip.duration }
             else { componentEnd = max(componentEnd, clip.startTime + clip.duration) }
             component.append(clip)
@@ -1070,7 +1165,7 @@ public struct TrackLanes: Equatable {
     /// No overlapping item means lane zero, regardless of items elsewhere.
     public func recordingLane(start: Double, duration: Double, clips: [AudioClip]) -> Int {
         let end = start + duration
-        return clips.lazy.filter { $0.startTime < end - 1e-9 && $0.startTime + $0.duration > start + 1e-9 }
+        return clips.lazy.filter { $0.startTime < end - Self.edgeTolerance && $0.startTime + $0.duration > start + Self.edgeTolerance }
             .compactMap { lanes[$0.id] }.max().map { $0 + 1 } ?? 0
     }
 }

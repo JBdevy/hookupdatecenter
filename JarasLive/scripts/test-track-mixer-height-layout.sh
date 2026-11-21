@@ -11,7 +11,7 @@ start=source.index('struct TrackMixerHeightGeometry')
 root.joinpath('layout.swift').write_text('import SwiftUI\n'+source[start:source.index('\n/// Content and environment',start)])
 main=Path('Apple/Shared/MainView.swift').read_text()
 with root.joinpath('layout.swift').open('a') as f:
- f.write('\n'+main[main.index('enum SidebarWidthLimits {'):main.index('private struct WorkspaceProjectIdentity:')])
+ f.write('\n'+main[main.index('enum SidebarWidthLimits {'):main.index('private struct FooterDisplayIdentity:')])
 titleStart=source.index('private struct TrackDragTitle:')
 title=source[titleStart:source.index('\n#endif',titleStart)].replace('private ', '')
 stubs='''
@@ -31,11 +31,16 @@ final class TrackReorderState: ObservableObject {
 final class TrackSelectionRouter {
  static let shared = TrackSelectionRouter()
  var pinnedTracks = Set<UUID>()
+ func addTitle(_ view: TrackDragTitleView) {}
  func handle(_ event: NSEvent) {} ; func perform(track: UUID, event: NSEvent, action: () -> Void) { action() }
 }
 '''
-with root.joinpath('layout.swift').open('a') as f: f.write('\n'+stubs+'\n'+title)
+theme=Path('Apple/Shared/Theme.swift').read_text()
+drawing=theme.index('@MainActor final class NativeScreenDrawing')
+with root.joinpath('layout.swift').open('a') as f:
+ f.write('\nimport AppKit\n'+theme[drawing:theme.index('\n#endif',drawing)]+'\n'+stubs+'\n'+title)
 root.joinpath('main.swift').write_text(Path('Tests/Apple/TrackMixerHeightLayoutTests.swift').read_text())
 PY
-swiftc -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/JarasLegacyLayout.swift "$test_dir/layout.swift" "$test_dir/main.swift" -o "$test_dir/test"
+python3 scripts/track-height-test-geometry.py "$test_dir/TrackHeightGeometry.swift"
+swiftc "$test_dir/TrackHeightGeometry.swift" -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/JarasLegacyLayout.swift "$test_dir/layout.swift" "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

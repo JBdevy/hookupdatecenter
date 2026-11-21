@@ -12,6 +12,13 @@ import XCTest
     func addTrack(id: UUID, name: String, role: TrackRole) throws {}
     func advance(_ elapsed: Double) {}
     func finishCurrentSong(_ enabled: Bool) {}
+    func setFX(_ id: UUID?, settings: NativeFXSettings) throws {
+        if let id {
+            for s in project.songs.indices {
+                if let t = project.songs[s].tracks.firstIndex(where: { $0.id == id }) { project.songs[s].tracks[t].fx = settings }
+            }
+        } else { project.masterFX = settings }
+    }
     func setClipFXBypass(_ id: UUID, bypassed: Bool) throws {
         for s in project.songs.indices { for t in project.songs[s].tracks.indices {
             if let c = project.songs[s].tracks[t].clips.firstIndex(where: { $0.id == id }) { project.songs[s].tracks[t].clips[c].fxBypassed = bypassed }
@@ -24,6 +31,34 @@ import XCTest
     }
 }
 final class NativeFXTests: XCTestCase {
+    @MainActor func testSessionFXBypassAllowsIndependentMainAndTrackOverrides() throws {
+        var project = Project.empty(name: "Session FX")
+        var fx = NativeFXSettings()
+        fx.appendNative("EQ"); fx.appendNative("Delay"); fx.setEnabled("Delay", enabled: false)
+        project.masterFX = fx
+        let ids = (0..<3).map { _ in UUID() }
+        project.songs[0].tracks = ids.map { id in
+            var track = Track(id: id, name: "Track", role: .other); track.fx = fx; return track
+        }
+        let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        show.toggleStripFXBypass(ids[1])
+        show.toggleStripFXBypass(nil, sessionWide: true)
+        for id in [nil] + ids.map(Optional.some) { XCTAssertTrue(show.fxSettings(id).allBypassed) }
+        show.toggleStripFXBypass(nil)
+        show.toggleStripFXBypass(ids[0])
+        XCTAssertEqual(show.fxSettings(nil).sessionFXBypassed, true)
+        XCTAssertTrue(show.fxSettings(nil).isEnabled("EQ"))
+        XCTAssertTrue(show.fxSettings(ids[0]).isEnabled("EQ"))
+        XCTAssertTrue(show.fxSettings(ids[2]).allBypassed)
+        let saved = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(show.fxSettings(ids[2])))
+        XCTAssertEqual(saved.mixerBypassRestore, ["EQ"])
+        show.toggleStripFXBypass(nil, sessionWide: true)
+        XCTAssertNil(show.fxSettings(nil).sessionFXBypassed)
+        XCTAssertTrue(show.fxSettings(ids[1]).allBypassed, "A manually bypassed track must stay bypassed")
+        XCTAssertTrue(show.fxSettings(ids[2]).isEnabled("EQ"))
+        XCTAssertFalse(show.fxSettings(ids[2]).isEnabled("Delay"))
+    }
+
     @MainActor func testRemovingAllItemEffectsPreservesTrackEffectsAndTiming() throws {
         var project = Project.empty(name: "Remove item FX")
         var fx = NativeFXSettings(); fx.appendNative("EQ"); fx.appendNative("Reverb")

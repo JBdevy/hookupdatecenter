@@ -142,7 +142,7 @@ std::vector<OutputPatch> patches(const json& value) {
     return result;
 }
 TrackRouting routing(const json& value) {
-    object(value, {"receives", "transmitters"});
+    object(value, {"receives", "transmitters", "mainReceiveSlot"});
     TrackRouting result;
     auto decode = [](const json& raw) {
         std::vector<std::optional<ID>> values;
@@ -151,6 +151,8 @@ TrackRouting routing(const json& value) {
     };
     result.receives = decode(field(value, "receives"));
     result.transmitters = decode(field(value, "transmitters"));
+    if (const auto main = value.find("mainReceiveSlot"); main != value.end() && !main->is_null())
+        result.mainReceiveSlot = integer(*main);
     return result;
 }
 TimecodeSettings timecode(const json& value) {
@@ -250,7 +252,7 @@ Track importedTrack(const json& value) {
     object(value, {"id", "name", "role", "volume", "pan", "mute", "solo", "output", "audioFile", "clips", "patch",
         "color", "inputPatch", "inputMonitoring", "recordingChannels", "recordingFormat", "fx", "automation",
         "midiInput", "midiChannel", "parentTrackID", "secondaryPatch", "outputs", "timecode", "importedTimecodeItems",
-        "routing", "stereoLink", "phaseInverted", "heightScale", "instrumentIcon", "clickSound"});
+        "routing", "stereoLink", "phaseInverted", "hiddenMixerComponents", "heightScale", "instrumentIcon", "clickSound"});
     Track result;
     result.id = identifier(field(value, "id")); result.name = text(field(value, "name"));
     setting(value, "role", result.role.id, identifier);
@@ -267,6 +269,7 @@ Track importedTrack(const json& value) {
     TRACK_OPTIONAL("midiChannel", midiChannel, integer); TRACK_OPTIONAL("parentTrackID", parentTrackID, identifier);
     TRACK_OPTIONAL("secondaryPatch", secondaryPatch, patch); TRACK_OPTIONAL("outputs", outputs, patches);
     TRACK_OPTIONAL("timecode", timecode, timecode); TRACK_OPTIONAL("routing", routing, routing);
+    TRACK_OPTIONAL("hiddenMixerComponents", hiddenMixerComponents, integer);
     TRACK_OPTIONAL("phaseInverted", phaseInverted, boolean); TRACK_OPTIONAL("heightScale", heightScale, number);
     TRACK_OPTIONAL("instrumentIcon", instrumentIcon, text);
     TRACK_OPTIONAL("clickSound", clickSound, audioFile);

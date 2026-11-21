@@ -51,7 +51,7 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         mixer.setSize(640,350);mixer.setMasterRight(false);
         require(master->getBounds()==fixed && view->getX()>master->getRight(),"Returning Master left lost its original geometry");
         auto control=[&](const char *id){auto *c=uiFeatureTests::find(*master,id);require(c,"Master control missing");return c;};
-        require(!control("mixerRecord")->isVisible()&&!control("mixerPhase")->isVisible(),"Master exposes track-only recording or phase controls");
+        require(!control("mixerRecord")->isVisible() && !uiFeatureTests::find(*master, "mixerPhase"),"Master exposes track-only recording or phase controls");
         auto *fader=dynamic_cast<Slider*>(control("mixerFader"));auto *pan=dynamic_cast<Slider*>(control("mixerPan"));
         require(fader&&pan&&pan->getSliderStyle()==Slider::RotaryHorizontalVerticalDrag,"Master lacks fader or pan knob");
         fader->setValue(.5,dontSendNotification);fader->onValueChange();pan->setValue(-.4,dontSendNotification);pan->onValueChange();
@@ -72,7 +72,7 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
                 "Master background context did not reach the global Master menu or changed the selection/project");
         master->mouseDown(event(name,name,ModifierKeys::leftButtonModifier));master->mouseUp(event(name,name,0));
         require(contextMenus==1&&selected==0,"Plain Master click opened its context menu or selected a normal track");
-        const Point<float> slot{20,20};
+        const Point<float> slot{28,20};
         auto slotClick=[&](int modifier){master->mouseDown(event(slot,slot,modifier|ModifierKeys::leftButtonModifier));master->mouseUp(event(slot,slot,modifier));};
         slotClick(0);require(openedTrack.empty()&&openedEffect=="EQ","Master slot opened another track's FX");
         slotClick(ModifierKeys::shiftModifier);require(!fxchain::enabled(fxchain::settings(session,{}),"EQ"),"Master slot Shift bypass failed");
@@ -95,6 +95,62 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         mixer.refresh();
         FileOutputStream output(directory.getChildFile("mixer-fixed-master.png"));output.setPosition(0);output.truncate();
         require(output.openedOk()&&PNGImageFormat().writeImageToStream(mixer.createComponentSnapshot(mixer.getLocalBounds()),output),"Cannot save Master fixture screenshot");
+    });
+    test("Library effects dropped on mixer strip bodies append and slot drops retain order", [&] {
+        jaras::Project project; project.id = uuid(); project.name = "Library drop";
+        jaras::Song song; song.id = uuid(); song.name = "Song"; song.duration = 30;
+        jaras::Track track; track.id = uuid(); track.name = "Target"; track.role.id = "other";
+        song.tracks = {track}; project.songs = {song};
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(project)); session.audio.setOffline(true);
+        String failure;
+        MixerPanel mixer(session, [](ID, String) {}, [](ID, ModifierKeys) {},
+            [&](String error) { failure = error; }, [](ID, bool) {}, [](ID) { return false; }, [](ID, Point<int>) {});
+        mixer.setSize(540, 480);
+        auto *strip = uiFeatureTests::find(mixer, "mixerStrip:" + text(track.id));
+        auto *target = dynamic_cast<DragAndDropTarget *>(strip);
+        require(target != nullptr, "Track strip drop target missing");
+        auto drop = [&](const char *identity, Point<int> point) {
+            auto payload = object();
+            put(payload, "type", "catlive-library-effect");
+            put(payload, "project", text(project.id));
+            put(payload, "identity", identity);
+            DragAndDropTarget::SourceDetails details(payload, &mixer, point);
+            require(target->isInterestedInDragSource(details), "Strip rejected its Library");
+            target->itemDragEnter(details);
+            target->itemDropped(details);
+            require(failure.isEmpty(), "Library effect insertion failed");
+        };
+        const auto keys = [&] { return list(get(fxchain::settings(session, track.id), "inserted")); };
+        drop("native:EQ", {20, strip->getHeight() - 12});
+        auto chain = keys();
+        require(chain.size() == 1, "Dropping on the strip body did not append an effect");
+        const auto eq = chain[0];
+        drop("native:Compressor", {20, 19});
+        chain = keys();
+        require(chain.size() == 2 && chain[1] == eq, "Dropping on a slot must insert before it");
+        const auto compressor = chain[0];
+        drop("native:Delay", {20, strip->getHeight() - 12});
+        chain = keys();
+        require(chain.size() == 3 && chain[0] == compressor && chain[1] == eq,
+                "A body drop must append after the existing effects");
+
+        std::vector<jaras::CommandKind> mapped;
+        mixer.mapControl = [&](const ID &targetID, jaras::CommandKind kind) {
+            require(targetID == track.id, "Right-click mapped the wrong track");
+            mapped.push_back(kind);
+        };
+        for (const auto *controlID : {"mixerMute", "mixerSolo", "mixerFader"}) {
+            auto *control = uiFeatureTests::find(*strip, controlID);
+            require(control != nullptr, "Mixer mapping control missing");
+            const auto now = Time::getCurrentTime();
+            const auto point = control->getLocalBounds().toFloat().getCentre();
+            MouseEvent event(Desktop::getInstance().getMainMouseSource(), point, ModifierKeys::rightButtonModifier,
+                1, 0, 0, 0, 0, control, control, now, point, now, 1, false);
+            control->mouseDown(event);
+        }
+        require(mapped == std::vector<jaras::CommandKind>{jaras::CommandKind::mute, jaras::CommandKind::solo, jaras::CommandKind::volume},
+                "Right-click must offer mapping on all three strip controls");
     });
     test("Mixer wheel propagates once through controls and FX with either fixed Master side",[&] {
         jaras::Project project;project.id=uuid();project.name="Mixer wheel";
@@ -157,7 +213,8 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         auto effects=object();put(effects,"inserted",Array<var>{"EQ","Compressor","Limiter","Delay","Reverb"});
         session.configureEffects(song.tracks.front().id,effects);session.configureEffects({},effects);mixer.refresh();
         const auto slotClick=[&](Component &strip) {
-            const Point<float> point{20,20};
+            // Click the slot label. The leading portion belongs to bypass.
+            const Point<float> point{strip.getWidth() * .5f,20};
             const auto event=[&](int modifiers) {return MouseEvent(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys(modifiers),1,0,0,0,0,&strip,&strip,Time::getCurrentTime(),point,Time::getCurrentTime(),1,false);};
             strip.mouseDown(event(ModifierKeys::leftButtonModifier));strip.mouseUp(event(0));
         };
@@ -166,7 +223,7 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
             wheel(*track,{20,20},-.1f,0);
             require(mixer.scrollX()==32,"Horizontal gesture was swallowed by overflowing FX slots");
             reset();wheel(*track,{20,20},.0001f,-.1f,ModifierKeys::shiftModifier);
-            require(mixer.scrollX()==0&&!mixer.isSlotsOnly(),"A short Shift-wheel gesture scrolled the mixer or changed its layout");
+            require(mixer.scrollX()==32,"Shift-wheel should scroll tracks across FX slots");
             reset();
             for(auto *strip:{track,master}) {
                 wheel(*strip,{20,20},0,-.1f);slotClick(*strip);
@@ -205,6 +262,23 @@ inline void MasterMixerTests::run(const File &directory) {
         const bool undo=session.canUndo(),redo=session.canRedo();
         Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,preferences);
         workspace.setSize(1366,900);workspace.footerMixerVisible=true;workspace.resized();
+        {
+            auto& focus = *workspace.focusMixer;
+            const auto previous = workspace.selectedTrack;
+            focus.setSize(MixerPanel::focusWidth(), 520);
+            workspace.selectedTrack.clear();
+            focus.refresh();
+            require(focus.strips.isEmpty() && focus.master->getX() == 5 &&
+                    focus.master->getWidth() == focus.getWidth() - 10,
+                    "Track - I must give Main the whole panel without a selection");
+            workspace.selectedTrack = song.tracks.front().id;
+            focus.refresh();
+            require(focus.strips.size() == 1 && focus.master->getWidth() == focus.strips[0]->getWidth() &&
+                    focus.viewport.getRight() == focus.master->getX(),
+                    "Selecting a track must restore two adjoining equal strips");
+            workspace.selectedTrack = previous;
+            focus.refresh();
+        }
         const auto menuItems=[&](bool bar) {
             auto menu=workspace.masterMenu(bar);std::map<int,String> items;
             PopupMenu::MenuItemIterator iterator(menu);
@@ -216,10 +290,10 @@ inline void MasterMixerTests::run(const File &directory) {
             return items;
         };
         const auto transportMenu=menuItems(false);auto barMenu=menuItems(true);
-        require(transportMenu==std::map<int,String>{{1,"Patch"},{2,"FX"},{3,"Env"},{4,"Editar pista"}},
+        require(transportMenu==std::map<int,String>{{1,"Patch"},{2,"FX"},{3,"Env"}},
                 "Transport Master context changed its actions or exposes the bar placement option");
-        require(barMenu.size()==5 && barMenu[5]==String::fromUTF8("Mostrar Master à direita"),
-                "Left Master does not offer the right-placement action");
+        require(barMenu.size()==4 && barMenu[5]==String::fromUTF8("Mostrar Main à direita"),
+                "The Hoz Mixer Main starts on the left and offers the right-placement action");
         for(const auto &entry:transportMenu)require(barMenu[entry.first]==entry.second,"Bar Master does not share the transport context actions");
         const auto checkSide=[&](MixerPanel &panel,bool right) {
             auto *master=uiFeatureTests::find(panel,"mixerMaster");
@@ -243,36 +317,42 @@ inline void MasterMixerTests::run(const File &directory) {
                 for(auto *strip:{panel.master.get(),panel.strips[0]}) {
                     const auto geometry=strip->layout();
                     require(strip->getLocalBounds().contains(geometry.name),"Compact mixer clipped the track name");
-                    for(auto *control:std::vector<Component*>{&strip->fx,&strip->mute,&strip->solo,&strip->phase,
+                    for(auto *control:std::vector<Component*>{&strip->fx,&strip->mute,&strip->solo,
                             &strip->record,&strip->mono,&strip->pan,&strip->fader,strip->peak.get()}) {
                         if(!control->isVisible())continue;
                         require(strip->getLocalBounds().contains(control->getBounds()) &&
                                 !geometry.name.intersects(control->getBounds()),"Compact track name overlaps or clips a mixer control");
                     }
-                    require(!strip->peak->getBounds().intersects(strip->fader.getBounds()),
-                            "Peak readout overlaps the mixer fader");
+                    const auto peak = strip->peak->getBounds(), gain = strip->gainReadoutBounds();
+                    require(peak.getCentreX() == gain.getCentreX() && gain.getCentreX() == strip->fader.getBounds().getCentreX() &&
+                            peak.getBottom() <= gain.getY() && gain.getBottom() <= strip->fader.getY(),
+                            "Peak and gain must stack above and align with the fader");
+                    require(!peak.intersects(strip->pan.getBounds()) && !peak.intersects(strip->mono.getBounds()),
+                            "Peak readout overlaps the pan or Stereo/Mono control");
                     for(const auto *value:{"-30.00","+24.00"})
                         require(GlyphArrangement::getStringWidth(theme::semiboldFont(8),value)+4.f<=strip->peak->getWidth(),
                                 "Peak readout clips its two-decimal value at the minimum text size");
                     require(strip->fader.getHeight()>=115,"Compact mixer sacrificed the fader to keep FX slots");
-                    const bool expanded = strip->getHeight() - (panel.showsIcons ? 30 : 0) > 253;
+                    const bool expanded = strip->getHeight() > 253;
                     if(!expanded)require(geometry.slots.isEmpty()&&strip->visibleSlots()==0&&strip->slotAt({20,20})<0,
                         "Compact mixer still paints or hit-tests hidden FX slots");
                     else require(!geometry.slots.isEmpty()&&strip->slotAt({20,geometry.slots.getY()})==0,
                         "Expanded mixer failed to restore FX slots");
                 }
                 const int currentFader=panel.strips[0]->fader.getHeight();
-                const bool expanded = panel.strips[0]->getHeight() - (panel.showsIcons ? 30 : 0) > 253;
+                const bool expanded = panel.strips[0]->getHeight() > 253;
                 if(expanded && previousExpanded)require(currentFader==previousFader,"Expanded mixer stretched controls instead of revealing slots");
                 previousFader=currentFader; previousExpanded=expanded;
             }
         }
-        workspace.resized();workspace.footerMixer->setMasterRight(false);
+        workspace.resized();
+        checkSide(*workspace.footerMixer,true);
+        workspace.setBarMixerMasterRight(false);
         checkSide(*workspace.footerMixer,false);
         workspace.handleMasterMenu(5,false);checkSide(*workspace.footerMixer,false);
         workspace.handleMasterMenu(5,true);checkSide(*workspace.footerMixer,true);
         require((bool)Appearance(preferences).value("catlive.barMixer.masterRight",false) &&
-                menuItems(true).at(5)==String::fromUTF8("Mostrar Master à esquerda"),"Right placement was not saved or the action label did not switch");
+                menuItems(true).at(5)==String::fromUTF8("Mostrar Main à esquerda"),"Right placement was not saved or the action label did not switch");
         workspace.showDetachedMixer();
         auto *floating=dynamic_cast<MixerPanel*>(workspace.floatingWindows.at("Mixer")->getContentComponent());
         require(floating,"Detached mixer is missing");checkSide(*floating,true);

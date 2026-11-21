@@ -262,7 +262,7 @@ class MultiLoopsPanel final : public Component {
                 if(track.parentTrackID)groups.insert(*track.parentTrackID);
             }
             for (auto &rule : draft.tracks) {
-                String title="Master"; double ceiling=session.project().masterVolume;
+                String title="Main"; double ceiling=session.project().masterVolume;
                 const bool master=rule.id=="00000000-0000-0000-0000-000000000000";
                 const bool group=groups.count(rule.id)!=0; int depth=0;
                 auto at=tracks.find(rule.id); std::set<ID> visited;
@@ -270,7 +270,7 @@ class MultiLoopsPanel final : public Component {
                 while(at!=tracks.end() && at->second->parentTrackID && visited.insert(at->first).second) {
                     ++depth;at=tracks.find(*at->second->parentTrackID);
                 }
-                auto *background=new TrackRowBackground(title, master ? String("Master") : localization::translate(group ? "Track group" : "Track"),depth,master||group);
+                auto *background=new TrackRowBackground(title, master ? String("Main") : localization::translate(group ? "Track group" : "Track"),depth,master||group);
                 controls.add(background);content.addAndMakeVisible(background);background->setBounds(0,y,690,44);
                 background->selected=trackSelection.ids.count(rule.id)!=0;
                 background->clicked=[this,id=rule.id](const ModifierKeys &mods) {

@@ -27,6 +27,12 @@ std::vector<std::pair<jaras::ID,double>> edges(const jaras::Song &song) {
 }
 }
 int main() {
+    const MeasureLabels musical({{0, 5.25, 120, 4, 4}, {5.25, 25, 120, 6, 8}});
+    if (musical.label(0, 0, 0, 2) != "1" || musical.label(0, 0, 1, 2) != "1.1.2" ||
+        musical.label(0, 0, 2, 2) != "1.2" || musical.label(1, 0, 1, 1) != "4.2") {
+        std::cerr << "Expected continuous musical labels across a partial measure and meter change\n";
+        ++failures;
+    }
     jaras::Song song; song.bpm = 120; song.duration = 10000;
     song.timeSettings = jaras::ProjectTimeSettings{}; song.timeSettings->divisions = 0;
     jaras::Track track; track.id = "track"; track.clips = {item("moving",100,50)};

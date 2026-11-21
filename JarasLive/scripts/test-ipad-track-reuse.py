@@ -12,10 +12,18 @@ with tempfile.TemporaryDirectory(prefix='catlive-ipad-track-reuse-') as temporar
     remote = (root / 'Apple/Shared/DAWRemoteView.swift').read_text()
     index = (root / 'Apple/Shared/TimelineVisibleClipIndex.swift').read_text()
     declarations = workspace[workspace.index('struct IpadRecycledTrackRows<Row:'):workspace.index('@MainActor final class IpadTimelinePlaybackControl')]
+    audio = (root / 'Apple/Shared/StemAudioPlayback.swift').read_text()
+    meter_style = audio[audio.index('enum MixerMeterStyle {'):audio.index('struct MixerFaderMeter:')]
     meters = remote[remote.index('private final class IpadStereoMeterLayers'):remote.index('@MainActor private struct NativeRemoteProjectsView')]
     sliders = remote[remote.index('struct RemoteNativeSlider:'):remote.index('private func remoteDecibelText(')]
+    mixer = (root / 'Apple/Shared/TrackMixerRow.swift').read_text()
+    thumb = mixer[mixer.index('enum MixerFaderThumbStyle {'):mixer.index('private struct TrackVolumeFader:')]
+    theme = (root / 'Apple/Shared/Theme.swift').read_text()
+    display = '; '.join(line.strip() for line in theme.splitlines() if 'static let displayHex:' in line or 'static let lightDarkBackgroundHex:' in line)
+    color = 'extension JarasTheme { ' + display + '; static let display = Color(hex: displayHex) }\n'
+    color += theme[theme.index('extension Color {'):theme.index('struct ProjectSaveIcon:')]
     swift = directory / 'Fixture.swift'
-    swift.write_text((root / 'Tests/Apple/IpadTrackReuseFixture.swift').read_text() + '\n' + declarations + '\n' + meters + '\n' + index + '\n' + sliders)
+    swift.write_text((root / 'Tests/Apple/IpadTrackReuseFixture.swift').read_text() + '\n' + declarations + '\n' + meter_style + '\n' + meters + '\n' + index + '\n' + sliders + '\n' + thumb + '\n' + color)
     sdk = subprocess.check_output(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-path'], text=True).strip()
     subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-swift-version', '5', '-sdk', sdk, '-target',
         'arm64-apple-ios16.0-simulator', str(swift), '-o', str(app / 'TrackReuseFixture')], check=True)

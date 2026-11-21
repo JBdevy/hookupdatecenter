@@ -23,6 +23,8 @@ pure += addition[addition.index('function canonicalExistingTrackKey'):addition.i
 # Canonical taxonomy labels can differ from their alias regex (e.g. Clarim, XP).
 # Keep these labels and folder names out of cleanup candidates too.
 pure = pure.replace('if (!normalized || isCreateProjectSourceLabel(normalized)) return false;', 'if (!normalized || isCreateProjectSourceLabel(normalized)) return false;\n  if (CREATE_PROJECT_TRACK_RULES.some(rule => normalizeWords(rule.name) === normalized) || CREATE_PROJECT_TRACK_GROUPS.some(group => normalizeWords(group.name) === normalized)) return true;')
+# Keep guitar wah distinct from the generic guitar label in CatLive.
+pure = pure.replace(r"  if (has(/\b(drive|dist|distorcao|distortion)\b/)) variants.push('Drive');", r"  if (has(/\b(drive|dist|distorcao|distortion)\b/)) variants.push('Drive');" + '\n' + r"  if (rule.name === 'Guitarra' && has(/\bwah(?: wah)?\b/)) variants.push('Wah');")
 # CatLive Add Project can resolve real destination names before taxonomy.
 # Keep Hook Center's standalone project creation unchanged.
 pure = pure.replace('peakResolver, onProgress } = {})', 'peakResolver, onProgress, classifyTrack = classifyCreateProjectTrack, resolveTrackKey = key => key } = {})')
@@ -59,7 +61,21 @@ function existingImportClassifier(tracks) {
      return { name: label, key: 'existing:' + target.index, recognized: true, matchedExistingName: true, sourceName: name };
    }
    const result = classifyCreateProjectTrack(filePath, folderName);
-   return { ...result, key: resolveKey(result.key) };
+   const key = resolveKey(result.key);
+   if (!result.recognized || key !== result.key) return { ...result, key };
+
+   // Providers frequently append 1 to the first stem even when the
+   // equivalent destination has no number. Prefer an explicit numbered
+   // destination and keep 2 and later separate for simultaneous stems.
+   const first = result.key.endsWith(' 1');
+   if (first || !/ \d+$/.test(result.key)) {
+     const alternate = first ? result.key.slice(0, -2) : result.key + ' 1';
+     const target = canonical.get(alternate);
+     if (target) {
+       return { ...result, name: first ? result.name.slice(0, -2) : result.name, key: 'existing:' + target.index };
+     }
+   }
+   return result;
  };
  return { classify, resolveKey };
 }

@@ -16,8 +16,14 @@ kind=models[models.index('public enum TrackKind:'):models.index('public struct T
 row=Path('Apple/Shared/TrackMixerRow.swift').read_text()
 policy_start=row.index('private func trackShowsMeterReadouts(')
 policy=row[policy_start:row.index('\n}', policy_start)+2]
-typography=Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.',1)[1]
-Path(sys.argv[1]).write_text('// App-owned typography.'+typography+'\nimport SwiftUI\nimport AppKit\nimport Combine\n'+kind+'\n'+policy+'\n'+model+'\n'+native+'\n'+Path('Tests/Apple/NativeVerticalTrackMeterTests.swift').read_text())
+theme=Path('Apple/Shared/Theme.swift').read_text()
+colors=theme[theme.index('extension Color {'):theme.index('struct ProjectSaveIcon:')]
+appearance=theme[theme.index('enum JarasInterfaceTheme:'):theme.index('enum JarasTheme {')]
+display = '; '.join(line.strip() for line in theme.splitlines() if any(
+    name in line for name in ('static let displayHex:', 'static let lightDarkBackgroundHex:',
+                              'static let workspaceToolbar =', 'static let green =', 'static let liveOffRed =')))
+typography=theme.split('// App-owned typography.',1)[1]
+Path(sys.argv[1]).write_text('// App-owned typography.'+typography+'\nimport SwiftUI\nimport AppKit\nimport Combine\n'+colors+'\n'+appearance+'\nenum JarasTheme { '+display+' }\n'+kind+'\n'+policy+'\n'+model+'\n'+native+'\n'+Path('Tests/Apple/NativeVerticalTrackMeterTests.swift').read_text())
 PY
 swiftc "${JARAS_TEST_OPTIMIZATION:--O}" -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

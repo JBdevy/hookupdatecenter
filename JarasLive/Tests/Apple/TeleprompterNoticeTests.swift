@@ -31,6 +31,10 @@ MainActor.assumeIsolated {
     model.select(1); model.draft = "Stopped message"
     model.setPinWhenStopped(true)
     precondition(model.pinWhenStopped && model.active && model.pinned && model.message == "Stopped message")
+    model.draft = "Temporary message"
+    precondition(model.send() && !model.pinned && model.deadline != nil && model.message == "Temporary message")
+    model.clear()
+    precondition(model.stoppedNoticeActive && model.pinned && model.message == "Stopped message")
     model.select(2); model.draft = "Different draft"
     model.observeTransport(playing: true)
     precondition(!model.active && model.pinWhenStopped, "Play removes only the automatic notice")

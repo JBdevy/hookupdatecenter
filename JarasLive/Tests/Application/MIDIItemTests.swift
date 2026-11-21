@@ -1,6 +1,26 @@
 import XCTest
 @testable import JarasApplication
 final class MIDIItemTests: XCTestCase {
+    func testArpeggioUsesTempoAndGateWithoutChangingTheChord() {
+        var song = Project.empty(name: "Arp").songs[0]
+        song.bpm = 120
+        var track = Track(id: UUID(), name: "Keys", role: .keys)
+        var fx = NativeFXSettings()
+        fx.inserted = ["Arpeggiator"]
+        fx.setEnabled("Arpeggiator", enabled: true)
+        track.fx = fx
+        let notes = [67, 60, 64].map { MIDINote(start: 0, length: 2, pitch: $0) }
+        let clip = AudioClip(id: UUID(), name: "Chord", startTime: 0, duration: 1, midi: MIDIItem(notes: notes, sourceBPM: 120))
+        let rendered = song.instrumentPlaybackNotes(in: clip, track: track)
+        XCTAssertEqual(rendered.map(\.pitch), [60, 64, 67, 60, 64, 67, 60, 64])
+        XCTAssertEqual(rendered[1].start, 0.125, accuracy: 1e-9)
+        XCTAssertEqual(rendered[1].end - rendered[1].start, 0.09375, accuracy: 1e-9)
+        XCTAssertEqual(Set(rendered.map(\.sourceID)).count, 8)
+        XCTAssertEqual(song.midiPlaybackNotes(in: clip).count, 3)
+        track.fx?.setEnabled("Arpeggiator", enabled: false)
+        XCTAssertEqual(song.instrumentPlaybackNotes(in: clip, track: track).count, 3)
+    }
+
     func testEveryDivisionAndTimingMode() {
         for division in MIDIGrid.divisions {
             let straight=MIDIGrid(division:division)

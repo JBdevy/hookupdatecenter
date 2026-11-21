@@ -2,9 +2,29 @@
 #include "../Utils/Identity.hpp"
 #include <vector>
 #include <optional>
+#include <map>
 namespace jaras {
 struct OutputPatch { int firstChannel = 0; int channelCount = 2; };
-struct TrackRouting { std::vector<std::optional<ID>> receives{std::nullopt, std::nullopt}, transmitters{std::nullopt, std::nullopt}; };
+enum class TrackSendTap { preFX, postFX, preFader, postFader };
+inline const char *sendTapID(TrackSendTap tap) {
+    switch (tap) {
+        case TrackSendTap::preFX: return "preFX";
+        case TrackSendTap::postFX: return "postFX";
+        case TrackSendTap::preFader: return "preFader";
+        case TrackSendTap::postFader: return "postFader";
+    }
+    return "postFader";
+}
+struct TrackRouting {
+    std::vector<std::optional<ID>> receives{std::nullopt, std::nullopt}, transmitters{std::nullopt, std::nullopt};
+    std::optional<int> mainReceiveSlot;
+    std::map<ID, TrackSendTap> sendTaps;
+    std::optional<int> mainSendOrder;
+    TrackSendTap sendTap(const ID &target) const {
+        const auto found = sendTaps.find(target);
+        return found == sendTaps.end() ? TrackSendTap::postFader : found->second;
+    }
+};
 struct TrackRole { std::string id = "other"; };
 struct TimecodeSettings { std::string mode = "mtc"; double frameRate = 30, offset = 0; bool regionRelative = true; int midiDestination = 0; };
 inline bool isTeleprompterRole(const TrackRole& role) { return role.id == "teleprompt" || role.id == "teleprompt2"; }
@@ -15,6 +35,7 @@ struct MIDIItem { std::vector<MIDINote> notes; double sourceBPM=120; int divisio
 struct ItemTempoReference { ID markerID; double rate = 1; };
 struct AudioClip { ID id; std::vector<ID> separatedStemTracks; std::string name; double startTime = 0, duration = 0, sourceOffset = 0; std::vector<double> waveform; std::optional<AudioFile> audioFile; std::optional<double> gain; std::optional<bool> phaseInverted; std::optional<double> pan; std::optional<double> normalizationGain; std::optional<double> fadeIn, fadeOut, fadeInCurve, fadeInSCurve, fadeOutCurve, fadeOutSCurve; std::optional<int> channelMode; std::vector<std::vector<double>> waveformChannels; bool muted = false; double playbackRate = 1; std::optional<int> recordingLane; std::optional<double> loopStart, loopLength; std::optional<std::string> fxJSON; std::optional<double> timecodeStartOffset, timecodeEndOffset; std::optional<bool> fxBypassed; std::optional<std::string> text; std::optional<MIDIItem> midi; std::optional<bool> frozenMIDI, renderedTiming; std::optional<double> pitchSemitones; std::optional<TimecodeSettings> timecode; std::optional<ID> regionOwnerID; std::optional<std::string> automationJSON; std::optional<double> tempoBasePlaybackRate; std::optional<bool> renderedTempo; std::optional<bool> clickDouble; std::vector<ItemTempoReference> tempoRateReferences; };
 struct ProgramChangeMarker { ID id; double position = 0; int program = 0, channel = 1; std::string name; std::optional<int> output; };
+struct ChordMarker { ID id, regionID; double offset = 0; std::string name; };
 struct Track {
     ID id; std::string name; TrackRole role;
     double volume = 1, pan = 0;
@@ -34,6 +55,7 @@ struct Track {
     std::optional<int> midiChannel;
     std::optional<int> midiOutput;
     std::vector<ProgramChangeMarker> programChanges;
+    std::vector<ChordMarker> chordMarkers;
     std::optional<ID> parentTrackID;
     std::optional<OutputPatch> secondaryPatch;
     std::optional<std::vector<OutputPatch>> outputs;
@@ -46,12 +68,19 @@ struct Track {
     std::optional<TimecodeSettings> timecode;
     bool importedTimecodeItems = false;
     std::optional<TrackRouting> routing;
+    bool receivesMain() const { return routing && routing->mainReceiveSlot.has_value(); }
     std::optional<ID> stereoLinkPartner;
     bool stereoLinkLeft = false;
     std::optional<std::string> stereoLinkJSON;
     std::optional<bool> phaseInverted;
     std::optional<double> heightScale;
-    std::optional<std::string> instrumentIcon;
+    std::optional<int> hiddenMixerComponents;
+    enum ComponentMask { patchBit=1, fxBit=2, envelopeBit=4, recBit=8, inputBit=16, panBit=32, muteBit=64, soloBit=128, phaseBit=256 };
+    static constexpr int compactMask = patchBit | fxBit | envelopeBit | recBit;
+    bool supportsMixerComponents() const { return fixedTrackName(role).empty() && role.id != "vinhetas"; }
+    bool showsComponent(int mask) const { return !supportsMixerComponents() || (hiddenMixerComponents.value_or(0) & mask) == 0; }
+    bool compactMixerControls() const { return supportsMixerComponents() && (hiddenMixerComponents.value_or(0) & compactMask) == compactMask; }
+    std::optional<std::string> instrumentIcon = "png:Sound Effects/noise";
     std::optional<AudioFile> clickSound;
 };
 }

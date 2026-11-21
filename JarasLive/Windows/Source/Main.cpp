@@ -151,7 +151,7 @@ class CatLiveApplication final : public JUCEApplication {
                                               BinaryData::icon2561x_pngSize));
             if (content->isLoginShowing()) {
                 fitLoginWindow(*this);
-            } else if (content->isProjectBrowserShowing()) {
+            } else if (!content->isProjectOpen()) {
                 fitProjectBrowserWindow(*this);
             } else {
                 fitEditorWindow(*this);
@@ -251,7 +251,14 @@ class CatLiveApplication final : public JUCEApplication {
             const int appearanceArgument = args.indexOf("--appearance-file");
             if ((visualTest || previewHome) && appearanceArgument >= 0 && appearanceArgument + 1 < args.size())
                 appearanceFile = File(args[appearanceArgument + 1]);
-            Desktop::getInstance().setGlobalScaleFactor(1.f);
+            auto &desktop = Desktop::getInstance();
+            if (const auto *screen = desktop.getDisplays().getPrimaryDisplay()) {
+                const auto area = screen->userArea;
+                if (!area.isEmpty()) {
+                    const auto scale = std::min(area.getWidth() / 1600.f, area.getHeight() / 850.f);
+                    desktop.setGlobalScaleFactor(jlimit(.8f, 1.f, scale));
+                }
+            }
             if (!visualTest && !args.contains("--imgui-ui"))
                 splash = std::make_unique<StartupSplash>();
             session = std::make_unique<Session>();
@@ -758,7 +765,11 @@ class CatLiveApplication final : public JUCEApplication {
     void selectProjectTab(size_t index, bool forClosing = false) {
         if (!window || index >= tabWorkspaces.size() || (closingProjects && !forClosing)) return;
         if (selectedTab < tabSessions.size() && (tabSessions[selectedTab]->busy || tabSessions[selectedTab]->audio.isRecording())) return;
-        if (auto *old = (tabHost ? tabHost->current : nullptr)) { old->deactivateProjectTab(); old->setVisible(false); }
+        if (auto *old = (tabHost ? tabHost->current : nullptr)) {
+            if (tabWorkspaces[index]->isProjectOpen()) old->returnToWorkspace();
+            old->deactivateProjectTab();
+            old->setVisible(false);
+        }
         selectedTab = index;
         auto *content = tabWorkspaces[index];
         tabHost->show(content);
@@ -835,7 +846,7 @@ class CatLiveApplication final : public JUCEApplication {
             tab->session->canPlay = [this] { return auth->allowed() && !auth->pendingRevocation; };
             if (!tab->session->inspection) {
                 const auto error = tab->session->audio.openDevice();
-                if (error.isNotEmpty()) throw std::runtime_error(utf8(error));
+                if (error.isNotEmpty()) tab->session->message = error;
             }
             tab->lighting = std::make_unique<Lighting>(*tab->session);
             auto *lights = tab->lighting.get();

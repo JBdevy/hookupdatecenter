@@ -1,6 +1,12 @@
 import SwiftUI
 import QuartzCore
 
+enum TimelineVerticalInk {
+    static let pixels: CGFloat = 0.5
+    static func width(at scale: CGFloat) -> CGFloat { pixels / scale }
+    static func center(_ x: CGFloat, at scale: CGFloat) -> CGFloat { (floor(x * scale) + 0.5) / scale }
+}
+
 /// One retained drawing per mounted layer, bounded by the visible grid. Colours
 /// and playback updates do not rebuild geometry; scrolling/zooming still do.
 final class TimelineGridPathCache {

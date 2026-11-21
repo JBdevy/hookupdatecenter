@@ -35,7 +35,7 @@ struct MemoryEstimate {
     template<class... T> void fields(const T&... values) noexcept { (dynamic(values), ...); }
     void dynamic(const jaras::AudioFile& v) noexcept { fields(v.path, v.sha256); }
     void dynamic(const jaras::TimecodeSettings& v) noexcept { dynamic(v.mode); }
-    void dynamic(const jaras::TrackRouting& v) noexcept { fields(v.receives, v.transmitters); }
+    void dynamic(const jaras::TrackRouting& v) noexcept { fields(v.receives, v.transmitters, v.mainReceiveSlot); }
     void dynamic(const jaras::MIDINote& v) noexcept { dynamic(v.id); }
     void dynamic(const jaras::MIDIItem& v) noexcept { fields(v.notes, v.mode); }
     void dynamic(const jaras::AudioClip& v) noexcept {

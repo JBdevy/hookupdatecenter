@@ -184,8 +184,8 @@ class NoticePanel final : public Component, private Timer {
 };
 class StageConfigPanel final : public Component {
   public:
-    StageConfigPanel(StageState &s, int target, std::function<void()> timerAction)
-        : state(s), index(target), configureTimer(std::move(timerAction)) {
+    StageConfigPanel(StageState &s, int target)
+        : state(s), index(target) {
         for (int i = 0; i < 3; ++i) {
             auto *b =
                 tabs.add(new TextButton(i == 2 ? "Recados" : "Teleprompter " + String(i + 1)));
@@ -200,7 +200,7 @@ class StageConfigPanel final : public Component {
                 build();
             };
         }
-        for (auto *b : {&night, &day, &timer, &close})
+        for (auto *b : {&night, &day, &close})
             addAndMakeVisible(b);
         for (auto *b : {&night, &day}) {
             b->getProperties().set("flat", true);
@@ -209,10 +209,8 @@ class StageConfigPanel final : public Component {
             b->setColour(TextButton::buttonOnColourId, Colour(0xff64b64a));
             b->setColour(TextButton::textColourOnId, Colours::white);
         }
-        for (auto *b : {&timer, &close}) {
-            b->getProperties().set("flat", true);
-            b->setColour(TextButton::buttonColourId, Colour(0xff505050));
-        }
+        close.getProperties().set("flat", true);
+        close.setColour(TextButton::buttonColourId, Colour(0xff505050));
         night.onClick = [this] {
             state.selectPreset(index, "night");
             build();
@@ -221,7 +219,6 @@ class StageConfigPanel final : public Component {
             state.selectPreset(index, "day");
             build();
         };
-        timer.onClick = configureTimer;
         close.onClick = [this] {
             if (findParentComponentOfClass<ModalSheet>())
                 ModalSheet::dismiss(*this);
@@ -266,16 +263,14 @@ class StageConfigPanel final : public Component {
         }
         for (int i = 0; i < headings.size(); ++i)
             headings[i]->setBounds(10, headingY[(size_t)i], content.getWidth() - 20, 24);
-        timer.setBounds(16, getHeight() - 38, 220, 26);
         close.setBounds(getWidth() - 82, getHeight() - 38, 66, 26);
     }
 
   private:
     StageState &state;
     int index = 1, contentHeight = 0;
-    std::function<void()> configureTimer;
     OwnedArray<TextButton> tabs;
-    TextButton night{localization::translate("NOITE")}, day{localization::translate("DIA")}, timer{localization::translate(String::fromUTF8("Configurações do cronômetro"))},
+    TextButton night{localization::translate("NOITE")}, day{localization::translate("DIA")},
         close{"Fechar"}, headerClose{"Fechar"};
     Viewport viewport;
     class SectionContent final : public Component {

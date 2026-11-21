@@ -113,6 +113,13 @@ $requiredRuntimeFiles=@(
 foreach ($category in @('pianos','upright','electric','keyboard','organ','strings','guitar','bass','synth','synthPad','lead','acordeon','brass','mallets','drum')) {
     $requiredRuntimeFiles += "InstrumentInterfaces/$category.png"
 }
+foreach ($folder in @('NativeSamples','TrackIcons')) {
+    $assetDirectory=Join-Path $runtimeDirectory $folder
+    if (-not (Test-Path -LiteralPath $assetDirectory -PathType Container)) {
+        throw "Runtime incompleto: $assetDirectory. O pacote nao foi gerado."
+    }
+    Copy-Item -LiteralPath $assetDirectory -Destination $packageDirectory -Recurse -Force
+}
 foreach ($relativePath in $requiredRuntimeFiles) {
     $runtimeFile=Join-Path $runtimeDirectory $relativePath
     if (-not (Test-Path -LiteralPath $runtimeFile -PathType Leaf) -or (Get-Item -LiteralPath $runtimeFile).Length -eq 0) {

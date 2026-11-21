@@ -13,6 +13,10 @@
 namespace catlive {
 using namespace juce;
 using jaras::ID;
+inline String mixerPanText(double value) {
+    const int percent = roundToInt(100 * jlimit(0., 1., std::abs(std::isfinite(value) ? value : 0.)));
+    return percent == 0 ? String("Center") : String(percent) + (value < 0 ? "%L" : "%R");
+}
 // Mac parameter controls change by click/drag or keyboard. Wheel input belongs
 // to the containing scroll view and never enters Slider's value-editing path.
 class ParameterSlider : public Slider {
@@ -21,8 +25,12 @@ class ParameterSlider : public Slider {
     bool backgroundGesture=false;
     ParameterSlider() = default;
     ParameterSlider(SliderStyle style, TextEntryBoxPosition text) : Slider(style, text) {}
+    String getTooltip() override {
+        return (bool)getProperties()["panValueTooltip"] ? mixerPanText(getValue()) : Slider::getTooltip();
+    }
     void mouseDown(const MouseEvent &event) override {
-        backgroundGesture=backgroundDown && getSliderStyle()!=Slider::RotaryVerticalDrag && event.x<42;
+        const bool onReadout = getComponentID() == "trackVolume" ? event.x >= getWidth() - 42 : event.x < 42;
+        backgroundGesture=backgroundDown && getSliderStyle()!=Slider::RotaryVerticalDrag && onReadout;
         if(backgroundGesture){backgroundDown(event);return;}
         dragging = event.mods.isLeftButtonDown() && !event.mods.isPopupMenu();
         if (dragging) Slider::mouseDown(event);
@@ -114,10 +122,59 @@ inline String clockText(double seconds, bool hours = false) {
                  : String::formatted("%02lld:%02lld", t / 60, t % 60);
 }
 namespace theme {
-inline const Colour background{0xff161616}, panel{0xff1d1d1d}, line{0xff444444},
-    secondary{0xffb9b9b9}, display{0xff101010}, titlebar{0xff222222}, green{0xff69ed91},
+inline constexpr uint32 darkBackgroundRGB = 0x0f0f0f;
+inline const Colour darkBackground{0xff000000u | darkBackgroundRGB};
+inline Colour background = darkBackground, panel = darkBackground, display = darkBackground, titlebar = darkBackground;
+inline Colour scrollRail{0xff1f1f1f}, homeBackground{0xff0f0f0f}, line{0xff444444}, secondary{0xffb9b9b9};
+inline const Colour transportPanelTop{0xff262626}, transportPanelBottom{0xff1a1a1a};
+inline const Colour transportPanelBorder{0xff505050};
+inline const Colour transportDetailTop{0xff1f1f1f}, transportDetailBottom{0xff1a1a1a}, transportDetailBorder{0xff3b3b3b};
+inline const Colour lightDarkBackground{0xff242424}, lightDarkPanel{0xff2b2b2b}, lightDarkDisplay{0xff202020};
+inline const Colour darkFaderRail{0xff0a0a0a};
+inline Colour faderRail = darkFaderRail;
+inline const Colour darkMixerStripeSurface{0xff262626};
+inline const Colour lightDarkMixerStripeSurface{0xff000000u | jaras::Project::defaultMasterColor};
+inline Colour mixerStripeSurface = darkMixerStripeSurface;
+inline Colour trackStripeSurface(bool selected) {
+    return selected ? mixerStripeSurface.interpolatedWith(Colours::white, .11f) : mixerStripeSurface;
+}
+inline constexpr int trackMixerMinHeight = 66, trackMixerStripeWidth = 5, hozMixerStripeHeight = 2;
+inline constexpr int trackMixerMinWidth = 278;
+inline constexpr auto trackMixerStyleKey = "jaras.trackMixer.trackStyle";
+inline constexpr auto hozMixerStyleKey = "jaras.hozMixer.trackStyle";
+inline constexpr auto interfaceThemeKey = "jaras.interface.theme";
+inline constexpr auto defaultInterfaceTheme = "lightDark";
+inline bool setInterfaceTheme(bool lightDark) {
+    const auto next = lightDark ? lightDarkBackground : darkBackground;
+    if (background == next) return false;
+    background = next;
+    faderRail = lightDark ? lightDarkBackground : darkFaderRail;
+    mixerStripeSurface = lightDark ? lightDarkMixerStripeSurface : darkMixerStripeSurface;
+    panel = lightDark ? lightDarkPanel : darkBackground;
+    display = lightDark ? lightDarkDisplay : darkBackground;
+    titlebar = next;
+    scrollRail = Colour(lightDark ? 0xff1c1c1c : 0xff1f1f1f);
+    homeBackground = Colour(lightDark ? 0xff242424 : 0xff0f0f0f);
+    line = Colour(lightDark ? 0xff494949 : 0xff444444);
+    secondary = Colour(lightDark ? 0xffd7d7d7 : 0xffb9b9b9);
+    return true;
+}
+inline Colour timelineHeaderLine() { return line.withAlpha(.65f); }
+inline const Colour green{0xff69ed91}, toolbarInactive{0xffc8c8c8},
     yellow{0xffffdc52}, accent{0xff79f59a}, transportPlay{0xff24f06a}, transportRed{0xff8f2847}, liveOffRed{0xffff3030};
-inline const Colour trackButton{0xff414141}, trackMute{0xffff4444};
+inline constexpr auto timelineBackgroundKey = "jaras.timeline.backgroundOverride";
+inline constexpr auto timelineVerticalGridKey = "jaras.timeline.primaryGridOverride";
+inline constexpr auto timelineHorizontalGridKey = "jaras.timeline.horizontalGrid";
+inline constexpr uint32 timelineBackgroundRGB = 0x222222;
+inline constexpr uint32 timelinePrimaryGridRGB = 0x828282;
+inline constexpr uint32 timelineHorizontalGridRGB = 0x000000;
+inline bool isTimelineThemeColour(const String &key) {
+    return key == timelineBackgroundKey || key == timelineVerticalGridKey || key == timelineHorizontalGridKey;
+}
+inline constexpr uint32 setlistQueuedYellowRGB = 0x807219;
+inline constexpr uint32 timelinePlayCursorRGB = 0xf44336;
+inline constexpr uint32 timelineEditCursorRGB = 0x00a65a;
+inline const Colour trackButton{0xff414141}, trackControl{0xff141414}, trackMute{0xffff4444};
 inline constexpr float trackButtonRadius = 4.f;
 inline void progressBar(Graphics &g, juce::Rectangle<float> bounds, double fraction) {
     const auto bar = bounds.withSizeKeepingCentre(bounds.getWidth(), std::min(6.f, bounds.getHeight()));
@@ -163,6 +220,7 @@ inline Colour surfaceText(Colour surface, Colour backgroundColour = panel) {
 Font font(float size, bool bold = false, bool italic = false);
 Font mediumFont(float size);
 Font semiboldFont(float size);
+Font setlistFont(float size, int style);
 } // namespace theme
 int runTests(const File &directory);
 } // namespace catlive

@@ -44,7 +44,7 @@ import Combine
     }
     func refresh(effect: String?, settings: NativeFXSettings) {
         self.effect = effect
-        guard let effect, settings.inserted.contains(effect) else { isHidden = true; return }
+        guard let effect, DrummerPadKind(rawValue: settings.kind(of: effect)) == nil, settings.inserted.contains(effect) else { isHidden = true; return }
         isHidden = false
         let identity = FXPreset.identity(settings, effect: effect)
         if identity != pluginID { factoryState = nil; pluginID = identity }

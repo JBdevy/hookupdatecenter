@@ -21,7 +21,8 @@ colors=theme[:theme.index('    static func track(')]+'}\n'+theme[theme.index('ex
 blink=theme[theme.index('/// Blink only'):theme.index('/// A color drag')]
 footer=source[source.index('struct SetlistFooterControls:'):source.index('private struct PlaylistNameEditor:')]
 drawer=source[source.index('private func setlistVisibleRegionID('):source.index('@MainActor private final class SetlistEntryCache')]
-Path(sys.argv[1]).write_text(colors+'\n'+typography+'\n'+blink+'\n'+footer+'\n'+drawer+'\n'+code+'\n'+original+'\n'+Path('Tests/Apple/NativeSetlistLabelTests.swift').read_text())
+localization='enum JarasLocalization { static func string(_ key: String) -> String { key } }'
+Path(sys.argv[1]).write_text(colors+'\n'+typography+'\n'+blink+'\n'+localization+'\n'+footer+'\n'+drawer+'\n'+code+'\n'+original+'\n'+Path('Tests/Apple/NativeSetlistLabelTests.swift').read_text())
 PY
 swiftc -suppress-warnings -swift-version 5 "$test_dir/main.swift" -o "$test_dir/test"
 cp -R Resources/Fonts/Inter "$test_dir/Inter"

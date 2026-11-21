@@ -122,6 +122,22 @@ int main(int argc, char **argv) {
         };
         const auto model=fixture();
         const auto encoded=ProjectCodec::encode(model);
+        test("chord markers roundtrip and are removed when cleared", [&] {
+            auto project = model;
+            auto &song = project.songs.front();
+            jaras::Track track{id(90), "Chords", {"chords"}};
+            track.chordMarkers = {{id(91), song.parts.front().id, 1.25, "F♯maj7"}};
+            song.tracks.push_back(track);
+            const auto wire = ProjectCodec::encode(project);
+            auto decoded = ProjectCodec::decode(json::parse(wire.dump()));
+            const auto &markers = decoded.songs.front().tracks.back().chordMarkers;
+            expect(markers.size() == 1 && markers.front().id == id(91) &&
+                   markers.front().regionID == song.parts.front().id && markers.front().offset == 1.25 &&
+                   markers.front().name == "F♯maj7", "Chord marker data lost");
+            decoded.songs.front().tracks.back().chordMarkers.clear();
+            const auto cleared = ProjectCodec::encode(decoded, wire);
+            expect(!cleared["songs"][0]["tracks"].back().contains("chordMarkers"), "Deleted chord marker returned");
+        });
         test("large projects keep every track beyond the old import ceiling",[&]{
             for (const auto count : {513, 4097}) {
                 auto large = model;

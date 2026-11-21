@@ -4,7 +4,11 @@ import SwiftUI
 
 // Display-only dependencies of the two extracted production views. Their
 // subscriptions, controls, local drafts and presentation-ID handling are real.
-@MainActor final class ProjectDocuments { var canCleanTimelineMedia = false }
+@MainActor final class ProjectDocuments {
+    var canCleanTimelineMedia = false
+    var canConvertTimelineAudio = false
+    func convertTimelineAudioToMP3(progress: @escaping @MainActor @Sendable (Int, Int) -> Void) async throws -> Int { 0 }
+}
 enum JarasTheme {
     static let background = Color.black, panel = Color.gray, text = Color.white, secondary = Color.gray, green = Color.green
 }
@@ -27,8 +31,23 @@ enum TimelineAppearanceDefaults {
     static let background: UInt32 = 0, primaryGrid: UInt32 = 1, secondaryGrid: UInt32 = 2
     static let playCursor: UInt32 = 3, editCursor: UInt32 = 4, subPlayCursor: UInt32 = 5
 }
+enum JarasInterfaceTheme: String {
+    case lightDark
+    static let preferenceKey = "jaras.interface.theme"
+    static let defaultTheme: Self = .lightDark
+}
+enum MixerTrackStyle: String {
+    case standard, stripeOnly
+    static let trackMixerKey = "jaras.trackMixer.trackStyle"
+    static let hozMixerKey = "jaras.hozMixer.trackStyle"
+}
+enum TimelineThemeColor {
+    case background, verticalGrid, horizontalGrid
+}
 struct SetlistTextColorRow: View {
-    let title: String, key: String, defaultColor: UInt32, showsReset: Bool
+    let title: String
+    init(title: String, key: String, defaultColor: UInt32, showsReset: Bool) { self.title = title }
+    init(title: String, swatch: TimelineThemeColor, theme: JarasInterfaceTheme) { self.title = title }
     var body: some View { HStack { Text(title); Button("Reset") {} } }
 }
 

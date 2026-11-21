@@ -47,6 +47,34 @@ func renderedPCM(_ url: URL) throws -> [Float] {
     try file.read(into: data)
     return Array(UnsafeBufferPointer(start: data.floatChannelData![0], count: Int(data.frameLength)))
 }
+do {
+    var source = Track(id: UUID(), name: "Send source", role: .keys)
+    var target = Track(id: UUID(), name: "Send destination", role: .other)
+    source.clips = [AudioClip(id: UUID(), name: "Tone", startTime: 0, duration: 1, audioFile: AudioFile(path: "b.wav"))]
+    source.outputs = [.none]; target.outputs = [.master]
+    source.volume = 0.25
+    source.routing = TrackRouting(transmitters: [target.id])
+    var fx = NativeFXSettings()
+    fx.inserted = ["Compressor"]; fx.compressorEnabled = true; fx.threshold = -30; fx.attack = 0.001
+    source.fx = fx
+    func peak(_ tap: TrackSendTap) throws -> Float {
+        var testProject = Project.empty(name: "Send taps")
+        source.routing?.setSendTap(tap, to: target.id)
+        testProject.songs[0].tracks = [source, target]
+        let folder = root.appendingPathComponent("send-" + tap.rawValue)
+        let request = AudioExportPlan(jobs: [.init(id: "send", fileName: "send.wav", start: 0, end: 1, track: nil, clip: nil)])
+        try OfflineAudioExport.run(project: testProject, song: testProject.songs[0], plan: request, mediaDirectory: root,
+            outputDirectory: folder, sampleRate: 48000, cancellation: AudioExportCancellation()) { _ in }
+        let samples = try renderedPCM(folder.appendingPathComponent("send.wav"))
+        return samples.suffix(12_000).map { abs($0) }.max() ?? 0
+    }
+    let dry = try peak(.preFX), processed = try peak(.postFX)
+    let prefader = try peak(.preFader), postfader = try peak(.postFader)
+    precondition(abs(dry - 0.3) < 0.001 && processed > 0 && processed < dry * 0.9, "Pre-FX must carry the dry audio")
+    precondition(abs(processed - prefader) < 0.0001, "Post-FX and pre-fader carry the processed chain at full gain")
+    precondition(abs(postfader - 0.25 * prefader) < 0.001, "Post-fader must carry the same PCM through the fader")
+    print("OFFLINE_SEND_TAPS_DRY_COMPRESSED_FADER_PCM_OK")
+}
 var tempoSong = song
 tempoSong.markers = [TimelineMarker(id: UUID(), name: "TEMPO", position: 0.4, color: 0x999999, tempoBPM: 180),
                      TimelineMarker(id: UUID(), name: "TEMPO", position: 0.8, color: 0x999999, tempoBPM: 60)]

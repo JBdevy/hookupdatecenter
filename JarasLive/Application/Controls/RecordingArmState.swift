@@ -21,8 +21,9 @@ public extension Project {
 public struct RecordingArmState: Equatable {
     public enum Mode: String, Equatable {
         case off, manual, automatic
-        public var next: Self {
-            switch self { case .off: return .manual; case .manual: return .automatic; case .automatic: return .off }
+        public func afterRecordClick(automatic: Bool = false) -> Self {
+            if automatic { return .automatic }
+            return self == .off ? .manual : .off
         }
     }
     private var modes: [UUID: Mode] = [:]

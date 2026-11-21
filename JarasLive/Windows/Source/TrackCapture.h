@@ -23,7 +23,7 @@ class TrackCapture {
         ID track;
         File file;
         int input = 1, channels = 2;
-        bool bus = false, midi = false, output = false;
+        bool bus = false, midi = false, output = false, silent = false, main = false;
         bool outputPostFX = true, outputPostFader = true;
         int bits = 0;
         bool floatingPoint = false;
@@ -113,7 +113,7 @@ class TrackCapture {
         entry.target = spec;
         entry.gain = spec.gain;
         entry.processing = std::make_shared<ProcessingState>();
-        if (!spec.midi) {
+        if (!spec.midi && !spec.silent) {
             const bool mp3 = spec.file.hasFileExtension("mp3");
             entry.captureFile = mp3 ? spec.file.withFileExtension(".capture.wav") : spec.file;
             if (spec.file.exists())
@@ -150,7 +150,7 @@ class TrackCapture {
     void input(const float *const *data, int channels, int count,
                const std::array<int, 128> &mapping) {
         for (auto &entry : entries)
-            if (entry.active && !entry.target.bus && !entry.target.midi) {
+            if (entry.active && !entry.target.bus && !entry.target.midi && !entry.target.silent) {
                 const float *pointers[3]{silence.data(), silence.data(), nullptr};
                 for (int ch = 0; ch < entry.target.channels; ++ch) {
                     const int physical = entry.target.input - 1 + ch;
@@ -166,19 +166,25 @@ class TrackCapture {
     }
     void bus(const ID &id, const AudioBuffer<float> &buffer, int count, bool output = false, bool postFX = true, bool postFader = true) {
         for (auto &entry : entries)
-            if (entry.active && entry.target.bus && !entry.target.midi && entry.target.track == id && entry.target.output == output &&
-                (!output || (entry.target.outputPostFX == postFX && entry.target.outputPostFader == postFader))) {
-                const float *pointers[3]{buffer.getReadPointer(0), buffer.getReadPointer(1), nullptr};
-                if (entry.target.channels == 1) {
-                    for (int i = 0; i < count; ++i)
-                        mono[(size_t)i] = (pointers[0][i] + pointers[1][i]) * .5f;
-                    pointers[0] = mono.data();
-                }
-                std::fill_n(gainSamples.data(), count, entry.gain);
-                pointers[entry.target.channels] = gainSamples.data();
-                if (!entry.writer->write(pointers, count))
-                    ++dropped;
-            }
+            if (entry.active && entry.target.bus && !entry.target.main && !entry.target.midi &&
+                entry.target.track == id && entry.target.output == output &&
+                (!output || (entry.target.outputPostFX == postFX && entry.target.outputPostFader == postFader)))
+                writeBus(entry, buffer, count);
+    }
+    void mainOutput(const AudioBuffer<float> &buffer, int count) {
+        for (auto &entry : entries)
+            if (entry.active && entry.target.main && !entry.target.midi) writeBus(entry, buffer, count);
+    }
+    void writeBus(Entry &entry, const AudioBuffer<float> &buffer, int count) {
+        const float *pointers[3]{buffer.getReadPointer(0), buffer.getReadPointer(1), nullptr};
+        if (entry.target.channels == 1) {
+            for (int i = 0; i < count; ++i)
+                mono[(size_t)i] = (pointers[0][i] + pointers[1][i]) * .5f;
+            pointers[0] = mono.data();
+        }
+        std::fill_n(gainSamples.data(), count, entry.gain);
+        pointers[entry.target.channels] = gainSamples.data();
+        if (!entry.writer->write(pointers, count)) ++dropped;
     }
     void midi(const ID &id, const MidiBuffer &messages, int count, int channelFilter = 0) {
         for (size_t target = 0; target < entries.size(); ++target)

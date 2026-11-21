@@ -36,14 +36,16 @@ import Foundation
         measuredMeter.update(left: 1, right: 0.1, elapsed: 0)
         precondition(measuredMeter.levels == SIMD2(1, 0.1), "Attack must remain immediate")
         for _ in 0..<Int(frequency / 10) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
-        precondition(abs(20 * log10(measuredMeter.levels.x) + 12) < 0.001, "Fall starts immediately and reaches -12 dB after 100 ms")
+        precondition(abs(20 * log10(measuredMeter.levels.x) + 4) < 0.001, "Fall starts immediately and reaches -4 dB after 100 ms")
         precondition(abs(measuredMeter.levels.x / measuredMeter.levels.y - 10) < 0.001, "Stereo channels fall independently")
-        for _ in 0..<Int(frequency * 0.5) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
-        precondition(measuredMeter.levels == .zero, "Silence must clear the short smoothing tail within 600 ms")
+        for _ in 0..<Int(frequency * 1.3) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(measuredMeter.levels.x > 0, "The meter should still be falling after 1.4 s")
+        for _ in 0..<Int(frequency * 0.2) { measuredMeter.update(left: 0, right: 0, elapsed: 1 / frequency) }
+        precondition(measuredMeter.levels == .zero, "The meter clears by 1.6 s")
         measuredMeter.update(left: 0.8, right: 0.2, elapsed: 1 / frequency)
         precondition(measuredMeter.levels == SIMD2(0.8, 0.2))
     }
-    print("METER_SHORT_SMOOTH_RELEASE_NO_HOLD_AND_INSTANT_STEREO_ATTACK_OK")
+    print("METER_SLOW_SMOOTH_RELEASE_NO_HOLD_AND_INSTANT_STEREO_ATTACK_OK")
     let level = TrackMeterLevel(), meter = NativeVerticalTrackMeterView(frame: NSRect(x: 5, y: 0, width: 40, height: 80))
     meter.bind(level, showScale: true); document.addSubview(meter)
     window.orderFront(nil)
@@ -98,7 +100,10 @@ import Foundation
     let leftClip = meterLayer("meter-level-0"), rightClip = meterLayer("meter-level-1")
     let leftGradient = leftClip.sublayers!.first as! CAGradientLayer
     precondition(abs(leftClip.frame.height - 40) < 0.001 && rightClip.frame.height == 80)
-    precondition(leftGradient.frame.height == 80 && leftGradient.locations == [0, 0.5, 1])
+    precondition(leftGradient.frame.height == 80 && leftGradient.locations == MixerMeterStyle.gradientStops.map { NSNumber(value: Double($0)) })
+    precondition(rightClip.sublayers!.last!.isHidden, "A zero dB signal must stay yellow")
+    level.update(left: pow(10, -30.0 / 20), right: pow(10, 0.1 / 20), elapsed: 1)
+    precondition(!rightClip.sublayers!.last!.isHidden, "The red tip must appear above zero dB")
     let quietBitmap = bitmap(), backingScale = window.backingScaleFactor
     var matchedGradientPixels = 0
     for y in 0..<quietBitmap.pixelsHigh {
@@ -165,8 +170,8 @@ import Foundation
     }
     for kind in TrackKind.allCases.map(Optional.some) + [nil] {
         let showsNumbers = trackShowsMeterReadouts(kind)
-        let expected = kind == nil || kind == .standard || kind == .video || kind == .click
-        precondition(showsNumbers == expected, "Only TP1/TP2, chords and timecode omit numeric meter readouts")
+        let expected = kind != .chords && kind != .timecode
+        precondition(showsNumbers == expected, "Chords and timecode omit numeric meter readouts")
         meter.bind(level, showScale: showsNumbers, foreground: .black)
         precondition(meterLayer("meter-peak").isHidden == !expected)
         precondition((0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden == !expected })
@@ -195,6 +200,19 @@ import Foundation
     precondition((0..<3).allSatisfy { meterLayer("meter-scale-\($0)").isHidden } && !meterLayer("meter-peak").isHidden,
         "The Track Mixer column shows only the held peak, never fixed 0, −24 or −∞ labels")
     precondition(numberColor("meter-peak") == .black, "Peak uses the configured track-name color")
+    meter.presentation = .compact
+    level.reset()
+    level.update(left: 0.4, right: 0, elapsed: 1)
+    precondition(meterLayer("meter-level-0").isHidden && meterLayer("meter-peak").isHidden)
+    let compact = meterLayer("meter-compact")
+    let gradient = compact.sublayers!.first as! CAGradientLayer
+    let channels = gradient.mask!.sublayers!
+    precondition(!compact.isHidden && compact.bounds.size == MixerMeterStyle.compactSize && compact.cornerRadius == 4)
+    precondition(gradient.startPoint.y == 0 && gradient.endPoint.y == 1)
+    precondition(channels[0].frame.minY == 0 && channels[0].frame.height > 0 && channels[1].frame.height == 0)
+    meter.presentation = .peak
+    precondition(compact.isHidden && meterLayer("meter-level-1").isHidden && !meterLayer("meter-peak").isHidden)
+    meter.presentation = .bars
     let bottomPeakFrame = meterLayer("meter-peak").frame
     let bottomPeakPoint = NSPoint(x: bottomPeakFrame.midX, y: bottomPeakFrame.midY)
     let bottomPeakClick = NSEvent.mouseEvent(with: .leftMouseDown, location: meter.convert(bottomPeakPoint, to: nil), modifierFlags: [],
@@ -214,11 +232,11 @@ import Foundation
     precondition(meterLayer("meter-background-0").backgroundColor == NSColor.black.withAlphaComponent(0.55).cgColor
         && meterLayer("meter-background-1").backgroundColor == NSColor.black.withAlphaComponent(0.55).cgColor,
         "The preexisting narrow stereo bar backgrounds are preserved")
-    for decibels in [-0.01, 0.0, 3.0] {
+    for decibels in [-0.01, 0.0, 0.1, 3.0] {
         level.peakHold.clear(); level.peakHold.record(pow(10, decibels / 20))
-        precondition(numberColor("meter-peak") == (decibels >= 0 ? .red : .systemGreen),
-            "Peak is red from zero dB and follows the name below zero")
-        precondition(meterLayer("meter-peak").backgroundColor == (decibels >= 0 ? NSColor.black.cgColor : nil))
+        precondition(numberColor("meter-peak") == (decibels > 0 ? .red : .systemGreen),
+            "Peak is red above zero dB and follows the name at or below zero")
+        precondition(meterLayer("meter-peak").backgroundColor == (decibels > 0 ? NSColor.black.cgColor : nil))
     }
     level.peakHold.clear(); level.peakHold.record(pow(10, -24.0 / 20))
     meter.layer = CALayer()

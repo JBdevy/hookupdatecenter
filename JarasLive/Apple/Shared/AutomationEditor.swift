@@ -19,7 +19,7 @@ import Combine
     static func open(show: ShowController, track: UUID?) {
         let key = show.snapshot.project.id.uuidString + (track?.uuidString ?? "master")
         if let window = windows[key] { window.makeKeyAndOrderFront(nil); return }
-        let name = track.flatMap { id in show.current?.tracks.first { $0.id == id }?.name } ?? "Master"
+        let name = track.flatMap { id in show.current?.tracks.first { $0.id == id }?.name } ?? "Main"
         let window = AutomationWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 560), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = JarasLocalization.string("Envelopes") + " · " + name
         window.isReleasedWhenClosed = false; window.minSize = NSSize(width: 640, height: 400)

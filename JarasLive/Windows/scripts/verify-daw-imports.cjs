@@ -148,6 +148,7 @@ const imported=migrate(logic,'Logic'), song=imported.project.songs[0], clip=song
 assert.equal(song.tracks[1].parentTrackID,song.tracks[0].id);
 assert.equal(clip.startTime,6);assert.equal(clip.duration,10);assert.equal(clip.sourceOffset,1);assert.equal(clip.pitchSemitones,-4.75);assert.equal(clip.muted,true);
 assert.equal(song.parts[0].name,'Introduction');assert.equal(song.parts[0].endTime,6);
+assert(song.markers.every(m=>m.tempoBPM));
 assert.deepEqual(fs.readFileSync(path.join(path.dirname(imported.file),clip.audioFile.path)),audio);
 assert.deepEqual(fs.readFileSync(path.join(logic,'Media/Audio Files/Guitar.wav')),audio);
 fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:7}));migrate(logic,'BadAlternative');
@@ -190,6 +191,18 @@ assert(imported.project.songs[0].tracks.every(t=>t.color===0x828282));
 // Build Logic MUSICAS MIDI-region metadata, including a standalone song and
 // duplicate ordinary flags at child starts. Match Mac's linked-flag priority.
 function logicContainer(records){const b=Buffer.concat(records),h=Buffer.alloc(24);put(h,0,0xabc04723);put(h,16,b.length);return Buffer.concat([h,b]);}
+for (const [name,length,end] of [['Explicit',12*960,8],['Automatic',1,20]]) {
+ const first=Buffer.from(marker), next=Buffer.from(marker);
+ put(first,28,length);put(next,4,38400+36*960);put(next,16,5);put(next,28,960);
+ const input=path.join(root,`Logic${name}.logicx`), variant=path.join(input,'Alternatives/002');
+ fs.mkdirSync(path.dirname(variant),{recursive:true});fs.cpSync(alternative,variant,{recursive:true});
+ fs.cpSync(path.join(logic,'Media'),path.join(input,'Media'),{recursive:true});
+ const flags=[record('qSvE',Buffer.concat([first,next]),0,0,22),records.at(-1),record('qSxT',Buffer.from('{\\rtf1\\ansi Outro}'),5<<16,0,32)];
+ fs.writeFileSync(path.join(variant,'ProjectData'),logicContainer([...records.slice(0,-2),...flags]));
+ const migrated=migrate(input,`Logic${name}`).project.songs[0];
+ assert.deepEqual(migrated.parts.map(p=>[p.name,p.startTime,p.endTime]),[['Introduction',0,end],['Outro',20,20.5]]);
+ assert(migrated.markers.every(m=>m.tempoBPM));
+}
 const musicRecords=[];let musicRoot=Buffer.alloc(100);text(musicRoot,16,'Show');musicRecords.push(record('qeSM',musicRoot,0x40000));
 let musicEnv=Buffer.alloc(200);text(musicEnv,158,'MUSICAS');musicRecords.push(record('ivnE',musicEnv,0x40000,0,20));let musicTrack=Buffer.alloc(58);musicTrack[0]=1;put(musicTrack,6,0x40000);musicRecords.push(record('karT',musicTrack,0x40000,0));
 for(const [index,[name,start,length]] of [['First',0,4],['Second',4,4],['Outside',12,4]].entries()){
@@ -199,7 +212,7 @@ for(const [index,[name,start,length]] of [['First',0,4],['Second',4,4],['Outside
 const musicMarker=Buffer.alloc(48);musicMarker[0]=0x12;musicMarker[23]=0x88;musicMarker[39]=0x88;put(musicMarker,4,38400);put(musicMarker,16,4);put(musicMarker,28,8*960);musicRecords.push(record('qSvE',musicMarker,0,0,22));musicRecords.push(record('qSxT',Buffer.from('{\\rtf1\\ansi Family}'),4<<16,0,32));
 fs.writeFileSync(path.join(logic,'Resources/ProjectInformation.plist'),plist({ActiveVariant:2}));fs.writeFileSync(path.join(alternative,'MetaData.plist'),plist({SampleRate:48000,BeatsPerMinute:60,SongSignatureNumerator:4,SongSignatureDenominator:4}));fs.writeFileSync(path.join(alternative,'ProjectData'),logicContainer(musicRecords));
 const logicMusic=migrate(logic,'LogicMusic').project.songs[0];assert.deepEqual(logicMusic.parts.map(p=>p.name),['Family','First','Second','Outside']);
-const normalFlags=logicMusic.markers.filter(m=>!m.tempoBPM);assert.deepEqual(normalFlags.map(m=>m.name),['First','Second','Outside']);assert(normalFlags[0].sourceRegionID&&normalFlags[1].sourceRegionID);assert(!normalFlags[2].sourceRegionID);
+const normalFlags=logicMusic.markers.filter(m=>!m.tempoBPM);assert.deepEqual(normalFlags.map(m=>m.name),['First','Second']);assert(normalFlags.every(m=>m.sourceRegionID));
 const duplicateMixer=Buffer.alloc(180);duplicateMixer[89]=64;put(duplicateMixer,116,90*16777216);Buffer.alloc(16,7).copy(duplicateMixer,153);
 fs.writeFileSync(path.join(alternative,'ProjectData'),logicContainer([...musicRecords,record('OCuA',duplicateMixer,0,0,0,7),record('OCuA',duplicateMixer,0,0,0,7)]));migrate(logic,'LogicDuplicateMixer');
 console.log('VS Hook playlists/blocks/tuner/four loops/linked songs and Logic MUSICAS/standalone/duplicate-mixer parity passed.');

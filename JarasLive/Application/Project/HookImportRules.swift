@@ -15,7 +15,7 @@ const CREATE_PROJECT_INTERNAL_PEAK_DB = -1;
 const CREATE_PROJECT_DESTINATION_EXISTS_MESSAGE = 'Não é possível criar este projeto. Já existe outro projeto com esse nome nessa pasta.';
 const CREATE_PROJECT_TRACK_RULES = [
   { name: 'Click', pattern: /\b(click|metronomo|metronome)\b/ },
-  { name: 'Regência', pattern: /\b(regencia|maestro|gps|contagem|count in|countin)\b/ },
+  { name: 'Regência', pattern: /\b(regencia|cagueite|maestro|gps|contagem|count in|countin)\b/ },
   { name: 'Backing Vocal', pattern: /\b(back(?:ing)?(?: vocals?| vocais| vozes?| voz)?|backs?|bk|bgv)\b/ },
   // O nome da pista pode vir acompanhado pelo título da música, pelo artista
   // ou por uma seção. A correspondência deve funcionar em qualquer parte
@@ -470,6 +470,7 @@ function findVariant(normalizedName, rule) {
   if (has(/\b(lead)\b/)) variants.push('Lead');
   if (has(/\b(clean|limpo)\b/)) variants.push('Clean');
   if (has(/\b(drive|dist|distorcao|distortion)\b/)) variants.push('Drive');
+  if (rule.name === 'Guitarra' && has(/\bwah(?: wah)?\b/)) variants.push('Wah');
   if (has(/\b(midi)\b/)) variants.push('MIDI');
 
   const left = has(/\b(l|left|esq|esquerda)\b/);
@@ -1026,7 +1027,21 @@ function existingImportClassifier(tracks) {
      return { name: label, key: 'existing:' + target.index, recognized: true, matchedExistingName: true, sourceName: name };
    }
    const result = classifyCreateProjectTrack(filePath, folderName);
-   return { ...result, key: resolveKey(result.key) };
+   const key = resolveKey(result.key);
+   if (!result.recognized || key !== result.key) return { ...result, key };
+
+   // Providers frequently append 1 to the first stem even when the
+   // equivalent destination has no number. Prefer an explicit numbered
+   // destination and keep 2 and later separate for simultaneous stems.
+   const first = result.key.endsWith(' 1');
+   if (first || !/ \d+$/.test(result.key)) {
+     const alternate = first ? result.key.slice(0, -2) : result.key + ' 1';
+     const target = canonical.get(alternate);
+     if (target) {
+       return { ...result, name: first ? result.name.slice(0, -2) : result.name, key: 'existing:' + target.index };
+     }
+   }
+   return result;
  };
  return { classify, resolveKey };
 }

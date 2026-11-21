@@ -117,7 +117,10 @@ inline Drawer decodeDrawer(const var &raw) {
     return drawer;
 }
 inline var encode(const jaras::Song &source, const jaras::Part &region, std::vector<jaras::Track> tracks,
-                  const std::vector<RenderedStem> &stems, const StringArray &lyricsFiles, bool fullItems) {
+                  const std::vector<RenderedStem> &stems, const StringArray &lyricsFiles, bool fullItems, bool printedRateChange) {
+    const bool includesTempoMarkers = !printedRateChange && std::none_of(stems.begin(), stems.end(), [](const auto &stem) {
+        return std::any_of(stem.items.begin(), stem.items.end(), [](const auto &item) { return std::abs(item.rate - 1.) > 1e-7; });
+    });
     const double origin = region.startTime;
     double first = origin;
     std::set<ID> trackIDs;
@@ -142,7 +145,7 @@ inline var encode(const jaras::Song &source, const jaras::Part &region, std::vec
     }
     std::vector<jaras::TimelineMarker> regionMarkers;
     if (source.markers) for (const auto &marker : *source.markers) {
-        if (marker.sourceRegionID) continue;
+        if (marker.sourceRegionID || (!includesTempoMarkers && marker.tempoBPM)) continue;
         if (drawer) {
             if (marker.position < drawer->startTime || marker.position >= drawer->endTime) continue;
             if (marker.regionOwnerID && siblingIDs.count(*marker.regionOwnerID)) {
@@ -161,13 +164,19 @@ inline var encode(const jaras::Song &source, const jaras::Part &region, std::vec
     part.startTime -= first; part.endTime -= first;
     part.parentRegionID.reset();
     part.multiLoops.clear();
-    part.pitchTrackIDs.reset(); part.pitchGroupIDs.reset();
+    if (region.pitchTrackIDs || region.pitchGroupIDs) {
+        part.pitchTrackIDs.emplace();
+        part.pitchGroupIDs = std::vector<ID>{};
+        for (const auto &track : source.tracks)
+            if (trackIDs.count(track.id) && regionPitch::selected(source, track, region))
+                part.pitchTrackIDs->push_back(track.id);
+    }
     jaras::Song song;
     song.id = uuid(); song.name = region.name; song.duration = std::max(.01, last - first);
     song.bpm = source.bpm; song.beatsPerBar = source.beatsPerBar; song.beatUnit = source.beatUnit;
     song.timeSettings = source.timeSettings; song.parts.push_back(part);
     song.markers = std::move(regionMarkers);
-    if (std::none_of(song.markers->begin(), song.markers->end(),
+    if (includesTempoMarkers && std::none_of(song.markers->begin(), song.markers->end(),
         [&](const auto &marker) { return marker.tempoBPM && std::abs(marker.position - origin) < 1e-7; })) {
         jaras::TimelineMarker marker;
         marker.id = uuid(); marker.name = "TEMPO"; marker.position = origin; marker.color = 0x999999;
@@ -235,7 +244,6 @@ inline var encode(const jaras::Song &source, const jaras::Part &region, std::vec
         for (const auto &item : stem.items) {
             auto entry = object();
             put(entry, "offset", item.offset); put(entry, "duration", item.duration); put(entry, "rate", item.rate);
-            if (item.pitchSemitones) put(entry, "pitchSemitones", *item.pitchSemitones);
             items.add(entry);
         }
         put(row, "items", items); savedStems.add(row);

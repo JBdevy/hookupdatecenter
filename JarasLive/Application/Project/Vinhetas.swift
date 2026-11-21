@@ -77,6 +77,7 @@ public struct VinhetasPreset: Codable, Equatable {
     }
 }
 public struct VinhetasPad: Codable, Equatable {
+    public static let sampleFolder = "Pads"
     public static let maximumDuration: Double = 60
     public static func acceptsDuration(frames: Int64, sampleRate: Double) -> Bool {
         frames > 0 && sampleRate.isFinite && sampleRate > 0 && Double(frames) / sampleRate <= maximumDuration
@@ -184,7 +185,10 @@ public enum VinhetasPackage {
         for p in library.presets.indices { for n in library.presets[p].pads.indices {
             guard let name = library.presets[p].pads[n].audioFile, !name.isEmpty else { library.presets[p].pads[n].audioFile = nil; continue }
             let source = directory.appendingPathComponent(name).standardizedFileURL
-            guard source.deletingLastPathComponent() == directory.standardizedFileURL, VinhetasPad.accepts(source) else { throw invalid("Arquivo de pad inválido: \(name)") }
+            let mediaRoot = directory.standardizedFileURL
+            let parent = source.deletingLastPathComponent()
+            guard parent == mediaRoot || parent == mediaRoot.appendingPathComponent(VinhetasPad.sampleFolder, isDirectory: true),
+                  VinhetasPad.accepts(source) else { throw invalid("Arquivo de pad inválido: \(name)") }
             try PortableProjectPackage.validateRegularFile(source)
             if paths[source] == nil {
                 var record = try PortableProjectPackage.fingerprint(source)

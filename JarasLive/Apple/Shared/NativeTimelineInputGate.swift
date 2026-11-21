@@ -225,11 +225,14 @@ enum NativeTimelineOverlayInputRegistration {
         if let pinned = pinnedRoot(in: host, point: point) {
             return pinned.hitTest(pinned.superview?.convert(point, from: nil) ?? point) ?? pinned
         }
-        return views.allObjects.first { view in
+        let registered = views.allObjects.first { view in
             guard view.window === window, !view.isHiddenOrHasHiddenAncestor, view.isDescendant(of: host) else { return false }
             let local = view.convert(point, from: nil)
             return view.bounds.contains(local) && view.visibleRect.contains(local)
         }
+        guard let registered else { return nil }
+        let parentPoint = registered.superview?.convert(point, from: nil) ?? point
+        return registered.hitTest(parentPoint) ?? registered
     }
 }
 

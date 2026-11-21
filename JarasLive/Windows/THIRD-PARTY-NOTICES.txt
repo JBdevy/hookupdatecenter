@@ -28,6 +28,11 @@ The full license is included as Inter-LICENSE.txt and in
 Resources/Fonts/Inter/LICENSE.txt.
 https://github.com/rsms/inter
 
+Twemoji keycap artwork, copyright Twitter, Inc. and other contributors.
+Unmodified images from https://github.com/twitter/twemoji, licensed under
+Creative Commons Attribution 4.0 International.
+https://creativecommons.org/licenses/by/4.0/
+
 Signalsmith Stretch 1.4.0 and Signalsmith Linear 0.6.4, by Signalsmith Audio.
 Licensed under MIT. Complete notices accompany the executable as
 Signalsmith-Stretch-LICENSE.txt and Signalsmith-Linear-LICENSE.txt.

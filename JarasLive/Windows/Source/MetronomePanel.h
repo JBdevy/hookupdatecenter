@@ -12,13 +12,22 @@ inline var metronomePreferences(const Appearance &appearance){
     }
     return value;
 }
+inline void applyMetronomePreference(Appearance &preferences, AudioEngine &engine,
+                                    const String &key, const var &value, std::function<void(String)> report) {
+    auto next = metronomePreferences(preferences);
+    put(next, Identifier(key), value);
+    engine.configureMetronome(next, report);
+    preferences.setMetronome("jaras.metronome." + key, value, [report](String error) {
+        if (report && error.isNotEmpty()) report(error);
+    });
+}
 class MetronomePanel final:public Component {
   public:
     MetronomePanel(Appearance &p,AudioEngine &e):preferences(p),engine(e),settings(metronomePreferences(p)){
         for(auto *c:std::initializer_list<Component*>{&sound,&output,&gainA,&gainB,&close,&status,&fileA,&fileB})addAndMakeVisible(c);
         sound.addItemList({"Digital","Wood","Clave","User"},1);sound.setSelectedId(std::max(1,StringArray{"Digital","Wood","Clave","User"}.indexOf(str(settings,"preset"))+1),dontSendNotification);
         sound.onChange=[this]{change("preset",sound.getText());resized();};
-        for(int i=0;i<3;++i){auto *b=modes.add(new TextButton(i==0?String::fromUTF8("A–B"):i==1?String::fromUTF8("Só A"):String::fromUTF8("Só B")));addAndMakeVisible(b);b->setToggleState(i==(int)num(settings,"mode"),dontSendNotification);b->onClick=[this,i]{change("mode",i);for(int n=0;n<3;++n)modes[n]->setToggleState(n==i,dontSendNotification);};}
+        for(int i=0;i<3;++i){auto *b=modes.add(new TextButton(i==0?String::fromUTF8("A–B"):i==1?String::fromUTF8("Só A"):String::fromUTF8("Só B")));addAndMakeVisible(b);b->setToggleState(i==(int)num(settings,"mode"),dontSendNotification);b->onClick=[this,i]{change("mode",i);for(int n=0;n<3;++n)modes[n]->setToggleState(n==(int)preferences.value("jaras.metronome.mode",0),dontSendNotification);};}
         auto *device=engine.devices.getCurrentAudioDevice();const int count=device?device->getOutputChannelNames().size():2;
         for(int i=1;i<=count;++i){patches.push_back({i,1});output.addItem("Out "+String(i),(int)patches.size());}
         for(int i=1;i<count;i+=2){patches.push_back({i,2});output.addItem("Out "+String(i)+" / "+String(i+1),(int)patches.size());}
@@ -50,9 +59,14 @@ class MetronomePanel final:public Component {
     Appearance &preferences;AudioEngine &engine;var settings;ComboBox sound,output;OwnedArray<TextButton>modes;ParameterSlider gainA,gainB;
     TextButton close{localization::translate("Fechar")},fileA{"Importar A"},fileB{"Importar B"};Label status;std::vector<jaras::OutputPatch>patches;std::unique_ptr<FileChooser>chooser;
     void change(String key,var value){
-        auto next=settings.clone();put(next,Identifier(key),value);
-        try{engine.configureMetronome(next,[safe=SafePointer<MetronomePanel>(this)](String error){if(safe)safe->status.setText(error,dontSendNotification);});preferences.setMetronome("jaras.metronome."+key,value,[safe=SafePointer<MetronomePanel>(this)](String error){if(safe&&error.isNotEmpty())safe->status.setText(error,dontSendNotification);});settings=next;status.setText({},dontSendNotification);}
-        catch(const std::exception &e){status.setText(String::fromUTF8(e.what()),dontSendNotification);}
+        try {
+            status.setText({}, dontSendNotification);
+            applyMetronomePreference(preferences, engine, key, value, [safe = SafePointer<MetronomePanel>(this)](String error) {
+                if (safe) safe->status.setText(error, dontSendNotification);
+            });
+        } catch (const std::exception &e) {
+            status.setText(String::fromUTF8(e.what()), dontSendNotification);
+        }
     }
     void import(bool first){
         chooser=std::make_unique<FileChooser>("Som de click",File(),"*.wav;*.aif;*.aiff;*.mp3;*.flac",true);

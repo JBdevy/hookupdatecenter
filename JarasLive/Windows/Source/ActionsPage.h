@@ -93,7 +93,8 @@ class ActionsPage final : public Component, private ChangeListener {
         }
         keyboard.setBounds(56, 88, 72, 24);
         midi.setBounds(128, 88, 72, 24);
-        keyboard.setVisible(!onlyMappings);
+        keyboard.setVisible(!onlyMappings && ActionBindings::baseAction(selectedAction) != "volumeTrack"
+                            && selectedAction != "volumeMaster");
         midi.setVisible(!onlyMappings);
         information.setBounds(0, onlyMappings ? 0 : 122, getWidth(), 22);
         const int top = onlyMappings ? 40 : 154;
@@ -243,7 +244,7 @@ class ActionsPage final : public Component, private ChangeListener {
             contentHeight += card->height() + 14;
         };
         for (const auto &definition : actionDefinitions()) {
-            if (selectedAction.isNotEmpty() && selectedAction != definition.id) continue;
+            if (selectedAction.isNotEmpty() && ActionBindings::baseAction(selectedAction) != definition.id) continue;
             if (onlyMappings) {
                 auto targets = actions.mappedTracks(definition);
                 targets.insert(targets.begin(), 0);
@@ -269,8 +270,13 @@ class ActionsPage final : public Component, private ChangeListener {
             if (kind == "midi" && !definition.supportsMIDI())
                 continue;
             if (definition.track) {
-                add(definition, kind, (int)trackNumbers[Identifier(definition.id)], true);
-                if (String(definition.id) != "selectTrack") add(definition, kind);
+                const int target = ActionBindings::targetNumber(selectedAction);
+                if (target > 0) {
+                    add(definition, kind, target);
+                } else {
+                    add(definition, kind, (int)trackNumbers[Identifier(definition.id)], true);
+                    if (String(definition.id) != "selectTrack") add(definition, kind);
+                }
             } else add(definition, kind);
         }
         information.setText(actions.error.isNotEmpty() ? actions.error

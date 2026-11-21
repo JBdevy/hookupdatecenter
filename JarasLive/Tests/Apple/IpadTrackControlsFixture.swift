@@ -11,20 +11,34 @@ struct DAWRemoteState {
 enum DAWRemoteCommand { enum Action:String { case pan,volume,mute,solo,resetMeterPeak,tempo,pitch,phase } }
 enum TrackKind { case standard,click,chords,teleprompt,teleprompt2;var isText:Bool{self == .chords || isTeleprompter};var isTeleprompter:Bool{self == .teleprompt || self == .teleprompt2} }
 struct FixtureTrackRole { var rawValue = "other" }
+struct FixtureAutomation { var visibleEnvelopes: [String] = [] }
 struct FixturePlugin { var category = "Instrument" }
-struct FixtureFX { var instrumentKeys: [String] = []; var externalPlugins: [FixturePlugin]? }
-enum FixtureRecordingMode { case audio, midi }
+struct FixtureFX { var instrumentKeys: [String] = []; var externalPlugins: [FixturePlugin]?; var inserted: [String] = []; var allBypassed = false }
+enum FixtureRecordingMode: Int { case audio = 2, midi = 0 }
 struct Track {
  let id:UUID;var role = FixtureTrackRole();var kind:TrackKind = .standard;var parentTrackID:UUID? = nil
+ var automation: FixtureAutomation? = nil
  var fx: FixtureFX?; var recordingChannels: Int?; var midiChannel: Int?; var recordingFormat: String?
- var recordingPostFader: Bool?; var recordingPostFX: Bool?; var inputMonitoring: Bool?; var recordsOutput = false
+ var recordingPostFader: Bool?; var recordingPostFX: Bool?; var inputMonitoring: Bool?; var recordsOutput = false; var receivesMain = false
+ func monitorsInput(armed: Bool) -> Bool { !receivesMain && (inputMonitoring ?? armed) }
  var recordingMode: FixtureRecordingMode { recordingChannels == 0 ? .midi : .audio }
+}
+struct DesktopToolbarSymbol: View {
+ let name: String
+ var body: some View { Image(systemName: "point.topleft.down.to.point.bottomright.curvepath") }
+}
+struct TrackGainReductionIndicator: View {
+ let meter: TrackMeterLevel
+ var body: some View { EmptyView() }
 }
 struct Song {var tracks:[Track]}
 @MainActor final class ShowController: ObservableObject {
  @Published var current:Song?
  init(_ tracks:[Track]){current=Song(tracks:tracks)}
  func send(_ action:DAWRemoteCommand.Action,target:UUID){TouchProbe.shared.log(action.rawValue)}
+ func sendMixerControl(_ action: DAWRemoteCommand.Action, target: UUID?, value: Double, preview: Bool = false) {
+  if !preview { TouchProbe.shared.log(action.rawValue) }
+ }
  func insertClickItems(track:UUID){TouchProbe.shared.log("insert")}
  var canDrop:Bool{true}
  func canDropTrack(_ source:UUID,on target:UUID,after:Bool)->Bool{source != target}
@@ -61,18 +75,25 @@ extension View { func jarasHelp(_ help: String) -> some View { self } }
  @Published var muted=false;@Published var solo=false
  func log(_ value:String){event=value}
 }
-struct TrackGroupButton:View {let show:ShowController;let project:UUID;let track:UUID;let parent:UUID?;var body:some View {Button("Folder") {TouchProbe.shared.log("folder")}}}
-enum JarasTheme {static let text=Color.white,green=Color.green,yellow=Color.yellow,mixer=Color(white:0.2),background=Color(white:0.086),panel=Color(white:0.114),display=Color(white:0.063),transportRed=Color.red,liveOffRed=Color.red,trackButton=Color.gray}
+struct TrackGroupButton:View {let show:ShowController;let project:UUID;let track:UUID;let parent:UUID?;var height:CGFloat=20;var body:some View {Button("Folder") {TouchProbe.shared.log("folder")}}}
+enum JarasTheme {static let displayHex:UInt32=0x101010,lightDarkBackgroundHex:UInt32=0x242424; static let workspaceToolbar=Color(white:42.0/255); static let text=Color.white,green=Color.green,yellow=Color.yellow,mixer=Color(white:0.2),background=Color(white:0.086),panel=Color(white:0.114),display=Color(white:0.063),transportRed=Color.red,liveOffRed=Color.red,trackButton=Color.gray}
 extension Color { init(hex: UInt32) { self.init(red: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255, blue: Double(hex & 255) / 255) } }
 func remoteColor(_ color:UInt32)->Color{.white}
 enum TrackNameContrast{static func components(_ color:UInt32,emphasized:Bool)->(red:Double,green:Double,blue:Double){(0.2,0.5,0.3)}}
 struct GroupTrackConnector:Shape {let last:Bool;func path(in r:CGRect)->Path{Path{p in p.move(to:.zero);p.addLine(to:CGPoint(x:0,y:r.height));p.addLine(to:CGPoint(x:r.width,y:r.height))}}}
 @MainActor final class StemAudioPlayback {static let shared=StemAudioPlayback();func meter(for id:UUID)->Int{0}}
-struct IpadMixerMeter:View {let meter:Int;var preparesOffscreen=false;var body:some View{Color.green.allowsHitTesting(false).accessibilityElement().accessibilityLabel("Audio meter").accessibilityIdentifier("audio-meter")}}
+typealias TrackMeterLevel = Int
+enum MixerMeterStyle {
+    static let railThickness: CGFloat = 14
+    static func railBackground(for theme: JarasInterfaceTheme) -> CGColor {
+        let gray = (theme == .dark ? 10.0 : 36.0) / 255
+        return CGColor(srgbRed: gray, green: gray, blue: gray, alpha: 1)
+    }
+}
+struct IpadMixerMeter:View {let meter:Int;var preparesOffscreen=false;var compact=false;var linked=false;var body:some View{Color.green.allowsHitTesting(false).accessibilityElement().accessibilityLabel("Audio meter").accessibilityIdentifier("audio-meter")}}
 enum DAWRemoteFaderScale {static func decibels(_ gain:Double)->Double{gain>0 ? 20*log10(gain) : -60};static func gain(_ db:Double)->Double{pow(10,db/20)}}
 enum JarasLocalization {static func string(_ key:String)->String{key}}
 
-@MainActor final class InstrumentKeyboardState { static let shared = InstrumentKeyboardState(); private let state = TrackMIDIActivity(); func activity(_ id: UUID) -> TrackMIDIActivity { state } }
 
 // Distinguish the whole row from accessibility IDs inherited by its meters.
 struct RowFrameProbe: UIViewRepresentable {
@@ -123,8 +144,10 @@ struct TouchFixtureView:View {
     RemoteNativeMixerRow(track:.init(id:text,name:"Text track"),project:id,song:nil,number:3,local:true,localShow:show,select:{probe.selection+=1},addText:{probe.log("text")}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:60)
     ForEach(4...5, id: \.self) { number in
      let target=UUID(uuidString:String(format:"00000000-0000-0000-0000-%012d",number))!
-     RemoteNativeMixerRow(track:.init(id:target,name:"TP \(number-3)"),project:id,song:nil,number:number,local:nativeSpecialRows,localShow:show,
-      select:{probe.selection+=1},addText:{probe.log("tp-text")},addMedia:{probe.log("tp-media")}){action,_ in probe.log(action.rawValue)}.frame(width:450,height:80)
+     RemoteNativeMixerRow(track:.init(id:target,name:"TP \(number-3)"),project:id,song:nil,number:number,local:nativeSpecialRows,localShow:show,nativeContextMenu:true,
+      select:{probe.selection+=1},openPatch:{probe.log("tp-patch")},addText:{probe.log("tp-text")},
+      addLyrics:{probe.log("tp-lyrics")}){action,_ in probe.log(action.rawValue)}.frame(width:229,height:66)
+      .modifier(IpadTrackAudioContextMenu(enabled:nativeSpecialRows,openPatch:nil,addAudio:nil,addMedia:{probe.log("tp-media")}))
     }
     ForEach(0..<12){n in Text("Track \(n)").frame(width:450,height:90).background(Color.gray)}
    }

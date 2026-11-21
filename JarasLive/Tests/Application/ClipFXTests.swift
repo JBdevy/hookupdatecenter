@@ -94,12 +94,13 @@ final class ClipFXTests: XCTestCase {
         project.songs[0].tracks[0].clips[0].fx = settings
         let decoded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
         XCTAssertEqual(decoded.songs[0].tracks[0].clips[0].fx, settings)
-        var invalid = NativeFXSettings()
-        invalid.appendNative("Instruments", instrument: "piano")
-        invalid.appendNative("Instruments", instrument: "organ")
-        invalid.inserted.removeAll { $0 == "Instruments" }
-        invalid.instrumentID = nil; invalid.instrumentParameters = nil; invalid.instrumentBypassed = nil
-        XCTAssertThrowsError(try invalid.validateForClip(), "native instruments cannot enter an item through a repeated instance")
+        var instruments = NativeFXSettings()
+        instruments.appendNative("Instruments", instrument: "piano")
+        instruments.appendNative("Instruments", instrument: "organ")
+        try instruments.validateForClip()
+        project.songs[0].tracks[0].clips[0].fx = instruments
+        let reloaded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
+        XCTAssertEqual(reloaded.songs[0].tracks[0].clips[0].fx, instruments)
     }
     func testItemManagerShowsFixedNativeStagesBeforeRepeatedAndExternalInsertsWithoutRewritingOrder() throws {
         var settings = NativeFXSettings()
@@ -145,7 +146,7 @@ final class ClipFXTests: XCTestCase {
         var project = fixture(); project.songs[0].tracks[0].clips[0].fx = value
         XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)), project)
     }
-    func testItemEffectsRejectInstrumentsUnknownEffectsAndSpecialTracks() throws {
+    func testItemEffectsRejectIncompleteInstrumentsUnknownEffectsAndSpecialTracks() throws {
         var project = fixture()
         var effects = NativeFXSettings()
         for invalid in ["Instruments", "External"] {

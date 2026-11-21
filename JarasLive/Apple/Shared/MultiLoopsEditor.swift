@@ -198,7 +198,7 @@ struct MultiLoopsEditor: View {
             }
             ScrollView {
                 LazyVStack(spacing: 4) {
-                    trackRow(id: MultiLoopTrack.masterID, name: "Master", ceiling: show.snapshot.project.masterVolume ?? 1)
+                    trackRow(id: MultiLoopTrack.masterID, name: "Main", ceiling: show.snapshot.project.masterVolume ?? 1)
                     ForEach(tracks) { track in
                         trackRow(id: track.id, name: track.name, ceiling: track.volume,
                                  group: groups.contains(track.id), depth: depths[track.id] ?? 0)

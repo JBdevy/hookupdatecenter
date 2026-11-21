@@ -3,8 +3,9 @@ MainActor.assumeIsolated {
     let cache = TrackLayoutCache(), key = TimelineRenderKey(revision: 1)
     let initial = cache.layout(tracks, height: 64, key: key)
     precondition(initial.lanes.map(\.count) == [1, 2, 1])
-    precondition(initial.heights == [32, 89.6, 96] && initial.offsets == [0, 32, 121.6])
-    precondition(initial.globalLimits == 48...160)
+    precondition(zip(initial.heights, [66.0, 184.8, 198]).allSatisfy { abs($0 - $1) < 1e-9 })
+    precondition(zip(initial.offsets, [0.0, 66, 250.8]).allSatisfy { abs($0 - $1) < 1e-9 })
+    precondition(initial.globalLimits == 132...160)
     for frame in 0..<50 {
         let rows = cache.layout(tracks, height: CGFloat(24 + frame * 6), key: key)
         precondition(rows.lanes == initial.lanes && LaneBuildCounter.count == 3, "zoom shares expensive lane maps")
@@ -15,30 +16,34 @@ MainActor.assumeIsolated {
             return limits.contains(Double(height))
         })
     }
-    tracks[1].heightScale = 2
+    tracks[1].heightScale = 1.5
     let resized = cache.layout(tracks, height: 64, key: key)
-    precondition(resized.heights == [32, 179.2, 96] && resized.offsets == [0, 32, 211.2])
+    precondition(zip(resized.heights, [66.0, 277.2, 198]).allSatisfy { abs($0 - $1) < 1e-9 })
+    precondition(zip(resized.offsets, [0.0, 66, 343.2]).allSatisfy { abs($0 - $1) < 1e-9 })
     precondition(LaneBuildCounter.count == 3 && resized.lanes == initial.lanes, "individual preview does not rebuild lanes")
-    tracks = [Track(heightScale: 0.375), Track(heightScale: 3.75)]
+    tracks = [Track(heightScale: 1), Track(heightScale: 240.0 / 66)]
     let extreme = cache.layout(tracks, height: 64, key: TimelineRenderKey(revision: 2))
-    precondition(extreme.heights == [24, 240] && extreme.globalLimits == 64...64)
+    precondition(extreme.heights[0] == 66 && abs(extreme.heights[1] - 240) < 1e-9 && extreme.globalLimits == 66...66)
     for height: CGFloat in [24, 48, 120, 240] {
         let rows = cache.layout(tracks, height: height, key: TimelineRenderKey(revision: 2))
-        precondition(rows.heights == [24, 240] && rows.baseHeight == 64, "a full-range pair stops shared zoom without changing ratios")
+        precondition(rows.heights[0] == 66 && abs(rows.heights[1] - 240) < 1e-9 && rows.baseHeight == 66, "a full-range pair stops shared zoom without changing ratios")
     }
     var recording = Track()
     RecordingLaneLayout.shared.counts[recording.id] = 3
     RecordingLaneLayout.shared.items[UUID()] = .init(track: recording.id, clip: AudioClip(startTime: 0, duration: 1))
     recording.heightScale = 1.5
-    let activeTake = TrackRowLayout(tracks: [recording], baseHeight: 64)
-    precondition(activeTake.lanes[0].count == 3 && abs(activeTake.laneHeights[0] - 67.2) < 1e-9)
-    precondition(abs(activeTake.heights[0] - 201.6) < 1e-9, "active recording lanes use the same effective height")
+    let activeTake = TrackRowLayout(tracks: [recording], baseHeight: 80)
+    precondition(activeTake.lanes[0].count == 3 && abs(activeTake.laneHeights[0] - 84) < 1e-9)
+    precondition(abs(activeTake.heights[0] - 252) < 1e-9, "active recording lanes use the same effective height")
     let remoteFirst = DAWRemoteState.Track(id: UUID(), name: "Short", color: 0x828282, volume: 1, pan: 0, mute: false, solo: false, clips: [], heightScale: 0.5)
     let remoteSecond = DAWRemoteState.Track(id: UUID(), name: "Tall", color: 0x828282, volume: 1, pan: 0, mute: false, solo: false, clips: [], laneCount: 2, heightScale: 1.5)
     precondition(DAWRemoteItemLayout.laneHeight(remoteFirst) == 43)
-    precondition(DAWRemoteItemLayout.laneHeight(remoteFirst, scale: 0.1) == 24, "Native and Remote single lanes collapse to desktop height")
-    precondition(DAWRemoteItemLayout.laneHeight(remoteSecond, scale: 0.1) == 26, "Multi-lane minimum matches desktop")
+    precondition(DAWRemoteItemLayout.laneHeight(remoteFirst, scale: 0.1) == 24, "Remote retains its touch-specific minimum")
+    precondition(DAWRemoteItemLayout.laneHeight(remoteSecond, scale: 0.1) == 26, "Remote retains its existing multi-lane minimum")
     precondition(abs(DAWRemoteItemLayout.rowHeight(remoteSecond) - 180.6) < 1e-9)
+    let nativeMinimum = TrackHeightGeometry.minimumLaneHeight
+    precondition(DAWRemoteItemLayout.rowHeight(remoteFirst, scale: 0.1, minimum: nativeMinimum) == nativeMinimum)
+    precondition(DAWRemoteItemLayout.rowHeight(remoteSecond, scale: 0.1, minimum: nativeMinimum) == nativeMinimum)
     let region = DAWRemoteState.Region(id: UUID(), name: "Region", start: 0, end: 10, color: 0)
     let compact = DAWRemoteItemLayout.tracks([remoteSecond], within: region)[0]
     precondition(compact.heightScale == 1.5 && compact.laneCount == 1)
@@ -69,7 +74,7 @@ MainActor.assumeIsolated {
     let reordered = snapshotCache.layout([third, first, second], height: 64, key: unchangedKey)
     precondition(reordered.lanes == [afterInsert.lanes[2], afterInsert.lanes[0], afterInsert.lanes[1]], "equal scales and row count do not identify the track order")
     let reduced = snapshotCache.layout([second], height: 64, key: unchangedKey)
-    precondition(reduced.lanes == [beforeInsert.lanes[1]] && reduced.offsets == [0] && reduced.heights == [64])
+    precondition(reduced.lanes == [beforeInsert.lanes[1]] && reduced.offsets == [0] && reduced.heights == [66])
     let replaced = snapshotCache.layout([third], height: 64, key: unchangedKey)
     precondition(replaced.lanes == [afterInsert.lanes[2]], "switching the only track must replace its lane map")
     let empty = snapshotCache.layout([], height: 64, key: unchangedKey)
@@ -80,14 +85,14 @@ MainActor.assumeIsolated {
     var clipEdit = first
     clipEdit.clips.removeLast()
     let removedClip = snapshotCache.layout([clipEdit, second], height: 64, key: unchangedKey)
-    precondition(removedClip.lanes[0].count == 1 && removedClip.lanes[0].lanes.count == 1 && removedClip.heights == [64, 64],
+    precondition(removedClip.lanes[0].count == 1 && removedClip.lanes[0].lanes.count == 1 && removedClip.heights == [66, 66],
         "Removing an overlapping item must retire its lane before the render revision changes")
     clipEdit.clips = first.clips.reversed()
     let reorderedClips = snapshotCache.layout([clipEdit, second], height: 64, key: unchangedKey)
     precondition(reorderedClips.lanes == beforeInsert.lanes)
     clipEdit.clips[0].startTime = 20
     let movedClip = snapshotCache.layout([clipEdit, second], height: 64, key: unchangedKey)
-    precondition(movedClip.lanes[0].count == 1 && movedClip.heights == [64, 64],
+    precondition(movedClip.lanes[0].count == 1 && movedClip.heights == [66, 66],
         "Equal clip counts and IDs cannot keep overlap geometry after a position edit")
     _ = snapshotCache.layout([first, second], height: 64, key: unchangedKey)
     print("TRACK_ROW_CACHE_SAME_REVISION_CLIP_DELETE_REORDER_RELOCATE_EXACT_GEOMETRY_OK")

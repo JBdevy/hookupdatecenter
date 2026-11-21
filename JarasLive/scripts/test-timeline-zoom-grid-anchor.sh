@@ -13,8 +13,9 @@ if sys.argv[2] == 'legacy':
     source = source.replace('let x = tick.x - value.viewport.minX + pixel / 2',
         'let x = floor(tick.x * scale) / scale + pixel / 2 - value.viewport.minX')
 fonts = Path('Apple/Shared/Theme.swift').read_text()
-fonts = fonts[fonts.index('private enum CatLiveTypeface {'):fonts.index('\n#endif', fonts.index('private enum CatLiveTypeface {'))]
-Path(sys.argv[1]).with_name('Fonts.swift').write_text('import SwiftUI\nimport AppKit\nimport CoreText\n' + fonts)
+start = fonts.index('enum CatLiveTypeface {')
+fonts = fonts[start:fonts.index('\n/// Keep custom AppKit drawing', start)] + '\n#endif\n'
+Path(sys.argv[1]).with_name('Fonts.swift').write_text('import SwiftUI\nimport CoreText\n' + fonts)
 parts = ['import AppKit\nimport SwiftUI\n']
 for begin in ['private struct TimelineNativeGridBand {', 'private struct TimelineNativeRuler:']:
     start = source.index(begin)

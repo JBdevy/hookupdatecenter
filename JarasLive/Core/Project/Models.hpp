@@ -45,6 +45,7 @@ struct Project {
     double masterPan = 0;
     bool masterMute = false, masterSolo = false, masterMono = false;
     std::optional<bool> masterPhaseInverted;
+    static constexpr unsigned defaultMasterColor = 0x414141;
     std::optional<unsigned> masterColor;
     std::optional<bool> timelineMovementLocked;
     std::optional<int> timelineLockOptions;
@@ -71,5 +72,7 @@ bool regionOwns(const Song& song, const ID& root, const std::optional<ID>& owner
 std::optional<ID> regionMovementOwner(const Song&, double start, std::optional<double> end = {},
                                     const std::optional<ID>& preferred = {});
 bool markerMovesWithRegion(const Song&, const TimelineMarker&, const ID& root);
+const Part* chordRegion(const Song&, double position);
+const ChordMarker* chordAt(const Song&, double position);
 void synchronizeRegionOwnership(Project& project, const Project* previous = nullptr);
 }

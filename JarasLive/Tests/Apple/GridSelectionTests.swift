@@ -395,7 +395,7 @@ print("GRID_ITEM_EDGE_SCROLL_FOUR_EDGES_STABLE_DOCUMENT_ANCHOR_MULTI_SELECTION_R
 // refreshes over the same target must not resend its image to WindowServer.
 let stationaryItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 1000, y: 550, width: 400, height: 90),
                                        name: "Stationary pointer", duration: 10)
-grid.items = [stationaryItem]
+grid.updateLayout(GridSelectionLayout(items: [stationaryItem]), pixelsPerSecond: 32)
 let cursorTargets: [(CGPoint, NSCursor)] = [
     (CGPoint(x: 1002, y: 590), .resizeLeftRight),
     (CGPoint(x: 1002, y: 570), grid.pointerCursor(at: CGPoint(x: 1002, y: 570))),
@@ -600,6 +600,41 @@ precondition(gainMotions.count == beforeReset+1 && gainMotions.last!.1 == 1 && g
 let small = GridSelectionItem(id: UUID(),rect: CGRect(x: 0,y: 0,width: 25,height: 30))
 precondition(small.fxRect == nil && small.gainKnobRect == nil && small.titleInset <= small.rect.width, "controls collapse before item titles overflow")
 print("GRID_ITEM_FX_MUTE_HIT_AREAS_AND_MINI_KNOB_RESET_OK")
+
+let overviewItem = GridSelectionItem(id: UUID(), rect: CGRect(x: 100, y: 100, width: 65, height: 50), name: "Rhodes")
+grid.updateLayout(GridSelectionLayout(items: [overviewItem], timeCoordinates: false), pixelsPerSecond: 10)
+grid.updateSelection([])
+let overviewMutePoint = CGPoint(x: 112, y: 108)
+let mutedBeforeOverview = muted.count
+_ = grid.handlePointerEvent(event(.leftMouseDown, overviewMutePoint))
+_ = grid.handlePointerEvent(event(.leftMouseUp, overviewMutePoint))
+precondition(grid.selected == [overviewItem.id] && muted.count == mutedBeforeOverview,
+             "At distant zoom, a title click selects the item before the mute target becomes available")
+_ = grid.handlePointerEvent(event(.leftMouseDown, overviewMutePoint))
+_ = grid.handlePointerEvent(event(.leftMouseUp, overviewMutePoint))
+precondition(muted.last == overviewItem.id && muted.count == mutedBeforeOverview + 1)
+var titleOnly = overviewItem
+titleOnly.headerMode = .titleOnly
+precondition(titleOnly.titleInset == 2 && titleOnly.muteRect == nil && titleOnly.gainKnobRect == nil &&
+             titleOnly.fxRect == nil, "The name occupies the header of an unselected item at distant zoom")
+
+let zoomHeader = GridSelectionItem(id: UUID(), rect: CGRect(x: 200, y: 110, width: 350, height: 50), name: "Track")
+let zoomLayout = GridSelectionLayout(items: [zoomHeader], timeCoordinates: false)
+func headerCursor(_ rect: CGRect, at scale: CGFloat) -> NSCursor {
+    grid.updateLayout(zoomLayout, pixelsPerSecond: scale)
+    return grid.pointerCursor(at: CGPoint(x: rect.midX, y: rect.midY))
+}
+let volumeScale = GridSelectionItem.volumeMinimumScale
+let fxPanScale = GridSelectionItem.fxAndPanMinimumScale
+precondition(headerCursor(zoomHeader.gainKnobRect!, at: volumeScale.nextDown) != .resizeUpDown &&
+             headerCursor(zoomHeader.gainKnobRect!, at: volumeScale) == .resizeUpDown,
+             "The first desktop zoom point exposes only the volume knob")
+precondition(headerCursor(zoomHeader.fxRect!, at: fxPanScale.nextDown) != .pointingHand &&
+             headerCursor(zoomHeader.panKnobRect!, at: fxPanScale.nextDown) != .resizeUpDown &&
+             headerCursor(zoomHeader.fxRect!, at: fxPanScale) == .pointingHand &&
+             headerCursor(zoomHeader.panKnobRect!, at: fxPanScale) == .resizeUpDown,
+             "FX and Pan start together at the second desktop zoom point")
+print("GRID_ITEM_CONTROLS_USE_SEPARATE_ZOOM_THRESHOLDS_OK")
 
 let textID = UUID()
 grid.items = [GridSelectionItem(id: textID, rect: CGRect(x: 100,y: 100,width: 120,height: 60), editable: false, contextActions: false, textEditable: true)]
@@ -1266,11 +1301,11 @@ do {
     locked[1].resizable = true; locked[1].laneIndex = 1; view.items = locked
     precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil)
     locked[1].laneIndex = 0; locked[1].trackIndex = 1; view.items = locked
-    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil, "Text must belong to the same teleprompter track")
+    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil, "Both items must belong to the same track")
     locked[1].trackIndex = 0; locked[1].teleprompterText = false; view.items = locked
-    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil, "Both items must be teleprompter text")
+    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75))?.left == left)
     locked[0].teleprompterText = false; view.items = locked
-    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75)) == nil, "Ordinary audio edges resize independently")
+    precondition(view.sharedBoundary(at:CGPoint(x:180,y:75))?.left == left, "Adjacent audio items share their boundary")
     print("SHARED_ITEM_BOUNDARY_DISTINCT_CURSOR_SINGLE_COMMIT_LOCK_AND_LANE_OK")
 }
 

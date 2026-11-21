@@ -41,20 +41,20 @@ class ProjectSavePanel final : public Component {
     TextEditor name;
     TextButton save, portable, reduce;
     std::function<void(String)> rename;
-    std::function<void()> exportAction, reduceAction;
+    std::function<void()> shareAction, reduceAction;
     void saveName() {
         try { rename(name.getText()); dismiss(); }
         catch (const std::exception &e) { error.setText(localization::translate(String::fromUTF8(e.what())), dontSendNotification); setSize(500,212); resized(); }
     }
     void dismiss() { if(auto *box=findParentComponentOfClass<CallOutBox>()) box->dismiss(); }
 public:
-    ProjectSavePanel(String current, std::function<void(String)> commit, std::function<void()> exportProject, std::function<void()> reduceProject)
-      : rename(std::move(commit)), exportAction(std::move(exportProject)), reduceAction(std::move(reduceProject)) {
+    ProjectSavePanel(String current, std::function<void(String)> commit, std::function<void()> shareProject, std::function<void()> reduceProject)
+      : rename(std::move(commit)), shareAction(std::move(shareProject)), reduceAction(std::move(reduceProject)) {
         title.setText(localization::translate("Project name"),dontSendNotification);
         name.setText(current,false); name.onReturnKey=[this]{saveName();};
         save.setButtonText(localization::translate("Save")); save.onClick=[this]{saveName();};
-        portable.setButtonText(localization::translate(String::fromUTF8("Export ziplive")));
-        portable.onClick=[this]{auto action=exportAction; dismiss(); MessageManager::callAsync(std::move(action));};
+        portable.setButtonText("Share");
+        portable.onClick=[this]{auto action=shareAction; dismiss(); MessageManager::callAsync(std::move(action));};
         reduce.setButtonText(localization::translate(String::fromUTF8("Reduzir projeto")));
         reduce.onClick=[this]{auto action=reduceAction;dismiss();MessageManager::callAsync(std::move(action));};
         error.setColour(Label::textColourId, Colours::indianred);

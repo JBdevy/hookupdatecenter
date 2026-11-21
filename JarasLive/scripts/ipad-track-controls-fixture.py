@@ -13,11 +13,10 @@ def step_handler(name):
 stepControls=section(a,'    private var tunerControl:','    private var timeText:')+step_handler('stepTempo')+step_handler('stepPitch')
 fixtureRoot=fixture[1].replace('// PRODUCTION_STEP_CONTROLS',stepControls)
 theme=(root/'Apple/Shared/Theme.swift').read_text()
-palette=section(theme,'private struct JarasNativePaletteKey:', 'extension View {') + theme[theme.index('extension Font {'):]
-midiState=section((root/'Apple/Shared/StemAudioPlayback.swift').read_text(),'@MainActor final class TrackMIDIActivity:', '@MainActor final class InstrumentKeyboardState:')
-midiIndicator=section((root/'Apple/Shared/TrackMixerRow.swift').read_text(),'struct TrackMIDIIndicator:', 'struct FooterMixerPanel:')
+palette=section(theme,'private struct JarasNativePaletteKey:', 'extension View {') + section(theme,'enum JarasInterfaceTheme:', 'enum JarasTheme {') + theme[theme.index('extension Font {'):]
+thumb=section((root/'Apple/Shared/TrackMixerRow.swift').read_text(),'enum MixerFaderThumbStyle {','private struct TrackVolumeFader:')
 icons=section((root/'Apple/Shared/TrackInstrumentIcons.swift').read_text(),'enum TrackInstrumentIcon:', 'struct TrackInstrumentPickerModal:')
-parts=[fixture[0],icons,midiState,midiIndicator,palette,section((root/'Apple/Shared/TrackMixerRow.swift').read_text(),'struct TrackGroupSymbol:','struct TrackGroupButton:'),section(b,'struct IpadTrackControlsBoundsKey:','/// Dragging the grip'),section(b,'struct IpadTrackReorderModifier:','struct IpadItemResizePreview'),section(b,'struct IpadTrackSelectionSurface:','struct IpadRegionHeaderGesture:'),section(a,'private struct IpadTrackAudioContextMenu:','private struct RemoteNativeMixerRow:'),section(a,'private struct RemoteNativeMixerRow:','/// Shared by the iPad master'),section(a,'struct RemoteNativeSlider:','// Keep Cancel visibly'),section(a,'private struct RemoteNativeTrackButtonStyle:','/// Native Parts docks'),section(a,'private struct RemoteNativeTrackControlLayout {','/// Keep the presented scroll'),section(a,'enum RemoteSurface {','/// Plain SwiftUI buttons'),section(a,'private struct RemoteFullAreaButtonStyle:','private struct RemoteSurfaceButtonStyle:') if 'private struct RemoteSurfaceButtonStyle:' in a else '',section(a,'private struct RemotePeakReadout:','private struct IpadTrackAudioContextMenu:'),fixtureRoot]
+parts=[fixture[0],icons,thumb,palette,section((root/'Apple/Shared/TrackMixerRow.swift').read_text(),'struct TrackGroupSymbol:','struct TrackGroupButton:'),section(b,'struct IpadTrackControlsBoundsKey:','/// Dragging the grip'),section(b,'struct IpadTrackReorderModifier:','struct IpadItemResizePreview'),section(b,'struct IpadTrackSelectionSurface:','struct IpadRegionHeaderGesture:'),section(a,'private struct IpadTrackAudioContextMenu:','private struct RemoteNativeMixerRow:'),section(a,'private struct RemoteNativeMixerRow:','/// Meter samples update retained layers'),section(a,'struct RemoteNativeSlider:','// Keep Cancel visibly'),section(a,'private struct RemoteNativeTrackButtonStyle:','/// Native Parts docks'),section(a,'private struct RemoteNativeTrackControlLayout {','/// Keep the presented scroll'),section(a,'enum RemoteSurface {','/// Plain SwiftUI buttons'),section(a,'private struct RemoteFullAreaButtonStyle:','private struct RemoteSurfaceButtonStyle:') if 'private struct RemoteSurfaceButtonStyle:' in a else '',section(a,'private struct RemotePeakReadout:','private struct IpadTrackAudioContextMenu:'),fixtureRoot]
 # Only the full-area style is needed, up to the next declaration.
 s=a[a.index('private struct RemoteFullAreaButtonStyle:'):];end=s.index('\n}\n')+3
 parts.insert(-1,s[:end])
@@ -30,7 +29,13 @@ gate=tempo[tempo.index('struct LiveTempoEditGate {'):]
 parts.insert(1,gate[:gate.index('\n}')+2])
 parts.insert(1,arming[arming.index('public struct RecordingArmState:'):])
 parts.insert(-1,section(a,'struct IpadTapHoldTouchSurface:', 'private struct IpadTeleprompterRemoteHold:'))
-parts.insert(-1,section(recording,'struct TrackRecordButton:', 'struct TransportRecordButton:'))
+parts.insert(-1,section(a,'enum TrackMixControl:', 'private struct TrackMixFeedbackKey:'))
+parts.insert(-1,section(recording,'struct TrackInputMonitorButton:', 'struct TransportRecordButton:'))
+parts.insert(1,section((root/'Apple/Shared/TrackMixerRow.swift').read_text(),'struct CompactTrackButtonStyle:', 'private struct TrackPanKnob:'))
+mixer=(root/'Apple/Shared/TrackMixerRow.swift').read_text()
+parts.insert(1,section(mixer,'enum MixerPanFace {', '#if os(macOS)'))
+parts.insert(1,section(mixer,'func mixerPanText(', 'struct FooterHorizontalMixer:'))
+parts.insert(1,section((root/'Apple/Shared/GridSelectionInput.swift').read_text(),'enum TrackMixerButtonAppearance {', '#if CATLIVE_RENDER_DIAGNOSTICS'))
 (p/'Fixture.swift').write_text('\n'.join(parts))
 objects={}
 def uid(s):return hashlib.sha1(s.encode()).hexdigest()[:24].upper()

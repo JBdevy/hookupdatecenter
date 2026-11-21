@@ -19,6 +19,7 @@ import AppKit
     }
     #if os(macOS)
     private var configuration: NSPanel?
+    @Published private(set) var configurationOpen = false
     #endif
     init(defaults: UserDefaults = .standard, now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) {
         self.defaults = defaults; self.now = now
@@ -79,8 +80,9 @@ import AppKit
         panel.title = JarasLocalization.string("Timer")
         panel.contentMinSize = NSSize(width: 340,height: 240); panel.level = .normal; panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LocalizedTeleprompterTimer(controller: self,close: { [weak panel] in panel?.close() }))
+        panel.contentView = NSHostingView(rootView: LocalizedTeleprompterTimer(controller: self))
         configuration = panel; panel.center(); panel.makeKeyAndOrderFront(nil)
+        configurationOpen = true
         #endif
     }
 }
@@ -90,23 +92,22 @@ extension TeleprompterTimerController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard notification.object as? NSWindow === configuration else { return }
         configuration?.contentView = nil; configuration = nil
+        configurationOpen = false
     }
 }
 #endif
 
 private struct LocalizedTeleprompterTimer: View {
     let controller: TeleprompterTimerController
-    let close: () -> Void
     @AppStorage("jaras.language") private var language = "en"
     var body: some View {
-        TeleprompterTimerConfiguration(controller: controller,close: close)
+        TeleprompterTimerConfiguration(controller: controller)
             .environment(\.locale,Locale(identifier: language)).preferredColorScheme(.dark)
     }
 }
 
 struct TeleprompterTimerConfiguration: View {
     @ObservedObject var controller: TeleprompterTimerController
-    let close: () -> Void
     @State private var digits = ["00","00","00"]
     @State private var field = 0
     @State private var caret = 0
@@ -154,7 +155,6 @@ struct TeleprompterTimerConfiguration: View {
                     .buttonStyle(.bordered).tint(controller.initAutoEnabled ? JarasTheme.green : JarasTheme.secondary)
                     .jarasHelp("Start timer automatically when a song starts")
                 Spacer(minLength: 0)
-                Button("Close",action: close).keyboardShortcut(.cancelAction)
             }
         }.padding(16).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .onAppear { synchronizeDigits() }

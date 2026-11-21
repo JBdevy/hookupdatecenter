@@ -64,7 +64,7 @@
     "id": "textScale",
     "title": "Lyrics scale",
     "min": 35,
-    "max": 100
+    "max": 150
   },
   {
     "kind": "range",

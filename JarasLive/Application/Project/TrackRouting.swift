@@ -10,8 +10,6 @@ public enum TrackVisibilityArea: String, CaseIterable, Sendable {
 public struct TrackVisibilityState: Equatable, Sendable {
     public var trackMixer: Set<UUID> = []
     public var barMixer: Set<UUID> = []
-    public var fixedTracks: [UUID] = []
-    public static let fixedTrackLimit = 6
     public init(trackMixer: Set<UUID> = [], barMixer: Set<UUID> = []) {
         self.trackMixer = trackMixer; self.barMixer = barMixer
     }
@@ -56,29 +54,9 @@ public struct TrackVisibilityState: Equatable, Sendable {
         func read(_ area: TrackVisibilityArea) -> Set<UUID> {
             Set((defaults.stringArray(forKey: key(project, area)) ?? []).compactMap(UUID.init(uuidString:)))
         }
-        var state = TrackVisibilityState(trackMixer: read(.trackMixer), barMixer: read(.barMixer))
-        var seen = Set<UUID>()
-        state.fixedTracks = Array((defaults.stringArray(forKey: pinKey(project)) ?? [])
-            .compactMap(UUID.init(uuidString:)).filter { seen.insert($0).inserted }
-            .prefix(TrackVisibilityState.fixedTrackLimit))
+        let state = TrackVisibilityState(trackMixer: read(.trackMixer), barMixer: read(.barMixer))
         cached[project] = state
         return state
-    }
-    private func pinKey(_ project: UUID) -> String { "trackVisibility.\(project.uuidString).fixedTracks" }
-    @discardableResult public func toggleFixedTrack(_ track: UUID, project: UUID, available: Set<UUID>) -> Bool {
-        guard available.contains(track) else { return false }
-        var state = state(for: project)
-        var pins = state.fixedTracks.filter(available.contains)
-        if let index = pins.firstIndex(of: track) { pins.remove(at: index) }
-        else {
-            guard pins.count < TrackVisibilityState.fixedTrackLimit else { return false }
-            pins.append(track)
-        }
-        state.fixedTracks = pins
-        cached[project] = state
-        defaults.set(pins.map(\.uuidString), forKey: pinKey(project))
-        revision &+= 1
-        return true
     }
     public func setVisible(_ visible: Bool, track: UUID, in area: TrackVisibilityArea, project: UUID) {
         var state = state(for: project)
@@ -91,11 +69,41 @@ public struct TrackVisibilityState: Equatable, Sendable {
     }
 }
 
+public enum TrackSendTap: String, Codable, CaseIterable, Sendable {
+    case preFX, postFX, preFader, postFader
+    public var title: String {
+        switch self {
+        case .preFX: return "Pre-FX"
+        case .postFX: return "Post-FX"
+        case .preFader: return "Pre-Fader"
+        case .postFader: return "Post-Fader"
+        }
+    }
+}
+
 public struct TrackRouting: Codable, Equatable, Sendable {
     public var receives: [UUID?] = []
     public var transmitters: [UUID?] = []
-    public init(receives: [UUID?] = [], transmitters: [UUID?] = []) {
+    public var mainReceiveSlot: Int?
+    public var mainSendOrder: Int?
+    public var sendTaps: [String: TrackSendTap]?
+    public init(receives: [UUID?] = [], transmitters: [UUID?] = [], mainReceiveSlot: Int? = nil) {
         self.receives = receives; self.transmitters = transmitters
+        self.mainReceiveSlot = mainReceiveSlot
+    }
+    public func sendTap(to destination: UUID) -> TrackSendTap {
+        sendTaps?[destination.uuidString] ?? sendTaps?[destination.uuidString.lowercased()] ?? .postFader
+    }
+    public mutating func setSendTap(_ tap: TrackSendTap, to destination: UUID) {
+        var taps = sendTaps ?? [:]
+        taps[destination.uuidString.lowercased()] = nil
+        taps[destination.uuidString] = tap == .postFader ? nil : tap
+        sendTaps = taps.isEmpty ? nil : taps
+    }
+    mutating func removeUnusedSendTaps() {
+        let destinations = Set(transmitters.compactMap { $0?.uuidString })
+        let retained = sendTaps?.filter { destinations.contains($0.key.uppercased()) }
+        sendTaps = retained?.isEmpty == false ? retained : nil
     }
 }
 public struct TrackConnection: Hashable, Sendable {
@@ -135,13 +143,17 @@ public extension Song {
                     var mirror = tracks[i].routing ?? TrackRouting()
                     var slots = receive ? mirror.transmitters : mirror.receives
                     if new.contains(other) {
-                        if !slots.contains(id) { if let empty = slots.firstIndex(of: nil) { slots[empty] = id } else { slots.append(id) } }
+                        if !slots.contains(id) {
+                            let empty = slots.indices.first { slots[$0] == nil && (receive || $0 != mirror.mainReceiveSlot) }
+                            if let empty { slots[empty] = id } else { slots.append(id) }
+                        }
                     } else { slots = slots.map { $0 == id ? nil : $0 } }
                     if receive { mirror.transmitters = slots } else { mirror.receives = slots }
                     tracks[i].routing = mirror
                 }
             }
         }
+        for index in tracks.indices { tracks[index].routing?.removeUnusedSendTaps() }
         var result: [UUID: TrackRouting] = [:]
         for (old, current) in zip(before, tracks) where old.routing != current.routing { result[current.id] = current.routing ?? TrackRouting() }
         return result
@@ -152,6 +164,11 @@ public extension Song {
         for track in tracks {
             if track.routing != nil {
                 guard track.kind == .standard else { throw ProjectError.invalid("Invalid track routing") }
+            }
+            if let routing = track.routing, let slot = routing.mainReceiveSlot {
+                guard routing.receives.indices.contains(slot), routing.receives[slot] == nil, track.role.rawValue != "vinhetas" else {
+                    throw ProjectError.invalid("Invalid track routing")
+                }
             }
             if let parent = track.parentTrackID, track.outputPatches.contains(.masterGroup) {
                 edges.insert(TrackConnection(source: track.id, destination: parent))

@@ -11,18 +11,17 @@ class PortableExportPanel final : public Component, private Timer {
     };
     Session &session;
     std::function<void(std::function<void()>)> save;
-    TextButton close{localization::translate("Fechar")}, saveButton{localization::translate("Salvar")}, exportButton{localization::translate("Export ziplive")},
-        reveal{"Mostrar na pasta"};
+    TextButton close{localization::translate("Fechar")}, saveButton{localization::translate("Salvar")}, exportButton{"Share"},
+        reveal{localization::translate("Mostrar na pasta")};
     std::unique_ptr<FileChooser> chooser;
     std::shared_ptr<Work> work;
     String error, excluded;
     File exported;
-    String title() const { return localization::translate("Export ziplive"); }
     bool requiresSave() const { return session.dirty || !session.document.existsAsFile(); }
     void start(const File &destination, const File &document, const ID &identity) {
         if (session.document != document || session.project().id != identity || requiresSave() ||
             session.busy || session.audio.isRecording()) {
-            error = String::fromUTF8("Salve o projeto antes de exportar.");
+            error = localization::translate("Save the project before sharing.");
             repaint();
             return;
         }
@@ -46,7 +45,7 @@ class PortableExportPanel final : public Component, private Timer {
             String failure;
             try {
                 auto progress = [state](double value) {
-                    if (state->cancel) throw std::runtime_error("Export canceled.");
+                    if (state->cancel) throw std::runtime_error("Sharing canceled.");
                     state->progress = value;
                 };
                 portablePackage::exportPackage(committed, document.getParentDirectory(), destination, progress);
@@ -57,7 +56,7 @@ class PortableExportPanel final : public Component, private Timer {
                 if (!safe)
                     return;
                 safe->work.reset();
-                safe->error = failure;
+                safe->error = localization::translate(failure);
                 if (failure.isEmpty())
                     safe->exported = destination;
                 ModalSheet::blockDismiss(*safe, false);
@@ -70,7 +69,6 @@ class PortableExportPanel final : public Component, private Timer {
   public:
     PortableExportPanel(Session &value, std::function<void(std::function<void()>)> saveAction)
         : session(value), save(std::move(saveAction)) {
-        exportButton.setButtonText(title());
         StringArray removed;
         std::set<String> capabilities;
         portablePackage::portableCopy(session.snapshot(), removed, capabilities);
@@ -108,7 +106,7 @@ class PortableExportPanel final : public Component, private Timer {
         const auto document = session.document; const auto identity = session.project().id;
         const String ext = "ziplive";
         const auto destination = document.withFileExtension(ext);
-        chooser = std::make_unique<FileChooser>(title(), destination, "*." + ext, true);
+        chooser = std::make_unique<FileChooser>("Share", destination, "*." + ext, true);
         chooser->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles | FileBrowserComponent::warnAboutOverwriting,
             [owner = SafePointer<PortableExportPanel>(this), document, identity, ext](const FileChooser &fc) {
                 if (owner && fc.getResult() != File{}) owner->start(fc.getResult().withFileExtension(ext), document, identity);
@@ -122,17 +120,15 @@ class PortableExportPanel final : public Component, private Timer {
         g.fillAll(theme::panel);
         g.setColour(Colours::white);
         g.setFont(theme::font(18, true));
-        g.drawText(title(), 24, 22, getWidth() - 48, 24, Justification::centredLeft);
+        g.drawText("Share", 24, 22, getWidth() - 48, 24, Justification::centredLeft);
         g.setColour(theme::secondary);
         g.setFont(theme::font(13));
         g.drawFittedText(
-            String::fromUTF8(
-                "Crie um pacote .ziplive com este projeto, suas mídias e instrumentos nativos."),
+            localization::translate("Create a .ziplive package with this project, its media and native instruments."),
             24, 62, getWidth() - 48, 42, Justification::topLeft, 2, 1);
         g.setColour(theme::yellow);
         g.drawFittedText(
-            String::fromUTF8(
-                "Plugins VST3 externos não serão incluídos. Os efeitos nativos serão preservados."),
+            localization::translate("External VST3 plug-ins will not be included. Native effects will be preserved."),
             24, 116, getWidth() - 48, 42, Justification::topLeft, 2, 1);
         g.setColour(theme::secondary);
         g.setFont(theme::font(11));
@@ -142,10 +138,10 @@ class PortableExportPanel final : public Component, private Timer {
                                        : theme::green);
         const auto status =
             error.isNotEmpty() ? error
-            : work ? String::fromUTF8("Exportando projeto…")
-            : exported.existsAsFile() ? "Projeto exportado com sucesso."
-            : requiresSave()          ? "Salve o projeto antes de exportar."
-                                      : String{};
+            : work ? localization::translate("Preparing project package…")
+            : exported.existsAsFile() ? localization::translate("Project package ready.")
+            : requiresSave() ? localization::translate("Save the project before sharing.")
+            : String{};
         g.drawFittedText(status, 24, 250, getWidth() - 48, 42, Justification::topLeft, 3, 1);
         if (work) {
             theme::progressBar(g, {24.f, 298.f, (float)getWidth() - 48.f, 6.f}, work->progress.load());

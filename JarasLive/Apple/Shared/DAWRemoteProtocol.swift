@@ -81,6 +81,36 @@ enum DAWRemoteWire {
     }
 }
 enum DAWRemoteAccess: String, Codable { case director, observer, notices }
+
+struct DAWRemoteBatteryWarning {
+    private var previous: Int?
+    private var lastAlert: TimeInterval?
+
+    mutating func reset() {
+        previous = nil
+        lastAlert = nil
+    }
+
+    mutating func update(_ percent: Int, now: TimeInterval) -> Int? {
+        guard (0...100).contains(percent) else { return nil }
+        let threshold = Self.threshold(percent)
+        let crossed = threshold != nil && (previous.map { percent < $0 && Self.threshold($0) != threshold } ?? true)
+        guard !crossed || lastAlert.map({ now - $0 >= 60 }) != false else { return nil }
+        previous = percent
+        if crossed {
+            lastAlert = now
+            return percent
+        }
+        return nil
+    }
+
+    private static func threshold(_ percent: Int) -> Int? {
+        if percent <= 10 { return percent }
+        if percent <= 15 { return 15 }
+        if percent <= 20 { return 20 }
+        return nil
+    }
+}
 struct DAWRemoteAccessRequest: Codable {
     var mode: DAWRemoteAccess
     var pin: String = ""
@@ -274,6 +304,7 @@ struct DAWRemoteState: Codable, Equatable {
         var laneCount: Int? = nil
         var linkedTrack: UUID? = nil
         var heightScale: Double? = nil
+        var compactComponents: Bool? = nil
         var minimumHeight: Double? = nil
         var peakDB: Double? = nil
         var canMeter: Bool? = nil
@@ -395,6 +426,7 @@ struct DAWRemoteState: Codable, Equatable {
     var teleprompters: [DAWRemoteTeleprompter]? = nil
     var notices: DAWRemoteNotices? = nil
     var timer: DAWRemoteTimerState? = nil
+    var desktopBatteryPercent: Int? = nil
     var fadeout: DAWRemoteFadeoutState? = nil
     var gridTempo: [GridTempo]? = nil
     var gridDivisions: Int? = nil
@@ -440,6 +472,7 @@ struct DAWRemoteState: Codable, Equatable {
         (footerLoopBeatPhase == nil || [0, 1, 3].contains(footerLoopBeatPhase!)) &&
         (gridDivisions == nil || [0, 2, 4, 8].contains(gridDivisions!)) &&
         (previewPage == nil || (0...5).contains(previewPage!)) && (vinhetas?.valid ?? true) &&
+        (desktopBatteryPercent.map { (0...100).contains($0) } ?? true) &&
         (playedLiveRegionIDs ?? []).count <= 8192 &&
         Set(playedLiveRegionIDs ?? []).count == (playedLiveRegionIDs ?? []).count &&
         (setlistBlocks ?? []).count <= 8192 && (setlistBlocks ?? []).allSatisfy(\.valid) &&
@@ -786,14 +819,38 @@ struct DAWRemotePanelWidths: Equatable {
     }
 }
 
+struct NativeWorkspacePanelWidths {
+    let track: Double
+    let trackIcons: Double
+    let setlist: Double
+    let grid: Double
+
+    init(preferred: DAWRemotePanelWidths, reference: Double, available: Double,
+         minimumTrack: Double, iconWidth: Double) {
+        track = preferred.track > 0 ? min(available, max(minimumTrack, preferred.track * reference)) : 0
+        trackIcons = track > 0 ? min(iconWidth, max(0, available - track)) : 0
+        setlist = min(preferred.setlist * reference, max(0, available - track - trackIcons))
+        grid = max(0, available - track - trackIcons - setlist)
+    }
+}
+
+enum NativeRegionDrawerSwipe {
+    static func isHorizontal(x: Double, y: Double) -> Bool { abs(x) > abs(y) * 1.3 }
+    static func expansion(x: Double, y: Double) -> Bool? {
+        guard abs(x) >= 28, isHorizontal(x: x, y: y) else { return nil }
+        return x < 0
+    }
+}
+
 /// Match desktop lane heights while retaining alignment between mixer and grid.
 enum DAWRemoteItemLayout {
+    static let defaultLaneHeight = 86.0
     static func heightScale(_ value: Double) -> Double { value.isFinite ? min(3, max(0.1, value)) : 1 }
     static func laneHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
-        max((track.laneCount ?? 1) > 1 ? 26 : 24, ((track.laneCount ?? 1) > 1 ? 86 * 0.7 : 86) * heightScale(scale) * (track.heightScale ?? 1))
+        max((track.laneCount ?? 1) > 1 ? 26 : 24, defaultLaneHeight * ((track.laneCount ?? 1) > 1 ? 0.7 : 1) * heightScale(scale) * (track.heightScale ?? 1))
     }
-    static func rowHeight(_ track: DAWRemoteState.Track, scale: Double = 1) -> Double {
-        max(track.minimumHeight ?? 0, laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1)))
+    static func rowHeight(_ track: DAWRemoteState.Track, scale: Double = 1, minimum: Double = 0) -> Double {
+        max(track.compactComponents == true ? min(44, minimum) : minimum, track.minimumHeight ?? 0, laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1)))
     }
     /// Remote shows one region. Lanes occupied only by another song must not
     /// leave empty space here; overlapping visible items share the same compact
@@ -1116,16 +1173,21 @@ struct DAWRemoteVinhetasFeedback {
 /// cached display string from the previous song.
 extension DAWRemoteState {
     var showsSetlistSelection: Bool { !playing && !subPlaying }
-    var currentSongName: String {
-        if playing {
-            let regions = timelineRegions.isEmpty ? self.regions : timelineRegions
-            if let id = sectionPlayback?.currentRegion,
-               let part = regions.first(where: { $0.id == id }), position >= part.start,
-               position < (sectionPlayback?.currentEnd ?? part.end) { return part.name }
-            if let part = regions.filter({ position >= $0.start && position < $0.end })
-                .min(by: { $0.end - $0.start < $1.end - $1.start }) { return part.name }
-            if let part = regions.first(where: { $0.id == currentRegion }) { return part.name }
+    var transportDisplayRegion: Region? {
+        guard playing || paused else { return nil }
+        let list = timelineRegions.isEmpty ? regions : timelineRegions
+        if let id = sectionPlayback?.currentRegion,
+           let region = list.first(where: { $0.id == id }), position >= region.start,
+           position < (sectionPlayback?.currentEnd ?? region.end) { return region }
+        var current: Region?
+        for region in list where position >= region.start && position < region.end {
+            if let previous = current, previous.end - previous.start <= region.end - region.start { continue }
+            current = region
         }
+        return current ?? list.first { $0.id == currentRegion }
+    }
+    var currentSongName: String {
+        if let region = transportDisplayRegion { return region.name }
         return songDisplays?.current ?? (timelineRegions + regions).first(where: { $0.id == (focusedRegion ?? currentRegion) })?.name ?? songName
     }
 }

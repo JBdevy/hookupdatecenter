@@ -73,15 +73,67 @@ inline bool hasTakeInstrument(const jaras::AudioClip &clip) {
     return clip.midi && !clip.frozenMIDI.value_or(false) && clip.fxJSON &&
            hasTakeInstrument(JSON::parse(text(*clip.fxJSON)), clip.fxBypassed.value_or(false));
 }
+inline bool arpeggiatesMIDI(const var &settings) {
+    for (const auto &key : list(get(settings, "inserted"))) {
+        if (key.toString() == "Arpeggiator" && flag(settings, "arpeggiatorEnabled")) return true;
+        for (const auto &instance : list(get(settings, "instances"))) {
+            if (str(instance, "kind") != "Arpeggiator") continue;
+            const auto id = str(instance, "id");
+            if ((key.toString() == "Native:" + id || key.toString() == "Instance:" + id) &&
+                flag(get(instance, "settings"), "arpeggiatorEnabled")) return true;
+        }
+    }
+    return false;
+}
+inline bool arpeggiatesMIDI(const std::optional<std::string> &settings) {
+    return settings && arpeggiatesMIDI(JSON::parse(text(*settings)));
+}
+inline double arpeggioInterval(double bpm) { return 15. / std::max(20., bpm); }
+inline void appendArpeggio(std::vector<PlaybackNote> &output, const std::vector<PlaybackNote> &notes,
+                           const jaras::Song &song) {
+    std::vector<const PlaybackNote *> pending, held;
+    for (const auto &note : notes) if (note.velocity > 0) pending.push_back(&note);
+    if (pending.empty()) return;
+    std::stable_sort(pending.begin(), pending.end(), [](auto a, auto b) { return a->start < b->start; });
+    size_t next = 0;
+    double position = pending.front()->start;
+    int previousPitch = -1;
+    while (next < pending.size() || !held.empty()) {
+        while (next < pending.size() && pending[next]->start <= position + 1e-8) held.push_back(pending[next++]);
+        held.erase(std::remove_if(held.begin(), held.end(), [&](auto note) { return note->end <= position + 1e-8; }), held.end());
+        if (held.empty()) {
+            if (next == pending.size()) break;
+            position = pending[next]->start; previousPitch = -1;
+            continue;
+        }
+        const PlaybackNote *first = nullptr, *following = nullptr;
+        for (const auto *note : held) {
+            if (!first || note->pitch < first->pitch) first = note;
+            if (note->pitch > previousPitch && (!following || note->pitch < following->pitch)) following = note;
+        }
+        auto note = *(following ? following : first);
+        const auto *marker = jaras::tempoPlayback::active(song, position);
+        const auto step = arpeggioInterval(marker && marker->tempoBPM ? *marker->tempoBPM : song.bpm);
+        previousPitch = note.pitch; note.start = position; note.end = std::min(note.end, position + step * .75);
+        output.push_back(note);
+        if (output.size() > 1000000) throw std::runtime_error("Too many MIDI playback notes.");
+        position += step;
+    }
+}
+
 inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                                                const jaras::Song *song = nullptr, bool includeSilent = false,
                                                bool sharedInstrumentOnly = false) {
     std::vector<PlaybackNote> result;
+    const bool trackARP = song && arpeggiatesMIDI(track.fxJSON);
     for (const auto &clip : track.clips) {
         if (!clip.midi || (!includeSilent && (clip.muted || clip.gain.value_or(1) <= 0)) || clip.frozenMIDI.value_or(false))
             continue;
         if (sharedInstrumentOnly && hasTakeInstrument(clip)) continue;
         const auto &midi = *clip.midi;
+        const bool arpeggio = song && (trackARP || (!clip.fxBypassed.value_or(false) && arpeggiatesMIDI(clip.fxJSON)));
+        std::vector<PlaybackNote> projected;
+        auto &destination = arpeggio ? projected : result;
         const ClipTempo timing(clip, song);
         const double seconds = 60 / midi.sourceBPM,
                      sourceEnd = timing.sourceAt(clip.startTime + clip.duration);
@@ -111,7 +163,7 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                              end = std::min(clip.startTime + clip.duration,
                                             timing.timeAt(rawEnd, false));
                 if (end > start)
-                    result.push_back(
+                    destination.push_back(
                         {start, end,
                          jlimit(0, 127,
                                 note.pitch + (int)std::round(clip.pitchSemitones.value_or(0)) +
@@ -122,9 +174,10 @@ inline std::vector<PlaybackNote> playbackNotes(const jaras::Track &track,
                                 (int)std::round(note.velocity *
                                                 (clip.muted ? 0 : std::min(127., clip.gain.value_or(1))) * jaras::itemFadeGain(clip, start))),
                          note.channel, song ? jaras::playbackItemStart(*song, clip) : std::optional<double>(clip.startTime), song ? jaras::playbackOwnerIndex(*song,clip.regionOwnerID) : 0});
-                if (result.size() > 1000000)
+                if (destination.size() > 1000000)
                     throw std::runtime_error("Too many MIDI playback notes.");
             }
+        if (arpeggio) appendArpeggio(result, projected, *song);
     }
     if(!includeSilent)result.erase(std::remove_if(result.begin(), result.end(), [](const auto &note) { return note.velocity == 0; }), result.end());
     std::stable_sort(result.begin(), result.end(),
@@ -138,6 +191,7 @@ inline std::vector<PlaybackNote> takePlaybackNotes(const jaras::Track &track,
     source.id = track.id;
     source.role = track.role;
     source.parentTrackID = track.parentTrackID;
+    source.fxJSON = track.fxJSON;
     source.clips = {clip};
     if (audioControls) {
         // The take's gain/fades act on its generated audio, not on note velocity.
@@ -149,6 +203,74 @@ inline std::vector<PlaybackNote> takePlaybackNotes(const jaras::Track &track,
     }
     return playbackNotes(source, &song, true);
 }
+class LiveArpeggiator {
+    std::array<juce::uint8, 16 * 128> held{};
+    juce::MidiBuffer output;
+    int active = -1, previousPitch = -1;
+    int next = 0, gateEnd = 0;
+    bool collecting = false;
+    void release(int sample) {
+        if (active >= 0) output.addEvent(juce::MidiMessage::noteOff(active / 128 + 1, active % 128), sample);
+        active = -1;
+    }
+    void clearNotes(int sample) {
+        release(sample); held.fill(0); previousPitch = -1;
+        next = sample; gateEnd = sample; collecting = false;
+    }
+    void advance(int end, int interval) {
+        while (collecting && next < end) {
+            if (active >= 0) release(gateEnd);
+            int first = -1, following = -1;
+            for (int pitch = 0; pitch < 128; ++pitch) {
+                for (int channel = 0; channel < 16; ++channel) {
+                    const auto note = channel * 128 + pitch;
+                    if (held[size_t(note)] == 0) continue;
+                    if (first < 0) first = note;
+                    if (following < 0 && pitch > previousPitch) following = note;
+                }
+            }
+            active = following >= 0 ? following : first;
+            if (active < 0) { collecting = false; previousPitch = -1; return; }
+            output.addEvent(juce::MidiMessage::noteOn(active / 128 + 1, active % 128, held[size_t(active)]), next);
+            previousPitch = active % 128;
+            gateEnd = next + std::max(1, interval * 3 / 4);
+            next += interval;
+        }
+        if (active >= 0 && gateEnd < end) release(gateEnd);
+    }
+  public:
+    LiveArpeggiator() { output.ensureSize(65536); }
+    const juce::MidiBuffer &process(const juce::MidiBuffer &input, bool enabled, bool monitoring,
+                                   int samples, double sampleRate, double bpm) {
+        if (!enabled && !collecting && active < 0) return input;
+        output.clear();
+        if (!enabled || !monitoring) {
+            clearNotes(0);
+            if (!enabled) output.addEvents(input, 0, samples, 0);
+            return output;
+        }
+        const auto interval = std::max(2, int(std::round(arpeggioInterval(bpm) * sampleRate)));
+        for (const auto event : input) {
+            const auto message = event.getMessage();
+            const auto time = event.samplePosition;
+            advance(time, interval);
+            if (message.isNoteOn() || message.isNoteOff()) {
+                const auto note = (message.getChannel() - 1) * 128 + message.getNoteNumber();
+                held[size_t(note)] = message.isNoteOn() ? message.getVelocity() : 0;
+                if (message.isNoteOn() && !collecting) { collecting = true; next = time; }
+                if (message.isNoteOff() && std::none_of(held.begin(), held.end(), [](auto velocity) { return velocity > 0; }))
+                    clearNotes(time);
+            } else {
+                if (message.isAllNotesOff() || message.isAllSoundOff()) clearNotes(time);
+                output.addEvent(message, time);
+            }
+        }
+        advance(samples, interval);
+        next = std::max(0, next - samples); gateEnd = std::max(0, gateEnd - samples);
+        return output;
+    }
+};
+
 class MIDIPlayback {
   public:
     struct Event { double time; PlaybackNote note; bool on; };
@@ -276,14 +398,14 @@ class MIDIPlayback {
     }
     std::uint64_t builderOverflows() const noexcept { return midi.overflows(); }
     void live(AudioBuffer<float> &output, const MidiBuffer &messages, int samples,
-              int channel = 0) {
+              bool allowNoteOns = true) {
         if (samples <= 0 || layers.empty())
             return;
         midi.clear();
         for (const auto event : messages) {
             if (!midi.inspect()) break;
-            if ((channel <= 0 || event.getMessage().getChannel() == channel) &&
-                !midi.addEvent(event.getMessage(), event.samplePosition)) break;
+            const auto message = event.getMessage();
+            if ((allowNoteOns || !message.isNoteOn()) && !midi.addEvent(message, event.samplePosition)) break;
         }
         // Live notes use a separate voice bank from both timeline heads.
         for (auto &layer : layers) {

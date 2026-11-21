@@ -7,6 +7,35 @@ import ImageIO
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
+import IOKit.ps
+
+private final class DesktopBatteryStatus: @unchecked Sendable {
+    static let shared = DesktopBatteryStatus()
+    private let lock = NSLock()
+    private var sampledAt: TimeInterval?
+    private var percent: Int?
+
+    func current() -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = ProcessInfo.processInfo.systemUptime
+        if sampledAt.map({ now - $0 < 60 }) == true { return percent }
+        sampledAt = now
+        percent = nil
+        if let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+           let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [AnyObject] {
+            for source in sources {
+                guard let data = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
+                      data[kIOPSTypeKey] as? String == kIOPSInternalBatteryType,
+                      let current = data[kIOPSCurrentCapacityKey] as? Int,
+                      let maximum = data[kIOPSMaxCapacityKey] as? Int, maximum > 0 else { continue }
+                percent = min(100, max(0, Int((100 * Double(current) / Double(maximum)).rounded())))
+                break
+            }
+        }
+        return percent
+    }
+}
 #else
 import UIKit
 #endif
@@ -1220,6 +1249,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         // DAWRemoteWire.state validates the immutable snapshot on the worker.
         // Walking every clip here repeats that work on the UI thread at 10 Hz.
         guard var state = stateProviderForSession?(self) ?? stateProvider?() else { return }
+        #if os(macOS)
+        state.desktopBatteryPercent = DesktopBatteryStatus.shared.current()
+        #endif
         if accessMode == .observer || accessMode == .notices {
             state.vinhetas = nil
             state.tracks = []; state.playlists = nil; state.projects = nil; state.projectTabs = nil; state.gridTempo = nil

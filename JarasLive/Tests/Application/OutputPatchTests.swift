@@ -23,7 +23,7 @@ final class OutputPatchTests: XCTestCase {
     }
     func testOutputChoicesUseOnlyAvailableChannels() {
         XCTAssertEqual(OutputPatch.choices(channels: 0, includeMaster: true), [.master])
-        XCTAssertEqual(OutputPatch.choices(channels: 3, includeMaster: true).map(\.title), ["Master", "1+2", "1", "2", "3"])
+        XCTAssertEqual(OutputPatch.choices(channels: 3, includeMaster: true).map(\.title), ["Main", "1+2", "1", "2", "3"])
         XCTAssertEqual(OutputPatch.choices(channels: 2, includeMaster: false).map(\.title), ["1+2", "1", "2"])
         XCTAssertThrowsError(try OutputPatch.master.validate(allowMaster: false))
     }

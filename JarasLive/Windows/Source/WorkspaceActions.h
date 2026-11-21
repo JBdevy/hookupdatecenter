@@ -87,9 +87,10 @@ void Workspace::performAction(const String &action, float value, int trackNumber
             selected->pitchGroupIDs.value_or(regionPitch::defaults(*song, true)));
     } else if (action == "addTrack")
         createTrack();
-    else if (action == "projectStart" || action == "projectEnd")
+    else if (action == "projectStart" || action == "projectEnd") {
         command(jaras::CommandKind::editSeek, {}, action == "projectStart" ? 0 : song->duration);
-    else if (action == "setlistUp" || action == "setlistDown") {
+        timeline->revealEditPosition(true);
+    } else if (action == "setlistUp" || action == "setlistDown") {
         setlist->stepSelection(action == "setlistDown" ? 1 : -1);
     } else if (action == "nextRegion" || action == "previousRegion" || action == "partsUp" || action == "partsDown") {
         std::vector<const jaras::Part *> parts;
@@ -152,6 +153,7 @@ void Workspace::performAction(const String &action, float value, int trackNumber
                 if (point < at - .0001)
                     dest = point;
         command(jaras::CommandKind::editSeek, {}, dest);
+        timeline->revealEditPosition(true);
     } else if (action == "toggleAuto") {
         auto state = session.project().regionSetlist.value_or(jaras::RegionSetlist{});
         state.autoAdvance = !state.autoAdvance;

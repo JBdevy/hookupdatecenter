@@ -122,18 +122,10 @@ try {
     $partsClosed = Snapshot 'parts-sidebars-closed'
     if($partsClosed.partsLeftVisible -or $partsClosed.partsRightVisible){throw 'Left Parts did not close.'}
     Click-Control 'menu'
-    $d = Snapshot 'navigation-open'
-    if(-not $d.navigationVisible){throw 'Hamburger did not open the navigation drawer.'}
-    Click-Logical 100 109
-    $d = Snapshot 'navigation-live'
-    if($d.navigationVisible -or @($d.modals).Count -ne 0){throw 'Live Session did not return to the editor.'}
-    Click-Control 'menu'
-    [void](Snapshot 'navigation-projects-before')
-    Click-Logical 100 63
-    $d = Snapshot 'navigation-projects'
-    if($d.navigationVisible -or $d.modals -notcontains 'Projetos'){throw 'Navigation Projects did not open its sheet.'}
+    $d = Snapshot 'home-projects-open'
+    if($d.modals -notcontains ("In" + [char]0x00ed + "cio")){throw 'Home did not directly open the projects sheet.'}
     Key 0x1b
-    $d = Snapshot 'navigation-projects-closed'
+    $d = Snapshot 'home-projects-closed'
     Click-Logical ($d.timeline.x + 200) ($d.timeline.y + 55)
     $before = Snapshot 'zoom-cursor-before'
     $anchor = $before.editPosition * $before.timeline.zoom - $before.timeline.horizontal
