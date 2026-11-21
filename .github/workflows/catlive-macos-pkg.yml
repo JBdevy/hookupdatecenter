@@ -6,7 +6,7 @@ on:
         description: Desktop package to build
         default: both
         type: choice
-        options: [both, macos, windows]
+        options: [both, macos, windows, intel-audio]
       version:
         description: Public version
         required: true
@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   windows:
-    if: inputs.platform != 'macos'
+    if: inputs.platform == 'both' || inputs.platform == 'windows'
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -53,7 +53,7 @@ jobs:
           if-no-files-found: error
 
   macos-pkg:
-    if: inputs.platform != 'windows'
+    if: inputs.platform == 'both' || inputs.platform == 'macos'
     runs-on: macos-26
     timeout-minutes: 180
     env:
@@ -231,3 +231,36 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+
+  intel-audio:
+    if: inputs.platform == 'intel-audio'
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
+    defaults:
+      run:
+        working-directory: JarasLive
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Intel architecture
+        run: test "$(uname -m)" = x86_64
+      - name: Prepare generated native instrument fixture
+        run: |
+          python3 scripts/generate-test-sf2.py "$RUNNER_TEMP/catlive-native-test.sf2"
+          echo "JARAS_TEST_SF2=$RUNNER_TEMP/catlive-native-test.sf2" >> "$GITHUB_ENV"
+      - name: Validate native effect DSP and instruments
+        run: |
+          bash scripts/test-effects.sh
+          bash scripts/test-instruments.sh
+          bash scripts/test-instrument-behavior.sh
+      - name: Validate failed media without stopping healthy stems
+        run: CATLIVE_EXPORT_TEST_SOURCE=Tests/Apple/PlaybackMediaIsolationTests.swift bash scripts/test-offline-export.sh
+      - name: Validate item FX rendering and limiter gain order
+        run: CATLIVE_EXPORT_TEST_SOURCE=Tests/Apple/ItemPluginRenderTests.swift bash scripts/test-offline-plugin-latency.sh
+      - name: Validate VST3 state and metronome publication
+        run: |
+          bash scripts/test-vst3-state-stream.sh
+          bash scripts/test-metronome.sh
+          bash scripts/test-midi-sequence.sh

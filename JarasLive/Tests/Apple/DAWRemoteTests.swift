@@ -539,6 +539,8 @@ timerClient.testConnect(timerEndpoint)
 waitFor("timer fixture connects with initial timer sample") { timerClient.remoteState?.timer != nil }
 var timerPublications = 0
 let timerObservation = timerClient.$remoteState.dropFirst().sink { _ in timerPublications += 1 }
+// Synthetic snapshots bypass the host battery sampler. Keep that field stable while testing timer ticks.
+timerFixture.desktopBatteryPercent = timerClient.remoteState?.desktopBatteryPercent
 let ticks = (1...100).map { tick -> DAWRemoteState in
     var state = timerFixture; state.timer?.remainingSeconds -= Double(tick) * 0.1; return state
 }
