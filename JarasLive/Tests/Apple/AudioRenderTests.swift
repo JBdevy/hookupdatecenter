@@ -2150,10 +2150,13 @@ let pitchBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 512)!
     precondition(abs(measured - value) < 5, "pitch PCM frequency \(measured), expected \(value), rate \(outputFormat.sampleRate), test line \(line)")
 }
 try expectFrequency(440)
-let noPitchNodes = pitchEngine.attachedNodes.count
+let nodesBeforePitch = pitchEngine.attachedNodes
 var nativePitch = NativeFXSettings(); nativePitch.inserted = ["Pitch"]; nativePitch.pitchEnabled = true; nativePitch.pitchSemitones = 12
 pitchAudio.previewFX(pitchTrack.id, settings: nativePitch)
-precondition(pitchEngine.attachedNodes.count == noPitchNodes + 1, "Pitch allocates a processor only when inserted")
+let addedPitchNodes = pitchEngine.attachedNodes.subtracting(nodesBeforePitch)
+precondition(addedPitchNodes.count == 2 && addedPitchNodes.contains { $0 is AVAudioUnitTimePitch }
+             && addedPitchNodes.contains { $0 is AVAudioUnitEffect },
+             "Inserting Pitch adds one pitch processor and one formant processor")
 try expectFrequency(880)
 nativePitch.pitchSemitones = -12; pitchAudio.previewFX(pitchTrack.id, settings: nativePitch); try expectFrequency(220)
 nativePitch.pitchEnabled = false; pitchAudio.previewFX(pitchTrack.id, settings: nativePitch); try expectFrequency(440)
