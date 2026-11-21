@@ -306,15 +306,19 @@ enum TrackIconCatalog {
     }()
 
     private static let images: [String: [Artwork]] = Dictionary(uniqueKeysWithValues: categories.map { category in
-        let files = root.flatMap { try? FileManager.default.contentsOfDirectory(
-            at: $0.appendingPathComponent(category.name, isDirectory: true), includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]) } ?? []
-        let artwork = files.filter { $0.pathExtension.lowercased() == "png" }.map { url in
+        (category.name, loadArtwork(in: category))
+    })
+
+    private static func loadArtwork(in category: Category) -> [Artwork] {
+        guard let directory = root?.appendingPathComponent(category.name, isDirectory: true),
+              let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
+        let artwork: [Artwork] = files.filter { $0.pathExtension.lowercased() == "png" }.map { url in
             let name = url.deletingPathExtension().lastPathComponent
             return Artwork(id: "png:" + category.name + "/" + name, title: name.replacingOccurrences(of: "-", with: " ").capitalized, url: url)
-        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        return (category.name, artwork)
-    })
+        }
+        return artwork.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
     private static let byID = Dictionary(uniqueKeysWithValues: images.values.flatMap { $0 }.map { ($0.id, $0) })
 
     static func artwork(_ id: String) -> Artwork? { byID[id] }
