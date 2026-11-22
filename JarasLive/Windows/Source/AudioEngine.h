@@ -562,10 +562,12 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     struct MetronomePreparation {
         ClickProgram::Sample a,b;
         String error;
+        uint64 revision = 0;
         std::atomic<bool> done{false};
         std::function<void(String)> completed;
     };
     std::shared_ptr<MetronomePreparation> metronomePreparation;
+    uint64 requestedMetronomeSound = 0, renderedMetronomeSound = 0;
     void publishPreparedMetronome();
     jaras::PluginTempoMap pluginTempo;
     var metronomeSettings;
@@ -627,6 +629,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     struct CountIn {
         double period = 0, elapsed = 0;
         int beats = 0;
+        uint64 soundRevision = 0;
         std::atomic<bool> finished{false};
     };
     std::unique_ptr<CountIn> recordingCountIn;

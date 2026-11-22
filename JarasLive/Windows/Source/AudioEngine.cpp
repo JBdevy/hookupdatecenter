@@ -750,7 +750,9 @@ void AudioEngine::configureMetronome(const var &settings, std::function<void(Str
     std::swap(metronomeSettings, saved);
     metronomeEnabled = flag(settings, "enabled");
     if(!soundChanged){if(completed)completed({});return;}
-    auto task=std::make_shared<MetronomePreparation>();task->completed=std::move(completed);metronomePreparation=task;
+    auto task=std::make_shared<MetronomePreparation>();
+    task->revision = ++requestedMetronomeSound;
+    task->completed=std::move(completed);metronomePreparation=task;
     const auto prepare=[task,preset,firstPath,secondPath] {
         try {
             if(preset=="User") {
@@ -770,8 +772,12 @@ void AudioEngine::publishPreparedMetronome() {
     const auto task=metronomePreparation;
     if(!task||!task->done.load(std::memory_order_acquire))return;
     metronomePreparation.reset();
-    if(task->error.isEmpty())enqueuePreparedEdit([this,task]() noexcept {
-        std::swap(metronome.a,task->a);std::swap(metronome.b,task->b);
+    enqueuePreparedEdit([this, task]() noexcept {
+        if (task->error.isEmpty()) {
+            std::swap(metronome.a, task->a);
+            std::swap(metronome.b, task->b);
+        }
+        renderedMetronomeSound = task->revision;
     });
     if(task->completed)task->completed(task->error);
 }
@@ -2750,7 +2756,6 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             if(renderMetronome&&channel>=0&&channel<channels&&out[channel])FloatVectorOperations::add(out[channel],buffer.getReadPointer(std::min(1,c)),samples);
         }
     }
-    if (!offlineMode && !offlineRendering) renderCountIn(out, channels, samples, sr);
     auto automationTime=[&](int head,int frame,unsigned delay) {
         if(delay>unsigned(frame)&&latencyPlan)return latencyPlan->timeline[head].previous(delay-unsigned(frame)).position;
         const int sample=frame-int(delay);
@@ -3062,6 +3067,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         for (int ch = 0; ch < channels; ++ch)
             if (out[ch]) FloatVectorOperations::clear(out[ch], samples);
     }
+    if (!offlineMode && !offlineRendering) renderCountIn(out, channels, samples, sr);
     for (int ch = 0; ch < channels; ++ch)
         if (out[ch]) {
             auto range = FloatVectorOperations::findMinAndMax(out[ch], samples);
@@ -3171,18 +3177,19 @@ bool AudioEngine::librarySamplePlaying() const {
     return librarySample && !librarySample->finished.load() && librarySampleOutputReady.load();
 }
 bool AudioEngine::startRecordingCountIn(double bpm,int beats,int unit) {
-    if (!librarySampleOutputReady.load() || !std::isfinite(bpm) || bpm <= 0 || beats <= 0 || unit <= 0) return false;
+    if ((!librarySampleOutputReady.load() && !externalRenderDriven) || !std::isfinite(bpm) || bpm <= 0 || beats <= 0 || unit <= 0) return false;
     const double beat = 60. / bpm * 4 / unit;
     if (!std::isfinite(beat) || beat <= 0) return false;
     stopRecordingCountIn();
     recordingCountIn = std::make_unique<CountIn>();
     recordingCountIn->period = beat;
     recordingCountIn->beats = beats;
+    recordingCountIn->soundRevision = requestedMetronomeSound;
     recordingCountInSlot.publish(recordingCountIn.get());
     return true;
 }
 bool AudioEngine::recordingCountInPlaying() const {
-    return recordingCountIn && !recordingCountIn->finished.load() && librarySampleOutputReady.load();
+    return recordingCountIn && !recordingCountIn->finished.load() && (librarySampleOutputReady.load() || externalRenderDriven);
 }
 void AudioEngine::stopRecordingCountIn() {
     if (!recordingCountIn) return;
@@ -3195,7 +3202,9 @@ void AudioEngine::renderLibrarySample(AudioBuffer<float> &output, int frames, do
 void AudioEngine::renderCountIn(float* const* out, int channels, int frames, double sampleRate) {
     auto lease = recordingCountInSlot.read();
     auto* count = lease.get();
-    if (!count || count->finished.load(std::memory_order_relaxed)) return;
+    // Start at the first sample of a block with the prepared sound. Routing the
+    // count after the playback stop/fade also protects that first attack.
+    if (!count || count->finished.load(std::memory_order_relaxed) || renderedMetronomeSound < count->soundRevision) return;
     const double duration = count->beats * count->period;
     for (int frame = 0; frame < frames; ++frame) {
         const double time = count->elapsed + frame / sampleRate;
