@@ -3215,10 +3215,7 @@ private struct TrackMixFeedbackPanel: View {
     }
     private func nativeProTransport(show: ShowController) -> some View {
         let playback = ProTransportButtons(show: show, configureFadeout: { fadeoutSettingsOpen = true })
-        let editing = HStack(spacing: 4) {
-            TimelineEditButton(show: show, key: TimelineEditPreferences.native, width: 28, height: TransportControlMetrics.proHeight)
-            TransportEnvelopeButton(show: show, width: 28, height: TransportControlMetrics.proHeight)
-        }.fixedSize()
+        let editing = TransportEditingButtons(show: show, key: TimelineEditPreferences.native)
         let controls = IpadTransportControl.visible(hidden: hiddenTransport)
         let details = nativeTempoControls(controls, bpmWidth: 88, tunerWidth: 96)
         let tools = HStack(spacing: 4) {
@@ -3340,15 +3337,15 @@ private struct TrackMixFeedbackPanel: View {
         let hasMetronome = visible.contains(.metronome)
         let hasTuner = visible.contains(.tuner)
         let showsTempo = hasBPM || hasMetronome
-        let buttonCount = CGFloat(playback.count + (hasFadeout ? 0 : 1))
-        let playbackSpacing = CGFloat(playback.count + 1) * 4 + 3
-        let fixedWidth = playbackSpacing + 28 + (hasFadeout ? 50 : 0)
+        let buttonCount = CGFloat(playback.count - (hasFadeout ? 1 : 0))
+        let playbackSpacing = CGFloat(playback.count) * 4 + 3
+        let fixedWidth = playbackSpacing + TransportEditingButtons.span + (hasFadeout ? 50 : 0)
         let detailSpacing: CGFloat = (showsTempo || hasTuner ? 8 : 0) + (showsTempo && hasTuner ? 8 : 0)
         let tempoInsets: CGFloat = (showsTempo ? 12 : 0) + (hasMetronome ? 68 : 0)
             + (hasMetronome && hasBPM ? 10 : 0) + (hasBPM ? 56 : 0)
         let minBPM: CGFloat = hasBPM ? 88 : 0
         let minTuner: CGFloat = hasTuner ? 96 : 0
-        let buttonWidth = min(48, max(28, (width - fixedWidth - detailSpacing - tempoInsets - minBPM - minTuner) / buttonCount))
+        let buttonWidth = min(48, max(28, (width - fixedWidth - detailSpacing - tempoInsets - minBPM - minTuner) / max(1, buttonCount)))
         let extra = max(0, width - fixedWidth - buttonCount * buttonWidth - detailSpacing - tempoInsets - minBPM - minTuner)
         let tunerExtra = hasTuner ? extra * (hasBPM ? 0.4 : 1) : 0
         let bpmWidth = minBPM + (hasBPM ? min(12, extra - tunerExtra) : 0)
@@ -3394,10 +3391,9 @@ private struct TrackMixFeedbackPanel: View {
                     EmptyView()
                 }
             }
-            TimelineEditButton(show: localShow, key: TimelineEditPreferences.native, width: width, height: 28)
-                .padding(.leading, 3)
             if let localShow {
-                TransportEnvelopeButton(show: localShow, width: min(28, width), height: 28)
+                TransportEditingButtons(show: localShow, key: TimelineEditPreferences.native)
+                    .padding(.leading, 3)
             }
         }.fixedSize()
     }

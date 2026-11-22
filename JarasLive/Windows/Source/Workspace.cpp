@@ -5563,9 +5563,6 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         .setColour(TextButton::textColourOnId,theme::green);
     proButton("proPause","Pause","pause",[this] { session.command(jaras::CommandKind::pause); })
         .setColour(TextButton::textColourOnId,theme::yellow);
-    proButton("proSubplay","Sub Play","subplay",[this] {
-        session.command(session.transport().subPlay.playing ? jaras::CommandKind::subStop : jaras::CommandKind::subPlay);
-    }).setColour(TextButton::textColourOnId,theme::yellow);
     auto &proFadeout = proButton("proFadeout","Fadeout","fadeout",[this] { triggerTransportFadeout(); });
     proFadeout.setColour(TextButton::textColourOffId,theme::yellow);
     static_cast<QuietButton &>(proFadeout).context = [this](Point<int>) { openTransportFadeout(); };
@@ -6911,17 +6908,21 @@ void Workspace::resized() {
     invalidateRowGeometry();
     if(audioPreparationOverlay)audioPreparationOverlay->setBounds(getLocalBounds());
     if (fadeoutOverlay) fadeoutOverlay->setBounds(getLocalBounds());
-    constexpr int statusX = mainStripWidth + 8, playbackInset = 8, automationWidth = 28;
+    constexpr int statusX = mainStripWidth + 8, playbackInset = 8, editControlWidth = 28;
     constexpr int playbackHeight = 24, playbackGap = 4, editGroupSpacing = 8, navigationWidth = 29;
     constexpr int detailHeight = 35;
     constexpr int bpmWidth = 179, metroStripWidth = 88, tempoGap = 8, timelineToolsWidth = 244;
     const auto navigation = {"projectStart", "previousTimelinePoint", "nextTimelinePoint", "projectEnd"};
     const auto playback = {"play", "fadeout", "pause", "loop", "record"};
+    const auto proPlayback = {"proPlay","proPause","proFadeout","proRecord","proRepeat"};
     const bool multipleProjects = canNavigateProjectTab && (canNavigateProjectTab(-1) || canNavigateProjectTab(1));
     constexpr int buttonWidth = 34, modeWidth = 68, proToolWidth = 30, toolPickerWidth = 42;
-    constexpr int proControlGap = 6, proEditSpan = 2 * (proToolWidth + proControlGap);
+    constexpr int proControlGap = 6;
+    constexpr int editSpan = 2 * editControlWidth + playbackGap;
     constexpr int switchWidth = 24, switchGap = 3, switchesWidth = 2 * switchWidth + switchGap;
-    constexpr int proCellWidth = 31, proGroupWidth = proCellWidth * 10 + 4;
+    constexpr int proCellWidth = 31;
+    const int proGroupWidth = proCellWidth * (int)(navigation.size() + proPlayback.size()) + 4;
+    const int proEditSpan = editSpan + 2 * playbackGap;
     const int actionWidth = buttonWidth * 2 + 12 + modeWidth +
         (proTransport ? 3 * (proToolWidth + proControlGap) + toolPickerWidth + proControlGap : 0);
     const int masterX = 0;
@@ -6931,7 +6932,6 @@ void Workspace::resized() {
     const int tuningSpan = tempoWidth + tempoGap + tunerWidth;
     const int detailWidth = tuningSpan + timelineToolsWidth;
     const int playbackWidth = getWidth() < 1600 ? 54 : 60;
-    const int editSpan = playbackWidth + playbackGap + automationWidth;
     const int playbackSpan = (int)playback.size() * (playbackWidth + playbackGap) + editGroupSpacing + editSpan;
     const int rightControlSpan = actionWidth + (multipleProjects ? 62 : 0);
     const bool narrowTransport = !proTransport && statusWidth < playbackSpan + detailWidth + rightControlSpan + 2 * playbackInset + 24;
@@ -7075,8 +7075,8 @@ void Workspace::resized() {
     const int editLimit = narrowTransport ? (toolsShareDetailRow ? (multipleProjects ? tabsX : actionX) : rightToolsX) : tempoX;
     const int editX = std::max(recordRight + playbackGap, (recordRight + editLimit - editSpan) / 2);
     if (!proTransport) {
-        controls["editMode"]->setBounds(editX, playbackY, playbackWidth, playbackHeight);
-        controls["track-envelopes"]->setBounds(editX + playbackWidth + playbackGap, playbackY, automationWidth, playbackHeight);
+        controls["editMode"]->setBounds(editX, playbackY, editControlWidth, playbackHeight);
+        controls["track-envelopes"]->setBounds(editX + editControlWidth + playbackGap, playbackY, editControlWidth, playbackHeight);
     }
     songDisplay.setBounds(status.getX() + titleInset, titleY, std::max(1, status.getWidth() - 2 * titleInset), 27);
     tempoDisplayBounds = {tempoX, detailY, tempoWidth, detailHeight};
@@ -7109,7 +7109,6 @@ void Workspace::resized() {
         controls[id]->setTopLeftPosition(masterX + controls[id]->getX(), panelY + controls[id]->getY());
     for (Component *component : std::initializer_list<Component *>{&masterVolume, &masterPan, masterPeakReadout.get()})
         if (component) component->setTopLeftPosition(masterX + component->getX(), panelY + component->getY());
-    const auto proPlayback = {"proPlay","proPause","proSubplay","proFadeout","proRecord","proRepeat"};
     for (auto id : playback) controls[id]->setVisible(!proTransport);
     for (auto id : proPlayback) controls[id]->setVisible(proTransport);
     for (auto id : {"editMode","track-envelopes"}) controls[id]->setVisible(true);
@@ -7162,11 +7161,10 @@ void Workspace::resized() {
             : (tuner->getRight() + firstActionX - switchesWidth) / 2;
         timelineSnap.setBounds(snapX,controlBottom-24,switchWidth,24);
         timelineTimebase.setBounds(snapX+switchWidth+switchGap,controlBottom-24,switchWidth,24);
-        const int editWidth = proEditSpan - proControlGap;
-        const int proEditX = compactProTransport ? panelX - proEditSpan
-            : (proPlaybackBounds.getRight() + panelX - editWidth) / 2;
-        controls["editMode"]->setBounds(proEditX,actionY,proToolWidth,actionHeight);
-        controls["track-envelopes"]->setBounds(proEditX+proToolWidth+proControlGap,actionY,proToolWidth,actionHeight);
+        const int proEditX = compactProTransport ? panelX - editSpan - playbackGap
+            : (proPlaybackBounds.getRight() + panelX - editSpan) / 2;
+        controls["editMode"]->setBounds(proEditX,playbackY,editControlWidth,playbackHeight);
+        controls["track-envelopes"]->setBounds(proEditX+editControlWidth+playbackGap,playbackY,editControlWidth,playbackHeight);
         const int nameTop = compactProTransport ? settingsY + 26 : status.getY();
         songDisplay.setBounds(panelX, nameTop, tuner->getRight() - panelX, panelY - nameTop);
         const int positionY = settingsY;
@@ -7686,8 +7684,6 @@ void Workspace::updateState() {
     proPlay.setToggleState(t.playing,dontSendNotification);
     controls["proPause"]->setEnabled(t.playing || t.paused);
     controls["proPause"]->setToggleState(t.paused,dontSendNotification);
-    controls["proSubplay"]->setEnabled(t.subPlay.playing || (t.playing && (t.queuedRegionId || t.queue.songId)));
-    controls["proSubplay"]->setToggleState(t.subPlay.playing,dontSendNotification);
     controls["proRepeat"]->setToggleState(t.loop.enabled,dontSendNotification);
     controls["proRecord"]->setToggleState(recording,dontSendNotification);
     controls["proRecord"]->setEnabled(controls["record"]->isEnabled());

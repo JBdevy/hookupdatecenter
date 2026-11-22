@@ -469,6 +469,8 @@ struct WorkspaceLayoutTests {
         piano->mouseWheelMove(scrollEvent(ModifierKeys(ModifierKeys::altModifier)),wheel);
         require(vertical->getCurrentRangeStart() > pitch && zoom->getValue() == currentZoom,
                 "Alt scrolling must move only the MIDI Preview pitch rows");
+        const auto simpleEditSize = w.controls.at("editMode")->getLocalBounds();
+        const auto simpleEnvelopeSize = w.controls.at("track-envelopes")->getLocalBounds();
         w.controls.at("proMode")->onClick();
         const auto &mode = *w.controls.at("proMode");
         require(mode.getRight() < w.controls.at("save")->getX() && mode.getButtonText()=="Simple Mode" &&
@@ -479,8 +481,11 @@ struct WorkspaceLayoutTests {
                 "Pro and Simple Mode must use the same BPM and Tuner height");
         require(w.timelineSnap.isVisible() && w.timelineTimebase.isVisible() && w.controls.at("zoomFit")->isVisible() &&
                 w.controls.at("editMode")->isVisible() && w.controls.at("track-envelopes")->isVisible() &&
-                w.controls.at("proTool")->isVisible() && w.controls.count("proStop")==0,
-                "Pro Mode lost timeline tools or added a separate Stop button");
+                w.controls.at("proTool")->isVisible() && w.controls.count("proStop")==0 && w.controls.count("proSubplay")==0,
+                "Pro Mode must keep the timeline tools and a single Play/Stop control");
+        require(w.controls.at("editMode")->getLocalBounds() == simpleEditSize &&
+                w.controls.at("track-envelopes")->getLocalBounds() == simpleEnvelopeSize,
+                "Edit and Envelopes must keep their size across transport modes");
         require(w.controls.at("editMode")->getRight() < w.controls.at("track-envelopes")->getX() &&
                 w.controls.at("track-envelopes")->getRight() < w.tempoDisplayBounds.getX(),
                 "Edit and Envelopes must be immediately to the left of BPM");
@@ -498,7 +503,7 @@ struct WorkspaceLayoutTests {
         clockWindow.setSize(clockWindow.getWidth() + 150, clockWindow.getHeight() + 50);
         require(w.clockPositionLabel->getFont().getHeight() > fontHeight, "The clock digits must grow with the window");
         for (const auto *id : {"projectStart","previousTimelinePoint","nextTimelinePoint","projectEnd",
-                               "proPlay","proPause","proSubplay","proFadeout","proRecord","proRepeat"}) {
+                               "proPlay","proPause","proFadeout","proRecord","proRepeat"}) {
             const auto &button = *w.controls.at(id);
             require(button.isVisible() && button.getButtonText().isEmpty() && w.proPlaybackBounds.contains(button.getBounds()),
                     "Pro playback controls must use icons and remain inside a single group");
