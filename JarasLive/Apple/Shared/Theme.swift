@@ -94,6 +94,7 @@ enum JarasTheme {
     static let toolbarInactive = Color(hex: 0xc8c8c8)
     static func toolbarTint(active: Bool) -> Color { active ? green : toolbarInactive }
     static let yellow = Color(hex: 0xffdc52)
+    static func pauseBackground(_ paused: Bool) -> Color { paused ? yellow : Color(hex: 0x454545) }
     static let setlistQueuedYellow: UInt32 = 0x807219
     static let setlistQueuedGradient = [Color(hex: setlistQueuedYellow), Color(hex: 0x4d440c)]
     static func track(_ track: Track, emphasized: Bool = false) -> Color {

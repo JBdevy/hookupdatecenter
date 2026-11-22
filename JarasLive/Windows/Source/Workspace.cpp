@@ -5670,7 +5670,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["loop"]->setColour(TextButton::textColourOffId, Colours::black);
     controls["loop"]->setColour(TextButton::textColourOnId, Colours::black);
     controls["play"]->getProperties().set("transportColour", (int64)theme::transportPlay.getARGB());
-    controls["pause"]->setColour(TextButton::buttonColourId, theme::yellow);
+    controls["pause"]->setColour(TextButton::buttonColourId, Colour(0xff454545));
     controls["pause"]->setColour(TextButton::buttonOnColourId, theme::yellow);
     controls["pause"]->setColour(TextButton::textColourOnId, Colours::black);
     for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"}) {
