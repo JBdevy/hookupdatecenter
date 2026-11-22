@@ -831,10 +831,8 @@ struct MainView: View {
             .font(.jarasSystem(size: 9, weight: .medium, design: .monospaced))
             .fixedSize(horizontal: true, vertical: false).frame(height: 24)
         Button { openSettings() } label: {
-            ControlIcon(name: "gearshape", active: toolWindows.settingsOpen)
-                .foregroundStyle(JarasTheme.toolbarTint(active: toolWindows.settingsOpen))
-                .frame(width: 28, height: 24).contentShape(Rectangle())
-        }.accessibilityLabel("Configurações").desktopIconTooltip("Settings")
+            toolbarLabel("Settings", "gearshape", active: toolWindows.settingsOpen)
+        }.accessibilityLabel("Configurações")
     }
 
     @ViewBuilder private var desktopToolButtons: some View {
