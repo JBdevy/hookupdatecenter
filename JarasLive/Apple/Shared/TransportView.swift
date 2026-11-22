@@ -684,30 +684,32 @@ struct ProGridToolPicker: View {
     @State private var open = false
     var body: some View {
         Button { open.toggle() } label: {
-            HStack(spacing: 4) {
-                icon(selection)
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+            VStack(spacing: 1) {
+                icon(selection).frame(width: 18, height: 15)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .frame(height: 6)
             }.frame(width: 38, height: TransportControlMetrics.proHeight)
                 .background(Color(hex: 0x454545), in: RoundedRectangle(cornerRadius: 5))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Grid tool").accessibilityValue(selection.rawValue)
         .popover(isPresented: $open, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 3) {
-            ForEach(ProGridTool.allCases, id: \.self) { tool in
-                Button {
-                    selection = tool
-                    open = false
-                } label: {
-                    HStack {
-                        icon(tool).frame(width: 22)
-                        Text(LocalizedStringKey(tool.rawValue))
-                        Spacer(minLength: 10)
-                        if tool == selection { Image(systemName: "checkmark") }
-                    }.frame(height: 24).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-            }
+                ForEach(ProGridTool.allCases, id: \.self) { tool in
+                    Button {
+                        selection = tool
+                        open = false
+                    } label: {
+                        HStack {
+                            icon(tool).frame(width: 22)
+                            Text(LocalizedStringKey(tool.rawValue))
+                            Spacer(minLength: 10)
+                            if tool == selection { Image(systemName: "checkmark") }
+                        }.frame(height: 24).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
             }.frame(width: 140).padding(8)
-            }
+        }
     }
     @ViewBuilder private func icon(_ tool: ProGridTool) -> some View {
         if tool.letter { Text(verbatim: tool.symbol).font(.system(size: 12, weight: .bold)) }

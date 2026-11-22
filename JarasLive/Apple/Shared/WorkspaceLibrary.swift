@@ -292,16 +292,72 @@ private struct LibraryDockPickerButton: View {
     }
 }
 
+private struct LibraryDockPickerRow: View {
+    let title: String
+    var selected = false
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 0) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .opacity(selected ? 1 : 0)
+                    .frame(width: 19)
+                    .accessibilityHidden(true)
+                Text(verbatim: title).font(.jarasSystem(size: 13)).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 7)
+            .padding(.trailing, 20)
+            .frame(height: 24)
+            .background {
+                if hovered {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color(hex: 0x48484b))
+                        .padding(.horizontal, 2)
+                        .padding(.vertical, 1)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
 private struct LibraryDockPickerList<Content: View>: View {
+    let rowCount: Int
+    let hasSeparator: Bool
     @ViewBuilder let content: () -> Content
+
+    static var separator: some View {
+        Rectangle()
+            .fill(.white.opacity(0.13))
+            .frame(height: 1)
+            .padding(.horizontal, 9)
+            .frame(height: 9)
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 3, content: content)
+            VStack(alignment: .leading, spacing: 0, content: content)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(idealHeight: 180, maxHeight: 260)
-        .frame(width: 225)
-        .padding(8)
+        .frame(width: 178, height: min(300, CGFloat(rowCount * 24 + (hasSeparator ? 9 : 0))))
+        .padding(6)
+        .background {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(LinearGradient(colors: [Color(hex: 0x2b2b2d), Color(hex: 0x262628)],
+                                     startPoint: .top, endPoint: .bottom))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(.white.opacity(0.17), lineWidth: 1)
+                }
+        }
+        .foregroundStyle(Color(hex: 0xf2f2f2))
     }
 }
 
@@ -330,17 +386,16 @@ struct WorkspaceNotesDock: View {
                         showingPicker = false
                     }
                 } else {
-                    LibraryDockPickerList {
-                        Button("Create") { namingNote = LibraryNote() }
-                        if let activeNote { Button("Rename note") { namingNote = activeNote } }
-                        if !notes.isEmpty { Divider() }
+                    LibraryDockPickerList(rowCount: notes.count + (activeNote == nil ? 1 : 2), hasSeparator: !notes.isEmpty) {
+                        LibraryDockPickerRow(title: JarasLocalization.string("Create")) { namingNote = LibraryNote() }
+                        if let activeNote {
+                            LibraryDockPickerRow(title: JarasLocalization.string("Rename note")) { namingNote = activeNote }
+                            LibraryDockPickerList<EmptyView>.separator
+                        }
                         ForEach(notes) { note in
-                            Button {
+                            LibraryDockPickerRow(title: note.title, selected: activeNote?.id == note.id) {
                                 selection = note.id
                                 showingPicker = false
-                            } label: {
-                                if activeNote?.id == note.id { Label(note.title, systemImage: "checkmark") }
-                                else { Text(verbatim: note.title) }
                             }
                         }
                     }
@@ -494,6 +549,12 @@ struct WorkspaceLibrary: View {
         ((try? JSONDecoder().decode([SamplerCategory].self, from: storedSamplerCategories)) ?? [])
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
+    private var samplerPickerEntries: [(name: String, target: Selection)] {
+        var entries = samplerCategories.map { (name: $0.name, target: Selection.samplerCategory($0.id)) }
+        if hasPadSamples { entries.append((name: "Pads", target: .padSamplers)) }
+        entries.append(contentsOf: Self.nativeSampleCategories.map { (name: $0, target: .nativeSamplers($0)) })
+        return entries
+    }
     private var favoriteKeys: Set<String> {
         Set((try? JSONDecoder().decode([String].self, from: storedFavorites)) ?? [])
     }
@@ -644,8 +705,7 @@ struct WorkspaceLibrary: View {
             refreshPadSamples()
             if samplersOnly {
                 if selection == nil {
-                    selection = samplerCategories.first.map { .samplerCategory($0.id) }
-                        ?? Self.nativeSampleCategories.first.map { .nativeSamplers($0) }
+                    selection = samplerPickerEntries.first?.target
                 }
             } else {
                 instruments.refresh(); loadPresets()
@@ -1089,28 +1149,21 @@ struct WorkspaceLibrary: View {
         .popover(isPresented: $showingSamplerPicker, arrowEdge: .bottom) {
             if creatingCategory { categoryInput }
             else {
-                LibraryDockPickerList {
-                    Button("Create") { categoryName = ""; creatingCategory = true }
-                    Divider()
-                    ForEach(samplerCategories) { category in
-                        samplerPickerRow(category.name, target: .samplerCategory(category.id))
+                let entries = samplerPickerEntries
+                LibraryDockPickerList(rowCount: entries.count + 1, hasSeparator: !entries.isEmpty) {
+                    LibraryDockPickerRow(title: JarasLocalization.string("Create")) {
+                        categoryName = ""
+                        creatingCategory = true
                     }
-                    if hasPadSamples { samplerPickerRow("Pads", target: .padSamplers) }
-                    ForEach(Self.nativeSampleCategories, id: \.self) { name in
-                        samplerPickerRow(name, target: .nativeSamplers(name))
+                    if !entries.isEmpty { LibraryDockPickerList<EmptyView>.separator }
+                    ForEach(entries, id: \.target) { entry in
+                        LibraryDockPickerRow(title: entry.name, selected: selection == entry.target) {
+                            selection = entry.target
+                            showingSamplerPicker = false
+                        }
                     }
                 }
             }
-        }
-    }
-
-    private func samplerPickerRow(_ name: String, target: Selection) -> some View {
-        Button {
-            selection = target
-            showingSamplerPicker = false
-        } label: {
-            if selection == target { Label(name, systemImage: "checkmark") }
-            else { Text(verbatim: name) }
         }
     }
 

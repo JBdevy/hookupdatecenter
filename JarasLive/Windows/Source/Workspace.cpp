@@ -325,10 +325,13 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     const auto foreground = ink.withMultipliedAlpha(opacity);
     g.setColour(foreground);
     if ((bool)b.getProperties()["proToolPicker"]) {
-        drawInterfaceIcon(g,icon,{5.f,(b.getHeight()-15.f)/2,15.f,15.f});
-        const float x=b.getWidth()-11.f,y=b.getHeight()/2.f;
+        const float x = b.getWidth() * .5f;
+        const float y = b.getHeight() * .5f + 7.f;
+        drawInterfaceIcon(g, icon, {x - 7.5f, y - 17.f, 15.f, 15.f});
         Path chevron;
-        chevron.startNewSubPath(x-3,y-1.5f);chevron.lineTo(x,y+1.5f);chevron.lineTo(x+3,y-1.5f);
+        chevron.startNewSubPath(x - 3.f, y - 1.5f);
+        chevron.lineTo(x, y + 1.5f);
+        chevron.lineTo(x + 3.f, y - 1.5f);
         g.strokePath(chevron,PathStrokeType(1.3f));
         return;
     }
