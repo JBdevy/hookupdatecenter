@@ -553,7 +553,7 @@ final class MixerRailLayers {
             layer.backgroundColor = linked ? MixerMeterStyle.linkedBackground : MixerMeterStyle.railBackground(for: theme)
             gradient.frame = rail
             gradient.locations = MixerMeterStyle.gradientStops.map { stop in
-                let mapped = fixedUpperSpan ? HorizontalTrackFaderScale.fraction(decibels: stop * 72 - 60, travel: width) : stop
+                let mapped = fixedUpperSpan ? HorizontalTrackFaderScale.fraction(decibels: Double(stop) * 72 - 60, travel: width) : stop
                 return NSNumber(value: Double(mapped))
             }
             ink.frame = rail
@@ -564,7 +564,7 @@ final class MixerRailLayers {
         previousFixedUpperSpan = fixedUpperSpan
         for (index, channel) in channels.enumerated() {
             let linear = MixerMeterStyle.fraction(levels[index])
-            let level = fixedUpperSpan ? HorizontalTrackFaderScale.fraction(decibels: linear * 72 - 60, travel: layer.bounds.width) : linear
+            let level = fixedUpperSpan ? HorizontalTrackFaderScale.fraction(decibels: Double(linear) * 72 - 60, travel: layer.bounds.width) : linear
             var fill = MixerMeterStyle.fill(in: layer.bounds, channel: index, level: level, vertical: compact)
             if compact && !flipped { fill.origin.y = 0 }
             channel.frame = fill

@@ -2521,7 +2521,7 @@ private final class DirectVolumeSliderView: NSView {
         if usesFixedUpperSpan && rail.width != gradientWidth {
             gradientWidth = rail.width
             let stops = MixerMeterStyle.gradientStops.map {
-                HorizontalTrackFaderScale.fraction(decibels: $0 * 72 - 60, travel: rail.width)
+                HorizontalTrackFaderScale.fraction(decibels: Double($0) * 72 - 60, travel: rail.width)
             }
             horizontalTrackGradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
                 colors: MixerMeterStyle.gradientColors as CFArray, locations: stops)
