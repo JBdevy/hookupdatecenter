@@ -201,7 +201,7 @@ final class ClickTempoTests: XCTestCase {
         assertPhase(sections, follows: input.onsets, accuracy: 0.0201)
     }
 
-    func testDelayedClickProtectsRegionIntroAndRedetectionReplacesOldTempos() throws {
+    func testDelayedClickLeavesIntroTempoAndRedetectionReplacesOldTempos() throws {
         for start in [0.0, 20.0] {
             var song = Project.empty(name: "Delayed click").songs[0]
             let region = Part(id: UUID(), name: "Song", startTime: start, endTime: start + 30)
@@ -225,19 +225,19 @@ final class ClickTempoTests: XCTestCase {
             let detected = try ClickTempoDetector.markersWithMeter(song: song, region: region) { _ in
                 (0..<36).map { .init(position: 0.125 + Double($0) * 0.4, peak: $0 % 6 == 0 ? 0.9 : 0.45) }
             }
-            XCTAssertEqual(detected.markers.map(\.position), [start, start + 5.125])
-            XCTAssertEqual(detected.markers.map(\.tempoBPM), [150, 150])
-            XCTAssertEqual(detected.markers.map(\.tempoBeats), [4, 4])
-            XCTAssertEqual(detected.markers.map(\.tempoReferenceBPM), [150, 150])
+            XCTAssertEqual(detected.markers.map(\.position), [start + 5.125])
+            XCTAssertEqual(detected.markers.map(\.tempoBPM), [150])
+            XCTAssertEqual(detected.markers.map(\.tempoBeats), [4])
+            XCTAssertEqual(detected.markers.map(\.tempoReferenceBPM), [150])
             song.insertDetectedTempo(detected.markers, replacing: region)
             song.insertDetectedTempo(detected.markers, replacing: region)
             let within = (song.markers ?? []).filter { $0.position >= start && $0.position < region.endTime }
-            XCTAssertEqual(within.count, 2, "Redetection must replace, not accumulate tempo markers")
+            XCTAssertEqual(within.count, 1, "Redetection must replace, not accumulate tempo markers")
             XCTAssertTrue(within.allSatisfy { $0.regionOwnerID == region.id })
             XCTAssertFalse(song.markers!.contains { $0.id == old.id })
             XCTAssertTrue(song.markers!.contains(following))
             if start > 0 { XCTAssertTrue(song.markers!.contains(previous)) }
-            XCTAssertEqual(song.tempoSection(at: start + 1).bpm, 150)
+            XCTAssertEqual(song.tempoSection(at: start + 1).bpm, start == 0 ? song.bpm : 90)
             XCTAssertTrue(song.tempoAudioSegments(intro).allSatisfy { $0.audioRate == 1 })
             XCTAssertEqual(song.tracks, before.tracks)
             XCTAssertEqual(song.parts, before.parts)
@@ -425,11 +425,9 @@ final class ClickTempoTests: XCTestCase {
         let first = (0..<16).map { 2.125 + Double($0) * 0.5 }
         let second = (0..<16).map { 10.125 + Double($0) * 0.75 }
         let result = try ClickTempoDetector.markers(song: song, region: region) { _ in first + second }
-        XCTAssertEqual(result.markers.count, 3)
-        XCTAssertEqual(result.markers.map(\.tempoBPM), [150,150,100])
-        XCTAssertEqual(result.markers[0].position, region.startTime)
-        XCTAssertEqual(result.markers[1].position, 12.1, accuracy: 1e-9)
-        XCTAssertEqual(result.markers[2].position, 18.5, accuracy: 1e-9)
+        XCTAssertEqual(result.markers.map(\.tempoBPM), [150,100])
+        XCTAssertEqual(try XCTUnwrap(result.markers.first).position, 12.1, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(result.markers.last).position, 18.5, accuracy: 1e-9)
     }
     func testNoiseDoesNotInventTempo() {
         XCTAssertTrue(ClickTempoDetector.sections(onsets: []).isEmpty)
@@ -445,10 +443,10 @@ final class ClickTempoTests: XCTestCase {
         let onsets = (0..<12).map { 0.125 + Double($0) * 0.5 }
         let detected = try ClickTempoDetector.markers(song: song, region: region) { _ in onsets }
         XCTAssertTrue(detected.hasClickAudio)
-        XCTAssertEqual(detected.markers.count, 2)
-        XCTAssertEqual(detected.markers[0].position, region.startTime)
-        XCTAssertEqual(detected.markers[1].position, 12.125, accuracy: 1e-9)
-        XCTAssertEqual(detected.markers[0].tempoBPM, 120)
+        XCTAssertEqual(detected.markers.count, 1)
+        let marker = try XCTUnwrap(detected.markers.first)
+        XCTAssertEqual(marker.position, 12.125, accuracy: 1e-9)
+        XCTAssertEqual(marker.tempoBPM, 120)
 
         song.tracks = []
         let absent = try ClickTempoDetector.markers(song: song, region: region) { _ in
