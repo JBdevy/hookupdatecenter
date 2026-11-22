@@ -250,6 +250,7 @@ struct ControlIcon: View {
     var active = false
     var size: CGFloat = 18
     var toolbar = false
+    var tintable = false
     @Environment(\.toolbarIconSurface) private var toolbarSurface
 
     private static func load(_ state: String) -> [String: CGImage] {
@@ -272,7 +273,7 @@ struct ControlIcon: View {
             let artwork = active ? Self.on[name] :
                 (toolbar || toolbarSurface ? Self.toolbarOff[name] ?? Self.off[name] : Self.off[name])
             if let icon = artwork {
-                Image(decorative: icon, scale: CGFloat(icon.width) / size).renderingMode(.original).resizable().interpolation(.high)
+                Image(decorative: icon, scale: CGFloat(icon.width) / size).renderingMode(tintable ? .template : .original).resizable().interpolation(.high)
             } else {
                 DesktopToolbarSymbol(name: name)
             }
