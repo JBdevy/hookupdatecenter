@@ -437,7 +437,7 @@ final class NativeFXTests: XCTestCase {
         XCTAssertEqual(parameters.hold, 10)
         XCTAssertEqual(parameters.decay, 10)
         XCTAssertEqual(parameters.sustain, 1)
-        XCTAssertEqual(parameters.release, 0.3)
+        XCTAssertEqual(parameters.release, 0.16)
         XCTAssertEqual(parameters.gain, 0)
         try parameters.validate()
     }

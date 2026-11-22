@@ -59,3 +59,16 @@ tabs.waveform
 tabs.transport
 tabs.record
 metronome
+projectStart
+previousTimelinePoint
+nextTimelinePoint
+projectEnd
+save
+check
+search
+chevron.right
+chevron.left
+chevron.down
+send
+pin
+refresh

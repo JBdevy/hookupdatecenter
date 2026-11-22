@@ -18,7 +18,7 @@ final class TrackInstrumentIconTests: XCTestCase {
         var project = Project.empty(name: "Icons")
         let track = Track(id: UUID(), name: "Piano", role: .keys)
         project.songs[0].tracks = [track]
-        XCTAssertEqual(track.instrumentIcon, "png:Sound Effects/glitch")
+        XCTAssertEqual(track.instrumentIcon, "png:Other/waveform")
         XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)).songs[0].tracks[0].instrumentIcon,
                        track.instrumentIcon)
         project.songs[0].tracks[0].instrumentIcon = nil

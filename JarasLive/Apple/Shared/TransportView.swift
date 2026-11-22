@@ -280,14 +280,14 @@ struct TimelineNavigationControls: View {
     var width: CGFloat = 29
     var body: some View {
         HStack(spacing: 3) {
-            step(.projectStart, symbol: "backward.end.fill")
-            step(.previousTimelinePoint, symbol: "backward.fill")
-            step(.nextTimelinePoint, symbol: "forward.fill")
-            step(.projectEnd, symbol: "forward.end.fill")
+            step(.projectStart)
+            step(.previousTimelinePoint)
+            step(.nextTimelinePoint)
+            step(.projectEnd)
         }.fixedSize()
     }
-    private func step(_ action: DAWAction, symbol: String) -> some View {
-        Button { show.performAction(action) } label: { Image(systemName: symbol) }
+    private func step(_ action: DAWAction) -> some View {
+        Button { show.performAction(action) } label: { ControlIcon(name: action.rawValue, size: 16) }
             .buttonStyle(TransportButtonStyle(color: Color(hex: 0x454545), inactiveOpacity: 1,
                 fontSize: 10, width: width, height: 23, bordered: false))
             .accessibilityLabel(LocalizedStringKey(action.title)).accessibilityIdentifier(action.rawValue)
@@ -1215,8 +1215,7 @@ private struct ProjectSaveButton: View {
             Label {
                 Text(verbatim: "Save")
             } icon: {
-                if pending { ProjectSaveIcon().frame(width: 12, height: 12) }
-                else { Image(systemName: "checkmark") }
+                ControlIcon(name: pending ? "save" : "check", active: pending, size: 14)
             }
                 .font(.jarasSystem(size: TransportControlMetrics.font, weight: .semibold))
                 .lineLimit(1).minimumScaleFactor(0.8)

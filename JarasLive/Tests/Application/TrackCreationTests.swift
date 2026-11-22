@@ -195,7 +195,7 @@ final class TrackCreationTests: XCTestCase {
         XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "timecode"), count: 1, after: child.id).count, 1)
         XCTAssertEqual(show.addTracks(name: "Ignored", role: .chords, count: 1, after: child.id).count, 1)
         XCTAssertEqual(show.addTracks(name: "Ignored", role: TrackRole(rawValue: "generatedClick"), count: 1, after: child.id).count, 1)
-        XCTAssertEqual(show.current?.tracks.map(\.name), ["Timecode", "Teleprompter 1", "Teleprompter 2", "Chords", "Click", "Video", "Folder", "Child"])
+        XCTAssertEqual(show.current?.tracks.map(\.name), ["Timecode", "Teleprompter 1", "Teleprompter 2", "Chords", "Metronome", "Video", "Folder", "Child"])
         XCTAssertEqual(show.current?.tracks[0].patch, OutputPatch.none)
         XCTAssertNotNil(show.current?.tracks[0].timecode)
         XCTAssertTrue(show.addTracks(name: "Timecode", role: TrackRole(rawValue: "timecode"), count: 1).isEmpty)
