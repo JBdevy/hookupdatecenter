@@ -6,6 +6,7 @@ import SwiftUI
 struct IpadTimelineToolbar: View {
     let show: ShowController
     let addTrack: () -> Void
+    let showsTimelineSwitches: Bool
     @Binding private var editing: Bool
     @Binding private var showRegions: Bool
     @Binding private var showTempo: Bool
@@ -22,9 +23,10 @@ struct IpadTimelineToolbar: View {
     }
 
     init(show: ShowController, addTrack: @escaping () -> Void, editing: Binding<Bool>,
-         showRegions: Binding<Bool>, showTempo: Binding<Bool>) {
+         showRegions: Binding<Bool>, showTempo: Binding<Bool>, showsTimelineSwitches: Bool) {
         self.show = show
         self.addTrack = addTrack
+        self.showsTimelineSwitches = showsTimelineSwitches
         _editing = editing
         _showRegions = showRegions; _showTempo = showTempo
         _updates = ObservedObject(wrappedValue: show.projectPresentation)
@@ -106,29 +108,33 @@ struct IpadTimelineToolbar: View {
     }
 
     @ViewBuilder private var timelineButtons: some View {
-        Button { snapEnabled.toggle() } label: {
-            TransportControlIcon(name: "magnet")
-                .frame(width: 32, height: 32).contentShape(Rectangle())
-        }.buttonStyle(IpadTimelineToolbarButtonStyle(color: snapEnabled ? JarasTheme.green : JarasTheme.yellow))
-            .accessibilityLabel("Timeline snapping")
-            .accessibilityIdentifier("timeline-snap")
-            .accessibilityValue(snapEnabled ? "On" : "Off")
+        if showsTimelineSwitches {
+            Button { snapEnabled.toggle() } label: {
+                TransportControlIcon(name: "magnet")
+                    .frame(width: 32, height: 32).contentShape(Rectangle())
+            }.buttonStyle(IpadTimelineToolbarButtonStyle(color: snapEnabled ? JarasTheme.green : JarasTheme.yellow))
+                .accessibilityLabel("Timeline snapping")
+                .accessibilityIdentifier("timeline-snap")
+                .accessibilityValue(snapEnabled ? "On" : "Off")
+        }
         Button { showingVisibility = true } label: {
             ControlIcon(name: "eye", active: showingVisibility).frame(width: 32, height: 32).contentShape(Rectangle())
         }.buttonStyle(IpadTimelineToolbarButtonStyle(color: JarasTheme.text))
             .accessibilityLabel("Visibilidade das pistas")
             .accessibilityIdentifier("native-track-visibility").help(Text(verbatim: "Hide/View-Tracks"))
-        Button {
-            guard show.canControl(), let song = show.current else { return }
-            pendingTimebase = TimebaseRequest(project: show.snapshot.project.id, song: song.id,
-                                              relative: song.projectTime.timebase != .relative)
-        } label: {
-            TransportControlIcon(name: "itemTimebase").frame(width: 32, height: 32).contentShape(Rectangle())
-        }.buttonStyle(IpadTimelineToolbarButtonStyle(color: relativeTimebase ? JarasTheme.green : JarasTheme.yellow))
-            .accessibilityLabel("Relative timebase")
-            .accessibilityIdentifier("timeline-timebase")
-            .accessibilityValue(relativeTimebase ? "Enabled" : "Disabled")
-            .disabled(show.current == nil)
+        if showsTimelineSwitches {
+            Button {
+                guard show.canControl(), let song = show.current else { return }
+                pendingTimebase = TimebaseRequest(project: show.snapshot.project.id, song: song.id,
+                                                  relative: song.projectTime.timebase != .relative)
+            } label: {
+                TransportControlIcon(name: "itemTimebase").frame(width: 32, height: 32).contentShape(Rectangle())
+            }.buttonStyle(IpadTimelineToolbarButtonStyle(color: relativeTimebase ? JarasTheme.green : JarasTheme.yellow))
+                .accessibilityLabel("Relative timebase")
+                .accessibilityIdentifier("timeline-timebase")
+                .accessibilityValue(relativeTimebase ? "Enabled" : "Disabled")
+                .disabled(show.current == nil)
+        }
         Button { show.setTimelineMovementLocked(!show.timelineMovementLocked) } label: {
             ControlIcon(name: show.timelineMovementLocked ? "lock" : "unlock", active: show.timelineMovementLocked)
                 .frame(width: 32, height: 32).contentShape(Rectangle())

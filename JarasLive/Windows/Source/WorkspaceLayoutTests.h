@@ -234,9 +234,9 @@ struct WorkspaceLayoutTests {
             return result;
         };
         std::vector<Component*> transport{&w.masterVolume,&w.songDisplay,
-            &w.transportInfo,&w.transportTime,w.tempoControl.get(),w.tuner.get()};
+            &w.transportTime,w.tempoControl.get(),w.tuner.get()};
         for(auto id:{"masterMono","masterMute",
-            "previousProjectTab","nextProjectTab","track-envelopes",
+            "previousProjectTab","nextProjectTab",
             "play","pause","loop","record","metronome","save","setlist"}) transport.push_back(w.controls[id]);
         for(int width:{800,1000,1440,1920}) for(int tabInset:{0,24}) {
             host.setSize(width,850); w.workspaceFullscreen=false;
@@ -268,21 +268,19 @@ struct WorkspaceLayoutTests {
             require(w.tuner->getY() == w.tempoDisplayBounds.getY() &&
                     w.tuner->getHeight() == w.tempoDisplayBounds.getHeight(), "BPM and Tuner must share their top and height");
             const int playbackBottom = w.controls["play"]->getBottom();
-            for (auto id : {"fadeout", "pause", "loop", "record", "editMode", "track-envelopes", "save", "setlist"})
+            for (auto id : {"fadeout", "pause", "loop", "record", "proMode", "save", "setlist"})
                 require(w.controls[id]->getBottom() == playbackBottom, "Transport buttons must align at the bottom");
+            require(!w.timelineSnap.isVisible() && !w.timelineTimebase.isVisible() &&
+                    !w.controls["editMode"]->isVisible() && !w.controls["track-envelopes"]->isVisible(),
+                    "Simple Mode must hide the Pro editing and timeline switch controls");
+            require(w.footerSongBounds.contains(w.transportInfo.getBounds()) &&
+                    w.transportInfo.getJustificationType() == Justification::centred,
+                    "Simple Mode should center notices in the footer");
             if (width == 1920) {
                 require(playbackBottom == w.tuner->getBottom(), "Playback must align with BPM and Tuner");
                 const auto details = w.tempoDisplayBounds.getUnion(w.tuner->getBounds());
                 require(std::abs(details.getCentreX() - w.transportDisplayBounds.getCentreX()) <= 1,
                         "The BPM and Tuner group must be centered within the transport display");
-                const int gapAfterREC = w.controls["editMode"]->getX() - w.controls["record"]->getRight();
-                const int gapBeforeBPM = w.tempoDisplayBounds.getX() - w.controls["track-envelopes"]->getRight();
-                require(gapAfterREC >= 0 && std::abs(gapAfterREC - gapBeforeBPM) <= 1,
-                        "Edit and envelopes must be centered together between REC and BPM");
-                const auto switches = w.timelineSnap.getBounds().getUnion(w.timelineTimebase.getBounds());
-                const auto gapCenter = (w.tuner->getRight() + w.controls["trackHeightFit"]->getX()) / 2;
-                require(std::abs(switches.getCentreX() - gapCenter) <= 1,
-                        "Snap and Timebase must be centered between Tuner and the zoom controls");
             }
             require(w.controls.count("export") == 0 &&
                     w.controls["save"]->getRight() < w.controls["setlist"]->getX() &&
@@ -469,8 +467,24 @@ struct WorkspaceLayoutTests {
         piano->mouseWheelMove(scrollEvent(ModifierKeys(ModifierKeys::altModifier)),wheel);
         require(vertical->getCurrentRangeStart() > pitch && zoom->getValue() == currentZoom,
                 "Alt scrolling must move only the MIDI Preview pitch rows");
-        const auto simpleEditSize = w.controls.at("editMode")->getLocalBounds();
-        const auto simpleEnvelopeSize = w.controls.at("track-envelopes")->getLocalBounds();
+        for (const int width : {1060, 1600}) {
+            w.setSize(width, 1050);
+            const auto simpleProgress = w.transportProgressBounds();
+            const auto simpleNotice = w.transportInfo.getBounds();
+            const auto modeBounds = w.controls.at("proMode")->getBounds();
+            const auto saveBounds = w.controls.at("save")->getBounds();
+            const auto setlistBounds = w.controls.at("setlist")->getBounds();
+            w.controls.at("proMode")->onClick();
+            const auto proProgress = w.transportProgressBounds();
+            require(w.controls.at("proMode")->getBounds() == modeBounds && w.controls.at("save")->getBounds() == saveBounds &&
+                    w.controls.at("setlist")->getBounds() == setlistBounds,
+                    "Mode, Save and Setlist must keep their position and size");
+            require(simpleProgress.getBottom() == proProgress.getBottom() &&
+                    proProgress.getHeight() == 2 * simpleProgress.getHeight(),
+                    "Both progress bars share a baseline and Pro is twice as thick");
+            require(w.transportInfo.getBounds() == simpleNotice, "Notices stay between Next and Queued in both modes");
+            w.controls.at("proMode")->onClick();
+        }
         w.controls.at("proMode")->onClick();
         const auto &mode = *w.controls.at("proMode");
         require(mode.getRight() < w.controls.at("save")->getX() && mode.getButtonText()=="Simple Mode" &&
@@ -483,9 +497,6 @@ struct WorkspaceLayoutTests {
                 w.controls.at("editMode")->isVisible() && w.controls.at("track-envelopes")->isVisible() &&
                 w.controls.at("proTool")->isVisible() && w.controls.count("proStop")==0 && w.controls.count("proSubplay")==0,
                 "Pro Mode must keep the timeline tools and a single Play/Stop control");
-        require(w.controls.at("editMode")->getLocalBounds() == simpleEditSize &&
-                w.controls.at("track-envelopes")->getLocalBounds() == simpleEnvelopeSize,
-                "Edit and Envelopes must keep their size across transport modes");
         require(w.controls.at("editMode")->getRight() < w.controls.at("track-envelopes")->getX() &&
                 w.controls.at("track-envelopes")->getRight() < w.tempoDisplayBounds.getX(),
                 "Edit and Envelopes must be immediately to the left of BPM");
@@ -652,10 +663,12 @@ struct WorkspaceLayoutTests {
                 "Fixed toolbar labels must be verbatim");
         require(w.addTrack.getWidth() == w.timelineBands.getWidth() && w.addTrack.getHeight() == w.timelineBands.getHeight() &&
                 w.addTrack.getRight() < w.timelineBands.getX(), "Timeline lanes must match Add and sit immediately to its right");
+        w.controls["proMode"]->onClick();
         require(w.controls["editMode"]->getProperties()["icon"].toString() == "editCursor" &&
                 w.controls["track-envelopes"]->getProperties()["icon"].toString() == "automationLanes" &&
                 w.controls["editMode"]->getRight() < w.controls["track-envelopes"]->getX(),
                 "The edit cursor and global envelopes controls must be beside one another");
+        w.controls["proMode"]->onClick();
         auto testMemory = [&](Slider &slider, const char *control, double previous, double manual) {
             auto *button = w.controls[control];
             slider.setValue(previous, sendNotificationSync);

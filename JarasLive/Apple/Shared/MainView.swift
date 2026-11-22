@@ -473,7 +473,7 @@ struct MainView: View {
                     GeometryReader { geometry in
                         HStack(spacing: 14) {
                             ResourceUsageView().fixedSize(horizontal: true, vertical: false)
-                            FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true, showsNotices: proMode && !remotePresentation)
+                            FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true, showsNotices: !remotePresentation)
                                 .frame(maxWidth: .infinity)
                                 .overlay(FooterDisplayResizeInput(height: geometry.size.height, maximum: maximumFooterHeight(workspaceHeight: workspaceHeight),
                                     changed: { _ in }, ended: { storedFooterHeight = $0 }))
