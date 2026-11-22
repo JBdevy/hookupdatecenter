@@ -2,6 +2,7 @@
 #include "../Project/Models.hpp"
 #include "../ProjectSync/ProjectSync.hpp"
 #include "PlaybackCapacity.hpp"
+#include <map>
 #include <utility>
 namespace jaras {
 enum class CommandKind { toggleMultiLoopBypass, queueSection, cancelSection, clipFadeIn, clipFadeOut, loopStart, loopEnd, escape, phase, masterMono, ignoreNext, tempo, beatsPerBar, beatUnit, play, stop, next, previous, queue, select, toggleLoop, seek, editSeek, subPlay, subStop, subSeek, stopAll, volume, pan, mute, solo, selectRegion, queueRegion, pause, clipMute, clipGain, clipPhase, clipPan, clipChannelMode, clipNormalization, clipPitch, clipFadeInCurve, clipFadeInSCurve, clipFadeOutCurve, clipFadeOutSCurve, queueBeatSeek, cancelBeatSeek };
@@ -59,6 +60,7 @@ public:
     void setTimecode(const ID& track, TimecodeSettings settings);
     void editTrack(const ID& id, std::string name, unsigned color);
     void editMasterColor(unsigned color);
+    std::map<ID, int> setTrackMixerComponents(const ID& song, const std::map<ID, int>& masks);
     void setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing = {}, bool retime = false);
     void setMarker(ID id, std::string name, double position, unsigned color, std::optional<double> bpm = {}, std::optional<int> beats = {}, std::optional<int> unit = {}, std::optional<std::string> timebase = {}, std::optional<bool> section = {}, std::optional<bool> loopSection = {});
     void setProjectTiming(double bpm, int beats, int unit, std::optional<ProjectTimeSettings> settings);

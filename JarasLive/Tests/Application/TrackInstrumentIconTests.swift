@@ -8,6 +8,13 @@ import XCTest
     func snapshot() throws -> ShowSnapshot { ShowSnapshot(project: project, transport: transport) }
     func playbackSnapshot() throws -> PlaybackSnapshot { PlaybackSnapshot(transport: transport) }
     func applyProjectEdit(_ value: Project) throws { try value.validate(); project = value }
+    func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws {
+        let index = try XCTUnwrap(project.songs.firstIndex { $0.id == song })
+        for row in project.songs[index].tracks.indices {
+            guard let mask = masks[project.songs[index].tracks[row].id] else { continue }
+            project.songs[index].tracks[row].hiddenMixerComponents = mask == 0 ? nil : mask
+        }
+    }
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {}
     func addTrack(id: UUID, name: String, role: TrackRole) throws {}
     func advance(_ elapsed: Double) {}
@@ -89,12 +96,23 @@ final class TrackInstrumentIconTests: XCTestCase {
         let mask = TrackMixerComponent.pan.rawValue
         first.hiddenMixerComponents = mask
         project.songs[0].tracks = [first, second, other]
-        let show = try ShowController(executor: IconExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let executor = IconExecutor()
+        let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        var audioUpdates = 0
+        show.audioUpdate = { _, _ in audioUpdates += 1 }
+        let transport = show.snapshot.transport
         let selection: Set<UUID> = [first.id, second.id]
         XCTAssertEqual(show.hiddenTrackMixerComponents(selection), mask)
         show.toggleTrackMixerComponents(selection, mask: mask, showWhenMixed: true)
         XCTAssertEqual(show.current?.tracks.map { $0.showsMixerComponent(.pan) }, [true, true, true])
         show.toggleTrackMixerComponents(selection, mask: mask, showWhenMixed: true)
+        XCTAssertEqual(show.current?.tracks.map { $0.showsMixerComponent(.pan) }, [false, false, true])
+        XCTAssertEqual(show.snapshot.project, executor.project)
+        XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(audioUpdates, 0)
+        show.undo()
+        XCTAssertEqual(show.current?.tracks.map { $0.showsMixerComponent(.pan) }, [true, true, true])
+        show.redo()
         XCTAssertEqual(show.current?.tracks.map { $0.showsMixerComponent(.pan) }, [false, false, true])
     }
     @MainActor func testIconOnlyOnLegacyTrackKeepsDefaultColorAndHistoryEmpty() throws {

@@ -33,6 +33,7 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
     func replaceAudioClip(_ clip: AudioClip, track: UUID) throws
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws
     func editMasterColor(_ color: UInt32) throws
+    func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws
     func editTrack(_ id: UUID, name: String, color: UInt32) throws
     func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws
@@ -99,6 +100,7 @@ public extension CommandExecutor {
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws { throw BackendFailure.notConfigured }
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws { throw BackendFailure.notConfigured }
     func editMasterColor(_ color: UInt32) throws { throw BackendFailure.notConfigured }
+    func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws { throw BackendFailure.notConfigured }
     func editTrack(_ id: UUID, name: String, color: UInt32) throws { throw BackendFailure.notConfigured }
     func setTrackRouting(_ routes: [UUID: TrackRouting]) throws { throw BackendFailure.notConfigured }
     func setOutputPatches(track: UUID?, patches: [OutputPatch]) throws { throw BackendFailure.notConfigured }

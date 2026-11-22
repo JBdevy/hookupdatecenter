@@ -2089,6 +2089,24 @@ void Session::edit(const std::function<void(jaras::Project &)> &change, bool reb
     }
     notify();
 }
+Session::TrackMixerComponentsHistory Session::applyTrackMixerComponents(const TrackMixerComponentsHistory &entry) {
+    return {entry.song, core.setTrackMixerComponents(entry.song, entry.masks)};
+}
+void Session::notifyTrackMixerComponents() {
+    dirty = true;
+    ++revision;
+    if (trackMixerComponentsChanged) trackMixerComponentsChanged();
+    else if (changed) changed();
+}
+void Session::setTrackMixerComponents(const std::map<ID, int> &masks) {
+    if (busy || jaras::projectSync::readOnly() || !song() || masks.empty()) return;
+    auto previous = applyTrackMixerComponents({song()->id, masks});
+    if (previous.masks.empty()) return;
+    undoHistory.emplace_back(std::move(previous));
+    if (undoHistory.size() > 40) undoHistory.pop_front();
+    redoHistory.clear();
+    notifyTrackMixerComponents();
+}
 void Session::setTrackInstrumentIcon(const std::set<ID> &ids, std::optional<std::string> icon) {
     if(busy || jaras::projectSync::readOnly() || ids.empty()) return;
     if(icon && icon->empty()) icon.reset();
@@ -2514,6 +2532,12 @@ void Session::undo() {
     if (audio.isRecording())
         throw std::runtime_error("Pare para desfazer alterações.");
     auto value = undoHistory.back();
+    if (value.components) {
+        redoHistory.emplace_back(applyTrackMixerComponents(*value.components));
+        undoHistory.pop_back();
+        notifyTrackMixerComponents();
+        return;
+    }
     if (value.timeline) redoHistory.emplace_back(TimelineHistory{value.timeline->tempo ? core.timingSnapshot() : project(), value.timeline->tempo, value.timeline->itemControls, value.timeline->mixerControls, value.timeline->routingControls});
     else if (value.pitch) redoHistory.emplace_back(pitchHistory(value.pitch->region));
     else if (value.itemPitch) redoHistory.emplace_back(itemPitchHistory(value.itemPitch->item));
@@ -2543,6 +2567,12 @@ void Session::redo() {
     if (audio.isRecording())
         throw std::runtime_error("Pare para refazer alterações.");
     auto value = redoHistory.back();
+    if (value.components) {
+        undoHistory.emplace_back(applyTrackMixerComponents(*value.components));
+        redoHistory.pop_back();
+        notifyTrackMixerComponents();
+        return;
+    }
     if (value.timeline) undoHistory.emplace_back(TimelineHistory{value.timeline->tempo ? core.timingSnapshot() : project(), value.timeline->tempo, value.timeline->itemControls, value.timeline->mixerControls, value.timeline->routingControls});
     else if (value.pitch) undoHistory.emplace_back(pitchHistory(value.pitch->region));
     else if (value.itemPitch) undoHistory.emplace_back(itemPitchHistory(value.itemPitch->item));

@@ -6046,6 +6046,15 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             if(auto* mixer=dynamic_cast<MixerPanel*>(entry.second->getContentComponent()))mixer->refreshVisible();
         timeline->refreshMixer();caption->repaint();updateState();
     };
+    session.trackMixerComponentsChanged = [this] {
+        if (itemLayoutRevision + 1 == session.revision) itemLayoutRevision = session.revision;
+        if (itemTitleRevision + 1 == session.revision) itemTitleRevision = session.revision;
+        for (auto* row : rows) row->resized();
+        resized();
+        timeline->updateRanges();
+        updateState();
+        repaint();
+    };
     session.setlistChanged = [this] { refreshPlaybackState(); };
     session.transportChanged = [this] { refreshPlaybackState(); };
     session.selectionChanged = [this] {
@@ -9684,23 +9693,18 @@ void Workspace::showChordMenu(const ID &track, const ID &marker, Point<int> poin
 void Workspace::toggleTrackMixerComponents(const std::set<ID>& ids, int mask) {
     const auto *song = session.song();
     if (!song || ids.empty()) return;
-    const auto songID = song->id;
-    const bool restore = std::any_of(song->tracks.begin(), song->tracks.end(), [&](const auto &t) {
-        return t.supportsMixerComponents() && ids.count(t.id) && (t.hiddenMixerComponents.value_or(0) & mask) != 0;
+    const auto selected = [&](const auto &track) {
+        return track.supportsMixerComponents() && ids.count(track.id);
+    };
+    const bool restore = std::any_of(song->tracks.begin(), song->tracks.end(), [&](const auto &track) {
+        return selected(track) && !track.showsComponent(mask);
     });
-    perform([&] {
-        session.edit([&](jaras::Project &p) {
-            for (auto &s : p.songs) if (s.id == songID) for (auto &t : s.tracks) if (t.supportsMixerComponents() && ids.count(t.id)) {
-                const int old = t.hiddenMixerComponents.value_or(0);
-                const int next = restore ? old & ~mask : old | mask;
-                t.hiddenMixerComponents = next ? std::optional<int>(next) : std::nullopt;
-            }
-        }, false);
-        for (auto *row : rows) row->resized();
-        resized();
-        timeline->updateRanges();
-        repaint();
-    });
+    std::map<ID, int> masks;
+    for (const auto &track : song->tracks) if (selected(track)) {
+        const int previous = track.hiddenMixerComponents.value_or(0);
+        masks.emplace(track.id, restore ? previous & ~mask : previous | mask);
+    }
+    perform([&] { session.setTrackMixerComponents(masks); });
 }
 void Workspace::showTrackMenu(ID id, Point<int> point, bool trackMixerMenu) {
     if(id.empty()){showMasterMenu(point,true);return;}
