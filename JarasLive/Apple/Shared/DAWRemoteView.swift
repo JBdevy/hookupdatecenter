@@ -3200,7 +3200,7 @@ private struct TrackMixFeedbackPanel: View {
                 Group {
                     if local { nativeTransportReadout }
                     else { tabletRemoteTransportReadout }
-                }.frame(height: local ? 64 : 30)
+                }.frame(height: 30)
                 if !local { transportProgress().padding(.vertical, 1) }
                 HStack(alignment: local ? .bottom : .center, spacing: 6) {
                     GeometryReader { geometry in
@@ -3227,7 +3227,7 @@ private struct TrackMixFeedbackPanel: View {
                         .padding(.horizontal, 3)
                 }
             }
-        }.padding(6).frame(height: local ? 115 : 82, alignment: .top).background(RemoteSurface.panel)
+        }.padding(6).frame(height: 82, alignment: .top).background(RemoteSurface.panel)
     }
     private func nativeProTransport(show: ShowController) -> some View {
         let playback = ProTransportButtons(show: show, configureFadeout: { fadeoutSettingsOpen = true })
@@ -3251,7 +3251,7 @@ private struct TrackMixFeedbackPanel: View {
                 ProTimelinePosition(show: show)
                 Spacer(minLength: 0)
                 editing
-            }.frame(height: 64)
+            }.frame(height: 30)
             .overlay {
                 Text(verbatim: name)
                     .font(.jarasSystem(size: 15, weight: .semibold))
@@ -3277,7 +3277,7 @@ private struct TrackMixFeedbackPanel: View {
                 }
                 transportActions
             }.frame(height: 32)
-        }.frame(height: 96)
+        }.frame(height: 62)
     }
     private func nativeProButton(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) { TransportControlIcon(name: icon, size: 15) }
@@ -8227,25 +8227,9 @@ private struct RemoteNativeMixerRow: View, Equatable {
     }
 
     private func teleprompterControls(width: CGFloat) -> some View {
-        let count = CGFloat((addText == nil ? 0 : 1) + (addLyrics == nil ? 0 : 1))
-        let patchSpace: CGFloat = openPatch == nil ? 0 : 40
-        let labelWidth = min(86, max(24, (width - patchSpace - 12) / max(1, count)))
-        return HStack(spacing: 3) {
-            if let openPatch {
-                Button("Patch", action: openPatch)
-                    .buttonStyle(CompactTrackButtonStyle(width: 34))
-            }
-            if let addText {
-                Button(action: addText) {
-                    Text("Add text").lineLimit(1).minimumScaleFactor(0.65).frame(width: labelWidth)
-                }.buttonStyle(TrackControlButtonStyle(height: 22))
-            }
-            if let addLyrics {
-                Button(action: addLyrics) {
-                    Text("Full lyrics").lineLimit(1).minimumScaleFactor(0.65).frame(width: labelWidth)
-                }.buttonStyle(TrackControlButtonStyle(height: 22))
-            }
-        }
+        TeleprompterTrackButtons(availableWidth: max(0, width), openPatch: openPatch,
+            addText: addText, addLyrics: addLyrics)
+            .frame(width: max(0, width), alignment: .trailing)
     }
 }
 

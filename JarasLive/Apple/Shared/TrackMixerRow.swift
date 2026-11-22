@@ -1503,17 +1503,13 @@ struct TrackMixerRow: View, Equatable {
             .onChange(of: projectID) { _ in patchTarget = nil; clickSoundPresented = false }
 
     }
-    private func teleprompterButtons(project: UUID, compact: Bool) -> some View {
-        HStack(spacing: 3) {
-            Button("Patch") { patchTarget = editorTarget(project: project) }
-                .buttonStyle(CompactTrackButtonStyle(width: 34))
-            Button { if let item = show.addTextItem(track: track.id) { editTextItem(item) } } label: {
-                Text("Add text").lineLimit(1).minimumScaleFactor(0.72).frame(width: compact ? 59 : 75)
-            }.buttonStyle(TrackControlButtonStyle(height: 22))
-            Button { addFullLyrics(track.id) } label: {
-                Text("Full lyrics").lineLimit(1).minimumScaleFactor(0.72).frame(width: compact ? 65 : 78)
-            }.buttonStyle(TrackControlButtonStyle(height: 22))
-        }.fixedSize(horizontal: true, vertical: false).trackControlSelectionExclusion()
+    private func teleprompterButtons(project: UUID) -> some View {
+        GeometryReader { bounds in
+            TeleprompterTrackButtons(availableWidth: bounds.size.width,
+                openPatch: { patchTarget = editorTarget(project: project) },
+                addText: { if let item = show.addTextItem(track: track.id) { editTextItem(item) } },
+                addLyrics: { addFullLyrics(track.id) })
+        }.frame(height: 22).trackControlSelectionExclusion()
     }
     #if os(macOS)
     @ViewBuilder private func continuousControls(title: String, color: UInt32, project: UUID) -> some View {
@@ -1557,7 +1553,7 @@ struct TrackMixerRow: View, Equatable {
                     .buttonStyle(CompactTrackButtonStyle(width: 47))
                     .fixedSize(horizontal: true, vertical: false).trackControlSelectionExclusion().jarasHelp("Insert click items in regions without a click")
             } else if track.kind.isTeleprompter {
-                teleprompterButtons(project: project, compact: compact)
+                teleprompterButtons(project: project)
             } else {
                 HStack(spacing: 3) {
                     if track.kind == .timecode {
@@ -1977,17 +1973,46 @@ struct CompactTrackButtonStyle: ButtonStyle {
 struct TrackControlButtonStyle: ButtonStyle {
     var activeColor: Color? = nil
     var height: CGFloat = 24
+    var width: CGFloat? = nil
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.jarasSystem(size: 12, weight: .semibold))
             .padding(.horizontal, 7)
-            .frame(minWidth: 30, minHeight: height)
+            .frame(minWidth: width ?? 30, maxWidth: width, minHeight: height)
             .background(activeColor.map { $0.opacity(configuration.isPressed ? 0.75 : 1) } ?? JarasTheme.text.opacity(configuration.isPressed ? 0.24 : 0.12))
             .clipShape(RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(JarasTheme.text.opacity(0.18)))
             .contentShape(Rectangle())
             .opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
+struct TeleprompterTrackButtons: View {
+    let availableWidth: CGFloat
+    let openPatch: (() -> Void)?
+    let addText: (() -> Void)?
+    let addLyrics: (() -> Void)?
+
+    var body: some View {
+        let count = (addText == nil ? 0 : 1) + (addLyrics == nil ? 0 : 1)
+        let patchWidth: CGFloat = openPatch == nil ? 0 : 34
+        let spacing = CGFloat(max(0, count + (openPatch == nil ? 0 : 1) - 1)) * 3
+        let labelWidth = min(100, max(0, (availableWidth - patchWidth - spacing) / CGFloat(max(1, count))))
+        HStack(spacing: 3) {
+            if let openPatch {
+                Button("Patch", action: openPatch)
+                    .buttonStyle(CompactTrackButtonStyle(width: patchWidth))
+            }
+            if let addText { textButton("Add text", width: labelWidth, action: addText) }
+            if let addLyrics { textButton("Full lyrics", width: labelWidth, action: addLyrics) }
+        }.frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private func textButton(_ title: LocalizedStringKey, width: CGFloat, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).lineLimit(1).minimumScaleFactor(0.58)
+        }.buttonStyle(TrackControlButtonStyle(height: 22, width: width))
     }
 }
 
