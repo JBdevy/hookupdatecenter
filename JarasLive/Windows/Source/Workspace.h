@@ -27,6 +27,7 @@
 #include "TrackVisibility.h"
 #include "TrackMixerViewport.h"
 #include "TrackRowGeometry.h"
+#include "TimelineSnapping.h"
 namespace catlive {
 class AudioPreparationOverlay;
 class WorkspaceLibrary;
@@ -219,7 +220,16 @@ class Workspace final : public Component,
     enum class ProDock { none, notes, samplers };
     ProDock proDock = ProDock::none;
     bool proTransport = false;
-    juce::Rectangle<int> proPlaybackBounds;
+    enum class ProTool { select, cut, mute, solo };
+    ProTool proTool = ProTool::select;
+    juce::Rectangle<int> proPlaybackBounds, proTimeBounds;
+    ID proTimingSong;
+    uint64_t proTimingRevision = 0;
+    std::vector<timelineGrid::Section> proTimingSections;
+    std::optional<timelineGrid::MeasureLabels> proMeasureLabels;
+    std::array<int64_t,9> proPosition{};
+    SafePointer<Label> clickPositionLabel;
+    void updateProPosition(double);
     void toggleProDock(ProDock);
     DragDivider libraryDivider;
     int libraryWidth = 344, libraryResizeStart = 344;
@@ -266,7 +276,8 @@ class Workspace final : public Component,
     int transportProgressPixels = -1;
     juce::Rectangle<int> transportProgressBounds() const {
         return {transportDisplayBounds.getX() + 3,
-                std::min(transportDisplayBounds.getCentreY() - 1, tempoDisplayBounds.getY() - 2),
+                proTransport ? transportDisplayBounds.getBottom() - 2
+                             : std::min(transportDisplayBounds.getCentreY() - 1, tempoDisplayBounds.getY() - 2),
                 std::max(0, transportDisplayBounds.getWidth() - 6), 2};
     }
     Label songDisplay, transportTime, transportInfo, footer, tempo;
@@ -274,7 +285,7 @@ class Workspace final : public Component,
     DragDivider footerHeightDivider{false}, mixerHeightDivider{false};
     int resizeStart = 0, footerHeightSetting = 27, mixerHeightSetting = 300, mixerHeightLimit = 724, midiPreviewHeightLimit = 724;
     int footerLeftWidth = 155, footerRightWidth = 230;
-    juce::Rectangle<int> footerSongBounds;
+    juce::Rectangle<int> footerSongBounds, proNoticeBounds;
     bool mixerDetached = false;
     bool layoutInitialized = false, layoutActive = true, restoringLayout = false;
     double layoutSaveTime = 0;

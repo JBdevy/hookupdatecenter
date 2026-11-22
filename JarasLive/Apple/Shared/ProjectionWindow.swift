@@ -138,7 +138,7 @@ final class ProjectionWindow: NSWindow {
             window.level = active ? workspaceConfirmationLevel : .normal
         }
     }
-    static func presentWorkspaceWindow(_ window: NSWindow) {
+    static func presentWorkspaceWindow(_ window: NSWindow, activates: Bool = true) {
         if !workspaceTools.contains(window) { followWorkspaceWindow(window) }
         if workspaceIsSuspended && !independentWindows.contains(window) {
             if !suspendedWindows.contains(where: { $0 === window }) { suspendedWindows.insert(window, at: 0) }
@@ -146,7 +146,8 @@ final class ProjectionWindow: NSWindow {
             return
         }
         window.level = workspaceToolLevel
-        window.makeKeyAndOrderFront(nil)
+        if activates { window.makeKeyAndOrderFront(nil) }
+        else { window.orderFront(nil) }
     }
     private static var savedPresentationOptions: NSApplication.PresentationOptions?
     private static func updatePresentationOptions() {

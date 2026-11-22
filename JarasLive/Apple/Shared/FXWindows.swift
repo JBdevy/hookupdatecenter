@@ -390,6 +390,7 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
     var scrolls = true
     var size: CGSize? = nil
     var canClose: () -> Bool = { true }
+    var activates = true
     @ViewBuilder let content: () -> Content
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
@@ -427,7 +428,7 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
             panel.setContentSize(NSSize(width: min(initialSize.width, available.width), height: min(initialSize.height, max(240, available.height - 32))))
             InterfaceScaling.shared.register(panel)
             coordinator.panel = panel
-            panel.center(); attachWorkspacePanel(panel); ProjectionWindow.presentWorkspaceWindow(panel)
+            panel.center(); attachWorkspacePanel(panel); ProjectionWindow.presentWorkspaceWindow(panel, activates: activates)
         }
     }
     static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.close(notify: false) }
@@ -487,9 +488,11 @@ extension EnvironmentValues {
 }
 
 extension View {
-    @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, scrolls: Bool = true, size: CGSize? = nil, @ViewBuilder content: @escaping () -> Content) -> some View {
+    @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, scrolls: Bool = true,
+        size: CGSize? = nil, activates: Bool = true, @ViewBuilder content: @escaping () -> Content) -> some View {
         #if os(macOS)
-        background(WorkspaceEditorPresenter(presented: isPresented, title: title, scrolls: scrolls, size: size, content: content).frame(width: 0, height: 0))
+        background(WorkspaceEditorPresenter(presented: isPresented, title: title, scrolls: scrolls, size: size,
+            activates: activates, content: content).frame(width: 0, height: 0))
         #else
         sheet(isPresented: isPresented, content: content)
         #endif

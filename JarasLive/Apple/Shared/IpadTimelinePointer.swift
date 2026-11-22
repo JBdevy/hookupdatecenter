@@ -21,6 +21,7 @@ struct IpadTimelinePointerProbe: UIViewRepresentable {
     var enabled: Bool
     var capturesPointer = true
     var acceptsTouch: ((CGPoint) -> Bool)? = nil
+    var touchTap: ((CGPoint) -> Bool)? = nil
     var reset: UUID
     var accepts: (CGPoint) -> Bool
     var wantsAutoScroll: (CGPoint) -> Bool
@@ -30,6 +31,7 @@ struct IpadTimelinePointerProbe: UIViewRepresentable {
     func updateUIView(_ view: IpadTimelinePointerView, context: Context) {
         view.accepts = accepts; view.acceptsTouch = acceptsTouch; view.wantsAutoScroll = wantsAutoScroll
         view.event = event; view.wheel = wheel
+        view.touchTap = touchTap
         view.setEnabled(enabled, reset: reset, capturesPointer: capturesPointer)
     }
     static func dismantleUIView(_ view: IpadTimelinePointerView, coordinator: ()) { view.detach() }
@@ -38,6 +40,7 @@ struct IpadTimelinePointerProbe: UIViewRepresentable {
 final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
     var accepts: (CGPoint) -> Bool = { _ in false }
     var acceptsTouch: ((CGPoint) -> Bool)?
+    var touchTap: ((CGPoint) -> Bool)?
     var wantsAutoScroll: (CGPoint) -> Bool = { _ in false }
     var event: (IpadTimelinePointerEvent) -> Void = { _ in }
     var wheel: (CGPoint, HardwareKeyboardModifiers) -> Void = { _,_ in }
@@ -56,6 +59,7 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
     }
     private lazy var pointer = IpadGridPointerRecognizer(target: self, action: #selector(pointerChanged(_:)))
     private lazy var touchDrag = UIPanGestureRecognizer(target: self, action: #selector(touchChanged(_:)))
+    private lazy var directTap = UITapGestureRecognizer(target: self, action: #selector(touchTapped(_:)))
     private lazy var scroll = UIPanGestureRecognizer(target: self, action: #selector(wheelChanged(_:)))
     override init(frame: CGRect) { super.init(frame: frame); isUserInteractionEnabled = false }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -71,10 +75,15 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         touchDrag.maximumNumberOfTouches = 1
         touchDrag.cancelsTouchesInView = true
         touchDrag.isEnabled = active && acceptsTouch != nil
+        directTap.delegate = self
+        directTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        directTap.cancelsTouchesInView = false
+        directTap.isEnabled = active && touchTap != nil
         scroll.delegate = self; scroll.allowedTouchTypes = []
         scroll.allowedScrollTypesMask = [.continuous, .discrete]
         scroll.cancelsTouchesInView = false
-        window.addGestureRecognizer(pointer); window.addGestureRecognizer(touchDrag); window.addGestureRecognizer(scroll)
+        window.addGestureRecognizer(pointer); window.addGestureRecognizer(touchDrag); window.addGestureRecognizer(directTap)
+        window.addGestureRecognizer(scroll)
         updateWheelRouting()
     }
     override func didMoveToSuperview() { super.didMoveToSuperview(); updateWheelRouting() }
@@ -120,12 +129,13 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
             pointer.isEnabled = enabled && capturesPointer; scroll.isEnabled = enabled
         }
         touchDrag.isEnabled = enabled && acceptsTouch != nil
+        directTap.isEnabled = enabled && touchTap != nil
         updateWheelRouting()
     }
     func detach() {
         dragClock?.invalidate(); dragClock = nil
         restoreWheelRouting()
-        owner?.removeGestureRecognizer(pointer); owner?.removeGestureRecognizer(touchDrag)
+        owner?.removeGestureRecognizer(pointer); owner?.removeGestureRecognizer(touchDrag); owner?.removeGestureRecognizer(directTap)
         owner?.removeGestureRecognizer(scroll); owner = nil
     }
     deinit { dragClock?.invalidate() }
@@ -135,7 +145,9 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         let point = touch.location(in: self)
         guard IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: active), containsVisiblePoint(point) else { return false }
-        if recognizer === touchDrag {
+        if recognizer === directTap {
+            return touch.type == .direct && touchTap != nil && !ProgramChangeHeadAnchorView.contains(touch)
+        } else if recognizer === touchDrag {
             guard touch.type == .direct, acceptsTouch?(point) == true, !ProgramChangeHeadAnchorView.contains(touch) else { return false }
         } else {
             guard touch.type == .indirectPointer, accepts(point) else { return false }
@@ -149,6 +161,7 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         return true
     }
     override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+        if recognizer === directTap { return active && touchTap != nil && containsVisiblePoint(recognizer.location(in: self)) }
         if recognizer === touchDrag { return active && acceptsTouch != nil }
         let point = recognizer.location(in: self)
         guard IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: active),
@@ -161,6 +174,9 @@ final class IpadTimelinePointerView: UIView, UIGestureRecognizerDelegate {
         return true
     }
     func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { false }
+    @objc private func touchTapped(_ gesture: UITapGestureRecognizer) {
+        if gesture.state == .ended { _ = touchTap?(gesture.location(in: self)) }
+    }
     @objc private func touchChanged(_ gesture: UIPanGestureRecognizer) {
         let point = gesture.location(in: self)
         let phase: IpadTimelinePointerEvent.Phase

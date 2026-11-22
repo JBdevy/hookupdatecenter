@@ -3,6 +3,7 @@
 #include "../../Core/Songs/TempoPlaybackRate.hpp"
 #include "../../Core/Transport/TransportState.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <queue>
@@ -36,6 +37,20 @@ struct MeasureLabels {
         const auto withinBeat = subdivision % divisionsPerBeat;
         if (withinBeat) name += "." + std::to_string(withinBeat + 1);
         return name;
+    }
+    std::array<int64_t,4> position(double seconds, const std::vector<Section>& sections, int divisions) const {
+        if (!std::isfinite(seconds) || seconds < 0 || sections.empty()) return {1,1,1,1};
+        const auto found = std::upper_bound(sections.begin(),sections.end(),seconds,
+            [](double time, const Section& section) { return time < section.end; });
+        const auto index = std::min(sections.size()-1,size_t(found-sections.begin()));
+        const auto& section = sections[index];
+        const auto perBeat = std::max(1,divisions / section.unit);
+        const auto ticksPerDivision = std::max(1,3840 / section.unit / perBeat);
+        const auto elapsed = std::max(0.,seconds-section.start) / section.barSeconds() * section.beats;
+        const auto ticks = int64_t(std::floor(elapsed * perBeat * ticksPerDivision + 1e-7));
+        const auto subdivisions = ticks / ticksPerDivision, beat = subdivisions / perBeat;
+        return {firstMeasures[index]+beat/section.beats,beat%section.beats+1,
+                subdivisions%perBeat+1,ticks%ticksPerDivision+1};
     }
     double spacing;
 private:

@@ -1021,6 +1021,21 @@ public enum TimelineTimeRuler {
             let withinBeat = subdivision % divisionsPerBeat
             return withinBeat == 0 ? "\(measure).\(beat)" : "\(measure).\(beat).\(withinBeat + 1)"
         }
+
+        public func position(at seconds: Double, sections: [TimelineTempoSection], divisions: Int)
+            -> (bar: Int, beat: Int, division: Int, tick: Int) {
+            guard seconds.isFinite, seconds >= 0, !sections.isEmpty else { return (1, 1, 1, 1) }
+            let index = min(sections.count - 1, TimelineTimeRuler.firstSection(endingAfter: seconds, in: sections))
+            let section = sections[index]
+            let perBeat = max(1, divisions / section.unit)
+            let ticksPerDivision = max(1, 3840 / section.unit / perBeat)
+            let elapsed = max(0, seconds - section.start) / section.barSeconds * Double(section.beats)
+            let ticks = Int(floor(elapsed * Double(perBeat * ticksPerDivision) + 1e-7))
+            let subdivisions = ticks / ticksPerDivision
+            let beat = subdivisions / perBeat
+            return (firstMeasures[index] + beat / section.beats, beat % section.beats + 1,
+                    subdivisions % perBeat + 1, ticks % ticksPerDivision + 1)
+        }
     }
     static func nearestTick(to position: Double, pixelsPerSecond: Double, divisions: Int,
                             sections: [TimelineTempoSection]) -> Double? {

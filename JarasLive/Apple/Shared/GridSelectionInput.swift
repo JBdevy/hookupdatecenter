@@ -727,6 +727,9 @@ struct GridSelectionInput: NSViewRepresentable {
     var pointerDown: (NSEvent) -> Void = { _ in }
     var marqueeBegan: () -> Void = {}
     var itemMoveBegan: () -> Void = {}
+    var proTools = false
+    var applyProTool: (ProGridTool, UUID, CGFloat) -> Void = { _, _, _ in }
+    var setLoopArea: (CGFloat, CGFloat) -> Void = { _, _ in }
     var separateAudio: ((UUID) -> Void)? = nil
     var canSeparateAudio: ((UUID) -> Bool)? = nil
     var toggleClickDouble: ((UUID) -> Void)? = nil
@@ -760,12 +763,20 @@ struct GridSelectionInput: NSViewRepresentable {
         view.fileLocation = fileLocation; view.separateAudio = separateAudio; view.canSeparateAudio = canSeparateAudio; view.configureRate = configureRate
         view.marqueeBegan = marqueeBegan
         view.itemMoveBegan = itemMoveBegan
+        view.supportsProTools = proTools; view.applyProTool = applyProTool; view.setLoopArea = setLoopArea
         view.renameItem = renameItem; view.exportMIDI = exportMIDI
         view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.resetDuration = resetDuration; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.resizeShared = resizeShared; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
     }
 }
 final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimelineBodyInput {
+    var supportsProTools = false
+    private var proTools: Bool { supportsProTools && WorkspaceLayoutPreferences.storage.bool(forKey: "jaras.transport.proMode") }
+    var applyProTool: ((ProGridTool, UUID, CGFloat) -> Void)?
+    var setLoopArea: ((CGFloat, CGFloat) -> Void)?
+    private var proMarquee = false
+    private var proLoop = false
+    private var pendingProTool: (ProGridTool, UUID, CGFloat)?
     var editMIDI: ((UUID) -> Void)?
     var createMIDI: ((CGPoint, CGFloat?) -> Void)?
     private var midiStart: CGPoint?
@@ -1208,6 +1219,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     }
     func timelineInputGateChanged(blocked: Bool) {
         guard blocked else { return }
+        proMarquee = false; proLoop = false; pendingProTool = nil
         stopSelectionScroll()
         if let id = draggedItem, isItemMove { move?(id, .zero, .nan, true) }
         if let fadeItem {
@@ -1240,6 +1252,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         // This view consumes native clicks before later event monitors run.
         // Report the editing area before selecting the item's owning track.
         stopSelectionScroll()
+        proMarquee = false; proLoop = false; pendingProTool = nil
         collapseSelectionOnRelease = nil
         pendingShiftSelection = nil
         pointerDown?(event)
@@ -1253,7 +1266,15 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         pressedHeader = nil; headerPressCancelled = false
         guard let item = hitItem(at: timeline) else {
             if createMIDI != nil && !event.modifierFlags.intersection([.command,.control]).isEmpty { midiStart = timeline; return }
+            if proTools && ProGridTool.current == .select {
+                beginAreaGesture(timeline, event: event)
+                proMarquee = true
+            }
             pendingSeek = timeline; return
+        }
+        if proTools && ProGridTool.current != .select {
+            pendingProTool = (ProGridTool.current,item.id,timeline.x)
+            return
         }
         if event.modifierFlags.contains(.shift), let rect = item.fxRect, rect.contains(timeline) {
             pressedHeader = (item.id, rect, .fx); return
@@ -1315,6 +1336,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         draggedItem = item.id; dragStart = event.locationInWindow; dragOrigin = timeline
     }
     override func mouseDragged(with event: NSEvent) {
+        if proMarquee { rightMouseDragged(with: event); return }
+        if pendingProTool != nil { return }
         if let draggedItem, !selected.contains(draggedItem), hypot(event.locationInWindow.x - dragStart.x, event.locationInWindow.y - dragStart.y) >= 3 {
             selected = [draggedItem]; selectionChanged?(selected)
         }
@@ -1378,6 +1401,20 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         move?(id, translation, ended && !inside ? .nan : point.y, ended)
     }
     override func mouseUp(with event: NSEvent) {
+        if let pendingProTool {
+            self.pendingProTool = nil
+            if hypot(event.locationInWindow.x-dragStart.x,event.locationInWindow.y-dragStart.y) < 3 {
+                selected = [pendingProTool.1]; selectionChanged?(selected)
+                applyProTool?(pendingProTool.0,pendingProTool.1,pendingProTool.2)
+            }
+            return
+        }
+        if proMarquee {
+            rightMouseDragged(with: event)
+            let dragged = selectionRect != nil
+            proMarquee = false; anchor = nil; selectionRect = nil; needsDisplay = true
+            if dragged { pendingSeek = nil; stopSelectionScroll(); return }
+        }
         stopSelectionScroll()
         if let pending = pendingShiftSelection, !hasDragged {
             let released = convert(event.locationInWindow, from: nil)
@@ -1575,7 +1612,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         stopSelectionScroll()
         pointerDown?(event)
         window?.makeFirstResponder(self)
-        anchor = timelinePoint(event)
+        proLoop = proTools
+        beginAreaGesture(timelinePoint(event), event: event)
+    }
+    private func beginAreaGesture(_ point: CGPoint, event: NSEvent) {
+        anchor = point
         anchorInWindow = event.locationInWindow
         edgePointerInWindow = event.locationInWindow
         additive = !event.modifierFlags.intersection([.shift, .command, .control]).isEmpty
@@ -1583,8 +1624,14 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         selectionRect = nil
     }
     override func rightMouseDragged(with event: NSEvent) {
-        guard anchor != nil else { return }
+        guard let anchor else { return }
         edgePointerInWindow = event.locationInWindow
+        if proLoop {
+            if abs(event.locationInWindow.x-anchorInWindow.x) >= 3 {
+                setLoopArea?(anchor.x,timelinePoint(event).x)
+            }
+            return
+        }
         guard selectionRect != nil || hypot(event.locationInWindow.x-anchorInWindow.x, event.locationInWindow.y-anchorInWindow.y) >= 3 else { return }
         if selectionRect == nil { marqueeBegan?() }
         updateMarqueeSelection()
@@ -1678,8 +1725,10 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     override func rightMouseUp(with event: NSEvent) {
         guard let anchor else { return }
         rightMouseDragged(with: event)
+        let loopDragged = proLoop && abs(event.locationInWindow.x-anchorInWindow.x) >= 3
+        proLoop = false
         stopSelectionScroll()
-        if selectionRect == nil {
+        if selectionRect == nil && !loopDragged {
             contextItem = candidates(in: CGRect(origin: anchor, size: .zero)).first { $0.rect.contains(anchor) }?.id
             if let contextItem {
                 if !selected.contains(contextItem) { selected = [contextItem]; selectionChanged?(selected) }

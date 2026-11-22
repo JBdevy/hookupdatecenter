@@ -234,15 +234,16 @@ struct WorkspaceLayoutTests {
             return result;
         };
         std::vector<Component*> transport{&w.masterVolume,&w.songDisplay,
-            &w.transportInfo,&w.transportTime,w.tempoControl.get(),w.tuner.get(),w.masterPeakReadout.get()};
-        for(auto id:{"masterMono","masterPatch","masterFX","masterMute","masterSolo",
+            &w.transportInfo,&w.transportTime,w.tempoControl.get(),w.tuner.get()};
+        for(auto id:{"masterMono","masterMute",
             "previousProjectTab","nextProjectTab","track-envelopes",
             "play","pause","loop","record","metronome","save","setlist"}) transport.push_back(w.controls[id]);
         for(int width:{800,1000,1440,1920}) for(int tabInset:{0,24}) {
             host.setSize(width,850); w.workspaceFullscreen=false;
             w.setBounds(0,tabInset,tabs.getWidth(),tabs.getHeight()-tabInset); w.resized();
-            require(w.controls["masterPatch"]->getRight() <= w.controls["masterFX"]->getX(),
-                    "Master Patch must sit to the left of FX");
+            require(w.controls["masterMono"]->isVisible() && w.controls["masterMute"]->isVisible() &&
+                    !w.controls["masterPatch"]->isVisible() && !w.controls["masterFX"]->isVisible() &&
+                    !w.controls["masterSolo"]->isVisible(), "Main must show only mute, the channel mode and the fader");
             require(w.masterVolume.getRight() <= w.transportDisplayBounds.getX(),
                     "The Main must stay at the left of the top transport");
             if (width >= 1440) {
@@ -288,7 +289,7 @@ struct WorkspaceLayoutTests {
             std::vector<juce::Rectangle<int>> normal;
             for(auto *c:transport) normal.push_back(c->getBounds());
             const auto beforeNative=nativeRects(); require(beforeNative.size()==8,"Native controls missing");
-            const auto beforeMaster=w.createComponentSnapshot({4,normalPanel.getY()+4,268,80});
+            const auto beforeMaster=w.createComponentSnapshot({4,normalPanel.getY()+4,222,80});
             for(int repeat=0;repeat<3;++repeat) {
                 w.workspaceFullscreen=true; w.resized();
                 require(w.transportBounds.getY()==normalPanel.getY()-32 && w.workspaceBounds.getY()==normalGrid.getY()-32,
@@ -305,7 +306,7 @@ struct WorkspaceLayoutTests {
                     const auto found=afterNative.find(child);
                     require(found!=afterNative.end() && EqualRect(&expected,&found->second),"Native hit area lagged behind fullscreen layout");
                 }
-                const auto afterMaster=w.createComponentSnapshot({4,w.transportBounds.getY()+4,268,80});
+                const auto afterMaster=w.createComponentSnapshot({4,w.transportBounds.getY()+4,222,80});
                 for(int y=0;y<beforeMaster.getHeight();++y) for(int x=0;x<beforeMaster.getWidth();++x)
                     require(beforeMaster.getPixelAt(x,y)==afterMaster.getPixelAt(x,y),"Master drawing moved relative to its controls");
                 w.workspaceFullscreen=false; w.resized();
@@ -351,11 +352,24 @@ struct WorkspaceLayoutTests {
         w.syncNativeTransport();
         const auto parent=static_cast<HWND>(host.getPeer()->getNativeHandle());
         std::vector<std::pair<HWND,RECT>> original;
+        std::vector<HWND> simplePlayback;
+        const auto peer=host.getPeer();
+        const auto peerFrame=peer->getBounds();
+        const auto componentFrame=peer->getComponent().getLocalBounds();
+        const auto scale=AffineTransform::scale(
+            (float)peer->getPlatformScaleFactor()*peerFrame.getWidth()/std::max(1,componentFrame.getWidth()),
+            (float)peer->getPlatformScaleFactor()*peerFrame.getHeight()/std::max(1,componentFrame.getHeight()));
         for(auto child=GetWindow(parent,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)) {
             wchar_t name[64]{};GetClassNameW(child,name,64);
             if(std::wstring(name)!=L"CatLiveTransportButton")continue;
             RECT rect{};GetWindowRect(child,&rect);MapWindowPoints(HWND_DESKTOP,parent,reinterpret_cast<POINT*>(&rect),2);
             original.emplace_back(child,rect);
+            for (auto id : {"play","fadeout","pause","loop","record"}) {
+                const auto area=peer->getComponent().getLocalArea(&w,w.controls.at(id)->getBounds()).toFloat()
+                    .transformedBy(scale).getSmallestIntegerContainer();
+                const RECT expected{area.getX(),area.getY(),area.getRight(),area.getBottom()};
+                if (EqualRect(&rect,&expected)) simplePlayback.push_back(child);
+            }
             SetWindowPos(child,nullptr,rect.left+43,rect.top+9,rect.right-rect.left+7,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_NOZORDER);
         }
         require(original.size()==8,"Native transport buttons are missing");
@@ -364,6 +378,15 @@ struct WorkspaceLayoutTests {
             RECT rect{};GetWindowRect(child,&rect);MapWindowPoints(HWND_DESKTOP,parent,reinterpret_cast<POINT*>(&rect),2);
             require(EqualRect(&rect,&expected)!=FALSE,"Input bounds stayed displaced despite unchanged transport state");
         }
+        w.proTransport=true;
+        w.resized();
+        require(simplePlayback.size()==5,"Missing native Simple Mode playback inputs");
+        for (auto child : simplePlayback)
+            require((GetWindowLongPtrW(child,GWL_STYLE)&WS_VISIBLE)==0,"A native Simple Mode playback button covers Pro Mode");
+        w.proTransport=false;
+        w.resized();
+        for(auto child : simplePlayback)
+            require((GetWindowLongPtrW(child,GWL_STYLE)&WS_VISIBLE)!=0,"Simple Mode did not restore native buttons");
         host.clearContentComponent();
     }
     static void performanceDockPositions(const File &directory) {
@@ -447,14 +470,21 @@ struct WorkspaceLayoutTests {
                 "Alt scrolling must move only the MIDI Preview pitch rows");
         w.controls.at("proMode")->onClick();
         const auto &mode = *w.controls.at("proMode");
-        require(mode.getRight() < w.controls.at("save")->getX() && !w.songDisplay.isVisible() &&
-                w.tempoDisplayBounds.getBottom() <= w.proPlaybackBounds.getY(),
-                "Pro Mode must sit before Save and place BPM and Tuner above the compact playback group");
+        require(mode.getRight() < w.controls.at("save")->getX() && mode.getButtonText()=="Simple Mode" &&
+                !w.songDisplay.isVisible() && w.tempoDisplayBounds.getHeight()==35 &&
+                w.tempoDisplayBounds.getHeight()==w.tuner->getHeight() &&
+                !w.tempoDisplayBounds.intersects(w.proPlaybackBounds),
+                "Pro and Simple Mode must use the same BPM and Tuner height");
+        require(w.timelineSnap.isVisible() && w.timelineTimebase.isVisible() && w.controls.at("zoomFit")->isVisible() &&
+                w.controls.at("editMode")->isVisible() && w.controls.at("track-envelopes")->isVisible() &&
+                w.controls.at("proTool")->isVisible() && w.controls.count("proStop")==0,
+                "Pro Mode lost timeline tools or added a separate Stop button");
         for (const auto *id : {"projectStart","previousTimelinePoint","nextTimelinePoint","projectEnd",
-                               "proStop","proPlay","proPause","proSubplay","proFadeout","proRecord","proRepeat"}) {
+                               "proPlay","proPause","proSubplay","proFadeout","proRecord","proRepeat"}) {
             const auto &button = *w.controls.at(id);
             require(button.isVisible() && button.getButtonText().isEmpty() && w.proPlaybackBounds.contains(button.getBounds()),
                     "Pro playback controls must use icons and remain inside a single group");
+            require(button.getHeight()==w.controls.at("save")->getHeight(), "Pro controls must match the Save height");
         }
         w.controls.at("proNotes")->onClick();
         auto *proDock = uiFeatureTests::find(w,"pro-library-dock");

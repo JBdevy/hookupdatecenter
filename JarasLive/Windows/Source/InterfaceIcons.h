@@ -38,6 +38,33 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         g.fillEllipse(bounds.withSizeKeepingCentre(5.f, 5.f));
         return true;
     }
+    if (name == "mainMono" || name == "mainStereo") {
+        const auto cx = bounds.getCentreX(), cy = bounds.getCentreY();
+        if (name == "mainMono") g.drawEllipse(cx - 5.5f, cy - 5.5f, 11, 11, 1.3f);
+        else {
+            g.drawEllipse(cx - 9, cy - 5.5f, 11, 11, 1.3f);
+            g.drawEllipse(cx - 2, cy - 5.5f, 11, 11, 1.3f);
+        }
+        return true;
+    }
+    if (name == "toolSelect" || name == "toolCut" || name == "toolMute" || name == "toolSolo") {
+        const auto b=bounds.withSizeKeepingCentre(15.f,15.f);
+        const auto at=[&](float x,float y){return Point<float>(b.getX()+x,b.getY()+y);};
+        if (name == "toolSelect") {
+            p.startNewSubPath(at(4,1));p.lineTo(at(13,10));p.lineTo(at(8,10));
+            p.lineTo(at(10,14));p.lineTo(at(8,15));p.lineTo(at(6,11));p.lineTo(at(4,14));
+            p.closeSubPath();g.fillPath(p);
+        } else if (name == "toolCut") {
+            g.drawEllipse(b.getX()+1,b.getY()+8,5,5,1.2f);
+            g.drawEllipse(b.getX()+9,b.getY()+8,5,5,1.2f);
+            g.drawLine(Line<float>(at(5,9),at(13,1)),1.2f);
+            g.drawLine(Line<float>(at(10,9),at(2,1)),1.2f);
+        } else {
+            g.setFont(theme::semiboldFont(12));
+            g.drawText(name=="toolMute"?"M":"S",b,Justification::centred,false);
+        }
+        return true;
+    }
     if (name == "mono") {
         const auto cx = bounds.getCentreX(), cy = bounds.getCentreY();
         g.drawEllipse(cx - 9, cy - 5.5f, 11, 11, 1.3f);

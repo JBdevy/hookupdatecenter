@@ -36,6 +36,7 @@ struct TrackMixerColumnGeometry {
 private struct FooterDisplayIdentity: Hashable {
     let show: ObjectIdentifier
     let theme: JarasInterfaceTheme
+    let proMode: Bool
 }
 private struct WorkspaceProjectIdentity: Hashable {
     let project: UUID
@@ -51,6 +52,7 @@ private struct WorkspaceProjectIdentity: Hashable {
     let keyboardOpen: Bool
     let midiPreviewDocked: Bool
     let vinhetasDocked: Bool
+    let proDockOpen: Bool
     let setlistPlacement: SetlistPlacement
     let interfaceTheme: JarasInterfaceTheme
 }
@@ -94,6 +96,7 @@ struct MainView: View {
     @AppStorage("jaras.layout.library.open", store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
     @AppStorage("jaras.layout.focus.open", store: WorkspaceLayoutPreferences.storage) private var focusOpen = false
     @State private var midiPreviewOpen = false
+    @AppStorage("jaras.transport.proMode", store: WorkspaceLayoutPreferences.storage) private var proMode = false
     @State private var proNotesOpen = false
     @State private var proSamplersOpen = false
     @StateObject private var midiPreviewWindow = RecordingPianoWindow()
@@ -374,11 +377,17 @@ struct MainView: View {
                 transport
                     #if os(macOS)
                     GeometryReader { geometry in
-                        SectionListDock(visible: proNotesOpen || proSamplersOpen, storageKey: "catlive.proDock.width",
-                                        minimumPrimaryWidth: 700, defaultFraction: 0.22) {
+                        let proDockOpen = proNotesOpen || proSamplersOpen
+                        let focusWidth = focusOpen ? FooterHorizontalMixer.focusWidth : 0
+                        let preferredMixer = mixerWidth > 0 ? min(486.5, max(SidebarWidthLimits.trackMixer, CGFloat(mixerWidth))) : 0
+                        let minimumEditorWidth = preferredMixer + focusWidth + (libraryOpen ? 122 : 0) + 90
+                        SectionListDock(visible: proDockOpen, storageKey: "catlive.proDock.width",
+                                        minimumPrimaryWidth: max(700, minimumEditorWidth + (setlistWidth > 0 ? SidebarWidthLimits.setlist : 0)),
+                                        defaultFraction: 0.22, enforcesMinimumPrimaryWidth: true) {
                         SectionListDock(visible: partsRightOpen && setlistWidth > 0 && setlistPlacement != .detached, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22) {
                         NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
-                            minimum: SidebarWidthLimits.setlist, scrollController: setlistScrollController,
+                            minimum: SidebarWidthLimits.setlist, minimumTimelineWidth: proDockOpen ? max(420, minimumEditorWidth) : 420,
+                            scrollController: setlistScrollController,
                             sidebarLeading: setlistPlacement == .left, sidebarDetached: setlistPlacement == .detached,
                             contentIdentity: WorkspaceProjectIdentity(project: show.snapshot.project.id, document: documents.currentURL,
                                 missingAudioPaths: documents.missingAudioPaths, remotePresentation: remotePresentation,
@@ -386,7 +395,8 @@ struct MainView: View {
                                 focusOpen: focusOpen, partsLeftOpen: partsLeftOpen,
                                 partsRightOpen: partsRightOpen, partsLeftHorizontal: partsLeftHorizontal,
                                 footerMixerOpen: footerMixerOpen, keyboardOpen: keyboardOpen,
-                                midiPreviewDocked: midiPreviewOpen && !midiPreviewWindow.detached, vinhetasDocked: vinhetasOpen && !vinhetasWindow.detached, setlistPlacement: setlistPlacement,
+                                midiPreviewDocked: midiPreviewOpen && !midiPreviewWindow.detached, vinhetasDocked: vinhetasOpen && !vinhetasWindow.detached,
+                                proDockOpen: proDockOpen, setlistPlacement: setlistPlacement,
                                 interfaceTheme: interfaceTheme),
                             onToggle: toggleSetlist, onEnd: { finalWidth in
                                 if finalWidth > 0 { setlistRestoreWidth = finalWidth }
@@ -403,7 +413,8 @@ struct MainView: View {
                                 ) { workspaceHeight, mixerHeight, preview in
                                     HStack(alignment: .top, spacing: 0) {
                                         if desktopExtras && libraryOpen {
-                                            let available = max(100, editing.size.width - (focusOpen ? FooterHorizontalMixer.focusWidth : 0) - 220)
+                                            let reserved = proDockOpen ? preferredMixer + 90 : 220
+                                            let available = max(100, editing.size.width - focusWidth - reserved)
                                             DesktopLibraryPane(theme: interfaceTheme, show: show, available: available)
                                         }
                                         if desktopExtras && focusOpen {
@@ -416,6 +427,7 @@ struct MainView: View {
                                                                 minimumPrimaryWidth: 260 + max(0, CGFloat(mixerWidth)), defaultFraction: 0.24, leading: true) {
                                                     TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
                                                                      toggleMixer: toggleMixer).equatable()
+                                                        .environment(\.minimumTimelineBodyWidth, proDockOpen ? 84 : 260)
                                                         .foregroundStyle(JarasTheme.text)
                                                 } sections: { SmoothSeekPanel(show: show, placement: .left) }
                                                 timelineDocks(mixerLimit: mixerHeight)
@@ -454,14 +466,15 @@ struct MainView: View {
                     #endif
                 #if os(macOS)
                 FooterNativeHeightHost(storedHeight: CGFloat(storedFooterHeight), minimum: 27, maximum: 161.046875,
-                    active: true, identity: AnyHashable(FooterDisplayIdentity(show: ObjectIdentifier(show), theme: interfaceTheme)), role: .display,
+                    active: true, identity: AnyHashable(FooterDisplayIdentity(show: ObjectIdentifier(show), theme: interfaceTheme, proMode: proMode)), role: .display,
                     resizeCoordinator: footerResizeCoordinator,
                     displayAvailableHeight: workspaceHeight - 150 - (keyboardOpen ? 108 : 0),
                     fallbackMixerHeight: footerMixerOpen ? min(723.55859375, max(273, footerMixerHeight)) : 0) {
                     GeometryReader { geometry in
                         HStack(spacing: 14) {
                             ResourceUsageView().fixedSize(horizontal: true, vertical: false)
-                            FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true).frame(maxWidth: .infinity)
+                            FooterPlaylistDisplay(show: show, scalesToAvailableHeight: true, showsNotices: proMode && !remotePresentation)
+                                .frame(maxWidth: .infinity)
                                 .overlay(FooterDisplayResizeInput(height: geometry.size.height, maximum: maximumFooterHeight(workspaceHeight: workspaceHeight),
                                     changed: { _ in }, ended: { storedFooterHeight = $0 }))
                         }.buttonStyle(.plain).frame(height: geometry.size.height)
@@ -1075,9 +1088,10 @@ private struct AudioDropOptions: View {
 /// Reuses the per-song pitch state and target editor in the transport.
 struct RegionTunerControl: View {
     let show: ShowController
+    let panelHeight: CGFloat
     @StateObject private var updates: ShowPresentationObserver
-    init(show: ShowController) {
-        self.show = show
+    init(show: ShowController, panelHeight: CGFloat = TransportControlMetrics.detailHeight) {
+        self.show = show; self.panelHeight = panelHeight
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     @State private var editing: Part?
@@ -1106,7 +1120,7 @@ struct RegionTunerControl: View {
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) >= 12).jarasHelp("Raise song pitch")
                 .onHover { updateHover(1, inside: $0) }
         }.buttonStyle(.plain).foregroundStyle(JarasTheme.green)
-        .padding(.horizontal, 6).frame(height: TransportControlMetrics.detailHeight)
+        .padding(.horizontal, 6).frame(height: panelHeight)
         .background(TransportDetailSurface())
         .sheet(item: $editing) { region in
             if let song = show.current {

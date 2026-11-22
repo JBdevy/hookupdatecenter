@@ -274,47 +274,78 @@ private struct LibraryNoteEditor: View {
     }
 }
 
-#if os(macOS)
+private struct LibraryDockPickerButton: View {
+    let title: String
+    let current: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                TransportControlIcon(name: "setlist", size: 17)
+                    .frame(width: 28, height: 24)
+                    .background(Color(hex: 0x454545), in: RoundedRectangle(cornerRadius: 5))
+                Text(verbatim: current).font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
+                Spacer(minLength: 0)
+            }.contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel(Text(LocalizedStringKey(title))).accessibilityValue(current)
+    }
+}
+
+private struct LibraryDockPickerList<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 3, content: content)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(idealHeight: 180, maxHeight: 260)
+        .frame(width: 225)
+        .padding(8)
+    }
+}
+
 struct WorkspaceNotesDock: View {
     let theme: JarasInterfaceTheme
     @AppStorage(LibraryNote.storageKey, store: WorkspaceLayoutPreferences.storage) private var storedNotes = Data()
     @State private var selection: UUID?
     @State private var namingNote: LibraryNote?
+    @State private var showingPicker = false
 
     private var notes: [LibraryNote] { LibraryNote.decode(storedNotes) }
     private var activeNote: LibraryNote? { notes.first { $0.id == selection } ?? notes.first }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Menu {
-                    Button("Create") { namingNote = LibraryNote() }
-                    if let activeNote { Button("Rename note") { namingNote = activeNote } }
-                    if !notes.isEmpty { Divider() }
-                    ForEach(notes) { note in
-                        Button { selection = note.id } label: {
-                            if activeNote?.id == note.id { Label(note.title, systemImage: "checkmark") }
-                            else { Text(verbatim: note.title) }
+            LibraryDockPickerButton(title: "Notes", current: activeNote?.title ?? JarasLocalization.string("Notes")) {
+                namingNote = nil
+                showingPicker.toggle()
+            }
+            .padding(5)
+            .popover(isPresented: $showingPicker, arrowEdge: .bottom) {
+                if let namingNote {
+                    LibraryNoteNameInput(note: namingNote) { name in
+                        persist(LibraryNote.saving(namingNote, name: name, in: notes))
+                        selection = namingNote.id
+                        showingPicker = false
+                    }
+                } else {
+                    LibraryDockPickerList {
+                        Button("Create") { namingNote = LibraryNote() }
+                        if let activeNote { Button("Rename note") { namingNote = activeNote } }
+                        if !notes.isEmpty { Divider() }
+                        ForEach(notes) { note in
+                            Button {
+                                selection = note.id
+                                showingPicker = false
+                            } label: {
+                                if activeNote?.id == note.id { Label(note.title, systemImage: "checkmark") }
+                                else { Text(verbatim: note.title) }
+                            }
                         }
                     }
-                } label: {
-                    TransportControlIcon(name: "setlist", size: 17)
-                        .frame(width: 28, height: 24)
-                        .background(theme.display, in: RoundedRectangle(cornerRadius: 5))
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                .accessibilityLabel("Notes")
-                .popover(item: $namingNote, arrowEdge: .bottom) { note in
-                    LibraryNoteNameInput(note: note) { name in
-                        persist(LibraryNote.saving(note, name: name, in: notes))
-                        selection = note.id
-                        namingNote = nil
-                    }
-                }
-                Text(verbatim: activeNote?.title ?? JarasLocalization.string("Notes"))
-                    .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
-                Spacer(minLength: 0)
-            }.padding(5)
+            }
             if let note = activeNote {
                 LibraryNoteEditor(text: Binding(
                     get: { notes.first { $0.id == note.id }?.text ?? "" },
@@ -336,8 +367,6 @@ struct WorkspaceNotesDock: View {
         if let encoded = try? JSONEncoder().encode(notes) { storedNotes = encoded }
     }
 }
-#endif
-
 struct WorkspaceLibrary: View {
     static let folderWidthKey = "jaras.library.foldersWidth"
     static let defaultFolderWidth = 146.0
@@ -402,6 +431,7 @@ struct WorkspaceLibrary: View {
     @State private var annotationExpanded = false
     @State private var namingNote: LibraryNote?
     @State private var creatingCategory = false
+    @State private var showingSamplerPicker = false
     @State private var categoryName = ""
     @State private var categoryToDelete: SamplerCategory?
     @State private var deletingPadSamples = false
@@ -1052,27 +1082,36 @@ struct WorkspaceLibrary: View {
     }
 
     private var samplerToolbar: some View {
-        HStack(spacing: 6) {
-            Menu {
-                Button("Create") { categoryName = ""; creatingCategory = true }
-                Divider()
-                ForEach(samplerCategories) { category in
-                    Button(category.name) { selection = .samplerCategory(category.id) }
-                }
-                if hasPadSamples { Button("Pads") { selection = .padSamplers } }
-                ForEach(Self.nativeSampleCategories, id: \.self) { name in
-                    Button(name) { selection = .nativeSamplers(name) }
-                }
-            } label: {
-                TransportControlIcon(name: "setlist", size: 17)
-                    .frame(width: 28, height: 24)
-                    .background(theme.display, in: RoundedRectangle(cornerRadius: 5))
-            }.menuStyle(.borderlessButton)
-                .accessibilityLabel("Sampler categories")
-                .popover(isPresented: $creatingCategory, arrowEdge: .bottom) { categoryInput }
-            Text(verbatim: samplerTitle).font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
-            Spacer(minLength: 0)
+        LibraryDockPickerButton(title: "Sampler categories", current: samplerTitle) {
+            creatingCategory = false
+            showingSamplerPicker.toggle()
         }.padding(5)
+        .popover(isPresented: $showingSamplerPicker, arrowEdge: .bottom) {
+            if creatingCategory { categoryInput }
+            else {
+                LibraryDockPickerList {
+                    Button("Create") { categoryName = ""; creatingCategory = true }
+                    Divider()
+                    ForEach(samplerCategories) { category in
+                        samplerPickerRow(category.name, target: .samplerCategory(category.id))
+                    }
+                    if hasPadSamples { samplerPickerRow("Pads", target: .padSamplers) }
+                    ForEach(Self.nativeSampleCategories, id: \.self) { name in
+                        samplerPickerRow(name, target: .nativeSamplers(name))
+                    }
+                }
+            }
+        }
+    }
+
+    private func samplerPickerRow(_ name: String, target: Selection) -> some View {
+        Button {
+            selection = target
+            showingSamplerPicker = false
+        } label: {
+            if selection == target { Label(name, systemImage: "checkmark") }
+            else { Text(verbatim: name) }
+        }
     }
 
     @ViewBuilder private func samplerDropArea<V: View>(_ view: V) -> some View {
@@ -1125,6 +1164,7 @@ struct WorkspaceLibrary: View {
         userExpanded = true
         selection = .samplerCategory(category.id)
         creatingCategory = false
+        showingSamplerPicker = false
     }
 
     private func deleteCategory(_ category: SamplerCategory) {
