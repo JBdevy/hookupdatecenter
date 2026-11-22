@@ -1419,6 +1419,7 @@ private struct TimelineGridContent: View, Equatable {
         return NativeTimelineBaseConfiguration(show: show, extent: extent, contentHeight: contentHeight,
             layoutWidth: layoutWidth, viewportSize: viewportSize, rulerHeight: rulerHeight,
             header: NativeTimelineHeaderConfiguration(song: song, lanes: regionLanes,
+                rulerSections: snapRulerSections(for: originalSong),
                 parentIDs: metadata.regionParentIDs, regionTargets: regionTargets,
                 edit: { marker in if marker.isTempo { editingTempoMarker = marker } else { editingMarker = marker } },
                 delete: { show.deleteManualMarker($0) }, convert: { show.modalNotice = show.convertMarkersToRegions(markerID: $0) }, seek: {
@@ -2351,7 +2352,7 @@ private struct TimelineGridContent: View, Equatable {
                                   otherCursors: [transport.position] + (transport.subPlay.playing ? [transport.subPlay.position] : []),
                                   excludingRegion: excludingRegion, includeItemEdges: true,
                                   excludingItems: excludingItems ?? movingClip.map { selectedClips.union([$0]) } ?? resizingItem.map { Set([$0]) } ?? [],
-                                  maximumDistancePixels: 8)
+                                  maximumDistancePixels: 8, rulerSections: snapRulerSections(for: song))
     }
     private func gridPosition(_ time: Double, song: Song, pixelsPerSecond: Double, freePositioning: Bool? = nil) -> Double {
         #if os(macOS)
@@ -2359,7 +2360,12 @@ private struct TimelineGridContent: View, Equatable {
         #else
         let free = !TimelineSnapPreference.enabled || (freePositioning ?? false)
         #endif
-        return TimelineTempo.snap(time, song: song, pixelsPerSecond: pixelsPerSecond, enabled: !free, includeItemEdges: true)
+        guard !free else { return max(0, time) }
+        return TimelineTempo.snap(time, song: song, pixelsPerSecond: pixelsPerSecond, includeItemEdges: true,
+                                  rulerSections: snapRulerSections(for: song))
+    }
+    private func snapRulerSections(for song: Song) -> [TimelineTempoSection] {
+        scrollEndCache.sections(for: show.current ?? song, project: show.snapshot.project.id, revision: revision)
     }
 
     @ViewBuilder
@@ -2982,6 +2988,7 @@ private struct TimelineGridContent: View, Equatable {
 @MainActor private struct NativeTimelineHeaderConfiguration {
     let song: Song
     let lanes: RegionLanes
+    let rulerSections: [TimelineTempoSection]
     let parentIDs: Set<UUID>
     let regionTargets: [NativeTimelineRegionTarget]
     let edit: (TimelineMarker) -> Void
@@ -3617,7 +3624,8 @@ private final class NativeTimelineHeaderText: NSObject {
             var moved = marker
             moved.position = value.song.markerDragPosition(marker, to: max(0, marker.position + Double(delta) / scale),
                 pixelsPerSecond: scale, free: !TimelineSnapPreference.enabled || NSEvent.modifierFlags.contains(.shift),
-                cursor: self.configuration?.editCursor?())
+                cursor: self.configuration?.editCursor?(),
+                rulerSections: value.rulerSections)
             if ended { self.preview = moved; value.move(moved) }
             else { self.preview = moved }
             self.prepareMarkers(); self.reproject()
@@ -6027,7 +6035,7 @@ private struct TimelineContentKey: Hashable {
 
 /// Use committed content, including hidden tracks, to keep edge scrolling
 /// from increasing its own limit during a drag.
-@MainActor private final class TimelineScrollEndCache {
+@MainActor final class TimelineScrollEndCache {
     private struct Key: Equatable {
         let project: UUID
         let song: UUID
@@ -6035,14 +6043,24 @@ private struct TimelineContentKey: Hashable {
     }
     private var key: Key?
     private var value = 0.0
+    private var rulerSections: [TimelineTempoSection]?
 
     func end(for song: Song, project: UUID, revision: UInt64) -> Double {
         let next = Key(project: project, song: song.id, revision: revision)
         if key != next {
             value = song.timelineScrollEnd
+            rulerSections = nil
             key = next
         }
         return value
+    }
+
+    func sections(for song: Song, project: UUID, revision: UInt64) -> [TimelineTempoSection] {
+        let extent = end(for: song, project: project, revision: revision)
+        if let rulerSections { return rulerSections }
+        let sections = song.tempoSections(until: extent)
+        rulerSections = sections
+        return sections
     }
 }
 

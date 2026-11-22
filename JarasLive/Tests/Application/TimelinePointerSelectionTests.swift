@@ -146,10 +146,10 @@ extension TimelineSnapTests {
         var song = Project.empty(name: "Screen-space magnet").songs[0]
         song.parts = []; song.markers = []; song.tracks = []; song.bpm = 120
         for scale in [10.0, 40, 100, 1000] {
-            let position = 16.0
+            let position = 16 + 2 / scale
             let boundary = position + 12 / scale
             XCTAssertEqual(TimelineTempo.snap(position, song: song, pixelsPerSecond: scale, cursor: boundary), boundary, accuracy: 1e-9)
-            XCTAssertEqual(TimelineTempo.snap(position, song: song, pixelsPerSecond: scale, cursor: position + 13 / scale), position, accuracy: 1e-9)
+            XCTAssertEqual(TimelineTempo.snap(position, song: song, pixelsPerSecond: scale, cursor: position + 13 / scale), 16, accuracy: 1e-9)
             XCTAssertEqual(TimelineTempo.snap(position + 0.003, song: song, pixelsPerSecond: scale, cursor: boundary,
                 enabled: false), position + 0.003, accuracy: 1e-9)
         }

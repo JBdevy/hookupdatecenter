@@ -384,10 +384,14 @@ public extension Song {
         guard marker.sourceRegionID == nil, marker.unifiedRegionID == nil else { return false }
         return !marker.isTempo || !parts.contains { marker.position >= $0.startTime && marker.position < $0.endTime }
     }
-    func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool, cursor: Double? = nil) -> Double {
+    func markerDragPosition(_ marker: TimelineMarker, to value: Double, pixelsPerSecond: Double, free: Bool,
+                            cursor: Double? = nil, rulerSections: [TimelineTempoSection]? = nil) -> Double {
         guard canDragMarker(marker), value.isFinite else { return marker.position }
         var target = max(0, value)
-        if !marker.isTempo { return free ? target : TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, cursor: cursor, excludingMarker: marker.id) }
+        if !marker.isTempo {
+            return TimelineTempo.snap(target, song: self, pixelsPerSecond: pixelsPerSecond, cursor: cursor,
+                                      enabled: !free, excludingMarker: marker.id, rulerSections: rulerSections)
+        }
         if !free, let cursor, cursor.isFinite, cursor >= 0, pixelsPerSecond.isFinite, pixelsPerSecond > 0,
            abs(cursor - target) * pixelsPerSecond <= 12 + 1e-9 { target = cursor }
         var intervals: [(Double, Double)] = []
@@ -634,10 +638,15 @@ public extension TimelineTempo {
                      cursor: Double? = nil, enabled: Bool = true,
                      otherCursors: [Double] = [], excludingRegion: UUID? = nil, excludingMarker: UUID? = nil,
                      includeItemEdges: Bool = false, excludingItems: Set<UUID> = [],
-                     maximumDistancePixels: Double? = nil) -> Double {
+                     maximumDistancePixels: Double? = nil, rulerSections: [TimelineTempoSection]? = nil) -> Double {
         guard time.isFinite, pixelsPerSecond.isFinite, pixelsPerSecond > 0 else { return 0 }
         let position = max(0, time)
         guard enabled else { return position }
+        let divisions = song.projectTime.divisions
+        let gridAnchor = divisions > 0 ? TimelineTimeRuler.nearestTick(to: position, pixelsPerSecond: pixelsPerSecond,
+            divisions: divisions, sections: rulerSections ?? song.tempoSections(until: song.timelineScrollEnd)) : nil
+        // A directly targeted line must be reachable even beside an item edge or cursor.
+        if let gridAnchor, abs(gridAnchor - position) * pixelsPerSecond <= 0.5 { return gridAnchor }
         // Item drags use a finite screen-space magnet. Ordinary cursor placement
         // can still request unconditional musical division quantization.
         let maximumDistance = maximumDistancePixels.map { $0.isFinite ? max(0, $0) : 0 }
@@ -654,11 +663,6 @@ public extension TimelineTempo {
             for track in song.tracks { for item in track.clips where !excludingItems.contains(item.id) { considerStrong(item.startTime); considerStrong(item.startTime + item.duration) } }
         }
         if let strong { return strong }
-        let section = song.tempoSection(at: position)
-        // Use the same musical spacing as the visible ruler and grid.
-        let divisions = song.projectTime.divisions
-        let step = gridStep(bar: section.barSeconds, beats: section.beats, pixelsPerSecond: pixelsPerSecond,
-                            divisions: divisions, unit: section.unit)
         var nearest: Double = 0
         var distance = position
         func consider(_ anchor: Double) {
@@ -668,16 +672,7 @@ public extension TimelineTempo {
                 nearest = anchor; distance = delta
             }
         }
-        // Work in absolute time: anchors before the active tempo section must
-        // remain candidates too. Shift bypasses every anchor above.
-        if step > 0 {
-            let origin = step < section.barSeconds
-                ? section.start + floor((position - section.start) / section.barSeconds) * section.barSeconds : section.start
-            let limit = min(section.end, step < section.barSeconds ? origin + section.barSeconds : section.end)
-            let offset = (position - origin) / step
-            consider(min(limit, origin + floor(offset) * step))
-            consider(min(limit, origin + ceil(offset) * step))
-        }
+        if let gridAnchor { consider(gridAnchor) }
         for part in song.parts where excludingRegion == nil || (part.id != excludingRegion && part.parentRegionID != excludingRegion) {
             consider(part.startTime)
             if regionEnds { consider(part.endTime) }
@@ -693,7 +688,7 @@ public extension TimelineTempo {
         for cursor in otherCursors { consider(cursor) }
         // A visible musical grid always quantizes the drop. With divisions
         // disabled, retain the capture radius for cursor and media edges.
-        if step <= 0, let maximumDistance, distance * pixelsPerSecond > maximumDistance + 1e-9 { return position }
+        if gridAnchor == nil, let maximumDistance, distance * pixelsPerSecond > maximumDistance + 1e-9 { return position }
         return nearest
     }
 }
@@ -1027,6 +1022,16 @@ public enum TimelineTimeRuler {
             return withinBeat == 0 ? "\(measure).\(beat)" : "\(measure).\(beat).\(withinBeat + 1)"
         }
     }
+    static func nearestTick(to position: Double, pixelsPerSecond: Double, divisions: Int,
+                            sections: [TimelineTempoSection]) -> Double? {
+        // Bar stride is rounded up to a power of two from six points.
+        // Two maximum strides leave room for bucket culling at tempo boundaries.
+        let radius = 24 / pixelsPerSecond
+        return ticks(in: sections, from: position - radius, to: position + radius,
+                     pixelsPerSecond: pixelsPerSecond, divisions: divisions, labels: false,
+                     musical: MusicalLabels(sections: sections))
+            .lazy.map(\.time).min { abs($0 - position) < abs($1 - position) }
+    }
     public static func ticks(in sections: [TimelineTempoSection], from start: Double, to end: Double,
                              pixelsPerSecond scale: Double, divisions: Int = 4, labels: Bool = true,
                              minimumLabelSpacing: Double? = nil, musical: MusicalLabels? = nil) -> [Tick] {
@@ -1096,7 +1101,7 @@ public enum TimelineTimeRuler {
                 let labeled = clearance + 1e-9 >= labelSeconds
                 let primary = subdivision == 0
                 let room = clearance * scale + 1e-9
-                // Label spacing and editing snap are independent of the grid.
+                // Label spacing only decides which of the same ticks have text.
                 // At close zoom, beat lines reach the tracks and finer marks stay in the ruler.
                 let drawsInGrid = musicalGrid
                     ? room >= barLineSpacing && (primary || (subdivision % divisionsPerBeat == 0 && beat * scale >= beatLineSpacing))

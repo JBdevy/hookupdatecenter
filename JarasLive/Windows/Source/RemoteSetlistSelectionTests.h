@@ -99,7 +99,7 @@ template <typename Test> void registerTests(const File &directory,Test &test) {
         session.redo();require(session.project().regionSetlist->playlists[0].regionIds==state.playlists[0].regionIds,"Playlist redo lost new ordering");
         require(rebuilds==0 && updates==3,"Playlist undo/redo rebuilt the workspace");
         for(double scale:{.05,.3,1.,3.,10.,20.}) {
-            const auto ticks=timelineGrid::ticks(*session.song(),0,100,scale);
+            const auto ticks=timelineGrid::ticks(*session.song(),0,100,scale,true);
             for(const auto &tick:ticks) if(!tick.primary) require(std::abs(timelineGrid::snap(tick.time+.001,*session.song(),scale,false,false)-tick.time)<.00001,"Secondary grid line rejected snapping");
         }
     });
