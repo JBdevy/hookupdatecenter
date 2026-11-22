@@ -464,11 +464,13 @@ private struct TrackMixerNativePanelContent {
     var mapVolume: (() -> Void)? = nil
     var customComponents = false
     var compactComponents = false
+    var fitsButtonsToAvailableWidth = false
     func hosted(_ wrap: (AnyView) -> AnyView) -> Self {
         Self(title: title, slider: slider, buttons: wrap(buttons), compactButtons: wrap(compactButtons),
              compactButtonsWidth: compactButtonsWidth, allowsCompactHeight: allowsCompactHeight,
              phase: phase, showsVolume: showsVolume,
-             expandedButtonsWidth: expandedButtonsWidth, mapVolume: mapVolume, customComponents: customComponents, compactComponents: compactComponents)
+             expandedButtonsWidth: expandedButtonsWidth, mapVolume: mapVolume, customComponents: customComponents,
+             compactComponents: compactComponents, fitsButtonsToAvailableWidth: fitsButtonsToAvailableWidth)
     }
 }
 private struct TrackMixerNativePhase {
@@ -654,7 +656,8 @@ private final class TrackMixerNativePanelView: NSView {
         place(titleArea, titleFrame)
         place(buttonBox, frames[3])
         if !buttonBox.isHidden {
-            let naturalBounds = CGRect(x: 0, y: 0, width: buttonsWidth, height: frames[3].height)
+            let hostedWidth = configuration.fitsButtonsToAvailableWidth ? frames[3].width : buttonsWidth
+            let naturalBounds = CGRect(x: 0, y: 0, width: hostedWidth, height: frames[3].height)
             // Keep the same controls mounted while the sidebar width changes.
             if buttonBox.bounds != naturalBounds { buttonBox.bounds = naturalBounds }
             if buttons.frame != naturalBounds { buttons.frame = naturalBounds }
@@ -1504,12 +1507,10 @@ struct TrackMixerRow: View, Equatable {
 
     }
     private func teleprompterButtons(project: UUID) -> some View {
-        GeometryReader { bounds in
-            TeleprompterTrackButtons(availableWidth: bounds.size.width,
-                openPatch: { patchTarget = editorTarget(project: project) },
-                addText: { if let item = show.addTextItem(track: track.id) { editTextItem(item) } },
-                addLyrics: { addFullLyrics(track.id) })
-        }.frame(height: 22).trackControlSelectionExclusion()
+        TeleprompterTrackButtons(openPatch: { patchTarget = editorTarget(project: project) },
+            addText: { if let item = show.addTextItem(track: track.id) { editTextItem(item) } },
+            addLyrics: { addFullLyrics(track.id) })
+            .trackControlSelectionExclusion()
     }
     #if os(macOS)
     @ViewBuilder private func continuousControls(title: String, color: UInt32, project: UUID) -> some View {
@@ -1635,7 +1636,8 @@ struct TrackMixerRow: View, Equatable {
             showsVolume: showsFader, expandedButtonsWidth: width,
             mapVolume: { guard show.snapshot.project.id == project else { return }; ControlMappings.shared.begin(track: id, command: "volume") },
             customComponents: track.mixerComponentMask != 0,
-            compactComponents: track.compactMixerControls)
+            compactComponents: track.compactMixerControls,
+            fitsButtonsToAvailableWidth: teleprompter)
     }
     private func continuousControlSlots(title: String, color: UInt32, project: UUID) -> some View {
             let lowerTitle = track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click
@@ -1989,30 +1991,33 @@ struct TrackControlButtonStyle: ButtonStyle {
 }
 
 struct TeleprompterTrackButtons: View {
-    let availableWidth: CGFloat
     let openPatch: (() -> Void)?
     let addText: (() -> Void)?
     let addLyrics: (() -> Void)?
 
     var body: some View {
-        let count = (addText == nil ? 0 : 1) + (addLyrics == nil ? 0 : 1)
-        let patchWidth: CGFloat = openPatch == nil ? 0 : 34
-        let spacing = CGFloat(max(0, count + (openPatch == nil ? 0 : 1) - 1)) * 3
-        let labelWidth = min(100, max(0, (availableWidth - patchWidth - spacing) / CGFloat(max(1, count))))
-        HStack(spacing: 3) {
-            if let openPatch {
-                Button("Patch", action: openPatch)
-                    .buttonStyle(CompactTrackButtonStyle(width: patchWidth))
-            }
-            if let addText { textButton("Add text", width: labelWidth, action: addText) }
-            if let addLyrics { textButton("Full lyrics", width: labelWidth, action: addLyrics) }
-        }.frame(maxWidth: .infinity, alignment: .trailing)
+        GeometryReader { bounds in
+            let count = (addText == nil ? 0 : 1) + (addLyrics == nil ? 0 : 1)
+            let patchWidth: CGFloat = openPatch == nil ? 0 : 34
+            let spacing = CGFloat(max(0, count + (openPatch == nil ? 0 : 1) - 1)) * 3
+            let labelWidth = min(100, max(0, (bounds.size.width - patchWidth - spacing) / CGFloat(max(1, count))))
+            HStack(spacing: 3) {
+                if let openPatch {
+                    Button(action: openPatch) { Text("Patch").lineLimit(1).minimumScaleFactor(0.8) }
+                        .buttonStyle(CompactTrackButtonStyle(width: patchWidth))
+                        .layoutPriority(1)
+                }
+                if let addText { textButton("Add text", width: labelWidth, action: addText) }
+                if let addLyrics { textButton("Full lyrics", width: labelWidth, action: addLyrics) }
+            }.frame(width: bounds.size.width, height: bounds.size.height, alignment: .trailing)
+        }.frame(height: 22)
     }
 
     private func textButton(_ title: LocalizedStringKey, width: CGFloat, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title).lineLimit(1).minimumScaleFactor(0.58)
         }.buttonStyle(TrackControlButtonStyle(height: 22, width: width))
+            .frame(width: width).clipped()
     }
 }
 
