@@ -73,7 +73,8 @@ MainActor.assumeIsolated {
         precondition(scroll.contentView.bounds.minX >= minimum - 0.00001 && scroll.contentView.bounds.minX <= minimum + 1,
             "native scroll follows the active needle")
     }
-    show.publish(main: 700, sub: 120, subPlaying: true); unchangedProjection(); pump(0.12); expectOrigin(120)
+    show.publish(main: 700, sub: 120, subPlaying: true); show.snapshot.transport.queuedRegionId = UUID()
+    unchangedProjection(); pump(0.12); expectOrigin(120)
     precondition(!needles.layer!.sublayers![2].isHidden, "Sub Play is visible")
     for root in needles.layer!.sublayers!.prefix(3) {
         let head = (root.sublayers![2] as! CAShapeLayer).path!

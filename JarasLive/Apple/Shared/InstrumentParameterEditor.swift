@@ -63,7 +63,7 @@ struct InstrumentParameterEditor: View {
                 FXKnob("Hold", value: envelope(\.hold), range: 0...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 10, parameter: .instrumentHold)
                 FXKnob("Decay", value: envelope(\.decay), range: 0.001...10, unit: "ms", multiplier: 1000, logarithmic: true, reset: 10, parameter: .instrumentDecay)
                 FXKnob("Sustain", value: envelope(\.sustain), range: 0...1, unit: "%", multiplier: 100, reset: 1, parameter: .instrumentSustain)
-                FXKnob("Release", value: envelope(\.release), range: 0.001...20, unit: "ms", multiplier: 1000, logarithmic: true, reset: drums ? 20 : 0.3, parameter: .instrumentRelease)
+                FXKnob("Release", value: envelope(\.release), range: 0.001...20, unit: "ms", multiplier: 1000, logarithmic: true, reset: InstrumentParameters(drums: drums).release, parameter: .instrumentRelease)
                 FXKnob("Gain", value: $parameters.gain, range: -24...12, unit: "dB", reset: 0, parameter: .instrumentGain)
             }.padding(12).nativeFXRack()
             } else if page == "Velocity" { velocityPage } else if page == "Cutoff" { cutoffPage } else { controllerPage }
@@ -84,6 +84,7 @@ struct InstrumentParameterEditor: View {
     }
     private var artworkCategory: String {
         switch category {
+        case .user: return "user"
         case .pianos: return "pianos"
         case .upright: return "upright"
         case .electric: return "electric"

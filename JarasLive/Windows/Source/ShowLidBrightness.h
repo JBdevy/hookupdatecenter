@@ -1,5 +1,6 @@
 #pragma once
 #include "Common.h"
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <cwchar>
@@ -54,6 +55,17 @@ private:
             {std::unique_lock<std::mutex> guard(mutex);ready.wait(guard,[this]{return pending.has_value()||stopping;});dim=pending.value_or(false);pending.reset();finish=stopping;}
             apply(dim);
             if(finish)return;
+            if (!dim) {
+                // While the panel is reconnecting, WMI can temporarily omit it.
+                for (const int delay : {150, 350, 750, 1500}) {
+                    if (!backup.existsAsFile()) break;
+                    std::unique_lock<std::mutex> guard(mutex);
+                    if (ready.wait_for(guard, std::chrono::milliseconds(delay),
+                                       [this] { return pending.has_value() || stopping; })) break;
+                    guard.unlock();
+                    apply(false);
+                }
+            }
         }
     }
     void apply(bool dim) {
@@ -80,7 +92,6 @@ try {
   $panel=@($panels|Where-Object {$_.InstanceName -eq $record.InstanceName})|Select-Object -First 1
   $method=@($methods|Where-Object {$_.InstanceName -eq $record.InstanceName})|Select-Object -First 1
   if(-not $panel -or -not $method){$remaining+=$record;continue}
-  if(-not $dim -and [int]$panel.CurrentBrightness -gt [int]$record.Minimum+1){continue}
   $target=[byte]$record.Original;if($dim){$target=[byte]$record.Minimum}
   try {$answer=Invoke-CimMethod -InputObject $method -MethodName WmiSetBrightness -Arguments @{Timeout=[uint32]0;Brightness=$target};if($answer.ReturnValue -ne 0){throw 'Brightness write failed'};if($dim){$remaining+=$record}}
   catch {$remaining+=$record}

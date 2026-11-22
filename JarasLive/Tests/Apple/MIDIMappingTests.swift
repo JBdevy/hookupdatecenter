@@ -88,6 +88,7 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
 @MainActor final class KeyboardMIDIMonitor {
     static let shared = KeyboardMIDIMonitor()
     func receive(source: Int32, status: UInt8, number: UInt8, value: UInt8) {}
+    func disconnect(_ devices: Set<Int32>) {}
 }
 
 struct FXParameterMapping: Codable, Equatable {

@@ -58,7 +58,7 @@ extension NativeTimelineAudioBodyView {
     var inkValuesForTest: [String] {
         inkForTest.map { item in
             switch item.content {
-            case .text(let text), .label(let text): return text.string
+            case .text(let text, _), .label(let text): return text.string
             case .emptyWaveform(let channels): return "channels:\(channels)"
             }
         }

@@ -10,7 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) uint32_t device;
 @property(nonatomic, readonly) uint32_t bufferFrames;
 - (BOOL)prepareWithDevice:(uint32_t)device bufferFrames:(uint32_t)frames error:(NSError **)error;
-- (void)setCapture:(void (^_Nullable)(AVAudioPCMBuffer *))capture;
+- (void)setCapture:(void (^_Nullable)(AVAudioPCMBuffer *, uint64_t))capture;
 - (BOOL)startAndReturnError:(NSError **)error;
 - (void)pause;
 - (void)stop;
@@ -20,10 +20,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithChannels:(NSUInteger)channels capacity:(NSUInteger)frames;
 - (AVAudioSourceNode *)monitorSourceWithSampleRate:(double)rate firstChannel:(NSUInteger)first channelCount:(NSUInteger)count;
 - (void)beginCapture;
+- (void)beginCaptureAtHostTime:(uint64_t)hostTime NS_SWIFT_NAME(beginCapture(atHostTime:));
 - (void)endCapture;
 // Writer queue only: wait for the last accepted input buffer before draining.
 - (void)waitForPendingCapture;
 - (void)pushBuffer:(AVAudioPCMBuffer *)buffer;
+- (void)pushBuffer:(AVAudioPCMBuffer *)buffer hostTime:(uint64_t)hostTime NS_SWIFT_NAME(push(_:hostTime:));
 - (NSUInteger)readFrames:(float *)destination maximum:(NSUInteger)frames;
 - (float)takeInputPeak:(NSUInteger)channel;
 @property(nonatomic, readonly) NSUInteger droppedFrames;

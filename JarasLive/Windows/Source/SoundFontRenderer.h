@@ -7,7 +7,7 @@ struct SoundFontRenderer {
     std::array<MIDIMessage,2048> messages{};
     std::atomic<unsigned> written{0}, read{0};
     std::atomic<bool> silenceRequested{false};
-    std::atomic<float> gain{1}, pan{0}, attack{0}, hold{10}, decay{10}, sustain{1}, release{.3};
+    std::atomic<float> gain{1}, pan{0}, attack{0}, hold{10}, decay{10}, sustain{1}, release{.16};
     std::atomic<bool> monophonic{false}, drums{false};
     std::atomic<int> velocityCurve{1};
     std::atomic<bool> modulationEnabled{false}, pitchVibratoEnabled{false};

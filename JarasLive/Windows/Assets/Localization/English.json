@@ -1,4 +1,6 @@
 {
+  "Convert To Audio Stereo": "Convert To Audio Stereo",
+  "Convert To Audio Mono": "Convert To Audio Mono",
   "Mostrar Main à direita": "Show Main on the right",
   "Mostrar Main à esquerda": "Show Main on the left",
   "Recents": "Recents",
@@ -1328,6 +1330,11 @@
   "Post-fader": "Post-fader",
   "Pre-FX": "Pre-FX",
   "Post-FX": "Post-FX",
+  "Track - I show/hide": "Track - I show/hide",
+  "Library show/hide": "Library show/hide",
+  "Input Monitor · Selected track": "Input Monitor · Selected track",
+  "By All Fx · Selected track": "By All Fx · Selected track",
+  "By Fx Session": "By Fx Session",
   "Track Mixer show/hide": "Track Mixer show/hide",
   "Hoz-Mixer show/hide": "Hoz-Mixer show/hide",
   "Encerrar o CatLive?": "Close CatLive?",
@@ -1883,5 +1890,7 @@
   "Track style": "Track style",
   "Stripe only": "Stripe only",
   "Vertical grid color": "Vertical grid color",
-  "Horizontal grid color": "Horizontal grid color"
+  "Horizontal grid color": "Horizontal grid color",
+  "Import SF2…": "Import SF2…",
+  "Could not import SF2:": "Could not import SF2:"
 }

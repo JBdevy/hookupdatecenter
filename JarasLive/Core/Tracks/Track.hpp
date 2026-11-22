@@ -76,11 +76,11 @@ struct Track {
     std::optional<double> heightScale;
     std::optional<int> hiddenMixerComponents;
     enum ComponentMask { patchBit=1, fxBit=2, envelopeBit=4, recBit=8, inputBit=16, panBit=32, muteBit=64, soloBit=128, phaseBit=256 };
-    static constexpr int compactMask = patchBit | fxBit | envelopeBit | recBit;
+    static constexpr int compactMask = patchBit | fxBit | envelopeBit | recBit | panBit;
     bool supportsMixerComponents() const { return fixedTrackName(role).empty() && role.id != "vinhetas"; }
     bool showsComponent(int mask) const { return !supportsMixerComponents() || (hiddenMixerComponents.value_or(0) & mask) == 0; }
     bool compactMixerControls() const { return supportsMixerComponents() && (hiddenMixerComponents.value_or(0) & compactMask) == compactMask; }
-    std::optional<std::string> instrumentIcon = "png:Sound Effects/noise";
+    std::optional<std::string> instrumentIcon = "png:Other/waveform";
     std::optional<AudioFile> clickSound;
 };
 }

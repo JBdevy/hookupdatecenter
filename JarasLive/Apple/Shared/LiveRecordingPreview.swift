@@ -5,7 +5,36 @@ struct RecordingPreviewTake {
     var start: Double
     var duration: Double
     var channels: [[Double]]
+    var midiHistory: RecordedNoteHistory?
+    var heldNotes: [RecordedNoteSpan] = []
     var waveform: LiveRecordedWaveform? = nil
+    var sourceOffset: Double = 0
+    var completedPass = false
+
+    func drawNotes(in context: inout GraphicsContext, from: Double, to: Double,
+                   x: (Double) -> CGFloat, y: (Int) -> CGFloat, height: CGFloat, color: Color, labels: Bool = false) {
+        guard let midiHistory else { return }
+        var path = Path()
+        func add(_ note: RecordedNoteSpan) {
+            let left = max(from, note.start), right = min(to, note.end ?? (start + duration))
+            guard right >= left else { return }
+            let rect = CGRect(x: x(left), y: y(note.pitch), width: max(1, x(right) - x(left)), height: height)
+            if labels {
+                context.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(color))
+                Self.drawNoteLabel(in: &context, rect: rect, pitch: note.pitch, velocity: note.velocity)
+            } else { path.addRect(rect) }
+        }
+        midiHistory.visit(from: from, to: to, add)
+        heldNotes.forEach(add)
+        if !labels { context.fill(path, with: .color(color)) }
+    }
+    static func drawNoteLabel(in context: inout GraphicsContext, rect: CGRect, pitch: Int, velocity: Int) {
+        guard rect.width > 14, rect.height >= 11 else { return }
+        let label = context.resolve(Text(verbatim: MIDINote.label(pitch: pitch, velocity: velocity))
+            .font(.jarasSystem(size: 10)).foregroundColor(.black))
+        guard label.measure(in: CGSize(width: 120, height: 20)).width <= rect.width - 6 else { return }
+        context.draw(label, at: CGPoint(x: rect.minX + 3, y: rect.midY), anchor: .leading)
+    }
 }
 @MainActor final class LiveRecordingPreview: ObservableObject {
     static let shared = LiveRecordingPreview()
@@ -63,19 +92,20 @@ struct RecordingGridOverlay: View {
         Canvas { context,size in
             context.translateBy(x: -visibleRect.minX,y: -visibleRect.minY)
             for (id, take) in preview.takes {
+                guard !TrackRecording.shared.countingIn else { break }
                 guard let reservation = RecordingLaneLayout.shared.items[id], let index = tracks.firstIndex(where: { $0.id == reservation.track }) else { continue }
                 let count = RecordingLaneLayout.shared.count(for: reservation.track, existing: TrackLanes(track: tracks[index]).count)
                 let laneHeight = heights[index] / CGFloat(count)
                 // Capture buffers can lead the audible transport. Only the drawing
                 // is bounded by the same presentation clock as the playhead.
-                let duration = min(take.duration, TrackRecording.shared.recordingDisplayPosition.map { max(0, $0 - take.start) } ?? take.duration)
+                let duration = take.completedPass ? take.duration : min(take.duration, TrackRecording.shared.recordingDisplayPosition.map { max(0, $0 - take.start) } ?? take.duration)
                 guard duration > 0 else { continue }
                 let y = rulerHeight + offsets[index] + CGFloat(reservation.clip.recordingLane ?? 0) * laneHeight + itemInset
                 let rect = CGRect(x: take.start * scale, y: y, width: duration * scale,
                                   height: max(0, laneHeight - 2 * itemInset))
                 guard rect.intersects(visibleRect) else { continue }
                 let shape = Path(roundedRect: rect, cornerRadius: 3)
-                let color = JarasTheme.track(tracks[index], emphasized: false)
+                let color = take.completedPass ? JarasTheme.track(tracks[index], emphasized: false) : Color(hex: 0xd53939)
                 context.fill(shape, with: .linearGradient(Gradient(colors: [color, color.opacity(0.78)]), startPoint: rect.origin, endPoint: CGPoint(x: rect.minX, y: rect.maxY)))
                 context.stroke(shape, with: .color(color.opacity(0.75)), lineWidth: 0.6)
                 var ink = context
@@ -89,16 +119,25 @@ struct RecordingGridOverlay: View {
                 }
                 #endif
                 guard rect.height > 26 else { continue }
-                guard let waveform = take.waveform else { continue }
                 let bodyTop = rect.minY + GridSelectionItem.bodyInset
+                if let history = take.midiHistory {
+                    let low = max(0, history.low - 2), high = min(127, history.high + 2)
+                    let row = max(0, rect.maxY - 2 - bodyTop) / CGFloat(max(12, high - low + 1))
+                    take.drawNotes(in: &ink, from: max(take.start, visibleRect.minX / scale),
+                        to: min(take.start + duration, visibleRect.maxX / scale), x: { $0 * scale },
+                        y: { rect.maxY - 2 - CGFloat($0 - low + 1) * row },
+                        height: max(1, row * 0.75), color: .white.opacity(0.85))
+                    continue
+                }
+                guard let waveform = take.waveform else { continue }
                 let channelHeight = max(0, rect.maxY-bodyTop-2)/Double(waveform.channels)
                 let rgb = TrackNameContrast.components(tracks[index].color ?? JarasTheme.roleHex(tracks[index].role), emphasized: false)
                 let luminance = 0.2126*rgb.red + 0.7152*rgb.green + 0.0722*rgb.blue
-                let waveColor = Color(white: luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8)
+                let waveColor = take.completedPass ? Color(white: luminance > 0.68 ? 0.52 : luminance > 0.42 ? 0.9 : 0.8) : .white.opacity(0.9)
                 let step = TimelineAudioWaveform.step(rate: waveform.rate, pixelsPerSecond: scale)
                 let span = TimelineAudioWaveform.span(step: step)
-                let first = max(0, Int((max(rect.minX,visibleRect.minX)/scale-take.start)*waveform.rate)/span)
-                let last = max(first, Int((min(rect.maxX,visibleRect.maxX)/scale-take.start)*waveform.rate)/span)
+                let first = max(0, Int((max(rect.minX,visibleRect.minX)/scale-take.start+take.sourceOffset)*waveform.rate)/span)
+                let last = max(first, Int((min(rect.maxX,visibleRect.maxX)/scale-take.start+take.sourceOffset)*waveform.rate)/span)
                 for block in first...min(last, first+511) {
                     guard let geometry = waveform.geometry(start: Int64(block*span), step: step, span: span) else { continue }
                     for channel in 0..<min(waveform.channels,geometry.paths.count) {
@@ -108,7 +147,7 @@ struct RecordingGridOverlay: View {
                         channelInk.clip(to: Path(channelRect))
                         let middle = bodyTop+channelHeight*(Double(channel)+0.5)
                         let transform = CGAffineTransform(a: scale, b: 0, c: 0, d: WaveformAmplitude.fullScale(channelHeight: channelHeight),
-                            tx: rect.minX+Double(geometry.start)/waveform.rate*scale, ty: middle)
+                            tx: rect.minX+(Double(geometry.start)/waveform.rate-take.sourceOffset)*scale, ty: middle)
                         let wave = geometry.paths[channel].applying(transform)
                         if geometry.isPeakEnvelope { channelInk.fill(wave, with: .color(waveColor)) }
                         else { channelInk.stroke(wave,with: .color(waveColor),style: StrokeStyle(

@@ -158,6 +158,17 @@ void Workspace::performAction(const String &action, float value, int trackNumber
         auto state = session.project().regionSetlist.value_or(jaras::RegionSetlist{});
         state.autoAdvance = !state.autoAdvance;
         session.configureSetlist(state);
+    } else if (action == "toggleFocus") {
+        toggleFocus();
+    } else if (action == "toggleLibrary") {
+        if (auto *button = controls["library"]; button && button->onClick) button->onClick();
+    } else if (action == "toggleSelectedInputMonitor" || action == "toggleSelectedStripFXBypass") {
+        const auto *selected = actionTrack(*song, selectedTrack, 0);
+        if (!selected) throw std::runtime_error("Pista indisponível para esta ação.");
+        if (action == "toggleSelectedInputMonitor") session.setTrackInputMonitoring(selected->id, !selected->inputMonitoring.value_or(false));
+        else fxchain::toggleStripBypass(session, selected->id, false);
+    } else if (action == "toggleSessionFXBypass") {
+        fxchain::toggleStripBypass(session, {}, true);
     } else if (action == "toggleTracks")
         showMixer();
     else if (action == "toggleBarMixer") {

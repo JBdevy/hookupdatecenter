@@ -59,7 +59,7 @@ inline var instrumentParameters(const String &instrument) {
     put(parameters, "hold", 10);
     put(parameters, "decay", 10);
     put(parameters, "sustain", 1);
-    put(parameters, "release", instrument.startsWith("drum-") ? 20. : .3);
+    put(parameters, "release", instrument.startsWith("drum-") ? 20. : .16);
     String category;
     for (auto item : instrumentAssets::catalog())
         if (str(item, "id") == instrument)

@@ -80,7 +80,7 @@ public struct InstrumentParameters: Codable, Equatable, Sendable {
     public var velocity: InstrumentVelocityParameters?
     public var cutoff: InstrumentCutoffParameters?
     public var gain = 0.0
-    public var attack = 0.0, hold = 10.0, decay = 10.0, sustain = 1.0, release = 0.3
+    public var attack = 0.0, hold = 10.0, decay = 10.0, sustain = 1.0, release = 0.16
     public init(drums: Bool = false) { if drums { release = 20 } }
     public func validate() throws {
         try cutoff?.validate()

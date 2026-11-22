@@ -36,6 +36,61 @@ private struct LocalizedAccessibilityHint: ViewModifier {
 #if os(macOS)
 import AppKit
 
+extension View {
+    @ViewBuilder func desktopIconTooltip(_ title: String?) -> some View {
+        if let title { background(DesktopIconTooltip(title: title).accessibilityHidden(true)) }
+        else { self }
+    }
+}
+
+private struct DesktopIconTooltip: NSViewRepresentable {
+    let title: String
+    @Environment(\.locale) private var locale
+
+    func makeNSView(context: Context) -> HoverView { HoverView() }
+    func updateNSView(_ view: HoverView, context: Context) {
+        view.title = JarasLocalization.string(title, language: locale.identifier)
+    }
+    static func dismantleNSView(_ view: HoverView, coordinator: ()) { view.hide() }
+
+    final class HoverView: NSView {
+        var title = ""
+        private var area: NSTrackingArea?
+        private var pending: Task<Void, Never>?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            guard area == nil else { return }
+            let tracking = NSTrackingArea(rect: .zero,
+                options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                owner: self, userInfo: nil)
+            addTrackingArea(tracking)
+            area = tracking
+        }
+        override func mouseEntered(with event: NSEvent) {
+            pending?.cancel()
+            pending = Task { @MainActor [weak self] in
+                do { try await Task.sleep(nanoseconds: 550_000_000) } catch { return }
+                guard let self, let window, window.isKeyWindow, !isHiddenOrHasHiddenAncestor,
+                      window.attachedSheet == nil, !NativeTimelineInputGate.shared.isBlocked(window) else { return }
+                let point = window.mouseLocationOutsideOfEventStream
+                guard visibleRect.contains(convert(point, from: nil)), NSEvent.pressedMouseButtons == 0 else { return }
+                DesktopIconTooltipWindow.shared.present(title, owner: self, at: window.convertPoint(toScreen: point))
+            }
+        }
+        override func mouseExited(with event: NSEvent) { hide() }
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow !== window { hide() }
+            super.viewWillMove(toWindow: newWindow)
+        }
+        func hide() {
+            pending?.cancel(); pending = nil
+            DesktopIconTooltipWindow.shared.hide(owner: self)
+        }
+    }
+}
+
 @MainActor final class DesktopIconTooltipWindow {
     static let shared = DesktopIconTooltipWindow()
     private weak var owner: NSView?

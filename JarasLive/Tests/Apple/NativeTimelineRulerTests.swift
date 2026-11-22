@@ -3,7 +3,8 @@ private let view = TimelineNativeRulerView(frame: CGRect(x: 0, y: 0, width: 400,
 private func content(origin: CGFloat = 0, ticks: [TimelineNativeRuler.Tick]) -> TimelineNativeRuler {
     TimelineNativeRuler(viewport: CGRect(x: origin, y: 0, width: 400, height: 80), displayScale: 2,
         barTop: 48, numberLaneHeight: 16, ticks: ticks, rows: [16.5, 32.5, 48.5, 64.5, 79.5], background: CGColor(gray: 0, alpha: 1),
-        lineColor: CGColor(gray: 0.25, alpha: 1))
+        lineColor: CGColor(gray: 0.25, alpha: 1),
+        gridColor: CGColor(gray: 0.4, alpha: 1), showsGrid: false)
 }
 private func bitmap() -> NSBitmapImageRep {
     let ctx = CGContext(data: nil, width: 800, height: 160, bitsPerComponent: 8, bytesPerRow: 3200,
@@ -19,12 +20,13 @@ func whiteLevel(_ image: NSBitmapImageRep, _ x: Int, _ y: Int) -> CGFloat {
     let pixel = image.colorAt(x: x, y: y)!.usingColorSpace(.sRGB)!
     return min(pixel.redComponent, pixel.greenComponent, pixel.blueComponent)
 }
-precondition(whiteLevel(first, 80, 152) > 0.8 && whiteLevel(first, 79, 152) < 0.1 && whiteLevel(first, 81, 152) < 0.1,
-             "Retina ruler ticks remain one physical pixel")
-precondition(whiteLevel(first, 400, 145) > 0.8 && whiteLevel(first, 400, 141) < 0.1,
-             "Subdivisions span half of the 16-point tick lane")
-precondition(whiteLevel(first, 80, 138) > 0.8 && whiteLevel(first, 400, 138) < 0.1,
-             "Major ticks remain taller when the vertical grid is hidden")
+let thinTicks = view.layer!.sublayers!.first { $0.name == "timelineTicks" } as! CAShapeLayer
+precondition(thinTicks.lineWidth == TimelineVerticalInk.width(at: 2),
+             "Ruler ticks use the same physical stroke as the vertical grid")
+precondition(thinTicks.path!.boundingBoxOfPath.minY == 64 && thinTicks.path!.boundingBoxOfPath.maxY == 80,
+             "Ruler ticks occupy the full 16-point tick lane")
+precondition(abs(whiteLevel(first, 80, 152) - whiteLevel(first, 400, 152)) < 0.01,
+             "Major and intermediate marks use the same ink when the vertical grid is hidden")
 precondition((86..<120).contains { x in (104..<130).contains { whiteLevel(first, x, $0) > 0.5 } },
              "cached label image draws above the bottom-aligned ticks")
 let label = view.layer!.sublayers!.last!
@@ -54,8 +56,8 @@ let retainedLabel = view.layer!.sublayers!.last!
 for _ in 0..<600 { view.update(retainedFrame) }
 precondition(retainedTickLayer.path === retainedTickPath, "Playback updates must retain ruler geometry")
 precondition(view.layer!.sublayers!.last === retainedLabel, "Playback updates must retain ruler labels")
-view.update(content(ticks: [.init(x: 25, primary: false, text: "2.2")]))
-precondition(retainedTickLayer.path !== retainedTickPath, "Tempo/subdivision changes must replace tick geometry")
+view.update(content(ticks: [.init(x: 27, primary: false, text: "2.2")]))
+precondition(retainedTickLayer.path!.boundingBoxOfPath.minX == 27.25, "Tempo/subdivision changes must replace tick geometry")
 print("RULER_GEOMETRY_REUSED_FOR_600_UPDATES_AND_INVALIDATED_FOR_EDITS_OK")
 
 private let numbered = TimelineNativeRuler(viewport: CGRect(x: 0, y: 0, width: 400, height: 80), displayScale: 2,
@@ -63,7 +65,7 @@ private let numbered = TimelineNativeRuler(viewport: CGRect(x: 0, y: 0, width: 4
     ticks: [.init(x: 40, primary: true, text: "13"), .init(x: 60, primary: true, text: ""),
             .init(x: 70, primary: false, text: "")],
     rows: [], background: CGColor(gray: 0, alpha: 1), lineColor: CGColor(gray: 0.25, alpha: 1),
-    gridColor: CGColor(gray: 0.4, alpha: 1))
+    gridColor: CGColor(gray: 0.4, alpha: 1), showsGrid: true)
 view.update(numbered)
 let grid = view.layer!.sublayers!.first { $0.name == "timelinePrimaryLines" } as! CAShapeLayer
 var gridStarts: [CGPoint] = []
@@ -74,5 +76,8 @@ precondition(gridStarts == [CGPoint(x: 40.25, y: 48), CGPoint(x: 60.25, y: 64)],
     "Only grid lines with numbers extend into the number lane")
 precondition(retainedTickLayer.path!.boundingBoxOfPath.minX == 70.25 &&
              retainedTickLayer.path!.boundingBoxOfPath.maxX == 70.25,
-    "The ruler draws white ticks only where there is no vertical grid line")
+    "The ruler adds ticks only where there is no vertical grid line")
+precondition(grid.strokeColor == retainedTickLayer.strokeColor && grid.lineWidth == retainedTickLayer.lineWidth,
+             "Continuous lines and intermediate ticks share style")
+precondition(retainedTickLayer.path!.boundingBoxOfPath.maxY == 80, "Intermediate ticks end at the ruler boundary")
 print("RULER_NUMBERED_VERTICAL_LINES_AND_UNDUPLICATED_TICKS_OK")

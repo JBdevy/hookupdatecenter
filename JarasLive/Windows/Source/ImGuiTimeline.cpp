@@ -120,7 +120,7 @@ struct ImGuiTimeline::Impl {
     std::uint64_t serial=0;double revision=-1,offset=0,scale=20,clockAt=0,previousPosition=-1;
     float vertical=0,totalHeight=0,lastUIScale=0;
     J clockTransport;std::string clockProject;
-    std::optional<double> editPreview;
+    std::optional<double> editPreview, rulerAnchor;
     std::uint64_t editRequest=0;
     int issuedThisFrame=0;
     Rect dropBody;
@@ -134,7 +134,7 @@ struct ImGuiTimeline::Impl {
         if(nextProject!=project||nextSong!=songID) {
             project=nextProject;songID=nextSong;offset=0;vertical=0;waves.clear();pending.clear();gesture=Gesture::none;
             previousPosition=-1;followPaused=false;clockTransport=member(snapshot,"transport");clockProject=project;clockAt=now();revision=-1;
-            editPreview.reset();editRequest=0;
+            editPreview.reset();rulerAnchor.reset();editRequest=0;
         }
         if(lastUIScale!=dpi) {
             if(lastUIScale>0){scale*=dpi/lastUIScale;vertical*=dpi/lastUIScale;}
@@ -474,21 +474,30 @@ void ImGuiTimeline::render(const J& snapshot,const J& telemetry,const Command& c
             const auto c=colour(track,"color",IM_COL32(81,104,118,255));
             const bool chosen=selected.count(layout.id)!=0||(s.gesture==Impl::Gesture::items&&s.gestureItems.count(layout.id));
             draw.PushClipRect(body.min(),body.max(),true);draw.AddRectFilled(rect.min(),rect.max(),flag(clip,"muted")?mutedColour(c):withAlpha(c,255),3*unit);
-            draw.PushClipRect(rect.min(),rect.max(),true);draw.AddRectFilled(top.min(),top.max(),IM_COL32(64,70,79,255));
+            const auto role=string(track,"role");
+            const bool itemFile=member(clip,"audioFile").is_object();
+            const bool midiItem=member(clip,"midi").is_object();
+            const bool lyric=(role=="teleprompt"||role=="teleprompt2") && !itemFile && !midiItem;
+            const bool selectedMedia=chosen && (itemFile || midiItem || (!lyric && member(clip,"text").is_null() &&
+                member(clip,"timecode").is_null() && (member(track,"audioFile").is_object() ||
+                !array(clip,"waveform").empty() || !array(clip,"waveformChannels").empty())));
+            const auto ink=IM_COL32(28,28,28,255);
+            draw.PushClipRect(rect.min(),rect.max(),true);
+            if(!lyric) draw.AddRectFilled(top.min(),top.max(),selectedMedia?IM_COL32(216,216,216,255):IM_COL32(64,70,79,255));
             Impl::Hit hit{rect,{},{},{},layout.id,row.id,layout.start,number(clip,"gain",1),number(clip,"pan"),flag(clip,"muted")};
             float left=top.x+4*unit,right=top.x+top.w-4*unit;
-            if(top.w>190*unit) {
+            if(!lyric && top.w>190*unit) {
                 hit.gain={left,top.y,48*unit,top.h};const auto value=s.gesture==Impl::Gesture::gain&&s.gestureItems.count(layout.id)?s.previewValue:hit.gainValue;
                 char gain[32];if(value>0)std::snprintf(gain,sizeof(gain),"%+.1f",20*std::log10(value));else std::snprintf(gain,sizeof(gain),"-inf");
-                label(draw,hit.gain,gain,IM_COL32(224,227,231,255),0);left+=48*unit;
+                label(draw,hit.gain,gain,selectedMedia?ink:IM_COL32(224,227,231,255),0);left+=48*unit;
                 if(top.w>270*unit) {
                     hit.pan={right-42*unit,top.y,42*unit,top.h};const auto pan=s.gesture==Impl::Gesture::pan&&s.gestureItems.count(layout.id)?s.previewValue:hit.panValue;
                     char text[24];if(std::abs(pan)<.005)std::snprintf(text,sizeof(text),"C");else std::snprintf(text,sizeof(text),"%s%.0f",pan<0?"L":"R",std::abs(pan)*100);
-                    label(draw,hit.pan,text,IM_COL32(191,209,225,255),4*unit);right-=42*unit;
+                    label(draw,hit.pan,text,selectedMedia?ink:IM_COL32(191,209,225,255),4*unit);right-=42*unit;
                 }
             }
-            if(top.w>54*unit){hit.mute={left,top.y,18*unit,top.h};label(draw,hit.mute,"M",hit.muted?IM_COL32(255,111,111,255):IM_COL32(175,183,194,255),0);left+=18*unit;}
-            label(draw,{left,top.y,std::max(0.f,right-left),top.h},string(clip,"name",string(track,"name")),chosen?IM_COL32(255,223,111,255):IM_COL32(235,238,243,255),0);
+            if(!lyric && top.w>54*unit){hit.mute={left,top.y,18*unit,top.h};label(draw,hit.mute,"M",hit.muted?IM_COL32(192,40,40,255):selectedMedia?ink:IM_COL32(175,183,194,255),0);left+=18*unit;}
+            if(!lyric) label(draw,{left,top.y,std::max(0.f,right-left),top.h},string(clip,"name",string(track,"name")),selectedMedia?ink:chosen?IM_COL32(255,223,111,255):IM_COL32(235,238,243,255),0);
             const auto from=std::max(layout.start,s.offset-delta),to=std::min(layout.end,s.offset+body.w/s.scale-delta);
             const auto& midi=member(clip,"midi");const auto& text=member(clip,"text");
             if(midi.is_object()&&!flag(clip,"frozenMIDI")) {
@@ -498,7 +507,7 @@ void ImGuiTimeline::render(const J& snapshot,const J& telemetry,const Command& c
                     const float nx=body.x+float((layout.start+start+delta-s.offset)*s.scale),ny=waveBody.y+waveBody.h*float(1-number(note,"pitch",60)/127.);
                     draw.AddRectFilled({nx,ny},{nx+std::max(2.f,float(length*s.scale)),ny+std::max(2.f,waveBody.h/64)},IM_COL32(219,237,220,230));
                 }
-            } else if(text.is_string())label(draw,waveBody,text.get<std::string>(),IM_COL32(230,233,239,255),5*unit);
+            } else if(text.is_string())label(draw,lyric?rect:waveBody,text.get<std::string>(),lyric?IM_COL32(0,0,0,255):IM_COL32(230,233,239,255),5*unit);
             else if(!member(clip,"audioFile").is_null()||!member(track,"audioFile").is_null())s.waveform(draw,waveBody,clip,track,from,to,command,delta,body.x);
             draw.PopClipRect();
             draw.AddRect(rect.min(),rect.max(),chosen?IM_COL32(149,229,167,255):withAlpha(c,255),3*unit,0,chosen?2*unit:1.f);
@@ -506,13 +515,32 @@ void ImGuiTimeline::render(const J& snapshot,const J& telemetry,const Command& c
             draw.PopClipRect();s.hits.push_back(std::move(hit));
         }
     }
+    const auto rulerTime=[&] { return s.snap(s.offset+std::clamp(mouse.x-ruler.x,0.f,ruler.w)/s.scale,song,io.KeyShift); };
+    if(hovered && editable && ruler.contains(mouse) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        s.rulerAnchor=rulerTime();s.followPaused=true;
+    }
+    const auto& storedRange=member(transport,"selectedTimeRange");
+    double rangeStart=number(storedRange,"start"),rangeEnd=number(storedRange,"end");
+    if(s.rulerAnchor && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Right]>=9*unit*unit) {
+        rangeStart=std::min(*s.rulerAnchor,rulerTime());rangeEnd=std::max(*s.rulerAnchor,rulerTime());
+        if(editable && rangeEnd>rangeStart && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+            s.emit(command,"selectTimeRange",{{"songID",s.songID},{"start",rangeStart},{"end",rangeEnd}});
+    }
+    if(ImGui::IsMouseReleased(ImGuiMouseButton_Right)) s.rulerAnchor.reset();
+    if(rangeEnd>rangeStart) {
+        const float left=ruler.x+float((rangeStart-s.offset)*s.scale),right=ruler.x+float((rangeEnd-s.offset)*s.scale);
+        draw.PushClipRect(ruler.min(),body.max(),true);
+        draw.AddRectFilled({left,ruler.y},{right,body.y+body.h},IM_COL32(90,185,115,42));
+        draw.PopClipRect();
+    }
     const auto cursor=[&](double time,ImU32 c,bool triangle) {
         const float x=canvas.x+float((time-s.offset)*s.scale);if(x<canvas.x||x>canvas.x+canvas.w)return;
         draw.AddLine({x,ruler.y},{x,body.y+body.h},c,1.4f*unit);
         if(triangle)draw.AddTriangleFilled({x-5*unit,ruler.y},{x+5*unit,ruler.y},{x,ruler.y+7*unit},c);
     };
     cursor(edit,IM_COL32(240,109,123,255),true);if(flag(transport,"playing"))cursor(position,IM_COL32(248,215,117,255),false);
-    if(flag(transport,"subPlaying"))cursor(subPosition,IM_COL32(110,190,255,255),false);
+    if(member(transport,"subCursorPosition").is_number())
+        cursor(flag(transport,"subPlaying") ? subPosition : number(transport,"subCursorPosition"),IM_COL32(255,211,0,255),false);
     draw.AddLine({body.x,body.y},{body.x+body.w,body.y},IM_COL32(76,83,94,255));
     draw.AddRectFilled(hscroll.min(),hscroll.max(),IM_COL32(22,25,29,255));draw.AddRectFilled(vscroll.min(),vscroll.max(),IM_COL32(22,25,29,255));
     const float thumbWidth=std::min(hscroll.w,std::max(24*unit,float(hscroll.w*(body.w/s.scale)/duration)));
@@ -583,7 +611,7 @@ void ImGuiTimeline::render(const J& snapshot,const J& telemetry,const Command& c
         }
         s.gesture=Impl::Gesture::none;s.gestureItems.clear();s.dragDelta=0;
     }
-    if(hovered&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    if(hovered&&!ruler.contains(mouse)&&ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         s.focused=true;const auto hit=std::find_if(s.hits.rbegin(),s.hits.rend(),[&](const auto& h){return h.bounds.contains(mouse);});
         if(hit!=s.hits.rend()&&!selected.count(hit->clip)){selected={hit->clip};s.select(command,selected,{hit->track});}
         ImGui::OpenPopup("Timeline actions");

@@ -27,10 +27,19 @@ class Session final : private Timer {
     var original;
     bool dirty = false, busy = false, inspection = false;
     double importProgress = 0;
-    struct RecordingItem { ID track; jaras::AudioClip clip; std::shared_ptr<RecordingPreview> preview; };
+    struct RecordingItem { ID track; jaras::AudioClip clip; std::shared_ptr<RecordingPreview> preview; double passLimit = std::numeric_limits<double>::infinity(); double captureOffset = 0; };
     std::vector<RecordingItem> recordingItems;
-    double subCursorPreviewUntil = 0;
-    bool subCursorVisible() const { return presentationTransport().subPlay.playing || Time::getMillisecondCounterHiRes() < subCursorPreviewUntil; }
+    bool extendRecordingLoops();
+    struct RecordingPianoFrame { double position, elapsed, passOffset; };
+    std::optional<RecordingPianoFrame> recordingPianoFrame() const;
+    bool subCursorVisible() const { return transport().queuedRegionId.has_value(); }
+    double subCursorPosition(const jaras::TransportState &state) const {
+        if (!state.subPlay.playing && state.queuedRegionId)
+            if (const auto *current = song())
+                for (const auto &part : current->parts)
+                    if (part.id == *state.queuedRegionId) return part.startTime;
+        return state.subPlay.position;
+    }
     static float subCursorOpacity(double seconds) { return std::fmod(seconds, .9) < .45 ? 1.f : .3f; }
     std::optional<ID> focusedRegion;
     std::optional<ID> smkPart;
@@ -135,6 +144,7 @@ class Session final : private Timer {
     void cancelBPMDetection();
     void cancelExport() { exportCancelled = true; if(loadCancellation)loadCancellation->store(true); }
     void toggleRecording(bool stopPlayback = false);
+    bool recordingCountInActive() const { return countingIn; }
     void updateRecordingTargets(bool starting = false);
     int recordArm(const ID &id) const {
         auto at = recordArms.find(id);
@@ -293,6 +303,10 @@ class Session final : private Timer {
     std::vector<jaras::Track> mixerGestureTracks;
     void updateRecordArms();
     double recordingStart = 0;
+    bool countingIn = false;
+    void startRecording();
+    void cancelRecordingCountIn();
+    std::optional<std::pair<double,double>> recordingLoop;
     std::atomic<bool> exportCancelled{false};
     mutable CriticalSection exportProgressLock;
     AudioExportProgress exportPreview;

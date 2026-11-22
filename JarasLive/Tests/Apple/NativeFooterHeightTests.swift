@@ -121,6 +121,14 @@ MainActor.assumeIsolated {
         root.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(seconds)); root.layoutSubtreeIfNeeded()
     }
     pump(0.15)
+    let clippedMixer = FooterHeightContainerView()
+    clippedMixer.configure(storedHeight: 450, minimum: 273, maximum: 210, active: true, role: .mixer, coordinator: nil)
+    expect(near(clippedMixer.effectiveHeight, 210), "Pads and Keyboard cap the mixer height")
+    clippedMixer.previewHeight(610)
+    expect(near(clippedMixer.effectiveHeight, 210), "Dragging cannot exceed the available height")
+    clippedMixer.finishHeight(commit: false)
+    clippedMixer.configure(storedHeight: 450, minimum: 273, maximum: 700, active: true, role: .mixer, coordinator: nil)
+    expect(near(clippedMixer.effectiveHeight, 450), "Closing the lower panels restores the saved height")
     let initiallyClosed = FooterHeightContainerView(frame: CGRect(x: 0, y: 0, width: 800, height: 0))
     initiallyClosed.configure(storedHeight: 273, minimum: 273, maximum: 700, active: false, role: .mixer, coordinator: nil)
     var madeClosedContent = 0

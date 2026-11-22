@@ -116,7 +116,7 @@ final class ProjectSessionResetTests: XCTestCase {
             show.modalNotice = "Old modal"
             show.selectTimelineRegion(region)
             show.send(.subSeek, value: 4)
-            XCTAssertTrue(show.subCursorPreview)
+            XCTAssertFalse(show.subCursorVisible, "A manual Subplay seek must not show a queued-region cursor")
             XCTAssertFalse(show.mixerPreviewValues.isEmpty)
             try replace(show, with: project, importing: importing)
             XCTAssertTrue(show.mixerTrackSelection.isEmpty)
@@ -125,7 +125,7 @@ final class ProjectSessionResetTests: XCTestCase {
             XCTAssertFalse(show.mixerPreviewIsPan)
             XCTAssertNil(show.trackSelectionRequest); XCTAssertNil(show.setlistNavigationRequest)
             XCTAssertNil(show.detectBPMRegion); XCTAssertTrue(show.detectBPMRegions.isEmpty)
-            XCTAssertNil(show.modalNotice); XCTAssertFalse(show.subCursorPreview)
+            XCTAssertNil(show.modalNotice); XCTAssertFalse(show.subCursorVisible)
             XCTAssertNil(show.selectedTimelineRegion); XCTAssertFalse(show.timelineFollowPaused)
             XCTAssertEqual(show.splitItemsRequest, 0); XCTAssertEqual(show.normalizeItemsRequest, 0)
             XCTAssertNil(show.itemProcessingRequest)

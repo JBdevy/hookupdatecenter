@@ -2,13 +2,11 @@
 #include <BinaryData.h>
 namespace catlive::theme {
 namespace {
-// Inter, bundled on both desktop platforms. Keep component bounds and the
-// application's DPI/UI scale independent of typography. Tiny Windows labels
-// retain at least 10.8px EM (the selected-song display size) rather than collapsing to 7–8px at 100-percent scale.
-constexpr float windowsTextScale = .9f;
+// Use the bundled Inter face at the requested point size on both desktops.
+// The peer handles display DPI. Keep the small-label legibility floor.
 Font calibrated(Typeface::Ptr face, float points) {
     // Preserve natural glyph proportions instead of compressing text to fit.
-    return Font(FontOptions(face).withFallbacks({"Segoe UI Emoji", "Segoe UI Symbol"}).withFallbackEnabled(true).withPointHeight(std::max(10.8f, points * windowsTextScale)));
+    return Font(FontOptions(face).withFallbacks({"Segoe UI Emoji", "Segoe UI Symbol"}).withFallbackEnabled(true).withPointHeight(std::max(10.8f, points)));
 }
 }
 Font mediumFont(float size) {

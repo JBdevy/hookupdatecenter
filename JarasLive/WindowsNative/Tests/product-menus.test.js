@@ -286,12 +286,12 @@ test('state-dependent labels have distinct translation keys rather than ambiguou
 });
 
 test('direct save/header/piano/marker gestures dispatch real commands without constructing a popup', () => {
-  const r = recorder('exportPortable seekSubplay beginTimeSelection updateTimeSelection endTimeSelection beginNoteSelection updateNoteSelection endNoteSelection editMarker');
+  const r = recorder('exportPortable beginTimeSelection updateTimeSelection endTimeSelection beginNoteSelection updateNoteSelection endNoteSelection editMarker');
   const invoke = (target, gesture, extra = {}) => menus.routeDirectGesture({target, gesture, context: {
     actions: r.actions, projectId: 'p', data: {time: 12, markerId: 'marker'}, ...extra,
   }});
   assert.equal(invoke('save', 'context').handled, true); assert.equal(r.calls.at(-1).name, 'exportPortable');
-  assert.equal(invoke('timelineHeader', 'context').handled, true); assert.equal(r.calls.at(-1).name, 'seekSubplay');
+  assert.equal(invoke('timelineHeader', 'context').handled, false);
   for (const [gesture, command] of [['rightDragStart', 'beginTimeSelection'], ['rightDrag', 'updateTimeSelection'], ['rightDragEnd', 'endTimeSelection']]) {
     assert.equal(invoke('timelineHeader', gesture).handled, true); assert.equal(r.calls.at(-1).name, command);
   }

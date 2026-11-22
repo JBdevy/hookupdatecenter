@@ -1384,6 +1384,28 @@ int runTests(const File &directory) {
                 if (r > 165 && g > 120 && b < 85 && g > b + 70) ++yellowPixels;
                 if (r > 165 && g < 110 && b < 120 && r > g + 90) ++redPixels;
             }
+            const auto assertLettersVisible = [&] (const wchar_t* prefix) {
+                SendMessageW(editor, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(prefix));
+                SendMessageW(editor, EM_SETSEL, -1, -1);
+                for (const wchar_t letter : std::wstring(L"Música")) {
+                    CHARRANGE before{};
+                    SendMessageW(editor, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&before));
+                    SendMessageW(editor, WM_CHAR, letter, 1);
+                    SendMessageW(editor, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+                    GdiFlush();
+                    const auto left = pointAt(before.cpMin);
+                    const auto right = pointAt(before.cpMin + 1);
+                    bool ink = false;
+                    for (LONG y = std::max(0L, left.y); y < std::min(bounds.bottom, left.y + 40); ++y)
+                        for (LONG x = std::max(0L, left.x); x < std::min(bounds.right, right.x); ++x) {
+                            const auto c = image[y * bounds.right + x];
+                            if (((c >> 16) & 255) > 145 && ((c >> 8) & 255) > 145 && (c & 255) > 145) ink = true;
+                        }
+                    expect(ink, "A typed letter must appear at its insertion position before the next keystroke");
+                }
+            };
+            assertLettersVisible(L"");
+            assertLettersVisible(L"1\ufe0f\u20e3 ");
             const auto numbers = String::fromUTF8("1️⃣ 2️⃣ #️⃣ *️⃣");
             SendMessageW(editor, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(numbers.toWideCharPointer()));
             SendMessageW(editor, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
@@ -1609,13 +1631,25 @@ int runTests(const File &directory) {
             session.command(jaras::CommandKind::stopAll);
         }
     });
-    test("Master default and temporary SubPlay cursor match Mac", [&] {
+    test("Master default and queued SubPlay cursor match Mac", [&] {
         Session session;session.newProject();expect(session.project().masterColor==0x414141,"New Master colour differs");
-        expect(!session.subCursorVisible(),"SubPlay cursor initially visible");session.command(jaras::CommandKind::subSeek,{},2);
-        expect(session.subCursorVisible(),"SubPlay positioning does not reveal needle");
-        session.subCursorPreviewUntil=Time::getMillisecondCounterHiRes()-1;expect(!session.subCursorVisible(),"SubPlay needle persists after preview");
-        session.command(jaras::CommandKind::play);session.command(jaras::CommandKind::subPlay);expect(session.subCursorVisible(),"SubPlay playing needle hidden");session.command(jaras::CommandKind::stopAll);
-        expect(!session.subCursorVisible(),"Stopped SubPlay needle retained");
+        auto fixture = projectFixture();
+        auto &song = fixture.songs.front();
+        song.tracks.clear();
+        session.inspection = true;
+        session.restoreSnapshot(ProjectCodec::encode(fixture));
+        session.command(jaras::CommandKind::subSeek, {}, 2);
+        expect(!session.subCursorVisible(), "A free secondary seek must not reveal a needle");
+        session.command(jaras::CommandKind::editSeek, {}, 12);
+        session.command(jaras::CommandKind::play);
+        session.command(jaras::CommandKind::subPlay);
+        expect(!session.subCursorVisible(), "Free SubPlay must not reveal a needle");
+        session.command(jaras::CommandKind::subStop);
+        const auto &queued = song.parts.back();
+        session.command(jaras::CommandKind::queueRegion, queued.id);
+        expect(session.subCursorVisible() && session.subCursorPosition(session.transport()) == queued.startTime, "Queue shows the needle at the queued region");
+        session.command(jaras::CommandKind::queueRegion, queued.id);
+        expect(!session.subCursorVisible(), "Cancelling the queue hides its needle immediately");
     });
     test("Show Mode preserves power-plan lid actions, handles denial and supports desktops", [&] {
         Appearance preferences(directory.getChildFile("show-mode-test.json"));
@@ -2995,6 +3029,10 @@ int runTests(const File &directory) {
         const int right=ModifierKeys::rightButtonModifier|ModifierKeys::shiftModifier;
         Point<float> anchor{200,60},end{100,60};
         canvas->mouseDown(event(anchor,anchor,right,false));
+        canvas->mouseUp(event(anchor,anchor,ModifierKeys::shiftModifier,false));
+        expect(!session.subCursorVisible() && !session.selectedTimeRange() && JSON::toString(session.snapshot())==before,
+               "Right-clicking the ruler preserves both cursors without creating a selection");
+        canvas->mouseDown(event(anchor,anchor,right,false));
         expect(!session.selectedTimeRange(),"Press alone creates no selection");
         canvas->mouseDrag(event(end,anchor,right,true));
         const auto range=session.selectedTimeRange();expect(range && range->first<range->second,"Reverse drag normalizes persistent range");
@@ -3493,8 +3531,14 @@ int runTests(const File &directory) {
         auto song=projectFixture().songs.front();song.tracks[0].name="Click";song.tracks[0].role.id="click";
         auto &clip=song.tracks[0].clips[0];clip.startTime=10;clip.duration=20;clip.sourceOffset=0;
         jaras::Part region{uuid(),"Click song",10,30};song.parts={region};
-        const auto detected=clickTempo::markers(song,region,[](const auto &){std::vector<clickTempo::Transient> result;for(int i=0;i<30;++i)result.push_back({.125+i*.5,1,{}});return result;});
+        const auto transients=[](const auto &){std::vector<clickTempo::Transient> result;for(int i=0;i<30;++i)result.push_back({.125+i*.5,1,{}});return result;};
+        const auto detected=clickTempo::markers(song,region,transients);
         expect(detected.size()==2&&detected[0].position==10&&detected[1].position==10.125,"Intro guard preserves first audible sample anchor");
+        clip.startTime=12;
+        const auto delayed=clickTempo::markers(song,region,transients);
+        expect(delayed.size()==1 && delayed.front().position==12.125,
+               "An uncovered region start must not inherit the first measured tempo");
+        clip.startTime=10;
         clickTempo::insert(song,region,detected);
         expect(song.tracks[0].clips[0].startTime==10&&song.tracks[0].clips[0].playbackRate==1,"Detection does not move or retime the click");
         auto original=song;original.bpm=87;original.beatsPerBar=7;original.markers=std::vector<jaras::TimelineMarker>{{uuid(),"Manual",15,0xff0000}};

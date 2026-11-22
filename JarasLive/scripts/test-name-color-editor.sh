@@ -15,5 +15,5 @@ typeface='// App-owned typography.'+Path('Apple/Shared/Theme.swift').read_text()
 Path(sys.argv[1]).write_text('import SwiftUI\nimport AppKit\n'+typeface+'\n'+dismissal+'\n'+editor+'\n'+Path('Tests/Apple/NameColorEditorTests.swift').read_text())
 PY
 swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
-    Apple/Shared/NativeTooltips.swift "$test_dir/main.swift" -o "$test_dir/test"
+    Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/NativeTooltips.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

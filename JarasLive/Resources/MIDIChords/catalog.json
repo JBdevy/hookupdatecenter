@@ -1,0 +1,23 @@
+[
+  {"category": "Major", "name": "C", "intervals": [0, 4, 7]},
+  {"category": "Major", "name": "C6", "intervals": [0, 4, 7, 9]},
+  {"category": "Major", "name": "Cmaj7", "intervals": [0, 4, 7, 11]},
+  {"category": "Major", "name": "Cadd9", "intervals": [0, 4, 7, 14]},
+  {"category": "Major", "name": "Cmaj9", "intervals": [0, 4, 7, 11, 14]},
+  {"category": "Major", "name": "C6/9", "intervals": [0, 4, 7, 9, 14]},
+  {"category": "Minor", "name": "Cm", "intervals": [0, 3, 7]},
+  {"category": "Minor", "name": "Cm6", "intervals": [0, 3, 7, 9]},
+  {"category": "Minor", "name": "Cm7", "intervals": [0, 3, 7, 10]},
+  {"category": "Minor", "name": "Cm(add9)", "intervals": [0, 3, 7, 14]},
+  {"category": "Minor", "name": "Cm9", "intervals": [0, 3, 7, 10, 14]},
+  {"category": "Minor", "name": "Cm(maj7)", "intervals": [0, 3, 7, 11]},
+  {"category": "Other", "name": "C5", "intervals": [0, 7]},
+  {"category": "Other", "name": "Csus2", "intervals": [0, 2, 7]},
+  {"category": "Other", "name": "Csus4", "intervals": [0, 5, 7]},
+  {"category": "Other", "name": "C7", "intervals": [0, 4, 7, 10]},
+  {"category": "Other", "name": "C9", "intervals": [0, 4, 7, 10, 14]},
+  {"category": "Other", "name": "Cdim", "intervals": [0, 3, 6]},
+  {"category": "Other", "name": "Cdim7", "intervals": [0, 3, 6, 9]},
+  {"category": "Other", "name": "Cm7♭5", "intervals": [0, 3, 6, 10]},
+  {"category": "Other", "name": "Caug", "intervals": [0, 4, 8]}
+]

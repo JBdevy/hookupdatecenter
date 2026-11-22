@@ -35,12 +35,13 @@ final class WorkspaceEditorHostingView<Content: View>: NSHostingView<Content> {
     override var fittingSize: NSSize { frame.size }
 }
 
+let workspacePanelStyle: NSWindow.StyleMask = [.titled, .closable, .resizable]
+
 @MainActor func makeWorkspacePanel(title: String, size: NSSize, minimum: NSSize, matrixPatch: Bool = false) -> NSPanel {
     let rect = NSRect(origin: .zero, size: size)
-    let style: NSWindow.StyleMask = [.titled, .closable, .resizable]
     let panel = matrixPatch
-        ? MatrixPatchWindow(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
-        : NSPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+        ? MatrixPatchWindow(contentRect: rect, styleMask: workspacePanelStyle, backing: .buffered, defer: false)
+        : NSPanel(contentRect: rect, styleMask: workspacePanelStyle, backing: .buffered, defer: false)
     panel.title = title
     panel.appearance = NSAppearance(named: .darkAqua)
     panel.contentMinSize = minimum

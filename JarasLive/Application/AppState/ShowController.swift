@@ -83,6 +83,7 @@ public struct ShowPresentationState: Equatable {
 }
 public struct ShowTimelinePresentationState: Equatable {
     let project: UUID
+    let projectSession: UUID
     let revision: UInt64
     let song: UUID?
     let focusRequest: UUID
@@ -124,7 +125,7 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public var timelinePresentationState: ShowTimelinePresentationState {
         let transport = snapshot.transport
-        return ShowTimelinePresentationState(project: snapshot.project.id, revision: projectRevision,
+        return ShowTimelinePresentationState(project: snapshot.project.id, projectSession: projectSessionID, revision: projectRevision,
             song: transport.songId, focusRequest: regionFocusRequest, selectedRegion: selectedTimelineRegion, selectedRegions: selectedTimelineRegions,
             editPosition: transport.editPosition ?? (isPlaying ? nil : transport.position),
             playing: transport.playing, subPlaying: transport.subPlay.playing, subCursorVisible: subCursorVisible,
@@ -754,6 +755,16 @@ public struct ShowTimelinePresentationState: Equatable {
     /// starts. Remote controllers and already prepared projects return nil.
     public var pendingSubplayPreparation: (ShowSnapshot, UInt64) throws -> Task<Void, Never>? = { _, _ in nil }
     public var pendingAudioPreparation: (ShowSnapshot, UInt64) throws -> Task<Void, Never>? = { _, _ in nil }
+    func prepareRecordingPlayback() async throws {
+        try validateAudioOutput()
+        var pending = snapshot
+        let stopped = try executor.playbackSnapshot()
+        pending.transport = stopped.transport
+        pending.nextSongId = stopped.nextSongId
+        if let preparation = try pendingAudioPreparation(pending, audioProjectRevision) {
+            await preparation.value
+        }
+    }
     @Published public private(set) var preparingAudio = false
     private var playbackPreparation: Task<Void, Never>?
     private var playbackPreparationGeneration = UUID()
@@ -766,17 +777,7 @@ public struct ShowTimelinePresentationState: Equatable {
     @Published public private(set) var lastSavedAt: String?
     public var current: Song? { snapshot.project.songs.first { $0.id == snapshot.transport.songId } }
     public var next: Song? { snapshot.project.songs.first { $0.id == snapshot.nextSongId } }
-    @Published public private(set) var subCursorPreview = false
-    private var subCursorHideTask: Task<Void, Never>?
-    public var subCursorVisible: Bool { subCursorPreview || snapshot.transport.subPlay.playing }
-    private func revealSubCursor() {
-        subCursorHideTask?.cancel()
-        subCursorPreview = true
-        subCursorHideTask = Task { @MainActor [weak self] in
-            do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
-            self?.subCursorPreview = false
-        }
-    }
+    public var subCursorVisible: Bool { snapshot.transport.queuedRegionId != nil }
     public struct TrackSelectionRequest: Equatable {
         public let id: UUID
         public let track: UUID
@@ -948,6 +949,13 @@ public struct ShowTimelinePresentationState: Equatable {
         case .toggleTeleprompter: toggleTeleprompterWindow()
         case .previousProjectTab: navigateProjectTab(-1)
         case .nextProjectTab: navigateProjectTab(1)
+        case .toggleFocus: toggleFocusPanel()
+        case .toggleLibrary: toggleLibraryPanel()
+        case .toggleSelectedInputMonitor, .toggleSelectedStripFXBypass:
+            guard let selected = actionTrack(number: nil) else { message = "Track unavailable"; return }
+            if action == .toggleSelectedInputMonitor { setInputMonitoring(selected.id, enabled: selected.inputMonitoring != true) }
+            else { toggleStripFXBypass(selected.id) }
+        case .toggleSessionFXBypass: toggleStripFXBypass(nil, sessionWide: true)
         case .toggleTracks: toggleTracksPanel()
         case .toggleBarMixer: toggleBarMixerPanel()
         case .toggleSetlist: toggleSetlistPanel()
@@ -1044,6 +1052,8 @@ public struct ShowTimelinePresentationState: Equatable {
     public var toggleWorkspaceFullscreen: () -> Void = {}
     public var toggleTeleprompterWindow: () -> Void = {}
     public var navigateProjectTab: (Int) -> Void = { _ in }
+    public var toggleFocusPanel: () -> Void = {}
+    public var toggleLibraryPanel: () -> Void = {}
     public var toggleTracksPanel: () -> Void = {}
     public var showTrackFocus: (UUID?) -> Void = { _ in }
     public var toggleBarMixerPanel: () -> Void = {}
@@ -1950,8 +1960,15 @@ public struct ShowTimelinePresentationState: Equatable {
             if let project { try replaceProject(project) } else { try await persistence.save(snapshot.project) }
         } catch { if projectSessionID == session { message = error.localizedDescription } }
     }
+    private var recordingStartDeadline: Double?
+    func startRecordingPlayback(at uptime: Double) {
+        recordingStartDeadline = uptime
+        defer { recordingStartDeadline = nil }
+        send(.play)
+    }
     public func startClock() {
-        guard timer == nil, isPlaying else { return }; lastTime = playbackClock()
+        guard timer == nil, isPlaying else { return }
+        lastTime = max(lastTime, playbackClock())
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -2014,7 +2031,9 @@ public struct ShowTimelinePresentationState: Equatable {
         if isPlaying { startClock() } else { timer?.invalidate(); timer = nil }
     }
     public func tick() {
-        let now = playbackClock(); let delta = now - lastTime; lastTime = now
+        let now = playbackClock()
+        guard now >= lastTime else { return }
+        let delta = now - lastTime; lastTime = now
         guard isPlaying else { return }
         let wasPublishing = publishingTimelinePlaybackTick
         publishingTimelinePlaybackTick = true
@@ -2270,8 +2289,8 @@ public struct ShowTimelinePresentationState: Equatable {
         // Advance the clock without scheduling one obsolete audio update before
         // applying Stop/Pause/Seek. Publish and render only the final command state.
         if isPlaying {
-            let now = playbackClock(), elapsed = now - lastTime
-            executor.advance(elapsed); lastTime = now
+            let now = playbackClock(), elapsed = max(0, now - lastTime)
+            executor.advance(elapsed); lastTime = max(now, lastTime)
             if setlistLiveEnabled, let advanced = try? executor.playbackSnapshot() {
                 recordSetlistLivePlayback(before: snapshot.transport, after: advanced.transport, elapsed: elapsed)
             }
@@ -2301,7 +2320,7 @@ public struct ShowTimelinePresentationState: Equatable {
                 try executor.execute(.loopStart, target: nil, value: range.lowerBound)
                 try executor.execute(.loopEnd, target: nil, value: range.upperBound)
             }
-            if command == .play, !previous.playing, !previous.subPlay.playing {
+            if command == .play, !previous.playing, !previous.subPlay.playing, recordingStartDeadline == nil {
                 var pending = snapshot
                 let stopped = try executor.playbackSnapshot()
                 pending.transport = stopped.transport; pending.nextSongId = stopped.nextSongId
@@ -2348,8 +2367,8 @@ public struct ShowTimelinePresentationState: Equatable {
             let disabledAuto = (escapedSongQueue || cancelledRegionQueue) && snapshot.project.regionSetlist?.autoAdvance == true
             if cancelledRegionQueue { focusedRegion = nil }
             if disabledAuto { snapshot.project.regionSetlist?.autoAdvance = false; setlistRevision &+= 1 }
-            if command == .subSeek { revealSubCursor() }
-            lastTime = playbackClock()
+            let scheduled = recordingStartDeadline ?? (previous.playing && update.transport.playing ? lastTime : 0)
+            lastTime = max(playbackClock(), scheduled)
             snapshot.transport = update.transport; snapshot.nextSongId = update.nextSongId
             if command == .toggleMultiLoopBypass {
                 globalDefaults?.set(snapshot.transport.multiLoopsBypassed == true, forKey: Self.multiLoopBypassDefaultsKey)
@@ -3928,7 +3947,7 @@ public struct ShowTimelinePresentationState: Equatable {
               let index = snapshot.project.songs.firstIndex(where: { $0.id == songID }) else { return nil }
         if let existing = current?.tracks.first(where: { $0.role.rawValue == "vinhetas" }) { return existing.id }
         var project = snapshot.project
-        let track = Track(id: UUID(), name: "VINHETAS-FX", role: TrackRole(rawValue: "vinhetas"), color: Track.defaultStandardColor)
+        let track = Track(id: UUID(), name: "VINHETAS-FX", role: TrackRole(rawValue: "vinhetas"), instrumentIcon: nil, color: Track.defaultStandardColor)
         project.songs[index].tracks.append(track); project.orderSpecialTracks()
         do {
             try project.validate(); try executor.applyProjectEdit(project)
@@ -3959,7 +3978,7 @@ public struct ShowTimelinePresentationState: Equatable {
         var newTracks: [Track] = []
         for index in 0..<count {
             let trackName = kind == .standard ? trimmed + (count == 1 ? "" : String(format: " %02d", index + 1)) : kind.title
-            var track = Track(id: UUID(), name: trackName, role: role, color: kind == .standard ? Track.defaultStandardColor : nil)
+            var track = Track(id: UUID(), name: trackName, role: role, instrumentIcon: kind.defaultInstrumentIcon, color: kind == .standard ? Track.defaultStandardColor : nil)
             track.parentTrackID = parent
             if kind == .standard && !inputPatches.isEmpty { track.inputPatch = inputPatches[index] }
             if kind == .programChange { track.midiInput = 1; track.midiOutput = 1; track.patch = .none }
@@ -4601,7 +4620,6 @@ public struct ShowTimelinePresentationState: Equatable {
         // Clear only document-local interaction state. Audio-device preferences,
         // license restrictions and the global bypass remain owned by the app.
         regionNavigationTask?.cancel(); regionNavigationTask = nil
-        subCursorHideTask?.cancel(); subCursorHideTask = nil; subCursorPreview = false
         timer?.invalidate(); timer = nil
         lastTime = playbackClock()
         discardAutomationRecording()

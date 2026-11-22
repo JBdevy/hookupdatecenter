@@ -20,8 +20,8 @@ class SettingsPanel final : public Component, private Timer {
                                 "MIDI",        String::fromUTF8("Ações"),
                                 "Mapeamentos", "Plugins",
                                 "Conta", "SMK37PRO"};
-        const char *icons[]{"mixer",    "speaker", "piano",  "keyboard",
-                            "mappings", "plugins", "account", "piano"};
+        const char *icons[]{"slider.horizontal.3", "speaker.wave.2", "pianokeys", "tabs.actions",
+                            "tabs.mappings", "tabs.plugins", "tabs.account", "pianokeys"};
         for (int i = 0; i < names.size(); ++i) {
             auto *tab = tabs.add(new TextButton(names[i]));
             addAndMakeVisible(tab);

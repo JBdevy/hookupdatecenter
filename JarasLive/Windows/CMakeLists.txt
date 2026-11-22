@@ -281,14 +281,14 @@ add_custom_command(TARGET CatLive POST_BUILD
 install(DIRECTORY "${CATLIVEROOT}/Resources/SMK37" DESTINATION .)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Resources/SMK37Tools" DESTINATION .)
 
-foreach(folder NativeSamples TrackIcons)
+foreach(folder NativeSamples TrackIcons ControlIcons MIDIChords)
     add_custom_command(TARGET CatLive POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CATLIVEROOT}/Resources/${folder}" "$<TARGET_FILE_DIR:CatLive>/${folder}")
     install(DIRECTORY "${CATLIVEROOT}/Resources/${folder}" DESTINATION .)
 endforeach()
 
 # Category artwork is decoded once per open editor, never in the audio callback.
-foreach(category pianos upright electric keyboard organ strings guitar bass synth synthPad lead acordeon brass mallets drum)
+foreach(category pianos upright electric keyboard organ strings guitar bass synth synthPad lead acordeon brass mallets drum user)
     set(artwork "${CATLIVEROOT}/Apple/Assets.xcassets/InstrumentArtwork_${category}.imageset/${category}.png")
     add_custom_command(TARGET CatLive POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CatLive>/InstrumentInterfaces"

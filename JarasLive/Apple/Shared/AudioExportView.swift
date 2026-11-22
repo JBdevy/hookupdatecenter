@@ -65,6 +65,10 @@ struct AudioExportView: View {
     @State private var clips: Set<UUID> = []
     @State private var regions: Set<UUID> = []
     @State private var choosingDirectory = false
+    #if os(iOS)
+    @State private var scopedDirectory: URL?
+    @AppStorage("jaras.export.directoryBookmark") private var directoryBookmark = Data()
+    #endif
     @State private var renderScreen = false
     @State private var renderedPlan: AudioExportPlan?
     @AppStorage("jaras.export.sampleRate") private var rate = 48000.0
@@ -116,7 +120,13 @@ struct AudioExportView: View {
             }
             if renderScreen { rendering }
             else { configuration }
-        }.padding(20).frame(width: 860).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
+        }.padding(20)
+            #if os(macOS)
+            .frame(width: 860)
+            #else
+            .frame(maxWidth: 860)
+            #endif
+            .background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
             .interactiveDismissDisabled(session.running)
             .alert("Replace existing files?", isPresented: $session.confirmingReplacement) {
                 Button("Cancel", role: .cancel) { session.cancelReplacement(); renderScreen = false; renderedPlan = nil }
@@ -133,11 +143,46 @@ struct AudioExportView: View {
                 if UserDefaults.standard.object(forKey: "jaras.export.sampleRate") == nil {
                     rate = [44100.0,48000.0].contains(AudioDeviceSettings.shared.sampleRate) ? AudioDeviceSettings.shared.sampleRate : 48000
                 }
+                #if os(iOS)
+                restoreExportDirectory()
+                #else
                 if directory.isEmpty { directory = FileManager.default.urls(for: .desktopDirectory,in: .userDomainMask).first?.path ?? "" }
+                #endif
                 if fileName == "$region" { fileName = "%region" }
             }
-            .fileImporter(isPresented: $choosingDirectory,allowedContentTypes: [.folder]) { if case .success(let url) = $0 { directory = url.path } }
+            .fileImporter(isPresented: $choosingDirectory, allowedContentTypes: [.folder]) { result in
+                guard case .success(let url) = result else { return }
+                #if os(iOS)
+                selectExportDirectory(url)
+                #else
+                directory = url.path
+                #endif
+            }
+            #if os(iOS)
+            .onDisappear {
+                scopedDirectory?.stopAccessingSecurityScopedResource()
+                scopedDirectory = nil
+            }
+            #endif
     }
+    #if os(iOS)
+    private func selectExportDirectory(_ url: URL) {
+        let acquired = url.startAccessingSecurityScopedResource()
+        scopedDirectory?.stopAccessingSecurityScopedResource()
+        scopedDirectory = acquired ? url : nil
+        directory = url.path
+        directoryBookmark = (try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)) ?? Data()
+    }
+    private func restoreExportDirectory() {
+        var stale = false
+        if !directoryBookmark.isEmpty, let url = try? URL(resolvingBookmarkData: directoryBookmark, options: [],
+                relativeTo: nil, bookmarkDataIsStale: &stale) {
+            selectExportDirectory(url)
+        } else {
+            directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        }
+    }
+    #endif
     private var configuration: some View {
         VStack(alignment: .leading,spacing: 12) {
             if regionMode {

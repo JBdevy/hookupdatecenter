@@ -8,7 +8,7 @@
 @implementation JarasMacAudioInput {
     AudioUnit _unit;
     AVAudioPCMBuffer *_buffer;
-    void (^_capture)(AVAudioPCMBuffer *);
+    void (^_capture)(AVAudioPCMBuffer *, uint64_t);
     BOOL _running;
     UInt32 _bufferFrames;
 }
@@ -21,7 +21,7 @@
             kAudioUnitScope_Global, 0, &device, &bytes) != noErr) return 0;
     return device;
 }
-- (void)setCapture:(void (^)(AVAudioPCMBuffer *))capture {
+- (void)setCapture:(void (^)(AVAudioPCMBuffer *, uint64_t))capture {
     // Only the control thread changes callback ownership, with input stopped.
     NSAssert(!_running, @"Pause input before changing the capture callback");
     _capture = [capture copy];
@@ -34,7 +34,7 @@
     if (frames > _buffer.frameCapacity) return kAudioUnitErr_TooManyFramesToProcess;
     _buffer.frameLength = frames;
     const auto status = AudioUnitRender(_unit, flags, time, 1, frames, _buffer.mutableAudioBufferList);
-    if (status == noErr && _capture) _capture(_buffer);
+    if (status == noErr && _capture) _capture(_buffer, time->mFlags & kAudioTimeStampHostTimeValid ? time->mHostTime : 0);
     return status;
 }
 static OSStatus macInputRender(void *context, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,

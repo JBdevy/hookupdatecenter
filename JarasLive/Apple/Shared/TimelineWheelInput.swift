@@ -76,6 +76,13 @@ final class TimelineTrackHeightMotion {
     private weak var retainedLayoutOwner: NSView?
     private var running: Bool { timer != nil || cancelDisplayLink != nil }
     private var limits = TimelineTrackHeightLimits.minimum...TimelineTrackHeightLimits.maximum
+    private var session: UUID?
+
+    func useProjectSession(_ id: UUID) {
+        guard session != id else { return }
+        cancel()
+        session = id
+    }
 
     func change(factor: Double, current: CGFloat, smoothWheel: Bool = false,
                 limits: ClosedRange<CGFloat> = TimelineTrackHeightLimits.minimum...TimelineTrackHeightLimits.maximum,
@@ -370,7 +377,7 @@ final class TimelineTrackHeightResizeView: NSView, NativeTimelineInputObserver, 
     override func mouseDragged(with event: NSEvent) {
         guard acceptsInput else { cancelDrag(); return }
         guard var drag else { return }
-        let limits = TrackHeightGeometry.laneLimits(count: drag.count, compact: drag.compact)
+        let limits = TrackHeightGeometry.laneLimits(count: drag.count, allowsCompactHeight: drag.compact)
         let travel = Double((drag.startY - event.locationInWindow.y) / max(0.01, abs(convert(NSSize(width: 1, height: 1), to: nil).height)))
         let lane = min(limits.upperBound, max(limits.lowerBound, ((Double(drag.height) + travel) / Double(drag.count)).rounded()))
         let scale = min(TrackHeightGeometry.maximumScale, max(TrackHeightGeometry.minimumScale, lane / drag.denominator))
@@ -974,7 +981,7 @@ struct TimelineRulerInput: NSViewRepresentable {
     var selectTime: (Double, Double) -> Void = { _, _ in }
     var selectedTime: () -> (Double, Double)? = { nil }
     var resizeTime: (Double, Bool) -> Void = { _, _ in }
-    let seek: (Double, Bool, Bool) -> Void
+    let seek: (Double, Bool) -> Void
     func makeNSView(context: Context) -> TimelineRulerView { TimelineRulerView() }
     func updateNSView(_ view: TimelineRulerView, context: Context) { view.seek = seek; view.extend = extend; view.selectTime = selectTime; view.selectedTime = selectedTime; view.resizeTime = resizeTime; view.markerCursor = markerCursor }
 }
@@ -984,7 +991,7 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
     var documentWidth: CGFloat?
     private var inputWidth: CGFloat { documentWidth ?? bounds.width }
     var markerCursor: (NSEvent) -> NSCursor? = { _ in nil }
-    var seek: ((Double, Bool, Bool) -> Void)?
+    var seek: ((Double, Bool) -> Void)?
     var selectTime: ((Double, Double) -> Void)?
     var selectedTime: (() -> (Double, Double)?)?
     var resizeTime: ((Double, Bool) -> Void)?
@@ -998,17 +1005,16 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
     private var startY: CGFloat = 0
     private var previousX: CGFloat = 0
     private var dragging = false
-    private var secondaryClick = false
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { NativeTimelineInputGate.shared.add(self) }
     }
     func timelineInputGateChanged(blocked: Bool) {
-        if blocked { startX = nil; dragging = false; secondaryClick = false; selectionStart = nil; selectingTime = false; selectionEdge = nil }
+        if blocked { startX = nil; dragging = false; selectionStart = nil; selectingTime = false; selectionEdge = nil }
     }
     func timelinePendingClickCancelled() {
         guard !dragging, selectionStart == nil else { return }
-        startX = nil; secondaryClick = false; selectionEdge = nil
+        startX = nil; selectionEdge = nil
     }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
     override func updateTrackingAreas() {
@@ -1035,15 +1041,16 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
     }
     override func mouseDown(with event: NSEvent) {
         guard !NativeTimelineInputGate.shared.isBlocked(window) else { return }
+        if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
         startX = event.locationInWindow.x
         startY = event.locationInWindow.y
         previousX = event.locationInWindow.x
         dragging = false
-        secondaryClick = event.modifierFlags.contains(.control)
         selectionEdge = areaEdge(event)
     }
     override func mouseDragged(with event: NSEvent) {
-        guard !NativeTimelineInputGate.shared.isBlocked(window), let startX, !secondaryClick else { return }
+        if selectionStart != nil { rightMouseDragged(with: event); return }
+        guard !NativeTimelineInputGate.shared.isBlocked(window), let startX else { return }
         if !dragging && hypot(event.locationInWindow.x - startX, event.locationInWindow.y - startY) < 3 { return }
         dragging = true
         if let selectionEdge {
@@ -1069,11 +1076,12 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
         }
     }
     override func mouseUp(with event: NSEvent) {
+        if selectionStart != nil { rightMouseUp(with: event); return }
         guard !NativeTimelineInputGate.shared.isBlocked(window), let startX else { return }
         if hypot(event.locationInWindow.x - startX, event.locationInWindow.y - startY) >= 3 { dragging = true }
         if let selectionEdge {
             if dragging { resizeTime?(fraction(event), selectionEdge) }
-        } else if !dragging { move(event, secondary: secondaryClick) }
+        } else if !dragging { seek?(fraction(event), event.modifierFlags.contains(.shift)) }
         selectionEdge = nil
         self.startX = nil
         dragging = false
@@ -1100,15 +1108,10 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
         if let selectionEdge {
             if selectingTime { resizeTime?(fraction(event), selectionEdge) }
         } else if selectingTime { selectTime?(selectionStart, fraction(event)) }
-        else { move(event, secondary: true) }
         self.selectionStart = nil; startX = nil; selectingTime = false; selectionEdge = nil
     }
     private func fraction(_ event: NSEvent) -> Double {
         Double(min(1, max(0, convert(event.locationInWindow, from: nil).x / max(1, inputWidth))))
-    }
-    private func move(_ event: NSEvent, secondary: Bool) {
-        let x = convert(event.locationInWindow, from: nil).x
-        seek?(Double(min(1, max(0, x / max(1, inputWidth)))), secondary, event.modifierFlags.contains(.shift))
     }
 }
 #endif

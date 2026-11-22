@@ -27,10 +27,17 @@ class GainFader final : public ParameterSlider {
 
     GainFader() { setRange(0, std::pow(10., 12. / 20.), 0); }
     double proportionOfLengthToValue(double proportion) override {
-        return proportion <= 0 ? 0 : std::pow(10., (-60 + jlimit(0., 1., proportion) * 72) / 20.);
+        const auto db = getComponentID() == "trackVolume" && isHorizontal()
+            ? meterDisplay::horizontalTrackDB(proportion, getLookAndFeel().getSliderLayout(*this).sliderBounds.getWidth())
+            : -60 + jlimit(0., 1., proportion) * 72;
+        return proportion <= 0 ? 0 : std::pow(10., db / 20.);
     }
     double valueToProportionOfLength(double gain) override {
-        return gain <= 0 ? 0 : jlimit(0., 1., (20 * std::log10(gain) + 60) / 72.);
+        if (gain <= 0) return 0;
+        const auto db = 20 * std::log10(gain);
+        return getComponentID() == "trackVolume" && isHorizontal()
+            ? meterDisplay::horizontalTrackFraction(db, getLookAndFeel().getSliderLayout(*this).sliderBounds.getWidth())
+            : jlimit(0., 1., (db + 60) / 72.);
     }
 };
 }

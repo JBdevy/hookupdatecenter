@@ -175,8 +175,8 @@ struct IpadItemBodyContextMenu: UIViewRepresentable {
                         }
                     }
                     if clip.midi != nil, !midiIDs.isEmpty {
-                        action("Convert Mono", symbol: "waveform") { processing.start(show: show, documents: documents, ids: midiIDs, operation: .midi(channels: 1)) }
-                        action("Convert Stereo", symbol: "waveform") { processing.start(show: show, documents: documents, ids: midiIDs, operation: .midi(channels: 2)) }
+                        action("Convert To Audio Mono", symbol: "waveform") { processing.start(show: show, documents: documents, ids: midiIDs, operation: .midi(channels: 1)) }
+                        action("Convert To Audio Stereo", symbol: "waveform") { processing.start(show: show, documents: documents, ids: midiIDs, operation: .midi(channels: 2)) }
                     } else if !audioIDs.intersection(editableIDs).isEmpty {
                         Divider()
                         ForEach([4, 1, 2, 3, 0], id: \.self) { mode in

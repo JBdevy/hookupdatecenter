@@ -93,6 +93,12 @@ var capturedTake = MIDIRecordingTake(track: captureTrack.id, song: captureProjec
 capturedTake.receive(source: 1, status: 0x90, number: 60, value: 100, position: 9)
 capturedTake.receive(source: 1, status: 0x91, number: 64, value: 90, position: 9.5)
 capturedTake.receive(source: 1, status: 0x80, number: 60, value: 0, position: 13)
+precondition(capturedTake.previewHistory.latestNoteOn == RecordedNoteSpan(pitch: 64, start: 9.5),
+             "The pitch viewport follows the last press even if an older note is released later")
+var nextPass = MIDIRecordingTake(track: captureTrack.id, song: captureProject.songs[0], startTime: 8)
+capturedTake.continueHeldNotes(into: &nextPass)
+precondition(nextPass.previewHistory.latestNoteOn == RecordedNoteSpan(pitch: 64, start: 8),
+             "Only held keys carry the viewport into the new pass")
 let capturedClip = capturedTake.finish(at: 33)!
 precondition(capturedClip.regionOwnerID == captureA.id)
 try core.addRecordedClip(JSONEncoder().encode(capturedClip), track: captureTrack.id.uuidString)

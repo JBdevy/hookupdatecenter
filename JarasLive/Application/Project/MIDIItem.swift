@@ -1,7 +1,31 @@
 import Foundation
 
+public struct LibraryMIDIChord: Decodable, Sendable {
+    public let category: String
+    public let name: String
+    public let intervals: [Int]
+    public static let transferType = "com.hookdeveloper.catlive.midi-chord"
+    public static let categories = ["Major", "Minor", "Other"]
+    public static let catalog: [Self] = {
+        guard let url = Bundle.main.url(forResource: "catalog", withExtension: "json", subdirectory: "MIDIChords"),
+              let data = try? Data(contentsOf: url),
+              let chords = try? JSONDecoder().decode([Self].self, from: data) else { return [] }
+        return chords
+    }()
+
+    public func notes(start: Double, length: Double, velocity: Int, channel: Int) -> [MIDINote] {
+        intervals.map { MIDINote(start: start, length: length, pitch: 48 + $0, velocity: velocity, channel: channel) }
+    }
+}
+
 /// Quarter-note units in the item's source; trimming keeps this source intact.
 public struct MIDINote: Codable, Equatable, Identifiable, Sendable {
+    private static let pitchNames = (0..<128).map { pitch in
+        ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][pitch % 12] + String(pitch / 12 - 1)
+    }
+    static func label(pitch: Int, velocity: Int) -> String {
+        pitchNames[min(127,max(0,pitch))] + " - " + String(velocity)
+    }
     public var id: UUID = UUID()
     public var start: Double
     public var length: Double
@@ -220,6 +244,60 @@ enum MIDIArpeggiator {
 
 /// Captures performed notes in the same source-time units used by MIDI playback.
 /// Host timestamps are converted to timeline positions by the recording coordinator.
+/// Absolute timeline seconds are used for drawing. The saved item keeps its tempo-mapped beats.
+public struct RecordedNoteSpan: Equatable, Sendable {
+    public let pitch: Int
+    public var velocity: Int = 100
+    public let start: Double
+    public var end: Double?
+}
+public struct RecordedNoteHistory: Sendable {
+    public private(set) var pages: [[RecordedNoteSpan]] = []
+    private var ends: [Double] = []
+    private(set) var low = 127, high = 0
+    public private(set) var latestNoteOn: RecordedNoteSpan?
+    mutating func noteOn(_ pitch: Int, velocity: Int = 100, at position: Double) {
+        low = min(low, pitch)
+        high = max(high, pitch)
+        latestNoteOn = RecordedNoteSpan(pitch: pitch, velocity: velocity, start: position, end: nil)
+    }
+    mutating func append(_ span: RecordedNoteSpan) {
+        guard let end = span.end else { return }
+        if let count = pages.last?.count, count < 256 {
+            let i = pages.count - 1
+            pages[i].append(span)
+            ends[i] = max(ends[i], end)
+        } else {
+            pages.append([span]); ends.append(end)
+        }
+    }
+    public func visit(from: Double, to: Double, _ draw: (RecordedNoteSpan) -> Void) {
+        for i in pages.indices where ends[i] >= from {
+            for span in pages[i] where span.start <= to && (span.end ?? to) >= from { draw(span) }
+        }
+    }
+}
+/// Maps continuous capture time onto successive passes through the selected range.
+public struct RecordingCycle: Sendable {
+    public let range: ClosedRange<Double>
+    public init?(_ range: ClosedRange<Double>?) {
+        guard let range, range.lowerBound.isFinite, range.upperBound.isFinite,
+              range.upperBound-range.lowerBound >= 0.001 else { return nil }
+        self.range = range
+    }
+    public func pass(start: Double, elapsed: Double) -> (index: Int, position: Double) {
+        let time = start + max(0, elapsed)
+        guard time >= range.upperBound else { return (0, time) }
+        let length = range.upperBound-range.lowerBound, after = time-range.upperBound
+        return (1+Int(floor(after/length)), range.lowerBound+after.truncatingRemainder(dividingBy: length))
+    }
+    public func segment(start: Double, index: Int) -> (start: Double, offset: Double, limit: Double) {
+        if index == 0 { return (start, 0, range.upperBound-start) }
+        let length = range.upperBound-range.lowerBound
+        return (range.lowerBound, range.upperBound-start+Double(index-1)*length, length)
+    }
+}
+
 public struct MIDIRecordingTake: Sendable {
     public let id: UUID
     public let track: UUID
@@ -230,11 +308,15 @@ public struct MIDIRecordingTake: Sendable {
     private let lane: Int
     private let regionOwnerID: UUID?
     private struct Key: Hashable, Sendable { let source: Int32; let channel: Int; let pitch: Int }
-    private struct Press: Sendable { var note: MIDINote; var released = false }
+    private struct Press: Sendable { var note: MIDINote; let startPosition: Double; var released = false }
     private struct Pedal: Hashable, Sendable { let source: Int32; let channel: Int }
     private var pressed: [Key: Press] = [:]
     private var sustain: Set<Pedal> = []
     private var notes: [MIDINote] = []
+    public private(set) var previewHistory = RecordedNoteHistory()
+    public var previewHeld: [RecordedNoteSpan] {
+        pressed.values.map { RecordedNoteSpan(pitch: $0.note.pitch, velocity: $0.note.velocity, start: $0.startPosition, end: nil) }
+    }
     public init(track: UUID, song: Song, startTime: Double, lane: Int = 0, id: UUID = UUID(), name: String = "MIDI recording") {
         self.track = track; self.song = song; self.startTime = startTime; self.lane = lane; self.id = id; self.name = name
         regionOwnerID = song.regionOwner(at: startTime)
@@ -248,10 +330,11 @@ public struct MIDIRecordingTake: Sendable {
         let probe = AudioClip(id: id, name: "MIDI", startTime: startTime, duration: elapsed, regionOwnerID: regionOwnerID)
         return song.tempoAudioSegments(probe).reduce(0) { $0 + $1.duration * $1.audioRate } * sourceBPM / 60
     }
-    private mutating func release(_ key: Key, at beat: Double) {
+    private mutating func release(_ key: Key, at beat: Double, position: Double) {
         guard var press = pressed.removeValue(forKey: key) else { return }
         press.note.length = max(1.0 / 960, beat - press.note.start)
         notes.append(press.note)
+        previewHistory.append(.init(pitch: press.note.pitch, velocity: press.note.velocity, start: press.startPosition, end: max(position, press.startPosition)))
     }
     public mutating func receive(source: Int32, status: UInt8, number: UInt8, value: UInt8, position: Double) {
         guard position.isFinite, position >= startTime, number < 128, value < 128 else { return }
@@ -261,27 +344,38 @@ public struct MIDIRecordingTake: Sendable {
         let time = beat(at: position)
         if kind == 0x90 && value > 0 {
             guard notes.count + pressed.count < 100_000 else { return }
-            release(key, at: time)
-            pressed[key] = Press(note: MIDINote(start: time, length: 1.0 / 960, pitch: Int(number), velocity: Int(value), channel: channel))
+            release(key, at: time, position: position)
+            previewHistory.noteOn(Int(number), velocity: Int(value), at: position)
+            pressed[key] = Press(note: MIDINote(start: time, length: 1.0 / 960, pitch: Int(number), velocity: Int(value), channel: channel), startPosition: position)
         } else if kind == 0x80 || (kind == 0x90 && value == 0) {
             if sustain.contains(pedal) { pressed[key]?.released = true }
-            else { release(key, at: time) }
+            else { release(key, at: time, position: position) }
         } else if kind == 0xb0 {
             if number == 64 {
                 if value >= 64 { sustain.insert(pedal) }
                 else {
                     sustain.remove(pedal)
-                    for key in Array(pressed.keys) where key.source == source && key.channel == channel && pressed[key]?.released == true { release(key, at: time) }
+                    for key in Array(pressed.keys) where key.source == source && key.channel == channel && pressed[key]?.released == true { release(key, at: time, position: position) }
                 }
             } else if number == 120 || number == 123 {
-                for key in Array(pressed.keys) where key.source == source && key.channel == channel { release(key, at: time) }
+                for key in Array(pressed.keys) where key.source == source && key.channel == channel { release(key, at: time, position: position) }
                 sustain.remove(pedal)
             }
         }
     }
+    /// Re-articulate keys spanning a wrap, preserving source, velocity, channel and pedal state.
+    public func continueHeldNotes(into next: inout MIDIRecordingTake) {
+        next.sustain = sustain
+        for (key, press) in pressed {
+            let note = MIDINote(start: 0, length: 1.0 / 960, pitch: press.note.pitch,
+                                velocity: press.note.velocity, channel: press.note.channel)
+            next.pressed[key] = Press(note: note, startPosition: next.startTime, released: press.released)
+            next.previewHistory.noteOn(note.pitch, velocity: note.velocity, at: next.startTime)
+        }
+    }
     public mutating func finish(at position: Double) -> AudioClip? {
         let end = max(startTime, position), time = beat(at: end)
-        for key in Array(pressed.keys) { release(key, at: time) }
+        for key in Array(pressed.keys) { release(key, at: time, position: position) }
         sustain.removeAll()
         guard end > startTime || !notes.isEmpty else { return nil }
         notes.sort { $0.start == $1.start ? ($0.channel == $1.channel ? $0.pitch < $1.pitch : $0.channel < $1.channel) : $0.start < $1.start }

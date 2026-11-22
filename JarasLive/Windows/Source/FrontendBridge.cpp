@@ -90,6 +90,12 @@ var FrontendBridge::transportJSON() const {
     put(value, "songID", optionalID(state.songId)); put(value, "recording", session.audio.isRecording());
     put(value, "paused", state.paused); put(value, "loop", state.loop.enabled);
     put(value, "subPlaying", state.subPlay.playing); put(value, "subPosition", state.subPlay.position);
+    if (state.queuedRegionId) put(value, "subCursorPosition", session.subCursorPosition(state));
+    if (auto range=session.selectedTimeRange()) {
+        auto bounds=object();
+        put(bounds,"start",range->first); put(bounds,"end",range->second);
+        put(value,"selectedTimeRange",bounds);
+    }
     put(value, "metronome", session.audio.metronomeEnabled.load());
     return value;
 }
@@ -585,6 +591,11 @@ void FrontendBridge::receive(const String &json) {
             if(kind=="subPlay"&&(!auth.allowed()||auth.pendingRevocation))throw std::runtime_error(utf8(localized("Sign in to play.","Faça login para reproduzir.")));
             const double value=kind=="editSeek"?std::max(0.,finiteNumber(payload,"value")):0.;
             session.command(found->second,utf8(str(payload,"target")),value);
+        } else if(action=="selectTimeRange") {
+            requireEditable();
+            if(!session.song() || utf8(str(payload,"songID"))!=session.song()->id ||
+               utf8(str(payload,"projectID"))!=session.project().id) throw std::runtime_error("The timeline changed.");
+            session.selectTimeRange(finiteNumber(payload,"start"),finiteNumber(payload,"end"));
         } else if(action=="tempo") {requireEditable();session.setTempo(finiteNumber(payload,"value"));}
         else if(action=="metronome") {
             requireEditable();if(!get(payload,"enabled").isBool())throw std::invalid_argument("Metronome state is required.");

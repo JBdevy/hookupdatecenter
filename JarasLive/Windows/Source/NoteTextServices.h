@@ -162,18 +162,33 @@ class NoteTextServices final : public ITextHost {
     void renderFrame(HDC dc, const RECT &bounds) {
         updateGlyphs();
         const RECTL textBounds{bounds.left, bounds.top, bounds.right, bounds.bottom};
-        if ((target || createTarget()) && SUCCEEDED(target->BindDC(dc, &bounds))) {
-            target->BeginDraw();
-            target->Clear(D2D1::ColorF(GetRValue(background) / 255.0f, GetGValue(background) / 255.0f, GetBValue(background) / 255.0f));
-            const auto drawn = services->TxDrawD2D(target.Get(), &textBounds, nullptr, TXTVIEW_ACTIVE);
-            if (drawn == S_OK) { drawEmoji(bounds); drawKeycaps(bounds); }
-            const auto flushed = target->EndDraw();
-            if (drawn == S_OK && SUCCEEDED(flushed)) return;
-            keycapBitmaps = {};
-            target.Reset();
-        }
+        // RichEdit's GDI layout knows the registered Inter font and supplies
+        // the caret coordinates. Compose color emoji over those same pixels.
+        SetDCBrushColor(dc, background);
+        FillRect(dc, &bounds, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
         services->TxDraw(DVASPECT_CONTENT, 0, nullptr, nullptr, dc, nullptr,
             const_cast<RECTL *>(&textBounds), nullptr, nullptr, nullptr, 0, TXTVIEW_ACTIVE);
+        if (emoji.empty() && keycaps.empty()) return;
+        if ((!target && !createTarget()) || FAILED(target->BindDC(dc, &bounds))) return;
+
+        GdiFlush();
+        const auto size = D2D1::SizeU(UINT32(bounds.right), UINT32(bounds.bottom));
+        if (!textFrame) {
+            const auto properties = D2D1::BitmapProperties(target->GetPixelFormat(), 96, 96);
+            if (FAILED(target->CreateBitmap(size, properties, textFrame.GetAddressOf()))) return;
+        }
+        if (FAILED(textFrame->CopyFromMemory(nullptr, surfacePixels, size.width * 4))) return;
+        target->BeginDraw();
+        target->DrawBitmap(textFrame.Get());
+        drawEmoji(bounds);
+        drawKeycaps(bounds);
+        if (FAILED(target->EndDraw())) {
+            textFrame.Reset();
+            keycapBitmaps = {};
+            target.Reset();
+            frameDirty = true;
+            InvalidateRect(window, nullptr, FALSE);
+        }
     }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
@@ -276,9 +291,13 @@ class NoteTextServices final : public ITextHost {
     HDC surfaceDC = nullptr;
     HBITMAP surfaceBitmap = nullptr;
     HGDIOBJ originalBitmap = nullptr;
+    void *surfacePixels = nullptr;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap> textFrame;
     SIZE surfaceSize{};
     bool frameDirty = true;
     void releaseSurface() {
+        textFrame.Reset();
+        surfacePixels = nullptr;
         if (surfaceDC && originalBitmap) SelectObject(surfaceDC, originalBitmap);
         if (surfaceBitmap) DeleteObject(surfaceBitmap);
         if (surfaceDC) DeleteDC(surfaceDC);
@@ -293,8 +312,7 @@ class NoteTextServices final : public ITextHost {
         info.bmiHeader.biWidth = width; info.bmiHeader.biHeight = -height;
         info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32;
         info.bmiHeader.biCompression = BI_RGB;
-        void *pixels = nullptr;
-        surfaceBitmap = CreateDIBSection(reference, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+        surfaceBitmap = CreateDIBSection(reference, &info, DIB_RGB_COLORS, &surfacePixels, nullptr, 0);
         if (!surfaceDC || !surfaceBitmap) { releaseSurface(); return false; }
         originalBitmap = SelectObject(surfaceDC, surfaceBitmap);
         surfaceSize = {width, height};

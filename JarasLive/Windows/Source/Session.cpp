@@ -115,7 +115,6 @@ void Session::newProject(String name) {
     cancelBPMDetection();
     core.execute({jaras::CommandKind::stopAll});
     auto p = makeEmptyProject(name);
-    subCursorPreviewUntil = 0;
     focusedRegion.reset(); ++setlistFocusRevision;
     core.loadProject(std::move(p));
     original = var();
@@ -197,7 +196,6 @@ void Session::loadPrepared(const File &file, var raw, jaras::Project p) {
     auto previousFile = document, previousMedia = mediaDirectory;
     try {
         core.execute({jaras::CommandKind::stopAll});
-        subCursorPreviewUntil = 0;
     focusedRegion.reset(); ++setlistFocusRevision;
         core.loadProject(p);
         if (p.savedCursor && std::any_of(p.songs.begin(), p.songs.end(), [&](const auto &song) {
@@ -521,7 +519,7 @@ void Session::loadAsync(const File &file, std::function<void(String, double)> pr
                     observedMedia.swap(prepared->observedMedia);
                     undoHistory.swap(prepared->undoHistory);redoHistory.swap(prepared->redoHistory);
                     preparedSong.swap(prepared->song);
-                    subCursorPreviewUntil=0;focusedRegion.reset();++setlistFocusRevision;
+                    focusedRegion.reset();++setlistFocusRevision;
                     presentationQueues.reset();fadeoutRequested=false;fadeoutTracks.clear();
                     updateRecordArms();publishTransport();
                     dirty=false;message=prepared->warning;importProgress=1;
@@ -1059,6 +1057,10 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     if (fadeoutRequested && kind == jaras::CommandKind::subPlay) {
         warnTransportFadeout(String::fromUTF8("Subplay indisponível enquanto o Fadeout está acontecendo.")); return;
     }
+    if (countingIn && (kind == jaras::CommandKind::stop || kind == jaras::CommandKind::stopAll ||
+        kind == jaras::CommandKind::pause || kind == jaras::CommandKind::play ||
+        kind == jaras::CommandKind::editSeek || kind == jaras::CommandKind::seek))
+        cancelRecordingCountIn();
     if (kind == jaras::CommandKind::volume && trackFaderLocked(target)) return;
     const bool stopsFinalizingPlayback = recordingFinalizing &&
         (kind == jaras::CommandKind::stop || kind == jaras::CommandKind::stopAll || kind == jaras::CommandKind::pause);
@@ -1117,8 +1119,6 @@ void Session::command(jaras::CommandKind kind, const ID &target, double value) {
     if (start && (transport().playing || transport().subPlay.playing) &&
         !fadeoutRequested && audio.trackFadeoutComplete())
         audio.cancelTrackFadeout();
-    if (kind == jaras::CommandKind::subSeek) subCursorPreviewUntil = Time::getMillisecondCounterHiRes() + 2000;
-    if (old != transport().songId) subCursorPreviewUntil = 0;
     if (old != transport().songId)
         prepare();
     if (old != transport().songId) { focusedRegion.reset(); ++setlistFocusRevision; }
@@ -1296,6 +1296,7 @@ void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set
 }
 void Session::toggleRecording(bool stopPlayback) {
     if (jaras::projectSync::readOnly()) return;
+    if (countingIn) { cancelRecordingCountIn(); notify(); return; }
     if (!audio.isRecording() && (recordingFinalizing || graphCancellation)) {
         recordingResume = recordingResume == RecordingResume::record ? RecordingResume::none : RecordingResume::record;
         return;
@@ -1311,12 +1312,14 @@ void Session::toggleRecording(bool stopPlayback) {
         const auto projectID = project().id, songID = recordingSong;
         const auto start = recordingStart;
         const auto previews = recordingItems;
+        const auto loop = recordingLoop;
+        const double captureRate = audio.sampleRate();
         const std::weak_ptr<int> lifetime = alive;
         busy = true;
         recordingFinalizing = true;
         message = String::fromUTF8("Finalizando gravação…");
         notify();
-        worker.addJob([this, lifetime, directory, projectID, songID, start, previews,
+        worker.addJob([this, lifetime, directory, projectID, songID, start, previews, loop, captureRate,
                        capture = std::move(capture)]() mutable {
             std::vector<std::pair<ID, jaras::AudioClip>> clips;
             StringArray failures;
@@ -1364,10 +1367,42 @@ void Session::toggleRecording(bool stopPlayback) {
                         failures.add(String::fromUTF8(failure.what()));
                     }
                 }
-                clips.emplace_back(take.track, std::move(clip));
+                if (!loop) {
+                    clips.emplace_back(take.track, std::move(clip));
+                    continue;
+                }
+                const double period = loop->second - loop->first;
+                if (clip.startTime >= loop->second)
+                    clip.startTime = loop->first + std::fmod(clip.startTime-loop->first, period);
+                const auto midi = std::move(clip.midi);
+                clip.midi.reset();
+                const auto original = clip;
+                const double framesPerSecond = captureRate;
+                const double tolerance = .5 / framesPerSecond;
+                for (double offset = 0; offset + tolerance < original.duration;) {
+                    auto pass = original;
+                    pass.startTime = offset == 0 ? original.startTime : loop->first;
+                    pass.duration = std::min(original.duration-offset, loop->second-pass.startTime);
+                    if (offset > 0) pass.id = uuid();
+                    if (midi) {
+                        pass.midi = jaras::MIDIItem{};
+                        pass.midi->sourceBPM = midi->sourceBPM;
+                        const double begin = offset * midi->sourceBPM / 60;
+                        const double end = (offset+pass.duration) * midi->sourceBPM / 60;
+                        for (auto note : midi->notes) {
+                            const auto a = std::max(begin,note.start), b = std::min(end,note.start+note.length);
+                            if (b <= a) continue;
+                            if (note.start < begin) note.id = uuid();
+                            note.start = a-begin; note.length = b-a;
+                            pass.midi->notes.push_back(std::move(note));
+                        }
+                    } else if (pass.audioFile) pass.sourceOffset += offset;
+                    clips.emplace_back(take.track,std::move(pass));
+                    offset += clips.back().second.duration;
+                }
             }
             MessageManager::callAsync([this, lifetime, projectID, songID, drops,
-                                       clips = std::move(clips), failures] {
+                                       clips = std::move(clips), failures, loop] {
                 if (lifetime.expired()) return;
                 audio.recordingCompleted(drops);
                 busy = false;
@@ -1378,7 +1413,13 @@ void Session::toggleRecording(bool stopPlayback) {
                         for (auto &song : project.songs) if (song.id == songID)
                             for (auto &track : song.tracks)
                                 for (const auto &[id, clip] : clips) if (track.id == id) {
-                                    track.clips.push_back(clip);
+                                    auto stored = clip;
+                                    if (loop) {
+                                        auto refs = ItemLanes::references(track);
+                                        refs.push_back(&stored);
+                                        stored.recordingLane = ItemLanes(std::move(refs)).lane(stored.id);
+                                    }
+                                    track.clips.push_back(std::move(stored));
                                     song.duration = std::max(song.duration, clip.startTime + clip.duration);
                                 }
                     });
@@ -1403,12 +1444,40 @@ void Session::toggleRecording(bool stopPlayback) {
         throw std::runtime_error("Valide sua licença para gravar.");
     if (!song())
         return;
-    if (transport().loop.enabled)
-        throw std::runtime_error("Desative o loop antes de gravar.");
+    recordingLoop.reset();
+    if (transport().loop.enabled) {
+        recordingLoop = selectedTimeRange();
+        if (!recordingLoop || recordingLoop->second <= recordingLoop->first || transport().multiLoop)
+            throw std::runtime_error("Selecione uma área da timeline para gravar em loop.");
+    }
     if (transport().subPlay.playing)
         throw std::runtime_error("Pare o Sub Play antes de gravar.");
     syncClock();
     recordingStart = transport().playing ? transport().position : transport().editPosition;
+    if (recordingLoop && recordingStart >= recordingLoop->second) {
+        recordingStart = recordingLoop->first;
+        command(jaras::CommandKind::seek, {}, recordingStart);
+        if (!transport().playing) command(jaras::CommandKind::editSeek, {}, recordingStart);
+    }
+    if (!transport().playing && recordingStart <= .000001 && audio.hasLiveDevice()) {
+        const auto meter = ClickProgram::meterAt(*song(),recordingStart);
+        if (!audio.startRecordingCountIn(meter.bpm,meter.beats,meter.unit))
+            throw std::runtime_error("Unable to play the recording count-in.");
+        countingIn = true;
+        busy = true;
+        startTimerHz(60);
+        notify();
+        return;
+    }
+    startRecording();
+}
+void Session::cancelRecordingCountIn() {
+    if (!countingIn) return;
+    audio.stopRecordingCountIn();
+    countingIn = false;
+    busy = false;
+}
+void Session::startRecording() {
     recordingSong = song()->id;
     updateRecordingTargets(true);
     try {
@@ -1512,11 +1581,48 @@ void Session::updateRecordingTargets(bool starting) {
     if (starting) { audio.startTrackRecording(targets, bits, song()->bpm); recordingItems.clear(); }
     else offset = audio.changeRecordingTargets(targets, active, bits);
     for (auto &item : previews) {
+        item.captureOffset = offset;
         item.clip.startTime = recordingStart + offset;
+        if (recordingLoop) {
+            const auto [lo,hi] = *recordingLoop;
+            if (item.clip.startTime >= hi) item.clip.startTime = lo + std::fmod(item.clip.startTime-lo,hi-lo);
+            item.passLimit = hi-item.clip.startTime;
+        }
         recordingItems.push_back(std::move(item));
     }
     recordingActiveTracks = std::move(active);
     ++revision;
+}
+std::optional<Session::RecordingPianoFrame> Session::recordingPianoFrame() const {
+    if (!audio.isRecording()) return {};
+    const double elapsed = audio.recordedSamples() / audio.sampleRate();
+    if (!recordingLoop || elapsed < recordingLoop->second - recordingStart)
+        return RecordingPianoFrame{recordingStart + elapsed, elapsed, 0};
+    const auto [start,end] = *recordingLoop;
+    const double withinPass = std::fmod(elapsed - (end - recordingStart), end - start);
+    return RecordingPianoFrame{start + withinPass, elapsed, elapsed - withinPass};
+}
+bool Session::extendRecordingLoops() {
+    if (!recordingLoop || !audio.isRecording()) return false;
+    bool changed = false;
+    std::set<RecordingPreview *> handled;
+    // The last item for a physical take is the only one that can grow.
+    for (size_t i = recordingItems.size(); i-- > 0;) {
+        auto last = recordingItems[i];
+        if (!handled.insert(last.preview.get()).second) continue;
+        const auto seconds = last.preview->frames.load(std::memory_order_acquire) / last.preview->rate;
+        while (seconds > last.clip.sourceOffset + last.passLimit + .5 / last.preview->rate) {
+            last.clip.sourceOffset += last.passLimit;
+            last.clip.id = uuid();
+            last.clip.startTime = recordingLoop->first;
+            last.clip.duration = 1 / last.preview->rate;
+            last.passLimit = recordingLoop->second-recordingLoop->first;
+            last.clip.recordingLane = last.clip.recordingLane.value_or(0)+1;
+            recordingItems.push_back(last);
+            changed = true;
+        }
+    }
+    return changed;
 }
 void Session::cancelBPMDetection() {
     if (!bpmCancellation) return;
@@ -2942,6 +3048,11 @@ void Session::reorderSong(ID id, int direction) {
 }
 void Session::timerCallback() {
     try {
+        if (countingIn && !audio.recordingCountInPlaying()) {
+            cancelRecordingCountIn();
+            if (audio.outputAvailabilityError().isEmpty() && song()) startRecording();
+            else notify();
+        }
         if ((transport().playing || transport().subPlay.playing) && audio.outputAvailabilityError().isNotEmpty()) {
             core.execute({jaras::CommandKind::stopAll}); publishTransport(); cancelTransportFadeout();
             message="Audio device disconnected. Playback stopped.";
@@ -2956,7 +3067,7 @@ void Session::timerCallback() {
         audio.setLoopMixer(transport().multiLoop);
         // Auto/region endings can stop playback without going through command().
         // Return those sessions to the idle rate, including hidden project tabs.
-        const int hz = transport().playing || transport().subPlay.playing ? 60 : 8;
+        const int hz = countingIn || transport().playing || transport().subPlay.playing ? 60 : 8;
         if (getTimerInterval() != 1000 / hz) startTimerHz(hz);
         updateTransportFadeout();
         if (playbackUpdate)

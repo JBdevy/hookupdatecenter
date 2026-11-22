@@ -20,15 +20,17 @@ class TransportButtons final {
   public:
     struct State {
         RECT rect{};
+        const unsigned* iconPixels = nullptr;
+        unsigned iconWidth = 0;
         float scale = 1, dimming = 0, fontSize = 9;
-        bool active = false, enabled = true, visible = true, blocked = false, savePulse = false, recordPulse = false;
+        bool active = false, enabled = true, visible = true, blocked = false, savePulse = false;
         unsigned background = 0xff252525, foreground = 0xffffffff, activeBackground = 0xff6cbd4b, surface = 0xff1d1d1d;
         unsigned accent = 0, surfaceBottom = 0, iconForeground = 0;
         // `tooltip` is retained as the native accessibility/window description;
         // CatLive does not create hover tooltip windows.
         std::wstring text, icon, tooltip;
         bool operator==(const State &b) const {
-            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && savePulse==b.savePulse && recordPulse==b.recordPulse && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && surface==b.surface && surfaceBottom==b.surfaceBottom && iconForeground==b.iconForeground && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
+            return EqualRect(&rect,&b.rect) && scale==b.scale && dimming==b.dimming && fontSize==b.fontSize && savePulse==b.savePulse && iconPixels==b.iconPixels && blocked==b.blocked && active==b.active && enabled==b.enabled && visible==b.visible && background==b.background && foreground==b.foreground && activeBackground==b.activeBackground && surface==b.surface && surfaceBottom==b.surfaceBottom && iconForeground==b.iconForeground && accent==b.accent && text==b.text && icon==b.icon && tooltip==b.tooltip;
         }
     };
     using Click = std::function<void(bool)>;
@@ -82,6 +84,7 @@ class TransportButtons final {
         // changing our cached State. Repair the actual input rectangle too.
         const bool resize=!hasBounds || !EqualRect(&actual,&state.rect);
         if(resize || !(button.state==state)) {
+            if (button.state.iconPixels != state.iconPixels) button.artwork.Reset();
             button.state=state;
             if(resize) {
                 SetWindowPos(button.window,HWND_TOP,state.rect.left,state.rect.top,state.rect.right-state.rect.left,state.rect.bottom-state.rect.top,SWP_NOACTIVATE);
@@ -106,21 +109,15 @@ class TransportButtons final {
         ~Button(){destroy();}
         void destroy(){pulse.reset();target.Reset();if(window&&IsWindow(window)){KillTimer(window,1);KillTimer(window,2);DestroyWindow(window);}window=nullptr;}
         TransportButtons &owner; HWND window=nullptr; State state; Click click;
+        Ptr<ID2D1Bitmap> artwork;
         bool pressed=false,hover=false; Ptr<ID2D1HwndRenderTarget> target;
         std::unique_ptr<SavePulseComposition> pulse;
-        bool pulseUnavailable=false, fallbackPulse=false, recordingPulse=false; double pulseStart=0, recordPulseStart=0;
+        bool pulseUnavailable=false, fallbackPulse=false; double pulseStart=0;
     };
     static double clock() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
     static void updatePulse(Button &button) {
         if (!button.window) return;
         const auto &s = button.state;
-        const bool recording = s.recordPulse && s.visible;
-        if (recording != button.recordingPulse) {
-            button.recordingPulse = recording;
-            if (recording) { button.recordPulseStart = clock(); SetTimer(button.window, 2, 16, nullptr); }
-            else KillTimer(button.window, 2);
-            InvalidateRect(button.window, nullptr, FALSE);
-        }
         const bool active = s.savePulse && s.visible;
         if (active && !button.pulse && !button.pulseUnavailable) {
             try { button.pulse = std::make_unique<SavePulseComposition>(button.window); }
@@ -153,7 +150,7 @@ class TransportButtons final {
         switch(m){
         case WM_ERASEBKGND:return 1;
         case WM_SIZE:b->target.Reset();InvalidateRect(h,nullptr,FALSE);return 0;
-        case WM_TIMER:if((w==1 && b->fallbackPulse) || (w==2 && b->recordingPulse))InvalidateRect(h,nullptr,FALSE);return 0;
+        case WM_TIMER:if((w==1 && b->fallbackPulse))InvalidateRect(h,nullptr,FALSE);return 0;
         case WM_PAINT:{PAINTSTRUCT ps{};BeginPaint(h,&ps);b->owner.paint(*b);EndPaint(h,&ps);return 0;}
         case WM_MOUSEMOVE:if(!b->hover){b->hover=true;TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,h,0};TrackMouseEvent(&t);InvalidateRect(h,nullptr,FALSE);}return 0;
         case WM_MOUSELEAVE:b->hover=false;InvalidateRect(h,nullptr,FALSE);return 0;
@@ -171,6 +168,7 @@ class TransportButtons final {
         RECT r{};GetClientRect(b.window,&r);
         const auto &s=b.state;const float scale=std::max(.1f,s.scale);
         if(!b.target) {
+            b.artwork.Reset();
             auto properties=D2D1::RenderTargetProperties();properties.dpiX=properties.dpiY=96.f*scale;
             if(FAILED(factory->CreateHwndRenderTarget(properties,D2D1::HwndRenderTargetProperties(b.window,D2D1::SizeU(r.right,r.bottom)),&b.target)))return;
         }
@@ -188,13 +186,7 @@ class TransportButtons final {
         }
         auto bg=colour(s.active?s.activeBackground:s.background);
         if(s.accent){bg=colour(s.accent);bg.a=s.active?1.f:b.pressed?.7f:.45f;}
-        if(b.recordingPulse) {
-            const float red = float(.5 + .5 * std::cos((clock()-b.recordPulseStart)*3.141592653589793/.6));
-            const auto grey = colour(0xff454545), armed = colour(s.activeBackground);
-            bg = D2D1::ColorF(grey.r+(armed.r-grey.r)*red, grey.g+(armed.g-grey.g)*red,
-                             grey.b+(armed.b-grey.b)*red, 1.f);
-        }
-        if (!s.enabled && !s.accent && !(s.active && s.icon == L"pause")) bg.a *= .35f;
+        if (!s.enabled && !s.accent && s.icon != L"pause") bg.a *= .35f;
         Ptr<ID2D1SolidColorBrush> brush;t->CreateSolidColorBrush(bg,&brush);if(!brush){t->EndDraw();return;}
         const auto bounds=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,width-.5f,height-.5f),6,6);
         t->FillRoundedRectangle(bounds,brush.Get());
@@ -239,7 +231,13 @@ class TransportButtons final {
             if (!s.enabled) iconInk.a *= .35f;
             brush->SetColor(iconInk);
         }
-        if(s.icon==L"play"){
+        if(s.iconPixels && s.iconWidth) {
+            if (!b.artwork) {
+                const auto properties = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+                t->CreateBitmap(D2D1::SizeU(s.iconWidth,s.iconWidth),s.iconPixels,s.iconWidth*4,properties,&b.artwork);
+            }
+            if (b.artwork) t->DrawBitmap(b.artwork.Get(),D2D1::RectF(-1,-1,13,13),s.enabled || s.icon == L"pause" ? 1.f : .35f);
+        } else if(s.icon==L"play"){
             Ptr<ID2D1PathGeometry> path;factory->CreatePathGeometry(&path);Ptr<ID2D1GeometrySink> sink;if(path&&SUCCEEDED(path->Open(&sink))){sink->BeginFigure(D2D1::Point2F(2,1),D2D1_FIGURE_BEGIN_FILLED);sink->AddLine(D2D1::Point2F(11,6));sink->AddLine(D2D1::Point2F(2,11));sink->EndFigure(D2D1_FIGURE_END_CLOSED);sink->Close();t->FillGeometry(path.Get(),brush.Get());}
         }else if(s.icon==L"pause"){rect(2,1,4.5f,11);rect(7.5f,1,10,11);}
         else if(s.icon==L"stopall")rect(1.5f,1.5f,10.5f,10.5f);

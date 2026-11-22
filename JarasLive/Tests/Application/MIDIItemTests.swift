@@ -245,6 +245,37 @@ extension MIDIItemTests {
         XCTAssertEqual(playback[1].end, 11.5, accuracy: 0.000001)
         XCTAssertEqual(playback[2].end, 12, accuracy: 0.000001)
     }
+    func testLoopRecordingPreservesPassesAndSustainedKeys() throws {
+        let cycle = try XCTUnwrap(RecordingCycle(4...6))
+        XCTAssertNil(RecordingCycle(4...4))
+        XCTAssertEqual(cycle.pass(start: 5, elapsed: 1).position, 4)
+        XCTAssertEqual(cycle.pass(start: 5, elapsed: 3).index, 2)
+        let captured = 5.125
+        let last = cycle.pass(start: 5, elapsed: captured)
+        XCTAssertEqual(last.index, 3)
+        XCTAssertEqual(last.position, 4.125)
+        let segments = (0...last.index).map { cycle.segment(start: 5, index: $0) }
+        XCTAssertEqual(segments.map(\.offset), [0,1,3,5])
+        XCTAssertEqual(segments.map { min($0.limit,captured-$0.offset) }, [1,2,2,0.125])
+
+        let song = Project.empty(name: "Loop recording").songs[0], track = UUID()
+        var first = MIDIRecordingTake(track: track, song: song, startTime: 5)
+        first.receive(source: 1, status: 0x92, number: 60, value: 87, position: 5.5)
+        first.receive(source: 1, status: 0xb2, number: 64, value: 127, position: 5.7)
+        first.receive(source: 1, status: 0x82, number: 60, value: 0, position: 5.8)
+        var second = MIDIRecordingTake(track: track, song: song, startTime: 4)
+        first.continueHeldNotes(into: &second)
+        let a = try XCTUnwrap(first.finish(at: 6))
+        XCTAssertEqual(second.previewHeld.first?.start, 4)
+        second.receive(source: 1, status: 0xb2, number: 64, value: 0, position: 4.25)
+        let b = try XCTUnwrap(second.finish(at: 4.5))
+        XCTAssertNotEqual(a.id, b.id)
+        XCTAssertNotEqual(a.midi?.notes.first?.id, b.midi?.notes.first?.id)
+        XCTAssertEqual(b.midi?.notes.first?.velocity, 87)
+        XCTAssertEqual(b.midi?.notes.first?.channel, 3)
+        XCTAssertEqual(song.midiPlaybackNotes(in: b).first?.end ?? 0, 4.25, accuracy: 0.000001)
+    }
+
     func testRecordingSustainRetriggerAllNotesOffAndEmptyTake() throws {
         let song = Project.empty(name: "Capture").songs[0]
         var empty = MIDIRecordingTake(track: UUID(), song: song, startTime: 0)

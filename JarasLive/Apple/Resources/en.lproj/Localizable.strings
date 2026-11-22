@@ -2695,3 +2695,23 @@
 "Channel %lld" = "Channel %lld";
 "Bypass effect" = "Bypass effect";
 "Enable effect" = "Enable effect";
+
+"Track - I show/hide" = "Track - I show/hide";
+
+"Library show/hide" = "Library show/hide";
+
+"Input Monitor · Selected track" = "Input Monitor · Selected track";
+
+"By All Fx · Selected track" = "By All Fx · Selected track";
+
+"By Fx Session" = "By Fx Session";
+
+"Tap or drag to route. Scroll with two fingers. Use the diagonal button or hold Shift." = "Tap or drag to route. Scroll with two fingers. Use the diagonal button or hold Shift.";
+
+"Convert To Audio Mono" = "Convert To Audio Mono";
+
+"Convert To Audio Stereo" = "Convert To Audio Stereo";
+
+"Import SF2…" = "Import SF2…";
+
+"Could not import SF2:" = "Could not import SF2:";

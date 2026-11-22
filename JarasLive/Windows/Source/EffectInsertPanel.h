@@ -31,7 +31,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
             if (external()) { chooseExternal(); return; }
             refresh(); updateLayout();
         };
-        const StringArray names{String::fromUTF8("Piano de cauda"),
+        const StringArray names{"User", String::fromUTF8("Piano de cauda"),
                                 "Piano vertical",
                                 String::fromUTF8("Pianos elétricos"),
                                 "Teclado",
@@ -139,7 +139,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
     std::unique_ptr<BrowserWindow> browser;
     bool insertingExternal = false;
     std::vector<var> items;
-    int category = 0;
+    int category = 1;
     bool allowsInstruments=true;
     String selected;
     std::shared_ptr<instrumentAssets::Download> job;
@@ -176,7 +176,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
         browser->setVisible(true); browser->toFront(true);
     }
     static String categoryID(int index) {
-        const StringArray keys{"pianos",  "upright",  "electric", "keyboard", "organ",
+        const StringArray keys{"user", "pianos",  "upright",  "electric", "keyboard", "organ",
                                "strings", "guitar",   "bass",     "synth",    "synthPad",
                                "lead",    "acordeon", "brass",    "mallets",  "drum"};
         return keys[index];
@@ -184,7 +184,7 @@ class EffectInsertPanel final : public Component, private ListBoxModel, private 
     void refresh() {
         items.clear();
         if(external()) {list.updateContent();updateConfirm();return;}
-        for (auto item : instrumentAssets::catalog())
+        for (auto item : instrumentAssets::availableCatalog(projectDirectory))
             if (str(item, "category") == categoryID(category))
                 items.push_back(item);
         for (int i = 0; i < categories.size(); ++i)

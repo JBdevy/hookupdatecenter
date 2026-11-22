@@ -335,10 +335,15 @@ public enum ClickTempoDetector {
         song.timeSettings = timing
         var pulses: [Transient] = []
         var hasClickAudio = false
-        for track in song.tracks where track.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("click") == .orderedSame || track.role == .click {
+        var hasClickAtRegionStart = false
+        for track in song.tracks {
+            let analyzesAudio = track.role == .click ||
+                track.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("click") == .orderedSame
+            guard analyzesAudio || track.kind == .click else { continue }
             for clip in track.clips where clip.startTime < region.endTime && clip.startTime + clip.duration > region.startTime {
                 if region.parentRegionID != nil && clip.startTime < region.startTime { continue }
-                guard let file = clip.audioFile ?? track.audioFile else { continue }
+                if clip.startTime <= region.startTime { hasClickAtRegionStart = true }
+                guard analyzesAudio, let file = clip.audioFile ?? track.audioFile else { continue }
                 hasClickAudio = true
                 for pulse in try transientsFor(file) {
                     let position = clip.startTime + (pulse.position - clip.sourceOffset) / clip.audioRate
@@ -365,10 +370,9 @@ public enum ClickTempoDetector {
                            tempoBPM: bpm, tempoBeats: beats,
                            tempoUnit: unit, tempoTimebase: .global, tempoReferenceBPM: bpm)
         }
-        // The first audible click can follow a silent/count-in-free intro.
-        // Protect that intro from the preceding song's tempo without moving
-        // the measured first beat (which anchors both grid and metronome).
-        if var initial = markers.first, initial.position > region.startTime {
+        // A click item can include silence before its first measured beat.
+        // Leave an empty lead-in before the item at the existing tempo.
+        if hasClickAtRegionStart, var initial = markers.first, initial.position > region.startTime {
             initial.id = UUID()
             initial.position = region.startTime
             markers.insert(initial, at: 0)

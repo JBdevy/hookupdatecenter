@@ -31,11 +31,6 @@ final class NativeEffectsChain {
     }
     private func configureDrums(_ next: NativeFXSettings, rate: Double) {
         guard let engine, let format else { return }
-        for key in Array(drummerVoices.keys) where !next.inserted.contains(key) {
-            guard let voice = drummerVoices.removeValue(forKey: key) else { continue }
-            engine.detach(voice.source.node)
-            engine.detach(voice.mixer)
-        }
         for key in next.effectKeys {
             guard let kind = DrummerPadKind(rawValue: next.kind(of: key)) else { continue }
             let voice: DrummerPadVoice
@@ -193,6 +188,7 @@ final class NativeEffectsChain {
     }
     private var itemInputMix: AVAudioMixerNode?
     private var trackEntryMix: AVAudioMixerNode?
+    private var silentClockMix: AVAudioMixerNode?
     private lazy var outputMix = AVAudioMixerNode()
     private var outputDestination: AVAudioNode?
     private var instanceNodes: [String: AVAudioNode] = [:]
@@ -502,20 +498,34 @@ final class NativeEffectsChain {
             // the source fanout during a live edit (AVAudioEngine resets it).
             let entry = AVAudioMixerNode(); engine.attach(entry)
             trackEntryMix = entry; self.input = entry
-            let anchorBus = destination.nextAvailableInputBus == 0 ? 1 : destination.nextAvailableInputBus
-            engine.connect(source, to: [AVAudioConnectionPoint(node: entry, bus: 0),
-                AVAudioConnectionPoint(node: destination, bus: anchorBus)], fromBus: 0, format: format)
-            source.destination(forMixer: destination, bus: anchorBus)!.volume = 0
+            connectClockedInput(source, to: entry, clock: destination, bus: max(1, destination.nextAvailableInputBus), engine: engine, format: format)
         }
         apply(NativeFXSettings())
         if !reorderable, let anchor = self.input as? AVAudioMixerNode, let first = connected.first {
             // Keep an inaudible connection alive through every graph edit.
             // Its per-destination volume leaves the FX branch at unity and
             // avoids the doubled signal of a temporary audible fanout.
-            engine.connect(anchor, to: [AVAudioConnectionPoint(node: first, bus: 0),
-                AVAudioConnectionPoint(node: outputMix, bus: 1)], fromBus: 0, format: format)
-            anchor.destination(forMixer: outputMix, bus: 1)!.volume = 0
+            connectClockedInput(anchor, to: first, clock: outputMix, bus: 1, engine: engine, format: format)
         }
+    }
+    private func connectClockedInput(_ source: AVAudioMixerNode, to first: AVAudioNode, clock: AVAudioMixerNode,
+                                     bus: AVAudioNodeBus, engine: AVAudioEngine, format: AVAudioFormat) {
+        let fx = AVAudioConnectionPoint(node: first, bus: 0)
+        #if os(macOS)
+        engine.connect(source, to: [fx, AVAudioConnectionPoint(node: clock, bus: bus)], fromBus: 0, format: format)
+        if let destination = source.destination(forMixer: clock, bus: bus) {
+            destination.volume = 0
+            return
+        }
+        #endif
+        // iPadOS 16 can return no mixing destination while attaching a live
+        // track. Mute the clock branch before connecting it to the source.
+        let silent = AVAudioMixerNode()
+        silentClockMix = silent
+        engine.attach(silent)
+        silent.outputVolume = 0
+        engine.connect(silent, to: clock, fromBus: 0, toBus: bus, format: format)
+        engine.connect(source, to: [fx, AVAudioConnectionPoint(node: silent, bus: 0)], fromBus: 0, format: format)
     }
     private func connect(_ next: NativeFXSettings) {
         guard let engine, let input, let format else { return }
@@ -537,7 +547,7 @@ final class NativeEffectsChain {
                 let value = next.settings(for: key)
                 guard next.effectKeys.contains(key), value.pitchEnabled == true, (value.semitones != 0 || value.formantSemitones != 0) else { return nil }
             }
-            if let voice = drummerVoices[key] { return voice.mixer }
+            if let voice = drummerVoices[key] { return next.inserted.contains(key) ? voice.mixer : nil }
             if let node = creativeNodes[key] { return node }
             if let alternate = channelDelays[key], next.settings(for: key).channels(for: "Delay") != 3 { return alternate }
             if let node = instanceNodes[key] { return node }
@@ -584,7 +594,9 @@ final class NativeEffectsChain {
         if connected.count > sharedPrefix {
             engine.connect(bridge, to: output, fromBus: 0, toBus: 0, format: format)
         }
-        for node in connected.dropFirst(sharedPrefix) { engine.disconnectNodeOutput(node) }
+        for node in connected.dropFirst(sharedPrefix) where node.engine === engine {
+            engine.disconnectNodeOutput(node)
+        }
         var destination: AVAudioNode = output
         for node in ordered.dropFirst(sharedPrefix).reversed() {
             engine.connect(node, to: destination, fromBus: 0, toBus: 0, format: format)
@@ -610,6 +622,7 @@ final class NativeEffectsChain {
         if let instrumentMix { engine.detach(instrumentMix) }
         if let itemInputMix { engine.detach(itemInputMix) }; itemInputMix = nil
         if let trackEntryMix { engine.detach(trackEntryMix) }; trackEntryMix = nil
+        if let silentClockMix { engine.detach(silentClockMix) }; silentClockMix = nil
         if outputDestination == nil { engine.detach(outputMix) }
         outputDestination = nil; connected.removeAll(); connectionsInstalled = false; self.engine = nil; input = nil
         preparedEffects = ["EQ"]
@@ -680,7 +693,14 @@ final class NativeEffectsChain {
         if next.inserted.contains("Delay") { setDelayChannels("Delay", value: next) }
         let removedCreative = Set(creativeNodes.keys).subtracting(next.effectKeys)
         let removedCreativeNodes = removedCreative.compactMap { creativeNodes.removeValue(forKey: $0) }
+        // Rewire the old chain while its mixers still belong to the engine.
+        // Disconnecting a detached node raises an Objective-C exception in AVFAudio.
         connect(next)
+        for key in Array(drummerVoices.keys) where !next.inserted.contains(key) {
+            guard let voice = drummerVoices.removeValue(forKey: key) else { continue }
+            engine?.detach(voice.source.node)
+            engine?.detach(voice.mixer)
+        }
         for node in removedCreativeNodes { engine?.detach(node) }
         if !next.inserted.contains(NativeFXSettings.stemSeparator), let node = stemSeparatorNode {
             JarasStemSeparator.stop(node); engine?.detach(node)

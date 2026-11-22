@@ -13,7 +13,7 @@ main=Path('Apple/Shared/MainView.swift').read_text()
 with root.joinpath('layout.swift').open('a') as f:
  f.write('\n'+main[main.index('enum SidebarWidthLimits {'):main.index('private struct FooterDisplayIdentity:')])
 titleStart=source.index('private struct TrackDragTitle:')
-title=source[titleStart:source.index('\n#endif',titleStart)].replace('private ', '')
+title=source[titleStart:source.index('\n#endif',titleStart)].replace('fileprivate ', '').replace('private ', '')
 stubs='''
 private enum JarasTheme { static let text = Color.white }
 extension NSFont {
@@ -30,6 +30,8 @@ final class TrackReorderState: ObservableObject {
 }
 final class TrackSelectionRouter {
  static let shared = TrackSelectionRouter()
+ weak var editingTitle: TrackDragTitleView?
+ func moveRename(from source: TrackDragTitleView, direction: Int) {}
  var pinnedTracks = Set<UUID>()
  func addTitle(_ view: TrackDragTitleView) {}
  func handle(_ event: NSEvent) {} ; func perform(track: UUID, event: NSEvent, action: () -> Void) { action() }

@@ -12,6 +12,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
     case setlistUp, setlistDown, toggleAuto, splitItems, ignoreNext
     case projectStart, projectEnd, nextRegion, previousRegion, nextTimelinePoint, previousTimelinePoint
     case toggleVideo, toggleTeleprompter, togglePreview, normalizeItems, reRenderItems, unifyAudioItems, createRegionsFromItems, createTempoMarker
+    case toggleFocus, toggleLibrary, toggleSelectedInputMonitor, toggleSelectedStripFXBypass, toggleSessionFXBypass
     case toggleTracks, toggleBarMixer, toggleSetlist, toggleMultiLoopBypass
 
     public var legacyTransportMapping: Bool { self == .play || self == .stop || self == .subPlay }
@@ -85,6 +86,11 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         case .togglePreview: return "Preview on/off"
         case .toggleVideo: return "Video window on/off"
         case .toggleTeleprompter: return "Teleprompter window on/off"
+        case .toggleFocus: return "Track - I show/hide"
+        case .toggleLibrary: return "Library show/hide"
+        case .toggleSelectedInputMonitor: return "Input Monitor · Selected track"
+        case .toggleSelectedStripFXBypass: return "By All Fx · Selected track"
+        case .toggleSessionFXBypass: return "By Fx Session"
         case .toggleTracks: return "Track Mixer show/hide"
         case .toggleBarMixer: return "Hoz-Mixer show/hide"
         case .toggleSetlist: return "Setlist show/hide"
@@ -95,7 +101,7 @@ public enum DAWAction: String, Codable, CaseIterable, Sendable {
         let command: UInt = 1 << 20, shift: UInt = 1 << 17, option: UInt = 1 << 19
         let key: UInt16, modifiers: UInt, label: String
         switch self {
-        case .togglePreview, .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .parts1, .parts2, .toggleParts, .cancelSection, .reRenderItems, .unifyAudioItems: return nil
+        case .toggleFocus, .toggleLibrary, .toggleSelectedInputMonitor, .toggleSelectedStripFXBypass, .toggleSessionFXBypass, .togglePreview, .previousProjectTab, .nextProjectTab, .transportFadeout, .selectTrack, .toggleMultiLoopBypass, .play, .stop, .subPlay, .tunerDown, .tunerUp, .partsUp, .partsDown, .parts1, .parts2, .toggleParts, .cancelSection, .reRenderItems, .unifyAudioItems: return nil
         case .saveProject: (key, modifiers, label) = (1, command, "⌘S")
         case .toggleFullscreen: (key, modifiers, label) = (103, command, "⌘F11")
         case .muteTrack: (key, modifiers, label) = (46, 0, "M")

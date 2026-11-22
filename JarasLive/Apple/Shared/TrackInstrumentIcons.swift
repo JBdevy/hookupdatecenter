@@ -336,10 +336,18 @@ struct TrackIconDisplay: View {
             TrackInstrumentIconView(icon: icon)
         } else if let artwork = TrackIconCatalog.artwork(id) {
             #if os(macOS)
-            if let image = NSImage(contentsOf: artwork.url) { Image(nsImage: image).resizable().scaledToFit() }
+            if let image = NSImage(contentsOf: artwork.url) { artworkImage(Image(nsImage: image)) }
             #else
-            if let image = UIImage(contentsOfFile: artwork.url.path) { Image(uiImage: image).resizable().scaledToFit() }
+            if let image = UIImage(contentsOfFile: artwork.url.path) { artworkImage(Image(uiImage: image)) }
             #endif
+        }
+    }
+    @ViewBuilder private func artworkImage(_ image: Image) -> some View {
+        if id == "png:Other/waveform" {
+            image.resizable().aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        } else {
+            image.resizable().scaledToFit()
         }
     }
 }

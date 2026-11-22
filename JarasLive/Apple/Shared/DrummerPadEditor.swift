@@ -1,5 +1,7 @@
 import SwiftUI
 import Combine
+import UniformTypeIdentifiers
+import AVFoundation
 
 @MainActor enum DrummerMIDILearn {
     static var owner: UUID?
@@ -17,6 +19,9 @@ struct DrummerPadEditor: View {
     @State private var glow: [Int: Date] = [:]
     @State private var dropIndex: Int?
     @State private var editing: Int?
+    @State private var choosingAudio = false
+    @State private var audioTarget: Int?
+    @State private var imports: [Int: UUID] = [:]
     @State private var name = ""
     @State private var saveName = ""
     @State private var saving = false
@@ -101,6 +106,15 @@ struct DrummerPadEditor: View {
             kit.map(note: note, to: i); stopLearning()
         }
         .onDisappear { stopLearning() }
+        .fileImporter(isPresented: $choosingAudio, allowedContentTypes: [.wav, .aiff, .mp3]) { result in
+            defer { audioTarget = nil }
+            guard let i = audioTarget else { return }
+            switch result {
+            case .success(let url): insertAudio(url, at: i)
+            case .failure(let failure):
+                if (failure as? CocoaError)?.code != .userCancelled { error = failure.localizedDescription }
+            }
+        }
         .alert("Rename pad", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
             TextField("Name", text: $name)
             Button("Save") { if let i = editing { kit.pads[i].name = name }; editing = nil }
@@ -163,6 +177,7 @@ struct DrummerPadEditor: View {
                     .foregroundStyle(isLearning ? Color.yellow : Color(white: 0.80)).lineLimit(1)
             }.frame(maxWidth: .infinity, minHeight: legend, maxHeight: legend, alignment: .leading)
         }.contextMenu {
+            Button("Insert audio") { audioTarget = i; choosingAudio = true }
             Button("Rename pad") { name = slot.name; editing = i }
             Button("Learn MIDI") { DrummerMIDILearn.owner = owner; learning = i }
             if let note = slot.note { Button("Unlearn Note \(note)") { kit.pads[i].note = nil; stopLearning() } }
@@ -171,9 +186,43 @@ struct DrummerPadEditor: View {
             guard let p = providers.first else { return false }
             p.loadDataRepresentation(forTypeIdentifier: LibrarySamplerTransfer.type.identifier) { data, _ in
                 guard let url = LibrarySamplerTransfer.url(data), let reference = DrummerSamples.reference(url) else { return }
-                DispatchQueue.main.async { kit.pads[i].sample = reference; kit.pads[i].name = url.deletingPathExtension().lastPathComponent }
+                DispatchQueue.main.async { assign(reference, from: url, at: i) }
             }
             return true
+        }
+    }
+    private func assign(_ reference: String, from source: URL, at index: Int) {
+        guard kit.pads.indices.contains(index) else { return }
+        imports[index] = nil
+        kit.pads[index].sample = reference
+        kit.pads[index].name = source.deletingPathExtension().lastPathComponent
+    }
+    private func insertAudio(_ source: URL, at index: Int) {
+        let request = UUID()
+        imports[index] = request
+        let directory = VinhetasController.shared.padSampleDirectory
+        Task { @MainActor in
+            defer { if imports[index] == request { imports[index] = nil } }
+            do {
+                let file = try await Task.detached(priority: .userInitiated) {
+                    if DrummerSamples.reference(source) != nil {
+                        let scoped = source.startAccessingSecurityScopedResource()
+                        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+                        let audio = try AVAudioFile(forReading: source)
+                        guard VinhetasPad.acceptsDuration(frames: audio.length, sampleRate: audio.fileFormat.sampleRate) else {
+                            throw ProjectError.invalid(JarasLocalization.string("Pads accept audio up to 60 seconds."))
+                        }
+                        return source
+                    }
+                    return try WorkspaceLibrary.copySampler(source, into: directory, reuseIdentical: true)
+                }.value
+                NotificationCenter.default.post(name: VinhetasController.padSamplesChanged, object: nil)
+                guard imports[index] == request else { return }
+                guard let reference = DrummerSamples.reference(file) else { throw CocoaError(.fileReadInvalidFileName) }
+                assign(reference, from: source, at: index)
+            } catch {
+                if imports[index] == request { self.error = error.localizedDescription }
+            }
         }
     }
     private var presetList: some View {
@@ -188,6 +237,7 @@ struct DrummerPadEditor: View {
         }.frame(width: 238, height: min(340, CGFloat(entries.count + 1) * 30 + 20))
     }
     private func choose(_ preset: FXPreset?) {
+        imports.removeAll()
         selectedPreset = preset?.id
         kit = preset?.native?.drumKit(kind) ?? DrummerPadKit(kind)
         browsing = false

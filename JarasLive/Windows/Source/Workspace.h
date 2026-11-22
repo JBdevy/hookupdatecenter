@@ -39,6 +39,7 @@ class MacLook final : public MacPopupMenuLook {
     MacLook();
     void refreshThemeColours();
     void drawProgressBar(Graphics &, ProgressBar &, int, int, double, const String &) override;
+    juce::Rectangle<int> getTooltipBounds(const String &, juce::Point<int>, juce::Rectangle<int>) override;
     void drawTooltip(Graphics &,const String &,int,int) override;
     void drawButtonBackground(Graphics &, Button &, const Colour &, bool, bool) override;
     void drawButtonText(Graphics &, TextButton &, bool, bool) override;
@@ -183,6 +184,7 @@ class Workspace final : public Component,
     Auth &auth;
     Lighting &lighting;
     MacLook look;
+    std::unique_ptr<juce::TooltipWindow> toolbarTooltips;
     Appearance appearance;
     TrackVisibility trackVisibility;
     void openTrackVisibility();
@@ -209,13 +211,14 @@ class Workspace final : public Component,
     String remoteProjectError;
     std::array<std::unique_ptr<TeleprompterHTTP>,2> teleprompterHTTP;
     void openTPRemote(int);
+    String toolbarAudioFormat;
     std::unique_ptr<StageTimerReadout> stageTimer;
     std::unique_ptr<TempoControl> tempoControl;
     std::unique_ptr<MixerPanel> footerMixer, focusMixer;
     std::unique_ptr<WorkspaceLibrary> workspaceLibrary;
     DragDivider libraryDivider;
     int libraryWidth = 344, libraryResizeStart = 344;
-    struct DockHeights { int mixer = 0, parts = 0, total = 0, visible = 0; } dockHeights;
+    struct DockHeights { int mixer = 0, parts = 0, total = 0, visible = 0, preview = 0; } dockHeights;
     void layoutWorkspaceColumns(bool widthOnly);
     bool libraryVisible = false;
     std::unique_ptr<PartsPanel> partsLeft;
@@ -231,9 +234,21 @@ class Workspace final : public Component,
     std::unique_ptr<FooterKeyboard> keyboard;
     std::unique_ptr<VinhetasPanel> vinhetasPanel;
     bool vinhetasVisible = false, vinhetasDetached = false;
+    void closePads();
+    void closePanelsForPads();
     void toggleVinhetasDock();
+    void toggleMIDIPreviewDock();
+    std::unique_ptr<Component> midiPreviewPanel;
+    bool midiPreviewVisible = false, midiPreviewDetached = false;
+    DragDivider midiPreviewDivider{false};
+    int midiPreviewHeight = 273;
     TrackMixerViewport tracksViewport;
-    Viewport dockViewport;
+    struct DockViewport final : Viewport {
+        std::function<void(int)> scrolled;
+        void visibleAreaChanged(const juce::Rectangle<int> &area) override {
+            if (scrolled) scrolled(area.getY());
+        }
+    } dockViewport;
     Component tracksContent, dockContent;
     OwnedArray<TrackRow> rows;
     OwnedArray<TextButton> buttons;
@@ -241,7 +256,7 @@ class Workspace final : public Component,
     std::optional<unsigned> auxiliaryWindowSuppression;
     std::map<String, TextButton *> controls;
     GainFader masterVolume;
-    ParameterSlider zoom, trackHeightSlider;
+    ParameterSlider masterPan, zoom, trackHeightSlider;
     std::optional<std::pair<double, double>> transportProgressRange;
     int transportProgressPixels = -1;
     juce::Rectangle<int> transportProgressBounds() const {
@@ -252,7 +267,7 @@ class Workspace final : public Component,
     Label songDisplay, transportTime, transportInfo, footer, tempo;
     DragDivider mixerDivider, setlistDivider, partsLeftDivider, partsRightDivider;
     DragDivider footerHeightDivider{false}, mixerHeightDivider{false};
-    int resizeStart = 0, footerHeightSetting = 27, mixerHeightSetting = 300;
+    int resizeStart = 0, footerHeightSetting = 27, mixerHeightSetting = 300, mixerHeightLimit = 724, midiPreviewHeightLimit = 724;
     int footerLeftWidth = 155, footerRightWidth = 230;
     juce::Rectangle<int> footerSongBounds;
     bool mixerDetached = false;
@@ -275,7 +290,7 @@ class Workspace final : public Component,
     void refreshInterfaceTheme();
     void mixerMenu(Point<int>);
     ResourceUsage resourceUsage;
-    TextButton addTrack{"+"}, trackVisibilityButton, trackComponentsButton, timelineSnap, timelineTimebase, timelineBands;
+    TextButton addTrack{"+"}, trackVisibilityButton, timelineSnap, timelineTimebase, timelineBands;
     bool showRegionLanes = true, showTempoLane = true;
     QuietButton timelineLock;
     bool freeTimelinePosition(ModifierKeys mods) const { return !(bool)appearance.value("jaras.timeline.snapEnabled", true) || mods.isShiftDown(); }

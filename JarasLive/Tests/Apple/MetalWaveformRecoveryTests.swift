@@ -193,3 +193,34 @@ for index in 0..<8 {
 opacityObserver.invalidate()
 print("METAL_ZOOM_PRESENTS_CURRENT_PROJECTION_WITHOUT_OPACITY_CYCLE_OK")
 window.close()
+
+// The first drawable of a visible project can lag behind both the window's
+// visibility notification and the next main-queue turn. The native grid
+// retains its projection here: there is no second submit or zoom.
+// Supply the shown-window occlusion state even on headless CI.
+final class OpeningProjectWindow: NSWindow {
+    override var occlusionState: NSWindow.OcclusionState { [.visible] }
+}
+let openingWindow = OpeningProjectWindow(contentRect: NSRect(x: -10000, y: -10000, width: 128, height: 128),
+    styleMask: [.borderless], backing: .buffered, defer: false)
+openingWindow.isReleasedWhenClosed = false
+let openingSurface = MetalWaveformSurface()
+openingWindow.contentView = openingSurface
+openingWindow.orderBack(nil)
+settle()
+let openingFrame = MetalWaveformFrame(size: size, strokes: [stroke])
+MetalDrawableRecoveryProbe.blocked = true
+let openingAttempts = MetalDrawableRecoveryProbe.attempts
+openingSurface.submit(openingFrame)
+awaitValue("first draw and next-turn retry must run") { MetalDrawableRecoveryProbe.attempts >= openingAttempts + 2 }
+settle(0.25)
+check(openingSurface.pendingForRecoveryTest)
+MetalDrawableRecoveryProbe.blocked = false
+awaitValue("opening waveform must appear with no input or additional submit") {
+    openingSurface.presentedForRecoveryTest?.hasSameContent(as: openingFrame) == true
+}
+let openingSubmissions = openingSurface.submittedFrameCount
+settle(0.6)
+check(openingSurface.submittedFrameCount == openingSubmissions, "automatic recovery must stop after presentation")
+openingWindow.close()
+print("METAL_VISIBLE_PROJECT_OPEN_PRESENTS_WAVEFORM_WITHOUT_ZOOM_OK")

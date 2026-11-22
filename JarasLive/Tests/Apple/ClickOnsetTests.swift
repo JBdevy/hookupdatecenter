@@ -237,5 +237,11 @@ for rate in [44100.0, 48000.0] {
                  "A single transition gap must not become a public 114 BPM marker")
     precondition(abs(result.markers.last!.position - (40 + pulses[24].position)) < 1e-9,
                  "The actual 142 BPM entry must retain its measured sample position")
+    song.tracks[0].clips[0].startTime += 2
+    let leadIn = Part(id: region.id, name: region.name, startTime: region.startTime, endTime: region.endTime + 2)
+    let delayed = try ClickTempoDetector.markersWithMeter(song: song, region: leadIn) { _ in pulses }
+    precondition(delayed.markers.map(\.tempoBPM) == [170, 142] &&
+        abs(delayed.markers.first!.position - (42 + pulses[0].position)) < 1e-9,
+        "An uncovered region start must not inherit the first measured tempo")
 }
 print("CLICK_PCM_ISOLATED_TRANSITION_GAP_AND_EXACT_NEXT_TEMPO_44100_48000_OK")

@@ -1,4 +1,6 @@
 {
+  "Convert To Audio Stereo": "Converter To Audio Stereo",
+  "Convert To Audio Mono": "Converter To Audio Mono",
     "Select a track": "Selecione uma pista",
   "Mostrar Main à direita": "Mostrar Main à direita",
   "Mostrar Main à esquerda": "Mostrar Main à esquerda",
@@ -1339,6 +1341,11 @@
   "Post-fader": "Pós-fader",
   "Pre-FX": "Pré-FX",
   "Post-FX": "Pós-FX",
+  "Track - I show/hide": "Mostrar/ocultar Track - I",
+  "Library show/hide": "Mostrar/ocultar Library",
+  "Input Monitor · Selected track": "Input Monitor · Pista selecionada",
+  "By All Fx · Selected track": "By All Fx · Pista selecionada",
+  "By Fx Session": "By Fx Session",
   "Track Mixer show/hide": "Mostrar/ocultar Track Mixer",
   "Hoz-Mixer show/hide": "Mostrar/ocultar Hoz-Mixer",
   "Encerrar o CatLive?": "Encerrar o CatLive?",
@@ -1926,5 +1933,9 @@
   "Collapse all categories": "Recolher todas as categorias",
   "Sample preview volume": "Volume da prévia do sample",
   "Could not load the pad audio.": "Não foi possível carregar o áudio do pad.",
-  "Drag in one direction. Hold Shift to select a rectangle.": "Arraste em uma direção. Segure Shift para selecionar um retângulo."
+  "Insert audio": "Inserir áudio",
+  "Drag in one direction. Hold Shift to select a rectangle.": "Arraste em uma direção. Segure Shift para selecionar um retângulo.",
+  "Import SF2…": "Importar SF2…",
+  "Could not import SF2:": "Não foi possível importar SF2:",
+  "Count-in": "Contagem"
 }

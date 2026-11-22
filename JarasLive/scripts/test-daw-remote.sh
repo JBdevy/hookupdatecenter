@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/jaras-remote.XXXXXX")"
 trap 'rm -rf "$test_dir"' EXIT
 cat Application/Project/TeleprompterSettings.swift Apple/Shared/DAWRemoteProtocol.swift Apple/Shared/DAWRemoteSession.swift Tests/Apple/DAWRemoteTests.swift Tests/Apple/DAWRemoteTeleprompterTests.swift Tests/Apple/DAWRemoteHostPreferenceTests.swift Tests/Apple/DAWRemoteNoticeDeliveryTests.swift Tests/Apple/DAWRemoteSetlistBlockTests.swift Tests/Apple/DAWRemoteDiscoveryTests.swift Tests/Apple/DAWRemoteLifecycleTests.swift Tests/Apple/IpadStandaloneSessionTests.swift > "$test_dir/main.swift"
+printf '\n' >> "$test_dir/main.swift"
+sed -n '/^public enum TrackHeightGeometry {/,/^}/p' Application/Project/ProjectModels.swift >> "$test_dir/main.swift"
 sed -n '/^public enum ProjectError: LocalizedError/p' Application/Project/ProjectModels.swift >> "$test_dir/main.swift"
 swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos13.0" Application/Project/OutputPatch.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

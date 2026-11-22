@@ -1,5 +1,9 @@
 #import <AVFoundation/AVFoundation.h>
 NS_ASSUME_NONNULL_BEGIN
+@interface JarasMIDIChord : NSObject
++ (NSString *)nameForPitchClasses:(uint16_t)classes bass:(NSInteger)bass NS_SWIFT_NAME(name(pitchClasses:bass:));
+@end
+
 /// One permanent source for all pad voices. Control calls run on the main
 /// thread; rendering never changes the engine graph or owns buffer lifetimes.
 @interface JarasPadSource : NSObject
@@ -95,7 +99,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly, nullable) AVAudioFormat *format;
 @property(nonatomic, readonly) BOOL running;
 - (BOOL)prepareWithSampleRate:(double)rate channels:(AVAudioChannelCount)channels error:(NSError **)error;
-- (void)setCapture:(nullable void (^)(AVAudioPCMBuffer *))capture;
+- (void)setCapture:(nullable void (^)(AVAudioPCMBuffer *, uint64_t))capture;
 - (void)pause;
 - (BOOL)startAndReturnError:(NSError **)error;
 - (void)stop;

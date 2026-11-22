@@ -89,7 +89,7 @@ struct AdvancedView: View {
     @Environment(\.dismiss) private var dismiss
     private enum Tab: String, CaseIterable {
         case transport = "Transport", timeProject = "TimeProject", timeline = "Timeline", record = "Record", reRender = "Re-render", video = "Video", setlist = "Setlist", keyboard = "Keyboard", pads = "Pads", trackMixer = "Track Mixer", hozMixer = "Hoz Mixer"
-        var icon: String { switch self { case .transport: return "playpause"; case .timeProject: return "metronome"; case .timeline: return "square.grid.3x3"; case .record: return "record.circle"; case .reRender: return "waveform"; case .video: return "video"; case .setlist: return "list.bullet"; case .keyboard: return "pianokeys"; case .pads: return "square.grid.4x3.fill"; case .trackMixer: return "slider.horizontal.3"; case .hozMixer: return "slider.vertical.3" } }
+        var icon: String { switch self { case .transport: return "tabs.transport"; case .timeProject: return "tabs.metronome"; case .timeline: return "square.grid.3x3"; case .record: return "tabs.record"; case .reRender: return "tabs.waveform"; case .video: return "video"; case .setlist: return "list.bullet.indent"; case .keyboard: return "pianokeys"; case .pads: return "square.grid.3x2.fill"; case .trackMixer: return "slider.horizontal.3"; case .hozMixer: return "slider.vertical.3" } }
     }
     private var availableTabs: [Tab] {
         #if os(iOS)
@@ -139,7 +139,7 @@ struct AdvancedView: View {
                 VStack(spacing: 4) {
                     ForEach(availableTabs, id: \.self) { item in
                         Button { tab = item; invalidField = nil; applyError = "" } label: {
-                            Label { Text(LocalizedStringKey(item.rawValue)).lineLimit(2).minimumScaleFactor(0.8) } icon: { Image(systemName: item.icon) }
+                            Label { Text(LocalizedStringKey(item.rawValue)).lineLimit(2).minimumScaleFactor(0.8) } icon: { ControlIcon(name: item.icon, active: tab == item, size: 16) }
                                 .font(.jarasSystem(size: 12, weight: .semibold)).frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 10).frame(height: 32)
                                 .background(tab == item ? JarasTheme.green.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))

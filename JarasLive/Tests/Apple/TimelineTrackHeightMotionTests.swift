@@ -20,9 +20,24 @@ for smooth in [false, true] {
     gesture.change(factor: 0.01, current: displayed, smoothWheel: smooth, limits: CGFloat(compactLimits.lowerBound)...CGFloat(compactLimits.upperBound)) { displayed = $0 }
     RunLoop.main.run(until: Date().addingTimeInterval(0.15))
     precondition(displayed == TrackHeightGeometry.compactMinimumLaneHeight)
-    precondition(TrackHeightGeometry.laneHeight(base: displayed, scale: 1, count: 1, compact: false) == base)
+    precondition(TrackHeightGeometry.laneHeight(base: displayed, scale: 1, count: 1, allowsCompactHeight: false) == base)
     gesture.cancel()
 }
+let reopenedMotion = TimelineTrackHeightMotion()
+reopenedMotion.useProjectSession(UUID())
+var outgoingValues: [CGFloat] = []
+reopenedMotion.change(factor: 1.6, current: 100, smoothWheel: true) { outgoingValues.append($0) }
+let finalOutgoingCount = outgoingValues.count
+reopenedMotion.useProjectSession(UUID())
+var reopenedHeight: CGFloat = 66
+reopenedMotion.change(factor: 0.01, current: reopenedHeight,
+                      limits: CGFloat(compactLimits.lowerBound)...CGFloat(compactLimits.upperBound)) { reopenedHeight = $0 }
+RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+precondition(reopenedHeight == 28 && outgoingValues.count == finalOutgoingCount,
+             "The first wheel event after opening a project uses its compact floor and cancels the old track-height animation")
+reopenedMotion.cancel()
+print("TRACK_HEIGHT_RECENT_SWITCH_FIRST_WHEEL_EVENT_OK")
+
 let motion = TimelineTrackHeightMotion()
 var values: [CGFloat] = []
 var expected: CGFloat = 100

@@ -2810,3 +2810,23 @@
 
 "Set Track Color" = "Cor da Pista";
 "Set Track Icon" = "Ícone da Pista";
+
+"Track - I show/hide" = "Mostrar/ocultar Track - I";
+
+"Library show/hide" = "Mostrar/ocultar Library";
+
+"Input Monitor · Selected track" = "Input Monitor · Pista selecionada";
+
+"By All Fx · Selected track" = "By All Fx · Pista selecionada";
+
+"By Fx Session" = "By Fx Session";
+
+"Tap or drag to route. Scroll with two fingers. Use the diagonal button or hold Shift." = "Toque ou arraste para rotear. Role com dois dedos. Para traçar uma diagonal, use o botão de seta ou segure Shift.";
+
+"Convert To Audio Mono" = "Converter To Audio Mono";
+
+"Convert To Audio Stereo" = "Converter To Audio Stereo";
+
+"Import SF2…" = "Importar SF2…";
+
+"Could not import SF2:" = "Não foi possível importar SF2:";

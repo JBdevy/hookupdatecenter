@@ -14,7 +14,7 @@ struct SettingsView: View {
     @ObservedObject private var recorder = TrackRecording.shared
     private var audioConfigurationLocked: Bool { recorder.recording || recorder.busy || show.isPlaying }
     enum Section: String, CaseIterable { case tp1 = "Config TP 1", tp2 = "Config TP 2", notices = "Config Recados", general = "General", audio = "Audio", midi = "MIDI", smk37 = "SMK37PRO", actions = "Actions", mappings = "Mappings", plugins = "Plugins", account = "Account"
-        var icon: String { switch self { case .tp1, .tp2: return "text.alignleft"; case .notices: return "message"; case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi, .smk37: return "pianokeys"; case .actions: return "keyboard"; case .mappings: return "switch.2"; case .plugins: return "puzzlepiece.extension"; case .account: return "person.crop.circle" } }
+        var icon: String { switch self { case .tp1, .tp2: return "list.bullet.indent"; case .notices: return "text.bubble"; case .general: return "slider.horizontal.3"; case .audio: return "speaker.wave.2"; case .midi, .smk37: return "pianokeys"; case .actions: return "tabs.actions"; case .mappings: return "tabs.mappings"; case .plugins: return "tabs.plugins"; case .account: return "tabs.account" } }
     }
     private var availableSections: [Section] {
         #if os(iOS)
@@ -42,7 +42,9 @@ struct SettingsView: View {
                     Button {
                         if let selection { selection.wrappedValue = item } else { localSection = item }
                     } label: {
-                        Label(LocalizedStringKey(item.rawValue), systemImage: item.icon)
+                        Label { Text(LocalizedStringKey(item.rawValue)) } icon: {
+                            ControlIcon(name: item.icon, active: section == item, size: 16)
+                        }
                             .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.85).frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 12).frame(height: 40)
                             .background(section == item ? JarasTheme.accent.opacity(0.15) : .clear)
@@ -256,6 +258,7 @@ import Darwin
     private var root: io_service_t = 0
     private var notifier: io_object_t = 0
     private var wakeObservers: [NSObjectProtocol] = []
+    private var restoreTask: Task<Void, Never>?
     init(backend: Backend? = nil, watchesHardware: Bool = true) {
         self.backend = backend ?? Self.nativeBackend; self.watchesHardware = watchesHardware
     }
@@ -266,7 +269,7 @@ import Darwin
             knownDisplays.formUnion(backend.displays())
             if watchesHardware { startNotifications() }
         } else {
-            restore()
+            restoreWhenReady()
             stopNotifications()
         }
     }
@@ -274,21 +277,51 @@ import Darwin
         self.closed = closed
         guard enabled else { return }
         if closed {
-            knownDisplays.formUnion(backend.displays())
+            restoreTask?.cancel()
+            restoreTask = nil
+            let online = backend.displays()
+            if !online.isEmpty { knownDisplays = Set(online) }
             for display in knownDisplays where saved[display] == nil {
                 guard let original = backend.read(display), backend.write(display, 0) else { continue }
                 saved[display] = original
             }
-        } else { restore() }
+        } else { restoreWhenReady() }
     }
-    func stop() { enabled = false; restore(); stopNotifications() }
+    func stop() {
+        enabled = false
+        restoreTask?.cancel()
+        restoreTask = nil
+        restore()
+        stopNotifications()
+    }
     private func restore() {
+        let online = backend.displays()
         for (display, original) in saved {
-            // A manual brightness adjustment takes precedence over our restore.
-            if let current = backend.read(display), current > 0.002 { saved.removeValue(forKey: display); continue }
-            if backend.write(display, original) { saved.removeValue(forKey: display) }
+            // The panel can reconnect with a different display ID when leaving clamshell mode.
+            let target = online.contains(display) ? display : (saved.count == 1 && online.count == 1 ? online.first : nil)
+            if let target, backend.write(target, original) { saved.removeValue(forKey: display) }
         }
     }
+    private func restoreWhenReady() {
+        restore()
+        guard !saved.isEmpty, restoreTask == nil else { return }
+        restoreTask = Task { [weak self] in
+            for delay: UInt64 in [150, 350, 750, 1_500] {
+                try? await Task.sleep(nanoseconds: delay * 1_000_000)
+                guard let self, !Task.isCancelled, !self.enabled || !self.closed else { return }
+                self.restore()
+                if self.saved.isEmpty { break }
+            }
+            self?.restoreTask = nil
+        }
+    }
+    private func refreshLidState() {
+        guard root != 0,
+              let state = IORegistryEntryCreateCFProperty(root, kAppleClamshellStateKey as CFString,
+                                                         kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool else { return }
+        lidChanged(closed: state)
+    }
+    @objc private func displaysChanged() { refreshLidState() }
     private func startNotifications() {
         guard notificationPort == nil else { return }
         root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
@@ -304,16 +337,17 @@ import Darwin
             MainActor.assumeIsolated { Unmanaged<MacShowLidBrightness>.fromOpaque(context).takeUnretainedValue().lidChanged(closed: closed) }
         }, context, &notifier)
         guard status == KERN_SUCCESS else { stopNotifications(); return }
-        if let state = IORegistryEntryCreateCFProperty(root, kAppleClamshellStateKey as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool {
-            lidChanged(closed: state)
-        }
+        refreshLidState()
+        NotificationCenter.default.addObserver(self, selector: #selector(displaysChanged),
+                                               name: NSApplication.didChangeScreenParametersNotification, object: nil)
         for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
             wakeObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { if let self { self.lidChanged(closed: self.closed) } }
+                MainActor.assumeIsolated { self?.refreshLidState() }
             })
         }
     }
     private func stopNotifications() {
+        NotificationCenter.default.removeObserver(self, name: NSApplication.didChangeScreenParametersNotification, object: nil)
         if notifier != 0 { IOObjectRelease(notifier); notifier = 0 }
         if let notificationPort { IONotificationPortDestroy(notificationPort); self.notificationPort = nil }
         if root != 0 { IOObjectRelease(root); root = 0 }
@@ -381,51 +415,69 @@ import Darwin
 /// CoreAudioKit creates a normal-level window; workspace tools use a higher
 /// app-local level. Keep the browser above its owning tool and fixed in size.
 @MainActor private final class MacBluetoothMIDIBrowser: ObservableObject {
-    private let controller = CABTLEMIDIWindowController()
+    private var controller: CABTLEMIDIWindowController?
+    private weak var browserWindow: NSWindow?
     private weak var owner: NSWindow?
     private var closeObserver: NSObjectProtocol?
     private var onDismiss: (() -> Void)?
 
-    init() {
-        closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notice in
-            guard let self, let window = notice.object as? NSWindow else { return }
-            if window === self.controller.window { self.onDismiss?() }
-            else if window === self.owner { self.close() }
-        }
-    }
     deinit { if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) } }
 
     func show(onDismiss: @escaping () -> Void) {
-        self.onDismiss = onDismiss
-        if NSApp.keyWindow !== controller.window { owner = NSApp.keyWindow }
+        if let browserWindow {
+            browserWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        // CoreAudioKit may order its window front as soon as the controller loads.
+        // Capture the settings panel first and only load the browser on a click.
+        owner = NSApp.keyWindow
+        let controller = CABTLEMIDIWindowController()
         guard let window = controller.window else { return }
-        let wasVisible = window.isVisible
+        self.controller = controller
+        self.browserWindow = window
+        self.onDismiss = onDismiss
+        closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notice in
+            guard let self, let closing = notice.object as? NSWindow else { return }
+            if closing === self.browserWindow { self.didClose() }
+            else if closing === self.owner { self.close() }
+        }
         window.identifier = NSUserInterfaceItemIdentifier("catlive.tool.bluetoothMIDI")
         window.isReleasedWhenClosed = false
+        window.styleMask = workspacePanelStyle.subtracting(.resizable)
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
         window.appearance = NSAppearance(named: .darkAqua)
         window.hidesOnDeactivate = false
-        window.styleMask.remove([.resizable, .miniaturizable])
         window.collectionBehavior.remove(.fullScreenPrimary)
         window.collectionBehavior.insert(.fullScreenAuxiliary)
-        window.standardWindowButton(.zoomButton)?.isEnabled = false
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         let available = owner?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 940, height: 580)
         let size = NSSize(width: min(940, available.width), height: min(540, max(240, available.height - 32)))
         window.contentMinSize = size
         window.contentMaxSize = size
         window.setContentSize(size)
-        window.level = NSWindow.Level(rawValue: max(owner?.level.rawValue ?? 0, ProjectionWindow.workspaceToolLevel.rawValue) + 1)
-        ProjectionWindow.followWorkspaceWindow(window)
-        if !wasVisible {
-            let anchor = owner?.frame ?? available
-            let x = min(max(available.minX, anchor.midX - window.frame.width / 2), available.maxX - window.frame.width)
-            let y = min(max(available.minY, anchor.midY - window.frame.height / 2), available.maxY - window.frame.height)
-            window.setFrameOrigin(NSPoint(x: x, y: y))
+        let anchor = owner?.frame ?? available
+        let x = min(max(available.minX, anchor.midX - window.frame.width / 2), available.maxX - window.frame.width)
+        let y = min(max(available.minY, anchor.midY - window.frame.height / 2), available.maxY - window.frame.height)
+        window.setFrameOrigin(NSPoint(x: x, y: y))
+        if let owner {
+            window.level = owner.level
+            owner.addChildWindow(window, ordered: .above)
         }
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
     }
-    func close() { controller.close() }
+    func close() { browserWindow?.close() }
+    private func didClose() {
+        if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        closeObserver = nil
+        if let browserWindow { owner?.removeChildWindow(browserWindow) }
+        browserWindow = nil
+        owner = nil
+        controller = nil
+        let refresh = onDismiss
+        onDismiss = nil
+        refresh?()
+    }
 }
 #endif
 

@@ -5,7 +5,8 @@
 namespace catlive {
 class AdvancedPanel final : public Component, private Timer {
   public:
-    AdvancedPanel(Appearance &, Session &, std::function<void(String)>);
+    enum class Presentation { advanced, keyboard };
+    AdvancedPanel(Appearance &, Session &, std::function<void(String)>, Presentation = Presentation::advanced);
     std::function<void(bool)> transferPads;
     void paint(Graphics &) override;
     void resized() override;
@@ -20,6 +21,7 @@ class AdvancedPanel final : public Component, private Timer {
     }
 
   private:
+    Presentation presentation;
     Appearance &appearance;
     Session &session;
     std::function<void(String)> error;

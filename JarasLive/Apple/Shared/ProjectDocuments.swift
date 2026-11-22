@@ -98,7 +98,7 @@ extension UTType {
     @Published var projectTabIndex = 0
 
     #if os(iOS)
-    enum NativePicker: String, Identifiable { case project, projectFolder, reaper, logic, package, packageDestination, stems, trackAudio, trackMedia, storage, temporaryDestination; var id: String { rawValue } }
+    enum NativePicker: String, Identifiable { case project, projectFile, projectFolder, reaper, logic, package, packageDestination, stems, trackAudio, trackMedia, storage, temporaryDestination; var id: String { rawValue } }
     @Published var nativePicker: NativePicker?
     @Published var nativePackagePrompt: PortableProjectImportPrompt?
     @Published private(set) var nativeStorageDirectory: URL?
@@ -372,7 +372,7 @@ extension UTType {
         nativePicker = .trackMedia
     }
     func cancelNativePicker(kind: NativePicker? = nil) {
-        if kind == .project || kind == .projectFolder { cancelNativeProjectOpen() }
+        if kind == .project || kind == .projectFile || kind == .projectFolder { cancelNativeProjectOpen() }
         if kind == .package || kind == .packageDestination { cancelNativePackageImport() }
         if kind == .storage || nativePicker == .storage {
             afterNativeStorage = nil
@@ -387,7 +387,7 @@ extension UTType {
     }
     func receiveNativeFiles(_ urls: [URL], kind: NativePicker) {
         nativePicker = nil
-        if kind == .project || kind == .reaper || kind == .logic { if let url = urls.first { receiveNativeProject(url) }; return }
+        if kind == .project || kind == .projectFile || kind == .reaper || kind == .logic { if let url = urls.first { receiveNativeProject(url) }; return }
         if kind == .projectFolder { if let url = urls.first { receiveNativeProjectFolder(url) } else { cancelNativeProjectOpen() }; return }
         if kind == .temporaryDestination { if let root = urls.first { receiveTemporaryDestination(root) }; return }
         if kind == .storage { if let root = urls.first { receiveNativeStorage(root) }; return }
@@ -1492,7 +1492,7 @@ extension UTType {
         guard !busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy,
               nativePicker == nil, nativePackagePrompt == nil else { return }
         cancelNativeProjectOpen(); cancelNativePackageImport()
-        nativePicker = .project
+        nativePicker = onlyCatLiveProject ? .projectFile : .project
         #endif
     }
     #if os(macOS)

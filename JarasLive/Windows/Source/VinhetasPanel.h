@@ -17,6 +17,7 @@ class VinhetasPanel final : public Component, private Timer {
     }
     static File padSampleDirectory() { return mediaFolder().getChildFile("Pads"); }
     static uint64_t padSamplesRevision() { return sampleRevision; }
+    static void notifyPadSamplesChanged() { ++sampleRevision; }
     static Result deletePadSamples() {
         if (transferBusy || instances.empty()) return Result::fail("Wait for the current Pads transfer.");
         const auto folder = padSampleDirectory();

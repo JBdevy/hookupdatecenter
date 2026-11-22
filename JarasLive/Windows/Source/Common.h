@@ -159,6 +159,8 @@ inline bool setInterfaceTheme(bool lightDark) {
     secondary = Colour(lightDark ? 0xffd7d7d7 : 0xffb9b9b9);
     return true;
 }
+inline Colour mixerPanelBackground() { return background == darkBackground ? Colour(0xff181818) : lightDarkPanel; }
+inline Colour libraryEntriesBackground() { return background == darkBackground ? Colour(0xff121212) : lightDarkDisplay; }
 inline Colour timelineHeaderLine() { return line.withAlpha(.65f); }
 inline const Colour green{0xff69ed91}, toolbarInactive{0xffc8c8c8},
     yellow{0xffffdc52}, accent{0xff79f59a}, transportPlay{0xff24f06a}, transportRed{0xff8f2847}, liveOffRed{0xffff3030};

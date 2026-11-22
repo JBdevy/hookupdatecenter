@@ -165,9 +165,10 @@ inline void HozMixerFocusTests::run(const File &directory) {
         panel.viewport.setViewPosition(0,0);
         require(panel.strips.getLast()==farStrip && farStrip->id==farID,
                 "Resizing or scrolling rebuilt a retained mixer strip");
-        // A saved oversized height must not push controls below the dock.
         workspace.mixerHeightSetting=724;workspace.resized();
-        require(panel.getHeight()<=workspace.dockViewport.getHeight(),"Hoz-Mixer escaped the visible dock at maximum height");
+        require(panel.getHeight()==workspace.mixerHeightLimit &&
+                panel.getY()==0 && workspace.workspaceBounds.getHeight()>=128,
+                "A tall mixer must stop at the available dock height");
         for(auto *strip:panel.strips)require(strip->getLocalBounds().contains(strip->layout().name),"Resizing clips the track name");
         panel.setSize(640,350);
         const auto firstID=project.songs[0].tracks[0].id,secondID=project.songs[0].tracks[1].id;

@@ -39,6 +39,7 @@ public:
                               std::function<void()> preview, std::function<void()> save)
         : instrumentID(std::move(id)), read(std::move(readSettings)), changed(std::move(preview)), commit(std::move(save)) {
         setComponentID("instrumentParameterEditor");
+        if (instrumentAssets::userInstrumentName(instrumentID).isNotEmpty()) category = "user";
         for (auto entry : instrumentAssets::catalog())
             if (str(entry, "id") == instrumentID) category = str(entry, "category");
         artwork = ImageCache::getFromFile(File::getSpecialLocation(File::currentExecutableFile).getSiblingFile("InstrumentInterfaces").getChildFile((category.isEmpty() ? "keyboard" : category) + ".png"));
@@ -82,7 +83,7 @@ public:
             knob("Hold", "", "hold", 0, 10, 10, " ms", 1000, true);
             knob("Decay", "", "decay", .001, 10, 10, " ms", 1000, true);
             knob("Sustain", "", "sustain", 0, 1, 1, " %", 100);
-            knob("Release", "", "release", .001, 20, category == "drum" ? 20 : .3, " ms", 1000, true);
+            knob("Release", "", "release", .001, 20, category == "drum" ? 20 : .16, " ms", 1000, true);
             knob("Gain", "", "gain", -24, 12, 0, " dB");
         } else if (page == 1) {
             knob("Cutoff", "velocity", "cutoffMinimum", 20, 20000, 20000, " Hz", 1, true);
@@ -216,7 +217,7 @@ private:
         if (page == 0) {
             const auto r = graphArea.toFloat().reduced(16); const auto p = parameters();
             const double a = num(p, "attack"), hold = num(p, "hold", 10), d = num(p, "decay", 10),
-                         release = num(p, "release", category == "drum" ? 20 : .3), total = a + hold + d + release + 1;
+                         release = num(p, "release", category == "drum" ? 20 : .16), total = a + hold + d + release + 1;
             const auto x = [&](double t) { return r.getX() + float(t / total) * r.getWidth(); };
             const float sustainY = r.getBottom() - float(num(p, "sustain", 1)) * r.getHeight();
             Path curve; curve.startNewSubPath(r.getX(), r.getBottom()); curve.lineTo(x(a), r.getY());

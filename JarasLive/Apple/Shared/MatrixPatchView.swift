@@ -1,7 +1,10 @@
-#if os(macOS)
 import SwiftUI
+#if os(macOS)
 import AppKit
 import CoreAudio
+#else
+import UIKit
+#endif
 
 private struct MatrixPatchRow: Equatable {
     let id: UUID?
@@ -38,8 +41,32 @@ private struct MatrixPatchPresentation: Equatable {
     }
 }
 
+private struct MatrixPatchStroke {
+    let start: (row: Int, column: Int)
+    let end: (row: Int, column: Int)
+    var steps: Int { max(abs(end.row - start.row), abs(end.column - start.column)) }
+    func cell(at step: Int) -> (row: Int, column: Int) {
+        let length = max(1, steps)
+        func coordinate(_ a: Int, _ b: Int) -> Int {
+            (a * (length - step) + b * step + length / 2) / length
+        }
+        return (coordinate(start.row, end.row), coordinate(start.column, end.column))
+    }
+    func contains(row: Int, column: Int) -> Bool {
+        let major = abs(end.column - start.column) >= abs(end.row - start.row)
+        let step = major ? abs(column - start.column) : abs(row - start.row)
+        guard step <= steps else { return false }
+        let point = cell(at: step)
+        return point.row == row && point.column == column
+    }
+}
+
 struct MatrixPatchView: View {
     @ObservedObject var show: ShowController
+    var close: (() -> Void)? = nil
+    #if os(iOS)
+    @State private var diagonal = false
+    #endif
     @ObservedObject private var audio = AudioDeviceSettings.shared
     @AppStorage("jaras.language") private var language = "en"
     @State private var search = ""
@@ -83,12 +110,14 @@ struct MatrixPatchView: View {
         cached = result
     }
     private func channelName(_ channel: Int) -> String {
+        #if os(macOS)
         if let device = audio.devices.first(where: { $0.id == audio.selectedUID }), device.hardwareID != 0 {
             var address = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyElementName, mScope: kAudioDevicePropertyScopeOutput, mElement: UInt32(channel))
             var name: CFString = "" as CFString
             var size = UInt32(MemoryLayout<CFString>.size)
             if AudioObjectGetPropertyData(device.hardwareID, &address, 0, nil, &size, &name) == noErr, !(name as String).isEmpty { return name as String }
         }
+        #endif
         return "Out \(channel)"
     }
     var body: some View {
@@ -105,15 +134,26 @@ struct MatrixPatchView: View {
                     TextField(JarasLocalization.string("Search tracks"), text: $search).textFieldStyle(.plain)
                     if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain) }
                 }.font(.system(size: 11)).padding(6).frame(width: 158).background(Color.black.opacity(0.35)).cornerRadius(5)
+                #if os(iOS)
+                Button { diagonal.toggle() } label: {
+                    Image(systemName: "arrow.down.right")
+                        .frame(width: 40, height: 40)
+                }.foregroundStyle(diagonal ? JarasTheme.green : Color.secondary)
+                    .accessibilityLabel("Diagonal").accessibilityAddTraits(diagonal ? .isSelected : [])
+                if let close {
+                    Button(action: close) { Image(systemName: "xmark").frame(width: 40, height: 40) }
+                        .accessibilityLabel("Close")
+                }
+                #endif
             }.padding(7)
-            MatrixPatchCanvas(model: model, hover: { hint = $0 }, apply: { cells, enabled in
-                failure = ""
-                let previous = show.projectRevision
-                show.applyMatrixPatch(cells, enabled: enabled)
-                if show.projectRevision == previous && !show.message.isEmpty { failure = JarasLocalization.string(show.message) }
-            }).padding(.horizontal, 8)
+            #if os(iOS)
+            NativeMatrixPatchCanvas(model: model, diagonal: diagonal, hint: { hint = $0 }, apply: apply)
+                .padding(.horizontal, 8)
+            #else
+            MatrixPatchCanvas(model: model, hover: { hint = $0 }, apply: apply).padding(.horizontal, 8)
+            #endif
             HStack(spacing: 8) {
-                Text("Drag along a row or column. Hold Shift and drag right to connect diagonally or left to disconnect.")
+                gestureHelp
                     .font(.system(size: 11)).foregroundColor(.secondary).lineLimit(2)
                 Spacer(minLength: 0)
                 if !failure.isEmpty || !hint.isEmpty {
@@ -131,8 +171,23 @@ struct MatrixPatchView: View {
             .onChange(of: audio.deviceName) { _ in refresh() }
             .onChange(of: language) { _ in refresh() }
     }
+    private var gestureHelp: Text {
+        #if os(iOS)
+        return Text("Tap or drag to route. Scroll with two fingers. Use the diagonal button or hold Shift.")
+        #else
+        return Text("Drag along a row or column. Hold Shift and drag right to connect diagonally or left to disconnect.")
+        #endif
+    }
+    private func apply(_ cells: [(UUID?, MatrixPatchDestination)], _ enabled: Bool) {
+        guard !cells.isEmpty else { return }
+        failure = ""
+        let previous = show.projectRevision
+        show.applyMatrixPatch(cells, enabled: enabled)
+        if show.projectRevision == previous && !show.message.isEmpty { failure = JarasLocalization.string(show.message) }
+    }
 }
 
+#if os(macOS)
 private struct MatrixPatchCanvas: NSViewRepresentable {
     let model: MatrixPatchPresentation
     let hover: (String) -> Void
@@ -210,26 +265,7 @@ private final class MatrixPatchDrawing: NSView {
     let area: Area
     private var tracking: NSTrackingArea?
     private var anchor: (row: Int, column: Int)?
-    private struct Stroke {
-        let start: (row: Int, column: Int)
-        let end: (row: Int, column: Int)
-        var steps: Int { max(abs(end.row - start.row), abs(end.column - start.column)) }
-        func cell(at step: Int) -> (row: Int, column: Int) {
-            let length = max(1, steps)
-            func coordinate(_ a: Int, _ b: Int) -> Int {
-                (a * (length - step) + b * step + length / 2) / length
-            }
-            return (coordinate(start.row, end.row), coordinate(start.column, end.column))
-        }
-        func contains(row: Int, column: Int) -> Bool {
-            let major = abs(end.column - start.column) >= abs(end.row - start.row)
-            let step = major ? abs(column - start.column) : abs(row - start.row)
-            guard step <= steps else { return false }
-            let point = cell(at: step)
-            return point.row == row && point.column == column
-        }
-    }
-    private var selection: Stroke?
+    private var selection: MatrixPatchStroke?
     private var connects = false
     override var isFlipped: Bool { true }
     init(owner: MatrixPatchSurface, area: Area) { self.owner = owner; self.area = area; super.init(frame: .zero); clipsToBounds = true }
@@ -283,7 +319,7 @@ private final class MatrixPatchDrawing: NSView {
             if abs(column - anchor.column) >= abs(row - anchor.row) { row = anchor.row }
             else { column = anchor.column }
         }
-        selection = Stroke(start: anchor, end: (row, column))
+        selection = MatrixPatchStroke(start: anchor, end: (row, column))
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
@@ -372,6 +408,197 @@ private final class MatrixPatchDrawing: NSView {
                 }
             }
         }
+    }
+}
+#endif
+
+#if os(iOS)
+private struct NativeMatrixPatchCanvas: UIViewRepresentable {
+    let model: MatrixPatchPresentation
+    let diagonal: Bool
+    let hint: (String) -> Void
+    let apply: ([(UUID?, MatrixPatchDestination)], Bool) -> Void
+
+    func makeUIView(context: Context) -> NativeMatrixPatchGrid { NativeMatrixPatchGrid() }
+    func updateUIView(_ view: NativeMatrixPatchGrid, context: Context) {
+        view.diagonal = diagonal
+        view.hint = hint
+        view.apply = apply
+        if view.model != model { view.update(model) }
+    }
+}
+
+private final class NativeMatrixPatchGrid: UIView, UIScrollViewDelegate {
+    private let scroll = UIScrollView()
+    private let ink = NativeMatrixPatchInk()
+    private let labelWidth: CGFloat = 142, headerHeight: CGFloat = 90
+    private let rowHeight: CGFloat = 31, columnWidth: CGFloat = 35
+    private var stroke: MatrixPatchStroke?
+    private var connecting = true
+    fileprivate private(set) var model = MatrixPatchPresentation()
+    var diagonal = false
+    var hint: (String) -> Void = { _ in }
+    var apply: ([(UUID?, MatrixPatchDestination)], Bool) -> Void = { _, _ in }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        scroll.delegate = self
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.panGestureRecognizer.minimumNumberOfTouches = 2
+        let drag = UIPanGestureRecognizer(target: self, action: #selector(dragged(_:)))
+        drag.maximumNumberOfTouches = 1
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+        tap.require(toFail: drag)
+        scroll.addGestureRecognizer(drag)
+        scroll.addGestureRecognizer(tap)
+        addSubview(scroll)
+        ink.owner = self
+        ink.isUserInteractionEnabled = false
+        addSubview(ink)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    func update(_ model: MatrixPatchPresentation) {
+        self.model = model
+        stroke = nil
+        setNeedsLayout()
+        ink.setNeedsDisplay()
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        scroll.frame = bounds
+        ink.frame = bounds
+        let size = CGSize(width: max(bounds.width, labelWidth + CGFloat(model.columns.count) * columnWidth),
+                          height: max(bounds.height, headerHeight + CGFloat(model.rows.count) * rowHeight))
+        if scroll.contentSize != size { scroll.contentSize = size }
+    }
+    func scrollViewDidScroll(_ scrollView: UIScrollView) { ink.setNeedsDisplay() }
+    private func cell(_ point: CGPoint, clamp: Bool = false) -> (row: Int, column: Int)? {
+        guard !model.rows.isEmpty, !model.columns.isEmpty else { return nil }
+        let row = Int(floor((point.y - headerHeight + scroll.contentOffset.y) / rowHeight))
+        let col = Int(floor((point.x - labelWidth + scroll.contentOffset.x) / columnWidth))
+        if clamp { return (min(model.rows.count - 1, max(0, row)), min(model.columns.count - 1, max(0, col))) }
+        guard point.x >= labelWidth, point.y >= headerHeight,
+              model.rows.indices.contains(row), model.columns.indices.contains(col) else { return nil }
+        return (row, col)
+    }
+    @objc private func tapped(_ gesture: UITapGestureRecognizer) {
+        guard let cell = cell(gesture.location(in: self)) else { return }
+        begin(cell)
+        commit()
+    }
+    private func begin(_ cell: (row: Int, column: Int)) {
+        connecting = !model.active(cell.row, cell.column)
+        stroke = MatrixPatchStroke(start: cell, end: cell)
+        hint(model.rows[cell.row].name + " → " + model.columns[cell.column].name)
+    }
+    @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
+        let point = gesture.location(in: self)
+        if gesture.state == .began {
+            let delta = gesture.translation(in: self)
+            guard let start = cell(CGPoint(x: point.x - delta.x, y: point.y - delta.y)) else { return }
+            begin(start)
+        }
+        guard let start = stroke?.start else { return }
+        defer { ink.setNeedsDisplay() }
+        guard gesture.state == .began || gesture.state == .changed || gesture.state == .ended,
+              var end = cell(point, clamp: true) else { stroke = nil; return }
+        let dx = end.column - start.column
+        connecting = !model.active(start.row, start.column)
+        if diagonal || gesture.modifierFlags.contains(.shift) {
+            let step = min(model.rows.count - 1 - start.row, max(-start.row, dx))
+            end = (start.row + step, start.column + step)
+            if dx != 0 { connecting = dx > 0 }
+        } else if abs(dx) >= abs(end.row - start.row) { end.row = start.row }
+        else { end.column = start.column }
+        stroke = MatrixPatchStroke(start: start, end: end)
+        if gesture.state == .ended { commit() }
+    }
+    private func commit() {
+        guard let stroke else { return }
+        var edits: [(UUID?, MatrixPatchDestination)] = []
+        for step in 0...stroke.steps {
+            let (r, c) = stroke.cell(at: step)
+            let active = model.active(r, c)
+            if active != connecting && (active || model.enabled(r, c)) {
+                edits.append((model.rows[r].id, model.columns[c].destination))
+            }
+        }
+        self.stroke = nil
+        ink.setNeedsDisplay()
+        if !edits.isEmpty { apply(edits, connecting) }
+    }
+
+    fileprivate func drawGrid(_ context: CGContext) {
+        let offset = scroll.contentOffset
+        let firstRow = max(0, Int(floor(offset.y / rowHeight)))
+        let firstCol = max(0, Int(floor(offset.x / columnWidth)))
+        let endRow = min(model.rows.count, Int(ceil((bounds.height - headerHeight + offset.y) / rowHeight)))
+        let endCol = min(model.columns.count, Int(ceil((bounds.width - labelWidth + offset.x) / columnWidth)))
+        let rows = firstRow..<max(firstRow, endRow)
+        let cols = firstCol..<max(firstCol, endCol)
+        func color(_ rgb: UInt32) -> UIColor {
+            UIColor(red: CGFloat(rgb >> 16 & 255)/255, green: CGFloat(rgb >> 8 & 255)/255, blue: CGFloat(rgb & 255)/255, alpha: 1)
+        }
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        func label(_ text: String, _ rect: CGRect, tint: UIColor = .white) {
+            (text as NSString).draw(in: rect, withAttributes: [.font: UIFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: tint, .paragraphStyle: style])
+        }
+        UIColor(white: 0.085, alpha: 1).setFill()
+        context.fill(bounds)
+        context.saveGState()
+        context.clip(to: CGRect(x: labelWidth, y: headerHeight, width: max(0,bounds.width-labelWidth), height: max(0,bounds.height-headerHeight)))
+        for r in rows {
+            let y = headerHeight + CGFloat(r) * rowHeight - offset.y
+            for c in cols {
+                let rect = CGRect(x: labelWidth + CGFloat(c)*columnWidth - offset.x + 2, y: y+2, width: columnWidth-4, height: rowHeight-4)
+                let preview = stroke?.contains(row: r, column: c) == true
+                let on = preview ? connecting : model.active(r, c)
+                let enabled = model.enabled(r, c)
+                let tint = on ? color(0x56da91) : UIColor(white: enabled ? 0.22 : 0.12, alpha: 1)
+                tint.setFill()
+                UIBezierPath(roundedRect: rect, cornerRadius: 4).fill()
+                if on {
+                    UIColor(white: 0.12, alpha: 1).setFill()
+                    UIBezierPath(ovalIn: CGRect(x: rect.midX-3, y: rect.midY-3, width: 6, height: 6)).fill()
+                }
+            }
+        }
+        context.restoreGState()
+        context.saveGState()
+        context.clip(to: CGRect(x: 0, y: headerHeight, width: labelWidth, height: max(0,bounds.height-headerHeight)))
+        for r in rows {
+            let y = headerHeight + CGFloat(r)*rowHeight - offset.y
+            let row = model.rows[r]
+            color(row.color).setFill()
+            context.fill(CGRect(x: 0, y: y + 3, width: 3, height: rowHeight-6))
+            label(row.number, CGRect(x: 7, y: y+8, width: 24, height: 17), tint: .lightGray)
+            label(row.name, CGRect(x: 32, y: y+8, width: labelWidth-36, height: 17))
+        }
+        context.restoreGState()
+        context.saveGState()
+        context.clip(to: CGRect(x: labelWidth, y: 0, width: max(0,bounds.width-labelWidth), height: headerHeight))
+        for c in cols {
+            let x = labelWidth + CGFloat(c)*columnWidth - offset.x
+            let dest = model.columns[c]
+            context.saveGState()
+            context.translateBy(x: x+6, y: headerHeight-24)
+            context.rotate(by: -.pi/2)
+            label(dest.name, CGRect(x: 0, y: 0, width: headerHeight-25, height: 17), tint: dest.available ? .white : .lightGray)
+            context.restoreGState()
+            label(dest.badge, CGRect(x: x+3, y: headerHeight-20, width: columnWidth-3, height: 17), tint: color(dest.color))
+        }
+        context.restoreGState()
+        label(JarasLocalization.string("Destinations →"), CGRect(x: 7, y: 12, width: labelWidth-9, height: 20), tint: .lightGray)
+        label(JarasLocalization.string("Sources"), CGRect(x: 7, y: headerHeight-24, width: labelWidth-9, height: 20))
+    }
+}
+
+private final class NativeMatrixPatchInk: UIView {
+    weak var owner: NativeMatrixPatchGrid?
+    override func draw(_ rect: CGRect) {
+        if let context = UIGraphicsGetCurrentContext() { owner?.drawGrid(context) }
     }
 }
 #endif

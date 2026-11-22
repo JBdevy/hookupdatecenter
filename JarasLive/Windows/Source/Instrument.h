@@ -12,7 +12,7 @@ public:
     void configure(const var &,bool drums=false);
     void render(AudioBuffer<float>&,const MidiBuffer&,int samples,int start=0);
     static constexpr int previewSampleRate = 48000;
-    static AudioBuffer<float> renderLibraryPreview(const File&);
+    static AudioBuffer<float> renderLibraryPreview(const File&, bool drums = false);
     void stop();
     String name;
 private:

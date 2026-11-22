@@ -42,6 +42,22 @@ struct ClickProgram {
         }
         if(current.end>current.start)result.push_back(current);return result;
     }
+    static Section meterAt(const jaras::Song &song, double position) {
+        Section section{0,song.duration,0,song.bpm,song.beatsPerBar,song.beatUnit};
+        const jaras::TimelineMarker *latest = nullptr;
+        if (song.markers) for (const auto &marker : *song.markers) {
+            if (marker.tempoBPM && marker.position <= position &&
+                (!latest || std::tie(marker.position,marker.id) > std::tie(latest->position,latest->id)))
+                latest = &marker;
+        }
+        if (latest) {
+            section.start = section.origin = latest->position;
+            section.bpm = *latest->tempoBPM;
+            section.beats = latest->tempoBeats.value_or(4);
+            section.unit = latest->tempoUnit.value_or(4);
+        }
+        return section;
+    }
     void prepare(const jaras::Song &song,const jaras::Track *track=nullptr){
         sections.clear();auto timing=tempo(song);
         if(!track){sections=timing;return;}
@@ -100,8 +116,11 @@ struct ClickProgram {
         const int beats=section.beats/section.subdivisions*subdivisions;
         const double beat=60./bpm*4/section.unit;const auto index=(int64)std::floor((time-section.origin)/beat+1e-9);
         if (gate && !gate->accepts(section.origin + index * beat)) return 0;
+        return pulse(index,time-section.origin-index*beat,beats,mode,gainA,gainB);
+    }
+    float pulse(int64 index, double phase, int beats, int mode, float gainA, float gainB) const {
         const bool accent=mode==1||(mode==0&&index%std::max(1,beats)==0);
-        const auto &sound=accent?a:b;const double offset=(time-section.origin-index*beat)*sound.rate;
+        const auto &sound=accent?a:b;const double offset=phase*sound.rate;
         if(offset<0||offset>=(double)sound.data.size())return 0;const auto n=(size_t)offset;const float fraction=(float)(offset-n);
         const float left=sound.data[n],right=n+1<sound.data.size()?sound.data[n+1]:0;
         return (left+(right-left)*fraction)*(accent?gainA:gainB);
