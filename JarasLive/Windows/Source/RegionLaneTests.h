@@ -359,12 +359,12 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 auto *row=uiFeatureTests::find(workspace,"trackRow:"+text(project.songs[0].tracks[i].id));
                 require(row,"Mixer track row missing");
                 const auto rowBounds=workspace.getLocalArea(row,row->getLocalBounds());
-                require(closeEnough((double)get(get(item,"bounds"),"y"),rowBounds.getY()+3),
+                require(closeEnough((double)get(get(item,"bounds"),"y"),rowBounds.getY() + timelineItemVerticalInset),
                         "Timeline item and track mixer row have different vertical origins");
             }
             return diagnostics;
         };
-        const auto before=checkGeometry(64,1);
+        const auto before=checkGeometry(80,1);
         const auto firstItemBefore=get(findEntry(get(before,"visibleItems"),"item-first"),"bounds");
         const auto secondItemBefore=get(findEntry(get(before,"visibleItems"),"item-second"),"bounds");
         const auto belowBefore=get(findEntry(get(before,"visibleItems"),"item-below"),"bounds");
@@ -377,7 +377,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const int modifiers=ModifierKeys::leftButtonModifier|ModifierKeys::shiftModifier;
         canvas->mouseDown(mouse(*canvas,origin,origin,modifiers & ~ModifierKeys::shiftModifier));
         canvas->mouseDrag(mouse(*canvas,destination,origin,modifiers,true));
-        const auto preview=checkGeometry(80,2);
+        const auto preview=checkGeometry(96,2);
         screenshot("region-overlap-preview.png");
         const auto previewRegion=findEntry(get(preview,"regions"),"second");
         require((int)get(previewRegion,"lane")==1 && closeEnough((double)get(previewRegion,"start"),10) && closeEnough((double)get(previewRegion,"end"),25),
@@ -397,19 +397,19 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
             void componentMovedOrResized(Component &,bool,bool) override { inspect(); }
         } observer;
         bool collapsed=false;
-        observer.inspect=[&]{ if ((int)get(state(),"headerHeight")<80) collapsed=true; };
+        observer.inspect=[&]{ if ((int)get(state(),"headerHeight")<96) collapsed=true; };
         for(auto *child:workspace.getChildren()) child->addComponentListener(&observer);
         canvas->mouseUp(mouse(*canvas,destination,origin,ModifierKeys::shiftModifier,true));
         for(auto *child:workspace.getChildren()) child->removeComponentListener(&observer);
         require(!collapsed,"Release briefly collapsed the preview lane before committing the region");
-        checkGeometry(80,2);
+        checkGeometry(96,2);
         screenshot("region-overlap-committed.png");
         require(closeEnough(part(*session.song(),"second").startTime,10) && closeEnough(clip(*session.song(),"item-second").startTime,11) &&
                 closeEnough(marker(*session.song(),"cue").position,12),"Release did not commit the displayed region and owned contents");
-        session.undo();checkGeometry(64,1);
+        session.undo();checkGeometry(80,1);
         require(closeEnough(part(*session.song(),"second").startTime,15) && closeEnough(clip(*session.song(),"item-second").startTime,16) &&
                 closeEnough(marker(*session.song(),"cue").position,17),"One Undo did not restore region, media and marker together");
-        session.redo();checkGeometry(80,2);
+        session.redo();checkGeometry(96,2);
         require(closeEnough(part(*session.song(),"second").startTime,10) && closeEnough(clip(*session.song(),"item-second").startTime,11),
                 "One Redo did not restore the complete overlapping move");
 

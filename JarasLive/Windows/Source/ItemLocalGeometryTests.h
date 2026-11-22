@@ -85,7 +85,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         const int counts[]{1,1,2,2,3,3,3}, positions[]{0,0,0,1,0,1,2};
         for(size_t i=0;i<7;++i) {
             const auto item=bounds(ids[i]);
-            require(approximatelyEqual(item.getY(),rowTop+positions[i]*height/counts[i]+3) && approximatelyEqual(item.getHeight(),height/counts[i]-6),
+            require(approximatelyEqual(item.getY(),rowTop + positions[i]*height/counts[i] + timelineItemVerticalInset) && approximatelyEqual(item.getHeight(),height/counts[i] - 2 * timelineItemVerticalInset),
                     "Workspace diagnostics or hit geometry still use the track's global lane count for every item");
         }
         timelineVisualParityTests::save(directory,"item-local-geometry.png",capture());
@@ -113,7 +113,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         canvas->mouseUp(mouse(*canvas,destination,origin,ModifierKeys::shiftModifier,true));
         require(approximatelyEqual(currentClip(session,"isolated").startTime,2),"Dragging the lower isolated area moved the wrong item or track");
         const auto moved=bounds("isolated");
-        require(approximatelyEqual(moved.getY(),rowTop+3) && approximatelyEqual(moved.getHeight(),height/2-6),"Moving into an overlap did not use the new local pair geometry");
+        require(approximatelyEqual(moved.getY(),rowTop + timelineItemVerticalInset) && approximatelyEqual(moved.getHeight(),height/2 - 2 * timelineItemVerticalInset),"Moving into an overlap did not use the new local pair geometry");
         const auto body=moved.withTrimmedTop(22).reduced(4).getLargestIntegerWithin();
         require(timelineVisualParityTests::differences(movePreview,capture(),body)==0,
                 "Move release changed the locally sized preview inside the item");

@@ -277,10 +277,11 @@ void addPartsPanelTests(const File &directory, Register &&test) {
             auto click=[&](const char *id) {button(workspace,id)->onClick();};
             auto *left=dynamic_cast<PartsPanel *>(uiFeatureTests::find(workspace,"partsLeft"));
             auto *right=dynamic_cast<PartsPanel *>(uiFeatureTests::find(workspace,"partsRight"));
+            auto *setlist=uiFeatureTests::find(workspace,"setlistPanel");
             auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");
             auto *row=uiFeatureTests::find(workspace,"trackRow:"+text(track.id));
             auto *trackViewport=row ? row->findParentComponentOfClass<Viewport>() : nullptr;
-            require(left && right && left!=right && canvas && trackViewport,"Parts docks or track viewport missing");
+            require(left && right && left!=right && setlist && canvas && trackViewport,"Parts docks or track viewport missing");
             int panelCount=0;
             std::function<void(Component &)> countPanels=[&](Component &component) {
                 if (dynamic_cast<PartsPanel *>(&component)) ++panelCount;
@@ -299,13 +300,16 @@ void addPartsPanelTests(const File &directory, Register &&test) {
                         "A Parts dock toggle changed the other dock or disagreed with rendered visibility");
                 require(trackViewport->isVisible()==tracksVisible,
                         "Parts visibility changed the independently controlled track mixer");
-                const auto grid=workspace.getLocalArea(canvas,canvas->getLocalBounds());
+                const auto *timeline = canvas->getParentComponent();
+                const auto grid = workspace.getLocalArea(timeline, timeline->getLocalBounds());
                 require(grid.getWidth()>0 && grid.getHeight()>0 && workspace.getLocalBounds().contains(grid),
                         "Parts docking collapsed the timeline or placed it outside the window");
                 for (auto *panel:{left,right}) if (panel->isVisible()) {
-                    const auto bounds=panel->getBounds();
+                    const auto bounds = workspace.getLocalArea(panel, panel->getLocalBounds());
+                    const auto sidebar = panel == right
+                        ? workspace.getLocalArea(setlist, setlist->getLocalBounds()) : grid;
                     require(bounds.getWidth()>0 && workspace.getLocalBounds().contains(bounds) &&
-                            bounds.getY()==grid.getY() && bounds.getHeight()==grid.getHeight() && !bounds.intersects(grid),
+                            bounds.getY()==sidebar.getY() && bounds.getHeight()==sidebar.getHeight() && !bounds.intersects(grid),
                             "Parts dock overlaps the timeline, clips, or uses a footer-sized layout");
                     require(bounds.getX()<grid.getX() || bounds.getX()>=grid.getRight(),
                             "Parts dock is not beside the timeline");

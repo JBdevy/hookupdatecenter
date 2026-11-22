@@ -1,4 +1,5 @@
 #pragma once
+#include "CloseProjectSheet.h"
 #include "TimelineRegionLabels.h"
 #include "DesktopToolbarSymbols.h"
 #include "FooterAudioStatusButton.h"
@@ -712,11 +713,7 @@ struct WorkspaceLayoutTests {
         w.setSize(1200,800); w.projectOpened(false);
         session.edit([](jaras::Project &p){p.name="Preserved edit";},false);
         bool applied=false, cancelled=false;
-        auto find=[&]() -> ProjectOpenConfirmationPanel * {
-            for(auto *child:w.getChildren())if(auto *sheet=dynamic_cast<ModalSheet*>(child))
-                for(auto *content:sheet->getChildren())if(auto *panel=dynamic_cast<ProjectOpenConfirmationPanel*>(content))return panel;
-            return nullptr;
-        };
+        auto find=[] { return dynamic_cast<CloseProjectSheet *>(Component::getCurrentlyModalComponent()); };
         w.confirmProjectReplacement("Next",[&]{applied=true;},[&]{cancelled=true;});
         auto *panel=find();require(panel!=nullptr,"Replacement used a system alert instead of the rounded panel");
         panel->keyPressed(KeyPress(KeyPress::escapeKey));floatingControlTests::pump();
@@ -731,7 +728,9 @@ struct WorkspaceLayoutTests {
         floatingControlTests::pump();
         session.edit([](jaras::Project &p){p.name="Remote preserved edit";},false);applied=false;
         w.confirmProjectReplacement("Remote next",[&]{applied=true;},{},true);
-        require(find()==nullptr,"Remote confirmation was repeated on the desktop");
+        panel = find();
+        require(panel && !applied && session.dirty, "Incoming Remote selection must allow the desktop to save its pending edits");
+        panel->keyPressed(KeyPress(KeyPress::returnKey));
         const auto remoteDeadline=Time::getMillisecondCounterHiRes()+15000;
         while(!applied&&Time::getMillisecondCounterHiRes()<remoteDeadline)floatingControlTests::pump();
         require(applied&&!session.dirty,"Remote replacement did not save before continuing");
@@ -842,7 +841,7 @@ struct WorkspaceLayoutTests {
         auto *fader = uiFeatureTests::find(*row, "trackVolume");
         const int narrow = fader ? fader->getWidth() : 0;
         workspace.mixerWidth = 360; workspace.resized();
-        require(narrow > 0 && narrow < fader->getWidth(), "The fader must get shorter as the mixer narrows");
+        require(narrow > 0 && narrow == fader->getWidth(), "The fader must keep its length across mixer widths");
 
         auto rename = [&](Component *channel, const String &replacement) {
             require(channel, "Mixer channel is missing");
