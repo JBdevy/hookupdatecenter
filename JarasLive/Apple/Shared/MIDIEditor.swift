@@ -555,6 +555,40 @@ private struct MIDIEditor: View {
                             else if scale > zoom.lowerBound { zoomMemory = scale; scale = zoom.lowerBound }
                         }))
     }
+    private func editorTitle(_ clip: AudioClip) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "pianokeys").foregroundStyle(JarasTheme.green)
+            Text(row?.name ?? "MIDI").fontWeight(.semibold).lineLimit(1)
+            Text(clip.name).foregroundStyle(JarasTheme.secondary).lineLimit(1)
+        }
+    }
+
+    private var editorActions: some View {
+        HStack(spacing: 10) {
+            #if os(iOS)
+            HStack(spacing: 7) {
+                Text(verbatim: "Create Velocity").fixedSize()
+                Button { creationVelocity -= 1 } label: {
+                    Image(systemName: "minus").frame(width: 29, height: 28).contentShape(Rectangle())
+                }.disabled(creationVelocity == 1).accessibilityLabel("Decrease Create Velocity")
+                Text("\(creationVelocity)").monospacedDigit().frame(width: 28)
+                    .accessibilityLabel(Text(verbatim: "Create Velocity"))
+                Button { creationVelocity += 1 } label: {
+                    Image(systemName: "plus").frame(width: 29, height: 28).contentShape(Rectangle())
+                }.disabled(creationVelocity == 127).accessibilityLabel("Increase Create Velocity")
+            }.disabled(!editable)
+            Divider().frame(height: 20)
+            #else
+            Text(verbatim: "Create Velocity")
+            Stepper(value: $creationVelocity, in: 1...127) {
+                Text("\(creationVelocity)").monospacedDigit().frame(width: 30)
+            }.frame(width: 75).accessibilityLabel(Text(verbatim: "Create Velocity")).disabled(!editable)
+            #endif
+            Button { show.undo() } label: { Image(systemName: "arrow.uturn.backward") }.jarasHelp("Desfazer")
+            Button { show.redo() } label: { Image(systemName: "arrow.uturn.forward") }.jarasHelp("Refazer")
+            Button(show.snapshot.transport.playing ? "Pausar" : "Play") { show.send(show.snapshot.transport.playing ? .pause : .play) }
+        }.fixedSize(horizontal: true, vertical: false)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -562,22 +596,7 @@ private struct MIDIEditor: View {
                 let visibleNotes = midi.notes.filter { channel == 0 || $0.channel == channel }
                 let visibleSelection = selected.intersection(visibleNotes.map(\.id))
                 let quantizeTargets = visibleSelection.isEmpty ? Set(visibleNotes.map(\.id)) : visibleSelection
-                HStack(spacing: 10) {
-                    Image(systemName: "pianokeys").foregroundStyle(JarasTheme.green)
-                    Text(row?.name ?? "MIDI").fontWeight(.semibold).lineLimit(1)
-                    Text(clip.name).foregroundStyle(JarasTheme.secondary).lineLimit(1)
-                    Spacer()
-                    Text(verbatim: "Create Velocity")
-                    Stepper(value: $creationVelocity, in: 1...127) {
-                        Text("\(creationVelocity)").monospacedDigit().frame(width: 30)
-                    }.frame(width: 75).accessibilityLabel(Text(verbatim: "Create Velocity")).disabled(!editable)
-                    Button { show.undo() } label: { Image(systemName:"arrow.uturn.backward") }.jarasHelp("Desfazer")
-                    Button { show.redo() } label: { Image(systemName:"arrow.uturn.forward") }.jarasHelp("Refazer")
-                    Button(show.snapshot.transport.playing ? "Pausar" : "Play") { show.send(show.snapshot.transport.playing ? .pause : .play) }
-                }.padding(10)
-                Divider()
-                HStack(spacing: 12) {
-                    Group {
+                let gridControls = HStack(spacing: 12) {
                     Picker("Grade",selection:gridBinding(\.division,16)) { ForEach(MIDIGrid.divisions,id:\.self) { Text($0 == 1 ? "1" : "1/\($0)").tag($0) } }.frame(width:120)
                     Picker("",selection:gridBinding(\.mode,.straight)) { ForEach(MIDIGridMode.allCases,id:\.self) { Text($0.title).tag($0) } }.labelsHidden().frame(width:108)
                     if midi.grid.mode == .swing {
@@ -595,10 +614,40 @@ private struct MIDIEditor: View {
                             }.keyboardShortcut(.defaultAction) }
                         }.padding(16).frame(width:320)
                     }
-                    }.disabled(!editable)
+                }.fixedSize(horizontal: true, vertical: false).disabled(!editable)
+                #if os(iOS)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        editorTitle(clip).fixedSize(horizontal: true, vertical: false)
+                        Spacer(minLength: 0)
+                        editorActions
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        editorTitle(clip)
+                        ScrollView(.horizontal, showsIndicators: false) { editorActions }
+                    }
+                }.padding(.horizontal, 10).padding(.vertical, 6)
+                Divider()
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        gridControls
+                        Spacer(minLength: 0)
+                        zoomControls.fixedSize(horizontal: true, vertical: false)
+                    }
+                    VStack(alignment: .trailing, spacing: 4) {
+                        ScrollView(.horizontal, showsIndicators: false) { gridControls }
+                        zoomControls.fixedSize(horizontal: true, vertical: false)
+                    }
+                }.padding(.horizontal, 10).padding(.vertical, 6)
+                #else
+                HStack(spacing: 10) { editorTitle(clip); Spacer(); editorActions }.padding(10)
+                Divider()
+                HStack(spacing: 12) {
+                    gridControls
                     Spacer(minLength: 0)
                     zoomControls.fixedSize(horizontal: true, vertical: false)
-                }.padding(.horizontal,10).padding(.vertical,8)
+                }.padding(.horizontal, 10).padding(.vertical, 8)
+                #endif
                 if let preview {
                     preview(.init(zoom: scale, height: keyHeight, changeZoom: changeScale, changeHeight: changeHeight, velocity: creationVelocity, filter: channel,
                                   selected: selected, select: { selected = $0 }, commit: { notes in
@@ -1335,10 +1384,11 @@ private struct MIDIPreviewScrollBar: View {
 #endif
 
 #if os(iOS)
-struct IpadMIDIPreviewWindow: View {
-    let show: ShowController
+struct IpadWorkspaceFloatingPanel<Content: View>: View {
+    let title: String
     let dock: () -> Void
     let close: () -> Void
+    @ViewBuilder let content: () -> Content
     @State private var position = CGPoint(x: 24, y: 82)
     @State private var height = 340.0
     @GestureState private var movement = CGSize.zero
@@ -1352,7 +1402,7 @@ struct IpadMIDIPreviewWindow: View {
             let yLimit = max(0, viewport.size.height - currentHeight)
             VStack(spacing: 0) {
                 HStack {
-                    Text(verbatim: "MIDI Preview").font(.jarasHeadline)
+                    Text(verbatim: title).font(.jarasHeadline)
                     Spacer()
                     Button(action: dock) { Image(systemName: "pin.fill").frame(width: 36, height: 36) }.accessibilityLabel("Indexar")
                     Button(action: close) { Image(systemName: "xmark").frame(width: 36, height: 36) }.accessibilityLabel("Close")
@@ -1364,13 +1414,13 @@ struct IpadMIDIPreviewWindow: View {
                             position.y = min(yLimit, max(0, position.y + drag.translation.height))
                         })
                 Divider()
-                RecordingPianoPreview(show: show)
+                content().frame(maxWidth: .infinity, maxHeight: .infinity)
                 Capsule().fill(JarasTheme.secondary).frame(width: 48, height: 3)
                     .frame(maxWidth: .infinity).frame(height: 16).contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
                         .updating($resize) { drag, value, _ in value = drag.translation.height }
                         .onEnded { drag in height = min(viewport.size.height, max(200, height + drag.translation.height)) })
-                    .accessibilityLabel("Resize MIDI Preview")
+                    .accessibilityLabel(Text("Resize \(title)"))
             }.frame(width: width, height: currentHeight)
                 .background(JarasTheme.panel)
                 .clipShape(RoundedRectangle(cornerRadius: 10))

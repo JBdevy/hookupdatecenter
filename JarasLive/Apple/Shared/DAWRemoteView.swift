@@ -1272,6 +1272,7 @@ private struct TrackMixFeedbackPanel: View {
     @AppStorage("jaras.ipad.parts.left.open") private var nativeLeftPartsOpen = false
     @AppStorage(JarasInterfaceTheme.preferenceKey) private var nativeInterfaceTheme = JarasInterfaceTheme.defaultTheme
     @AppStorage("jaras.ipad.hozMixer.height") private var nativeMixerHeight = 273.0
+    @State private var nativeHozMixerDetached = false
     @GestureState private var mixerHeightTranslation: CGFloat = 0
     @AppStorage("jaras.ipad.focus.open") private var nativeFocusOpen = false
     @AppStorage("jaras.ipad.library.open") private var nativeLibraryOpen = false
@@ -2475,7 +2476,8 @@ private struct TrackMixFeedbackPanel: View {
             let partsHeight = horizontalPartsOpen && !prompterFullscreen && prompterPanel == nil
                 ? min(192, geometry.size.height * 0.42) * min(1.5, max(1, horizontalPartsHeightScale)) : 0
             let dockAvailable = max(0, geometry.size.height - 250 - padsHeight - pianoHeight - partsHeight)
-            let previewMaximum = min(724, max(0, dockAvailable - (hozMixerOpen ? 160 : 0)))
+            let mixerDocked = local && hozMixerOpen && !nativeHozMixerDetached && !prompterFullscreen
+            let previewMaximum = min(724, max(0, dockAvailable - (mixerDocked ? 160 : 0)))
             let previewMinimum = min(170, previewMaximum)
             let previewInitial = min(previewMaximum, max(previewMinimum, nativeMIDIPreviewHeight))
             let previewHeight = local && nativeMIDIPreviewOpen && !nativeMIDIPreviewDetached && !prompterFullscreen && prompterPanel == nil
@@ -2484,7 +2486,7 @@ private struct TrackMixFeedbackPanel: View {
             let maximumDockHeight = min(724, dockLimit)
             let minimumDockHeight = min(160, maximumDockHeight)
             let initialDockHeight = min(maximumDockHeight, max(minimumDockHeight, nativeMixerHeight))
-            let dockHeight = local && hozMixerOpen && !prompterFullscreen
+            let dockHeight = mixerDocked
                 ? min(maximumDockHeight, max(minimumDockHeight, initialDockHeight - mixerHeightTranslation)) : 0
             VStack(spacing: 1) {
                 HStack(spacing: 4) {
@@ -2537,6 +2539,12 @@ private struct TrackMixFeedbackPanel: View {
                         }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
                             .foregroundStyle(JarasTheme.toolbarTint(active: hozMixerOpen))
                             .accessibilityLabel("Hoz-Mixer")
+                            .contextMenu {
+                                Button(nativeHozMixerDetached ? "Indexar" : "Desindexar") {
+                                    nativeHozMixerDetached.toggle()
+                                    if !hozMixerOpen { toggleHozMixer() }
+                                }
+                            }
                     }
                     if let openMatrixPatch {
                         Button(action: openMatrixPatch) {
@@ -2852,8 +2860,18 @@ private struct TrackMixFeedbackPanel: View {
                         close: { remoteVinhetasOpen = false })
                 }
                 if local, nativeMIDIPreviewOpen, nativeMIDIPreviewDetached, !prompterFullscreen, let localShow {
-                    IpadMIDIPreviewWindow(show: localShow, dock: { nativeMIDIPreviewDetached = false },
-                                         close: { nativeMIDIPreviewOpen = false })
+                    IpadWorkspaceFloatingPanel(title: "MIDI Preview", dock: { nativeMIDIPreviewDetached = false },
+                                              close: { nativeMIDIPreviewOpen = false }) {
+                        RecordingPianoPreview(show: localShow)
+                    }
+                }
+                if local, hozMixerOpen, nativeHozMixerDetached, !prompterFullscreen, let localShow, let toggleHozMixer {
+                    IpadWorkspaceFloatingPanel(title: "Hoz Mixer", dock: { nativeHozMixerDetached = false },
+                                              close: toggleHozMixer) {
+                        FooterHorizontalMixer(show: localShow)
+                            .environment(\.trackMixFeedback, trackMixFeedback)
+                            .environment(\.openFX, openNativeFX)
+                    }
                 }
                 if local, nativeVinhetasOpen, nativeVinhetasDetached, let localShow {
                     IpadVinhetasFloatingPanel(touchMenusEnabled: editingTracks, createTrack: { _ = localShow.createVinhetasTrack() },
