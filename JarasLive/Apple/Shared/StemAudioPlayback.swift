@@ -6101,6 +6101,7 @@ struct VerticalTrackMeter: NSViewRepresentable {
     private let views = NSHashTable<NativeVerticalTrackMeterView>.weakObjects()
     private var tokens: [NSObjectProtocol] = []
     private var visibility: NSKeyValueObservation?
+    private var screenRefreshPending = false
     static func forWindow(_ window: NSWindow) -> NativeMeterWindowObserver {
         if let observer = observers.object(forKey: window) { return observer }
         let observer = NativeMeterWindowObserver(window)
@@ -6119,16 +6120,25 @@ struct VerticalTrackMeter: NSViewRepresentable {
         tokens = events.map { name in
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    for view in self?.views.allObjects ?? [] {
-                        // A window edge moves many fixed-size meter views. Their
-                        // cached layer geometry stays valid; layout/backing events
-                        // already invalidate it when a meter actually changes.
-                        if name == NSWindow.didChangeScreenNotification || name == NSWindow.didChangeBackingPropertiesNotification {
-                            view.resumeVisibleDrawing()
-                        } else { view.refreshVisibleDrawing() }
+                    guard let self else { return }
+                    if name == NSWindow.didChangeScreenNotification || name == NSWindow.didChangeBackingPropertiesNotification {
+                        self.refreshAfterScreenChange()
+                    } else {
+                        for view in self.views.allObjects { view.refreshVisibleDrawing() }
                     }
                 }
             }
+        }
+    }
+    private func refreshAfterScreenChange() {
+        guard !screenRefreshPending else { return }
+        screenRefreshPending = true
+        // AppKit can publish both notifications in the same display change.
+        // Rebind visible meter layers after the window has its new backing scale.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.screenRefreshPending = false
+            for view in self.views.allObjects { view.resumeVisibleDrawing() }
         }
     }
     func add(_ view: NativeVerticalTrackMeterView) { views.add(view) }
