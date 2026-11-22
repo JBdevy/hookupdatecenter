@@ -2,28 +2,30 @@
 
 namespace catlive {
 // Read the same two raster sheets bundled by the macOS and iPad targets.
-inline Image controlArtwork(const String &name, bool active) {
+inline Image controlArtwork(const String &name, bool active, bool toolbar = false) {
     struct Atlas {
-        std::map<String, std::array<Image, 2>> icons;
+        std::map<String, std::array<Image, 3>> icons;
         Atlas() {
             const auto dir = File::getSpecialLocation(File::currentExecutableFile).getSiblingFile("ControlIcons");
             StringArray names;
             dir.getChildFile("controlNames.txt").readLines(names);
             const auto off = ImageFileFormat::loadFrom(dir.getChildFile("controlsOff.png"));
             const auto on = ImageFileFormat::loadFrom(dir.getChildFile("controlsOn.png"));
+            const auto toolbarOff = ImageFileFormat::loadFrom(dir.getChildFile("controlsToolbarOff.png"));
             if (off.isNull() || on.isNull() || off.getBounds() != on.getBounds()) return;
             const auto tile = off.getWidth() / 8;
             for (int i = 0; i < names.size(); ++i) {
                 if (names[i].isEmpty()) continue;
                 const juce::Rectangle<int> cell((i % 8) * tile, (i / 8) * tile, tile, tile);
                 if (off.getBounds().contains(cell))
-                    icons.emplace(names[i], std::array<Image, 2>{off.getClippedImage(cell), on.getClippedImage(cell)});
+                    icons.emplace(names[i], std::array<Image, 3>{off.getClippedImage(cell), on.getClippedImage(cell),
+                        toolbarOff.getBounds() == off.getBounds() ? toolbarOff.getClippedImage(cell) : off.getClippedImage(cell)});
             }
         }
     };
     static const Atlas atlas;
     const auto found = atlas.icons.find(name);
-    return found == atlas.icons.end() ? Image{} : found->second[active ? 1 : 0];
+    return found == atlas.icons.end() ? Image{} : found->second[active ? 1 : toolbar ? 2 : 0];
 }
 
 inline Image rasterizeControlIcon(const Image &source, int pixels) {
@@ -64,14 +66,14 @@ inline Image rasterizeControlIcon(const Image &source, int pixels) {
     return result;
 }
 
-inline bool drawControlIcon(Graphics &g, const String &name, bool active, juce::Rectangle<float> bounds, float opacity) {
-    const auto artwork = controlArtwork(name, active);
+inline bool drawControlIcon(Graphics &g, const String &name, bool active, juce::Rectangle<float> bounds, float opacity, bool toolbar = false) {
+    const auto artwork = controlArtwork(name, active, toolbar);
     if (!artwork.isValid()) return false;
     const float scale = std::max(.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
     const int pixels = std::max(1, int(std::lround(std::min(bounds.getWidth(), bounds.getHeight()) * scale)));
-    using Key = std::tuple<String, bool, int>;
+    using Key = std::tuple<String, int, int>;
     static thread_local std::map<Key, Image> rasters;
-    const auto [at, inserted] = rasters.try_emplace({name, active, pixels});
+    const auto [at, inserted] = rasters.try_emplace({name, active ? 1 : toolbar ? 2 : 0, pixels});
     if (inserted) at->second = rasterizeControlIcon(artwork, pixels);
     const float side = pixels / scale;
     const float x = std::round((bounds.getCentreX() - side * .5f) * scale) / scale;

@@ -320,8 +320,9 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     const auto foreground = ink.withMultipliedAlpha(opacity);
     g.setColour(foreground);
     const bool artworkTracksStatus = (bool)b.getProperties()["statusArtwork"];
+    const bool transportDrawing = (bool)b.getProperties()["transportDrawing"];
     if (toolbar && icon.isNotEmpty() && drawControlIcon(g, icon, toolbarSignal == 1 || (b.isDown() && !artworkTracksStatus),
-            b.getLocalBounds().toFloat().withSizeKeepingCentre(18.f, 18.f), opacity)) return;
+            b.getLocalBounds().toFloat().withSizeKeepingCentre(18.f, 18.f), opacity, true)) return;
     if (toolbar && icon.isNotEmpty() && drawDesktopToolbarSymbol(g, icon,
             b.getLocalBounds().toFloat().withSizeKeepingCentre(18.f, 18.f))) return;
     const auto leading = b.getProperties().getWithDefault("leadingIcon", {}).toString();
@@ -340,8 +341,10 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
         const float x = (b.getWidth() - iconSize - gap - labelWidth) * .5f;
         if (leading == "record" && !b.getToggleState()) g.setColour(theme::liveOffRed.withMultipliedAlpha(opacity));
         const juce::Rectangle<float> iconBounds{x, (b.getHeight() - iconSize) * .5f, iconSize, iconSize};
-        if (!drawControlIcon(g, leading, b.getToggleState(), iconBounds, opacity) &&
-            (!toolbar || !drawDesktopToolbarSymbol(g, leading, iconBounds))) drawInterfaceIcon(g, leading, iconBounds);
+        const bool drawn = transportDrawing ? drawDesktopToolbarSymbol(g, leading, iconBounds)
+                                            : drawControlIcon(g, leading, b.getToggleState(), iconBounds, opacity);
+        if (!drawn && (!toolbar || !drawDesktopToolbarSymbol(g, leading, iconBounds)))
+            drawInterfaceIcon(g, leading, iconBounds);
         g.setColour(foreground);
         g.setFont(font.withPointHeight(font.getHeightInPoints() * scale));
         g.drawText(label, juce::Rectangle<float>(x + iconSize + gap, 0, labelWidth,
@@ -350,8 +353,9 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     }
     if (leading.isNotEmpty()) {
         const juce::Rectangle<float> iconBounds{10, (b.getHeight() - 16) * .5f, 16, 16};
-        if (!drawControlIcon(g, leading, b.getToggleState(), iconBounds, opacity))
-            drawInterfaceIcon(g, leading, iconBounds);
+        const bool drawn = transportDrawing ? drawDesktopToolbarSymbol(g, leading, iconBounds)
+                                            : drawControlIcon(g, leading, b.getToggleState(), iconBounds, opacity);
+        if (!drawn) drawInterfaceIcon(g, leading, iconBounds);
         auto label = b.getButtonText();
         const float width = (float)(b.getWidth() - 40);
         if (!label.containsChar(' ') &&
@@ -372,7 +376,7 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     if (icon.isNotEmpty()) {
         const auto bounds = b.getLocalBounds().toFloat().withSizeKeepingCentre(iconSize, iconSize);
         const auto artwork = icon == "visibility" ? String("eye") : icon;
-        if (drawControlIcon(g, artwork, b.getToggleState() || b.isDown(), bounds, opacity)) return;
+        if (!transportDrawing && drawControlIcon(g, artwork, b.getToggleState() || b.isDown(), bounds, opacity)) return;
         if (drawDesktopToolbarSymbol(g, icon, bounds) || drawInterfaceIcon(g, icon, bounds)) return;
     }
     // Keep compact labels such as Patch at their natural width. Use the spare
@@ -432,7 +436,7 @@ void MacLook::drawLinearSlider(Graphics &g, int x, int y, int w, int h, float po
     if (axis.isNotEmpty()) {
         const float center = y + h * .5f;
         g.setColour(Colour(0xffc5c5c5));
-        drawControlIcon(g, axis, false, {3.f, center - 6.5f, 13.f, 13.f}, 1.f);
+        drawDesktopToolbarSymbol(g, axis, {3.f, center - 6.5f, 13.f, 13.f});
         g.setColour(Colour(0xff202020));
         g.fillRoundedRectangle(float(x) + 5.f, center - 2.f, std::max(1.f, w - 10.f), 4.f, 2.f);
         g.setColour(Colour(0xffa4a4a4));
@@ -1287,24 +1291,6 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
         };
         fx.onClick = [this] { w.openFX(id); };
         fxchain::bind(fx, w.session, id, [this](bool remove) { w.changeMixerFX(id, remove); });
-        addAndMakeVisible(folder);
-        folder.setWantsKeyboardFocus(false);
-        folder.setComponentID("trackGroupAction");
-        folder.getProperties().set("plain", true);
-        folder.onClick = [this] {
-            const auto *row=track();const auto *song=w.session.song();if(!row||!song)return;
-            const auto project=w.session.project().id, songID=song->id, target=id;
-            const auto parent=row->parentTrackID;
-            w.confirm("Track group",parent?"Move this group out of its parent group?":"Dissolve this track group?",
-                [safe=SafePointer<Workspace>(&w),project,songID,target,parent] {
-                    if(!safe||safe->session.project().id!=project||!safe->session.song()||safe->session.song()->id!=songID)return;
-                    const auto at=trackTree::index(*safe->session.song(),target);
-                    if(at==safe->session.song()->tracks.size()||safe->session.song()->tracks[at].parentTrackID!=parent)return;
-                    safe->perform([&]{safe->session.edit([&](jaras::Project &p){for(auto &song:p.songs)if(song.id==songID) {
-                        if(parent)trackEditing::removeFromGroup(song,target);else trackEditing::ungroup(song,target);
-                    }});});
-                });
-        };
         output.onClick = [this] {
             Workspace::showPanel(
                 track() && track()->role.id == "timecode" ? "Timecode" : "Patch",
@@ -1360,12 +1346,6 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
                     return &t;
         return nullptr;
     }
-    bool isFolder() const {
-        if (const auto *song = w.session.song())
-            return std::any_of(song->tracks.begin(), song->tracks.end(),
-                               [this](const auto &t) { return t.parentTrackID == id; });
-        return false;
-    }
     void refreshInputMonitor(const jaras::Track &track) {
         const bool available = !track.receivesMain();
         monitor.setEnabled(available);
@@ -1411,12 +1391,6 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             }
             fx.setColour(TextButton::textColourOffId, fxColour);
             record.setColour(TextButton::textColourOffId, Colour(0xffec4848));
-            folder.setVisible(isFolder());
-            folder.setTooltip(t->parentTrackID ? "Remove from group" : "Ungroup");
-            folder.setButtonText({});
-            folder.getProperties().set("icon",
-                                       t->parentTrackID ? "folderNested" : "folderFilled");
-            folder.setColour(TextButton::textColourOffId, theme::green);
             auto patches = t->outputPatches();
             auto p = patches.empty() ? jaras::OutputPatch{-1, 2} : patches.front();
             output.setButtonText("Patch");
@@ -1451,7 +1425,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             return {left, std::max(0, (body - 22) / 2), std::max(1, special->getX() - left - 4), 22};
         }
         if ((t.supportsMixerComponents() || t.role.id == "generatedClick") && body < expandedTrackHeight) {
-            const int left = groupIndent() + stripeWidth() + (isFolder() ? 50 : 28);
+            const int left = groupIndent() + stripeWidth() + 28;
             int right = signalLight.getX() - 3;
             for (const auto *button : {&record, &monitor, &mute, &solo})
                 if (button->isVisible()) right = std::min(right, button->getX() - 4);
@@ -1609,7 +1583,7 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
             int idealWidth = -3;
             for (const auto& [button, width] : buttons)
                 if (button->isVisible()) idealWidth += width + 3;
-            const int left = contentStart + (expanded && isFolder() ? 51 : 0);
+            const int left = contentStart;
             const double scale = std::min(1.0, std::max(0, x - left) / double(std::max(1,idealWidth)));
             double right = x;
             for (const auto& [button, width] : buttons) {
@@ -1635,8 +1609,6 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
                 special->setBounds(std::max(22, x - width), y, width, textTrack ? 48 : h);
             }
         }
-        folder.setBounds(contentStart + 20, y + (h - 20) / 2, 28, 20);
-        folder.setVisible(expanded && isFolder());
         phase.setVisible(standard && expanded && !t->compactMixerControls() && t->role.id != "vinhetas" && t->showsComponent(jaras::Track::phaseBit));
         volume.setVisible(t && expanded && (!textTrack || teleprompter) && t->role.id != "programChange");
         phase.setBounds(bodyWidth() - 26, volumeY, 22, volumeHeight);
@@ -1657,14 +1629,12 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
                 button->setBounds(right - 22, top, 22, 22);
                 right -= 25;
             }
-            if (isFolder()) { folder.setVisible(true); folder.setBounds(contentStart + 28, top + 1, 20, 20); }
         } else if (standard && t->compactMixerControls()) {
             const int top = std::max(0, std::min((body - 22) / 2, body - 17 - 22));
             const int iconSpace = 28;
             const int visibleCount = (int)monitor.isVisible() + (int)mute.isVisible() + (int)solo.isVisible();
-            int start = std::max(contentStart + 4 + iconSpace + (isFolder() ? 23 : 0),
+            int start = std::max(contentStart + 4 + iconSpace,
                                  bodyWidth() - 4 - 186 - 25 * visibleCount);
-            if(isFolder()) { folder.setVisible(true);folder.setBounds(contentStart+4+iconSpace,top+1,20,20); }
             for (auto *button : {&monitor, &mute, &solo}) if (button->isVisible()) {
                 button->setBounds(start, top, 22, 22); start += 25;
             }
@@ -1788,7 +1758,6 @@ class Workspace::TrackRow final : public Component, public DragAndDropTarget {
     std::unique_ptr<SpecialTrackControls> special;
     std::unique_ptr<meterDisplay::PeakReadout> peak;
     QuietButton mute, solo, phase, fx, output, env, record, monitor;
-    TextButton folder;
     GainFader volume;
     ParameterSlider pan;
     InlineMixerTrackName rename;
@@ -5667,12 +5636,16 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["setlist"]->setColour(TextButton::textColourOffId, Colours::black);
     controls["loop"]->setColour(TextButton::buttonColourId, Colour(0xff454545));
     controls["loop"]->setColour(TextButton::buttonOnColourId, theme::yellow);
-    controls["loop"]->setColour(TextButton::textColourOffId, Colours::black);
+    controls["loop"]->setColour(TextButton::textColourOffId, Colours::white);
     controls["loop"]->setColour(TextButton::textColourOnId, Colours::black);
     controls["play"]->getProperties().set("transportColour", (int64)theme::transportPlay.getARGB());
     controls["pause"]->setColour(TextButton::buttonColourId, Colour(0xff454545));
     controls["pause"]->setColour(TextButton::buttonOnColourId, theme::yellow);
     controls["pause"]->setColour(TextButton::textColourOnId, Colours::black);
+    for (const auto *id : {"play", "pause", "stopall", "loop", "record", "metronome", "fadeout",
+                           "editMode", "track-envelopes", "projectStart", "projectEnd", "previousTimelinePoint",
+                           "nextTimelinePoint", "trackHeightFit", "zoomFit"})
+        controls.at(id)->getProperties().set("transportDrawing", true);
     for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"}) {
         auto &control = *controls[id];
         const bool compact = String(id) == "masterMute" || String(id) == "masterSolo";
@@ -5742,6 +5715,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     timelineTimebase.setComponentID("timelineTimebase");
     timelineTimebase.setTitle("Relative timebase");
     timelineTimebase.getProperties().set("icon", "itemTimebase");
+    timelineTimebase.getProperties().set("transportDrawing", true);
     timelineTimebase.getProperties().set("borderAlpha", .23f);
     timelineTimebase.setWantsKeyboardFocus(false);
     timelineTimebase.setColour(TextButton::buttonColourId, Colour(0xff454545));
@@ -5767,12 +5741,13 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     addAndMakeVisible(timelineSnap);
     timelineSnap.setComponentID("timelineSnap");
     timelineSnap.getProperties().set("icon", "magnet");
+    timelineSnap.getProperties().set("transportDrawing", true);
     timelineSnap.getProperties().set("borderAlpha", .23f);
     timelineSnap.setColour(TextButton::buttonColourId, Colour(0xff454545));
     timelineSnap.setColour(TextButton::buttonOnColourId, Colour(0xff454545));
     timelineSnap.setWantsKeyboardFocus(false);
     timelineSnap.setColour(TextButton::textColourOnId, theme::green);
-    timelineSnap.setColour(TextButton::textColourOffId, Colours::grey);
+    timelineSnap.setColour(TextButton::textColourOffId, theme::yellow);
     timelineSnap.onClick = [this] {
         const auto result=appearance.set("jaras.timeline.snapEnabled", !(bool)appearance.value("jaras.timeline.snapEnabled",true));
         if (result.failed()) showError(result.getErrorMessage());
@@ -6535,7 +6510,7 @@ void Workspace::syncNativeTransport() {
         auto icon = model->getProperties()["leadingIcon"].toString();
         if (icon.isEmpty() && StringArray{"play", "pause", "loop", "record", "metronome"}.contains(id)) icon = id;
         state.icon = icon.toWideCharPointer();
-        static const StringArray pngIcons{"play","stopall","fadeout","pause","loop","record","metronome","save","check"};
+        static const StringArray pngIcons{"save","check"};
         if (pngIcons.contains(icon)) {
             // Native transport HWNDs own their render targets. Share immutable PNG pixels between them.
             static const auto bitmaps = [] {

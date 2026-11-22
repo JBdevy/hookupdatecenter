@@ -493,8 +493,9 @@ private struct FixtureRow: View, Equatable {
     private var nativePanel: TrackMixerNativePanelContent {
         TrackMixerNativePanelContent(
             title: TrackDragTitle(title:title,foreground:0xffffff,project:project,track:track,state:state.drag,select:{state.calls += actionStep}),
-            slider:volumeSlider,buttons:AnyView(buttons),folder:AnyView(Color.clear),phase:TrackMixerNativePhase(inverted:false,action:{state.calls += actionStep}),
-            showsVolume:true,isFolder:false,expandedButtonsWidth:210,mapVolume:{state.calls += 100})
+            slider:volumeSlider,buttons:AnyView(buttons),compactButtons:AnyView(buttons),
+            compactButtonsWidth:100,allowsCompactHeight:true,phase:TrackMixerNativePhase(inverted:false,action:{state.calls += actionStep}),
+            showsVolume:true,expandedButtonsWidth:210,mapVolume:{state.calls += 100})
     }
     @ViewBuilder private func controls(split: Bool) -> some View {
         TrackMixerContinuousContainer(meterWidth: 52, standard: kind == .standard, lowerTitle: lowerTitle) {

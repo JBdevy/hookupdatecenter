@@ -10,11 +10,12 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
     s=Path('Apple/Shared/TrackMixerRow.swift').read_text()
     theme=Path('Apple/Shared/Theme.swift').read_text()
     parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n', Path('Application/Transport/TransportFadeout.swift').read_text().split('extension ShowController {')[0], ('// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1])]
-    display = '; '.join(line.strip() for line in theme.splitlines() if 'static let displayHex:' in line or 'static let lightDarkBackgroundHex:' in line)
+    display = '; '.join(line.strip() for line in theme.splitlines() if 'static let displayHex:' in line or 'static let lightDarkBackgroundHex:' in line or 'static let workspaceToolbar =' in line)
     project=Path('Application/Project/ProjectModels.swift').read_text()
     parts.append(project[project.index('public enum TrackHeightGeometry'):project.index('public struct TrackLinkOriginal')])
     parts.append(theme[theme.index('enum JarasInterfaceTheme:'):theme.index('enum JarasTheme {')])
-    parts.append(theme[theme.index('extension Color {'):theme.index('struct StageButtonStyle:')])
+    parts.append(theme[theme.index('extension Color {'):theme.index('#if os(macOS)\nenum DesktopToolbarTone')])
+    parts.append(theme[theme.index('private struct ToolbarIconSurfaceKey:'):theme.index('struct StageButtonStyle:')])
     selection = Path('Apple/Shared/GridSelectionInput.swift').read_text()
     appearance = selection.index('enum TrackMixerButtonAppearance {')
     parts.append(selection[appearance:selection.index('\n}', appearance) + 2])
@@ -25,8 +26,9 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
     parts.append('private struct FixtureHeightMode { let compactHeight: Bool; let minimalHeight: Bool }\n'
                  'private func productionHeightModesEqual(_ lhs: FixtureHeightMode, _ rhs: FixtureHeightMode) -> Bool {\n'
                  +s[a:b]+'return sameHeightMode\n}')
-    for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('private struct CompactTrackButtonStyle:','private struct TrackPanKnob:'),('private struct DirectVolumeSlider:','\n#endif'),('private struct TrackDragTitle:','\n#endif')]:
+    for begin,end in [('struct TrackMixerHeightGeometry','\n#endif'),('struct CompactTrackButtonStyle:','private struct TrackPanKnob:'),('private struct DirectVolumeSlider:','\n#endif'),('private struct TrackDragTitle:','\n#endif')]:
      a=s.index(begin);parts.append(s[a:s.index(end,a)])
+    a=s.index('enum MixerPanFace {');parts.append(s[a:s.index('#if os(macOS)',a)])
     a=s.index('enum MixerFaderThumbStyle {');parts.append(s[a:s.index('private struct TrackVolumeFader:',a)])
     a=s.index('func mixerPanText(');parts.append(s[a:s.index('\n}',a)+2])
     if control_marker:
@@ -51,7 +53,7 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
     private enum JarasTheme { ''' + display + '''; static let green = Color.green; static let yellow = Color.yellow; static let text = Color.white; static let trackButton = Color(hex: 0x484848) }
     private struct TrackControlIdentity: Equatable { let project: UUID; let track: UUID? }
     private final class TrackReorderState: ObservableObject { var source: TrackDragSource?; func begin(track: UUID) {} ; func finish() {} }
-    private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); func addControl(_ view:NSView) {}; func handle(_ event: NSEvent) {} ; func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
+    private final class TrackSelectionRouter { static let shared=TrackSelectionRouter(); var pinnedTracks = Set<UUID>(); weak var editingTitle: TrackDragTitleView?; func addTitle(_ view: TrackDragTitleView) {}; func moveRename(from source: TrackDragTitleView, direction: Int) {}; func addControl(_ view:NSView) {}; func handle(_ event: NSEvent) {} ; func perform(track:UUID,event:NSEvent,action:()->Void) { action() } }
     private enum Counts { static var origin=0; static var size=0; static var slotLayouts=0; static var update=0; static func reset(){origin=0;size=0;slotLayouts=0;update=0} }
     ''')
     # Count only calls from the actual native implementations, without changing behavior.

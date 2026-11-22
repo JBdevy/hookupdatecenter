@@ -2207,11 +2207,11 @@ private struct TrackMixFeedbackPanel: View {
         let label = title == "Stop" ? Text(verbatim: title) : Text(LocalizedStringKey(title))
         return Button(action: perform) {
             VStack(spacing: 3) {
-                ControlIcon(name: icon, active: active, size: 16)
+                TransportControlIcon(name: icon, size: 16)
                 if !iconOnly { label.font(.jarasSystem(size: 9, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7) }
             }.frame(maxWidth: .infinity, minHeight: 44)
                 .modifier(RemoteControlSurface(color: solid ? color : active ? color.opacity(0.35) : nil, radius: 5))
-        }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(solid ? Color.black : color).accessibilityLabel(label)
+        }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(solid ? (active ? Color.black : .white) : color).accessibilityLabel(label)
     }
     private var transportProgress: some View {
         let region = state.transportDisplayRegion
@@ -2655,7 +2655,8 @@ private struct TrackMixFeedbackPanel: View {
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(JarasTheme.toolbarTint(active: settingsOpen || nativeSettingsOpen))
                         .accessibilityLabel("Configurações")
                         .popover(isPresented: $settingsOpen) { NativeRemoteSettingsView().preferredColorScheme(.dark) }
-                }.padding(.horizontal, 4).frame(height: 36).background(tabletToolbarBackground)
+                }.environment(\.toolbarIconSurface, true)
+                    .padding(.horizontal, 4).frame(height: 36).background(tabletToolbarBackground)
                 VStack(spacing: 1) {
                     if local || !prompterFullscreen { transportBar }
                     HStack(alignment: .top, spacing: 0) {
@@ -3220,15 +3221,15 @@ private struct TrackMixFeedbackPanel: View {
         let controls = HStack(spacing: 4) {
             Button { action(state.playing || state.paused ? .stop : .play) } label: {
                 Label { Text(verbatim: state.playing || state.paused ? "Stop" : "Play") }
-                    icon: { ControlIcon(name: state.playing || state.paused ? "stopall" : "play", active: state.playing, size: 14) }
+                    icon: { TransportControlIcon(name: state.playing || state.paused ? "stopall" : "play", size: 14) }
             }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: state.playing, fontSize: 12, width: buttonWidth, height: 28))
             fadeoutButton(width: buttonWidth, height: 28)
             Button { action(state.paused ? .play : .pause) } label: {
-                ControlIcon(name: state.paused ? "play" : "pause", active: state.paused, size: 14)
+                TransportControlIcon(name: state.paused ? "play" : "pause", size: 14)
             }.buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(state.paused), active: state.paused, inactiveOpacity: 1,
                 fontSize: 12, width: buttonWidth, height: 28)).disabled(!state.playing && !state.paused)
                 .accessibilityLabel(state.paused ? "Play" : "Pause")
-            Button { action(.toggleLoop) } label: { ControlIcon(name: "loop", active: state.loop, size: 14).accessibilityLabel("Repeat") }
+            Button { action(.toggleLoop) } label: { TransportControlIcon(name: "loop", size: 14).accessibilityLabel("Repeat") }
                 .buttonStyle(TransportButtonStyle(color: state.loop ? JarasTheme.yellow : Color(hex: 0x454545), active: state.loop, inactiveOpacity: 1, fontSize: 12, width: buttonWidth, height: 28))
             bpmControl
             tunerControl
@@ -3278,20 +3279,20 @@ private struct TrackMixFeedbackPanel: View {
                     Button { action(running ? .stop : .play) } label: {
                         Label {
                             if width >= 44 { Text(verbatim: running ? "Stop" : "Play") }
-                        } icon: { ControlIcon(name: running ? "stopall" : "play", active: running, size: 14) }
+                        } icon: { TransportControlIcon(name: running ? "stopall" : "play", size: 14) }
                     }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: running, fontSize: 10, width: width, height: 28))
                         .accessibilityLabel(Text(verbatim: running ? "Stop" : "Play"))
                 case .fadeout:
                     fadeoutButton(width: 50, height: 28)
                 case .pause:
-                    Button { action(.pause) } label: { ControlIcon(name: "pause", active: state.paused, size: 14) }
+                    Button { action(.pause) } label: { TransportControlIcon(name: "pause", size: 14) }
                         .buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(state.paused),
                             active: state.paused, inactiveOpacity: 1, fontSize: 11, width: width, height: 28))
                         .disabled(!state.playing).accessibilityLabel("Pause")
                 case .repeatPlayback:
-                    Button { action(.toggleLoop) } label: { ControlIcon(name: "loop", active: state.loop, size: 14) }
+                    Button { action(.toggleLoop) } label: { TransportControlIcon(name: "loop", size: 14) }
                         .buttonStyle(TransportButtonStyle(color: state.loop ? JarasTheme.yellow : Color(hex: 0x454545), active: state.loop, inactiveOpacity: 1,
-                            activeForeground: .black, inactiveForeground: .black, fontSize: 12, width: width, height: 28))
+                            activeForeground: .black, inactiveForeground: .white, fontSize: 12, width: width, height: 28))
                         .accessibilityLabel("Repeat")
                 case .record:
                     if let localShow { IpadAudioTransportButtons(show: localShow, only: control, controlWidth: width) }
@@ -3471,7 +3472,7 @@ private struct TrackMixFeedbackPanel: View {
         Button(action: toggleFadeout) {
             let layout = height == 44 ? AnyLayout(VStackLayout(spacing: 3)) : AnyLayout(HStackLayout(spacing: 2))
             layout {
-                ControlIcon(name: "fadeout", active: fadeoutActive, size: height == 44 ? 16 : 13)
+                TransportControlIcon(name: "fadeout", size: height == 44 ? 16 : 13)
                 Text(verbatim: "Fadeout").font(.jarasSystem(size: height == 44 ? 9 : 10, weight: .semibold))
                     .lineLimit(1).minimumScaleFactor(0.72)
             }
@@ -7704,10 +7705,6 @@ private struct RemoteNativeMixerRow: View, Equatable {
                 TrackIconDisplay(id: icon).foregroundStyle(.white).frame(width: 20, height: 20)
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
-            if isGroup {
-                TrackGroupButton(show: show, project: project, track: track.id, parent: nativeTrack.parentTrackID, height: 18)
-                    .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
-            }
             InlineMixerTrackName(name: track.name, number: number, editable: nativeTrack.fixedName == nil,
                 select: { select?() }, commit: { show.renameMixerTrack(track.id, name: $0, project: project) })
                 .foregroundStyle(remoteColor(nameColor))
@@ -7803,11 +7800,6 @@ private struct RemoteNativeMixerRow: View, Equatable {
                                 .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
                         } else {
                         if titleBesideControls {
-                            if isGroup, let localShow, let nativeTrack {
-                                TrackGroupButton(show: localShow, project: project, track: track.id, parent: nativeTrack.parentTrackID)
-                                    .disabled(!editing)
-                                    .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
-                            }
                             Text(String(format: "%02d  %@", number, track.name)).font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1)
                                 .foregroundStyle(remoteColor(nameColor)).frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -7922,11 +7914,6 @@ private struct RemoteNativeMixerRow: View, Equatable {
                 }
                 if (!compact || compactControls) && !titleBesideControls {
                         HStack(spacing: 4) {
-                            if isGroup, let localShow, let nativeTrack {
-                                TrackGroupButton(show: localShow, project: project, track: track.id, parent: nativeTrack.parentTrackID, height: local ? 13 : 20)
-                                    .disabled(!editing)
-                                    .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
-                            }
                             if local, let localShow, nativeTrack?.fixedName == nil, !vinhetas, kind == .standard {
                                 InlineMixerTrackName(name: track.name, number: number, editable: true,
                                     select: { select?() }, commit: { localShow.renameMixerTrack(track.id, name: $0, project: project) })

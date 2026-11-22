@@ -1409,7 +1409,7 @@ struct TransportRecordButton: View {
             Label {
                 Text("REC")
             } icon: {
-                ControlIcon(name: "record", active: recorder.recording || recorder.countingIn, size: 13)
+                TransportControlIcon(name: "record", size: 13, color: recorder.recording || recorder.countingIn ? nil : JarasTheme.liveOffRed)
             }
         }.buttonStyle(RecordingButtonStyle(active: recorder.recording || recorder.countingIn, width: width,
             height: TransportControlMetrics.playbackHeight, fontSize: TransportControlMetrics.font, cornerRadius: 6,

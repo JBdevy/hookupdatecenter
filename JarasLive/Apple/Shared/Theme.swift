@@ -220,7 +220,7 @@ struct DesktopToolbarLabel: View {
     var tone: DesktopToolbarTone? = nil
 
     var body: some View {
-        ControlIcon(name: systemImage, active: (tone ?? (active ? .selected : .neutral)) != .neutral, size: compact ? 16 : 18)
+        ControlIcon(name: systemImage, active: (tone ?? (active ? .selected : .neutral)) != .neutral, size: compact ? 16 : 18, toolbar: true)
             .accessibilityElement(children: .ignore)
             .frame(width: compact ? 16 : 18, height: compact ? 16 : 18)
             .modifier(DesktopToolbarChrome(tone: tone ?? (active ? .selected : .neutral)))
@@ -231,11 +231,24 @@ struct DesktopToolbarLabel: View {
 
 #endif
 
+private struct ToolbarIconSurfaceKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var toolbarIconSurface: Bool {
+        get { self[ToolbarIconSurfaceKey.self] }
+        set { self[ToolbarIconSurfaceKey.self] = newValue }
+    }
+}
+
 /// The desktop and iPad controls use the same sRGB artwork as the Windows build.
 struct ControlIcon: View {
     let name: String
     var active = false
     var size: CGFloat = 18
+    var toolbar = false
+    @Environment(\.toolbarIconSurface) private var toolbarSurface
 
     private static func load(_ state: String) -> [String: CGImage] {
         guard let url = Bundle.main.url(forResource: state, withExtension: "png", subdirectory: "ControlIcons"),
@@ -250,11 +263,13 @@ struct ControlIcon: View {
         }
         return result
     }
-    private static let off = load("controlsOff"), on = load("controlsOn")
+    private static let off = load("controlsOff"), on = load("controlsOn"), toolbarOff = load("controlsToolbarOff")
 
     var body: some View {
         Group {
-            if let icon = (active ? Self.on : Self.off)[name] {
+            let artwork = active ? Self.on[name] :
+                (toolbar || toolbarSurface ? Self.toolbarOff[name] ?? Self.off[name] : Self.off[name])
+            if let icon = artwork {
                 Image(decorative: icon, scale: CGFloat(icon.width) / size).renderingMode(.original).resizable().interpolation(.high)
             } else {
                 DesktopToolbarSymbol(name: name)
@@ -326,6 +341,16 @@ struct DesktopToolbarSymbol: View {
                 Image(systemName: name).resizable().scaledToFit()
             }
         }.accessibilityHidden(decorative)
+    }
+}
+
+struct TransportControlIcon: View {
+    let name: String
+    var size: CGFloat = 18
+    var color: Color? = nil
+    var body: some View {
+        let icon = DesktopToolbarSymbol(name: name).frame(width: size, height: size)
+        if let color { icon.foregroundStyle(color) } else { icon }
     }
 }
 

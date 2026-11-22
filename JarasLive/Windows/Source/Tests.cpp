@@ -2896,30 +2896,23 @@ int runTests(const File &directory) {
         trackEditing::ungroup(removed,ids[2]);expect(!removed.tracks[4].parentTrackID,"Root folder did not dissolve");
         expect(removed.tracks[4].secondaryPatch->firstChannel==6,"Group action changed an auxiliary output");
     });
-    test("Folder button confirms, preserves nested children and supports undo", [&] {
+    test("Track group rows leave group actions in the menu and preserve nested children through Undo", [&] {
         auto project=projectFixture();auto &song=project.songs.front();song.tracks.clear();
         std::vector<ID> ids;for(int i=0;i<4;++i)ids.push_back(uuid());
         for(int i=0;i<4;++i){jaras::Track t;t.id=ids[i];t.name="Folder "+std::to_string(i);t.role.id="other";
             if(i>0)t.parentTrackID=ids[i==2?1:0];t.patch=jaras::OutputPatch{i>0?-2:0,2};song.tracks.push_back(t);}
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
         Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("folder-action",".json"));workspace.setSize(1366,768);
-        auto press=[&](int track,int result){
-            auto *row=uiFeatureTests::find(workspace,"trackRow:"+text(ids[track]));expect(row!=nullptr,"Folder row missing");
-            auto *button=dynamic_cast<Button*>(uiFeatureTests::find(*row,"trackGroupAction"));expect(button!=nullptr,"Folder action missing");
-            const auto before=JSON::toString(ProjectCodec::encode(session.project()));button->onClick();floatingControlTests::pump();
-            expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Folder changed before confirmation");
-            auto *modal=Component::getCurrentlyModalComponent();expect(modal!=nullptr,"Folder action must ask before changing hierarchy");
-            auto *choice=dynamic_cast<Button*>(uiFeatureTests::find(*modal,result?"confirmationAccept":"confirmationCancel"));
-            expect(choice && choice->onClick,"Folder confirmation choice missing");
-            choice->onClick();for(int i=0;i<4;++i)floatingControlTests::pump();
-        };
-        const auto baseline=JSON::toString(ProjectCodec::encode(session.project()));
-        press(0,0);expect(JSON::toString(ProjectCodec::encode(session.project()))==baseline,"Cancel changed the group");
-        press(1,1);
+        for (int track : {0, 1}) {
+            auto* row = uiFeatureTests::find(workspace, "trackRow:" + text(ids[track]));
+            expect(row != nullptr && uiFeatureTests::find(*row,"trackGroupAction") == nullptr, "Group row still shows the folder button");
+        }
+        const auto baseline = JSON::toString(ProjectCodec::encode(session.project()));
+        session.edit([&](jaras::Project& p) { trackEditing::removeFromGroup(p.songs.front(), ids[1]); });
         expect(!session.song()->tracks[2].parentTrackID && session.song()->tracks[2].id==ids[1] &&
                session.song()->tracks[3].parentTrackID==ids[1],"Nested folder click did not promote the complete group");
         session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==baseline,"Undo lost group state");
-        press(0,1);
+        session.edit([&](jaras::Project& p) { trackEditing::ungroup(p.songs.front(), ids[0]); });
         expect(!session.song()->tracks[1].parentTrackID && session.song()->tracks[2].parentTrackID==ids[1] &&
                !session.song()->tracks[3].parentTrackID,"Root folder click must dissolve only its immediate membership");
         session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==baseline,"Undo did not restore dissolved group");

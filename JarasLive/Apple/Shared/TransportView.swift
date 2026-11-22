@@ -179,7 +179,7 @@ struct TransportView: View {
             } playback: {
                 HStack(spacing: playbackSpacing) {
                     Button { show.send(running ? .stop : .play) } label: {
-                        Label { playbackTitle } icon: { ControlIcon(name: running ? "stopall" : "play", active: transport.playing, size: 14) }
+                        Label { playbackTitle } icon: { TransportControlIcon(name: running ? "stopall" : "play", size: 14) }
                     }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: transport.playing,
                         width: playbackWidth, height: TransportControlMetrics.playbackHeight))
                         .accessibilityLabel(playbackTitle).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
@@ -190,7 +190,7 @@ struct TransportView: View {
                     if !remotePresentation {
                         Button { show.triggerTransportFadeout() } label: {
                             HStack(spacing: 2) {
-                                ControlIcon(name: "fadeout", active: show.transportFadeout.active, size: 13)
+                                TransportControlIcon(name: "fadeout", size: 13)
                                 Text(verbatim: "Fadeout")
                             }
                         }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, inactiveOpacity: 1, inactiveForeground: .black, fontSize: 10,
@@ -199,7 +199,7 @@ struct TransportView: View {
                             .immediateRightClick { showingFadeout = true }
                     }
                     #endif
-                    Button { show.send(.pause) } label: { ControlIcon(name: "pause", active: paused, size: 14) }
+                    Button { show.send(.pause) } label: { TransportControlIcon(name: "pause", size: 14) }
                         .buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(paused), active: paused, inactiveOpacity: 1,
                             width: playbackWidth, height: TransportControlMetrics.playbackHeight, bordered: false))
                         .accessibilityLabel("Pause").jarasHelp("Pause").disabled(!transport.playing)
@@ -287,7 +287,7 @@ struct TimelineNavigationControls: View {
         }.fixedSize()
     }
     private func step(_ action: DAWAction) -> some View {
-        Button { show.performAction(action) } label: { ControlIcon(name: action.rawValue, size: 16) }
+        Button { show.performAction(action) } label: { TransportControlIcon(name: action.rawValue, size: 16) }
             .buttonStyle(TransportButtonStyle(color: Color(hex: 0x454545), inactiveOpacity: 1,
                 fontSize: 10, width: width, height: 23, bordered: false))
             .accessibilityLabel(LocalizedStringKey(action.title)).accessibilityIdentifier(action.rawValue)
@@ -504,8 +504,8 @@ private struct DesktopTimelineToolbarView: View {
         let relative = show.current?.projectTime.timebase == .relative
         return HStack(spacing: 5) {
             Button { snapEnabled.toggle() } label: {
-                ControlIcon(name: "magnet", active: snapEnabled)
-                    .foregroundStyle(snapEnabled ? JarasTheme.accent : Color.secondary)
+                TransportControlIcon(name: "magnet")
+                    .foregroundStyle(snapEnabled ? JarasTheme.green : JarasTheme.yellow)
                     .frame(width: 24, height: 24).contentShape(Rectangle())
             }.buttonStyle(TimelineSwitchStyle())
                 .accessibilityLabel("Timeline snapping").accessibilityIdentifier("timeline-snap")
@@ -517,9 +517,9 @@ private struct DesktopTimelineToolbarView: View {
                     confirmingTimebase = true
                 }
             } label: {
-                ControlIcon(name: "itemTimebase", active: relative && !controls.movingRegion)
+                TransportControlIcon(name: "itemTimebase")
                     .font(.jarasSystem(size: 13, weight: .semibold))
-                    .foregroundStyle(relative && !controls.movingRegion ? JarasTheme.green : .yellow)
+                    .foregroundStyle(relative && !controls.movingRegion ? JarasTheme.green : JarasTheme.yellow)
                     .frame(width: 24, height: 24).contentShape(Rectangle())
             }.buttonStyle(TimelineSwitchStyle())
                 .accessibilityLabel("Relative timebase").accessibilityIdentifier("timeline-timebase")
@@ -538,7 +538,8 @@ private struct DesktopTimelineToolbarView: View {
                         value: Binding(get: { log(max(controls.limits.zoom.lowerBound, controls.zoom)) },
                                        set: { controls.changeZoom?(exp($0)) }),
                         range: log(controls.limits.zoom.lowerBound)...log(controls.limits.zoom.upperBound),
-                        active: controls.zoomMemory != nil, toggle: controls.toggleMinimumZoom))
+                        active: controls.zoomMemory != nil, toggle: controls.toggleMinimumZoom),
+            drawn: true)
     }
 
     private func applyTimebase() {
@@ -576,24 +577,25 @@ struct DesktopZoomControls: View {
     }
     let height: Axis
     let time: Axis
+    var drawn = false
 
     var body: some View {
         HStack(spacing: 5) {
             HStack(spacing: 0) {
                 ZoomButton(symbol: "fitTracks", label: height.toggleLabel, id: height.id + "-memory",
-                           active: height.active, action: height.toggle)
+                           active: height.active, drawn: drawn, action: height.toggle)
                 Rectangle().fill(Color(hex: 0x393939)).frame(width: 1)
                 ZoomButton(symbol: "fitTime", label: time.toggleLabel, id: time.id + "-memory",
-                           active: time.active, action: time.toggle)
+                           active: time.active, drawn: drawn, action: time.toggle)
             }.frame(height: 24)
                 .background(Color(hex: 0x4c4c4c), in: RoundedRectangle(cornerRadius: 4))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
             HStack(spacing: 0) {
                 ZoomSlider(symbol: "trackHeightAxis", label: height.label, id: height.id + "-slider",
-                           value: height.value, range: height.range)
+                           value: height.value, range: height.range, drawn: drawn)
                 Rectangle().fill(Color(hex: 0x242424)).frame(width: 1)
                 ZoomSlider(symbol: "timelineZoomAxis", label: time.label, id: time.id + "-slider",
-                           value: time.value, range: time.range)
+                           value: time.value, range: time.range, drawn: drawn)
             }.frame(height: 24)
                 .background(Color(hex: 0x343434), in: RoundedRectangle(cornerRadius: 4))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -605,11 +607,17 @@ struct DesktopZoomControls: View {
         let label: LocalizedStringKey
         let id: String
         let active: Bool
+        let drawn: Bool
         let action: () -> Void
         var body: some View {
             Button(action: action) {
-                ControlIcon(name: symbol, active: active, size: 15)
-                    .frame(width: 24, height: 24).contentShape(Rectangle())
+                Group {
+                    if drawn {
+                        TransportControlIcon(name: symbol, size: 15, color: active ? JarasTheme.green : Color(hex: 0xd5d5d5))
+                    } else {
+                        ControlIcon(name: symbol, active: active, size: 15)
+                    }
+                }.frame(width: 24, height: 24).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel(label).accessibilityIdentifier(id)
                 .accessibilityAddTraits(active ? .isSelected : [])
         }
@@ -621,6 +629,7 @@ struct DesktopZoomControls: View {
         let id: String
         @Binding var value: Double
         let range: ClosedRange<Double>
+        let drawn: Bool
 
         private var span: Double { range.upperBound - range.lowerBound }
         private var fraction: Double { span > 0 ? min(1, max(0, (value - range.lowerBound) / span)) : 0 }
@@ -638,7 +647,11 @@ struct DesktopZoomControls: View {
 
         private var slider: some View {
             HStack(spacing: 2) {
-                ControlIcon(name: symbol, size: 13)
+                if drawn {
+                    TransportControlIcon(name: symbol, size: 13, color: Color(hex: 0xc5c5c5))
+                } else {
+                    ControlIcon(name: symbol, size: 13)
+                }
                 GeometryReader { geometry in
                     let travel = max(1, geometry.size.width - 10)
                     ZStack(alignment: .leading) {
@@ -1367,7 +1380,7 @@ struct TimelineEditButton: View {
             enabled.toggle()
             if !enabled, let show, show.snapshot.transport.beatSeek != nil { show.send(.cancelBeatSeek) }
         } label: {
-            ControlIcon(name: "editCursor", active: enabled, size: 17)
+            TransportControlIcon(name: "editCursor", size: 17)
         }.buttonStyle(TransportButtonStyle(color: enabled ? JarasTheme.green : Color(hex: 0x454545),
             active: enabled, inactiveOpacity: 1, width: width, height: height, bordered: false))
             .accessibilityLabel("Edit").accessibilityIdentifier("editMode")
@@ -1383,7 +1396,7 @@ struct TransportEnvelopeButton: View {
     var body: some View {
         let active = show.allTrackAutomationLanesVisible
         Button { show.toggleAllTrackAutomationLanes() } label: {
-            ControlIcon(name: "automationLanes", active: active, size: 17)
+            TransportControlIcon(name: "automationLanes", size: 17)
         }.buttonStyle(TransportButtonStyle(color: active ? JarasTheme.green : Color(hex: 0x454545),
             active: active, inactiveOpacity: 1, width: width, height: height, bordered: false))
             .accessibilityLabel("Track envelopes").accessibilityIdentifier("track-envelopes")
@@ -1450,7 +1463,7 @@ private struct MetronomeControl: View {
     var body: some View { control }
     private var control: some View {
         Button { settings.enabled.toggle() } label: {
-            ControlIcon(name: "metronome", active: settings.enabled, size: 17)
+            TransportControlIcon(name: "metronome", size: 17)
         }
             .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : Color(hex: 0x454545),
                 active: settings.enabled, inactiveOpacity: 1, fontSize: TransportControlMetrics.font,
@@ -1541,7 +1554,7 @@ private struct RepeatControl: View {
     var width = TransportControlMetrics.playbackWidth
     let action: () -> Void
     var body: some View {
-        Button(action: action) { ControlIcon(name: "loop", active: active, size: 14) }
+        Button(action: action) { TransportControlIcon(name: "loop", size: 14) }
             .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.yellow : Color(hex: 0x454545),
                 active: active, inactiveOpacity: 1, fontSize: TransportControlMetrics.font,
                 width: width, height: TransportControlMetrics.playbackHeight))

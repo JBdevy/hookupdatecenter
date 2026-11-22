@@ -458,18 +458,16 @@ private struct TrackMixerNativePanelContent {
     let compactButtons: AnyView
     let compactButtonsWidth: CGFloat
     let allowsCompactHeight: Bool
-    let folder: AnyView
     let phase: TrackMixerNativePhase?
     let showsVolume: Bool
-    let isFolder: Bool
     let expandedButtonsWidth: CGFloat
     var mapVolume: (() -> Void)? = nil
     var customComponents = false
     var compactComponents = false
     func hosted(_ wrap: (AnyView) -> AnyView) -> Self {
         Self(title: title, slider: slider, buttons: wrap(buttons), compactButtons: wrap(compactButtons),
-             compactButtonsWidth: compactButtonsWidth, allowsCompactHeight: allowsCompactHeight, folder: wrap(folder),
-             phase: phase, showsVolume: showsVolume, isFolder: isFolder,
+             compactButtonsWidth: compactButtonsWidth, allowsCompactHeight: allowsCompactHeight,
+             phase: phase, showsVolume: showsVolume,
              expandedButtonsWidth: expandedButtonsWidth, mapVolume: mapVolume, customComponents: customComponents, compactComponents: compactComponents)
     }
 }
@@ -555,10 +553,9 @@ private final class TrackMixerNativePanelView: NSView {
     private let slider = DirectVolumeSliderView()
     private let readout = TrackMixerNativeGainLabel()
     private let buttons = TrackMixerControlHost(rootView: AnyView(Color.clear))
-    private let folder = TrackMixerControlHost(rootView: AnyView(Color.clear))
     private let phase = TrackMixerNativePhaseButton()
     private let phaseArea = TrackControlSelectionExclusionView()
-    private let buttonBox = Box(), folderBox = Box(), volumeBox = Box()
+    private let buttonBox = Box(), volumeBox = Box()
     private let sliderArea = TrackControlSelectionExclusionView()
     private let labelArea = TrackControlSelectionExclusionView()
     private let titleArea = TrackControlSelectionExclusionView()
@@ -572,12 +569,10 @@ private final class TrackMixerNativePanelView: NSView {
     override var fittingSize: NSSize { frame.size }
     override init(frame: NSRect) {
         super.init(frame: frame); autoresizesSubviews = false
-        for (box, host) in [(buttonBox, buttons), (folderBox, folder)] {
-            box.autoresizesSubviews = false; box.wantsLayer = true; box.layer?.masksToBounds = true
-            if #available(macOS 13, *) { host.sizingOptions = [] }
-            if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
-            box.addSubview(host); addSubview(box)
-        }
+        buttonBox.autoresizesSubviews = false; buttonBox.wantsLayer = true; buttonBox.layer?.masksToBounds = true
+        if #available(macOS 13, *) { buttons.sizingOptions = [] }
+        if #available(macOS 13.3, *) { buttons.safeAreaRegions = [] }
+        buttonBox.addSubview(buttons); addSubview(buttonBox)
         volumeBox.autoresizesSubviews = false; volumeBox.wantsLayer = true; volumeBox.layer?.masksToBounds = true
         volumeBox.addSubview(slider)
         for view in [title, titleArea, sliderArea, labelArea, mapping, volumeBox, readout, phaseArea, phase] as [NSView] { addSubview(view) }
@@ -603,7 +598,7 @@ private final class TrackMixerNativePanelView: NSView {
         content.slider.configure(slider)
         readout.value = slider.doubleValue
         mapping.action = enabled ? content.mapVolume : nil
-        updateButtons(content, expanded: bounds.height >= 64); folder.updateContent(content.folder)
+        updateButtons(content, expanded: bounds.height >= 64)
         phase.configure(content.phase, enabled: enabled)
         needsLayout = true
     }
@@ -620,30 +615,24 @@ private final class TrackMixerNativePanelView: NSView {
         let heightCompact = !expanded && configuration.allowsCompactHeight
         let buttonsWidth = heightCompact ? configuration.compactButtonsWidth :
             (expanded || configuration.customComponents) ? configuration.expandedButtonsWidth : (configuration.phase == nil ? 122 : 147)
-        let fittedWidth = TrackMixerHeightGeometry.fittedButtonsWidth(buttonsWidth, in: bounds.width, folder: configuration.isFolder)
+        let fittedWidth = TrackMixerHeightGeometry.fittedButtonsWidth(buttonsWidth, in: bounds.width, folder: false)
         var frames = TrackMixerHeightGeometry.frames(width: bounds.width, height: bounds.height,
             meterWidth: meterWidth, standard: true, lowerTitle: true,
-            controlsWidth: fittedWidth, folder: configuration.isFolder)
+            controlsWidth: fittedWidth)
         let disabled = CATransaction.disableActions(); CATransaction.setDisableActions(true)
         defer { CATransaction.setDisableActions(disabled) }
         func place(_ view: NSView, _ rect: CGRect, visible: Bool = true) {
             view.isHidden = !visible || rect.width <= 0 || rect.height <= 0
             if !view.isHidden, view.frame != rect { view.frame = rect }
         }
-        func placeHost(_ host: NSView, box: NSView, rect: CGRect, visible: Bool = true) {
-            place(box, rect, visible: visible)
-            let local = CGRect(origin: .zero, size: rect.size)
-            if !box.isHidden, host.frame != local { host.frame = local }
-        }
         if heightCompact {
             let end = bounds.width - (configuration.showsVolume ? 24 : 4)
             let width = min(buttonsWidth, max(0, end - 55))
             let top = max(0, (bounds.height - 22) / 2)
             frames[3] = CGRect(x: end - width, y: top, width: width, height: 22)
-            let titleStart: CGFloat = configuration.isFolder ? 48 : 28
+            let titleStart: CGFloat = 28
             frames[2] = CGRect(x: titleStart, y: top, width: max(0, end - width - titleStart - 4), height: 22)
             frames[4] = .zero
-            if configuration.isFolder { frames[5] = CGRect(x: 28, y: top + 3, width: 18, height: 16) }
         } else if configuration.compactComponents {
             let start = max(48, bounds.width - 227 - fittedWidth)
             let top = TrackMixerHeightGeometry.controlTop(height: bounds.height, groupHeight: 22)
@@ -651,7 +640,6 @@ private final class TrackMixerNativePanelView: NSView {
             let volumeStart = frames[3].maxX + 4
             frames[4] = CGRect(x: volumeStart, y: top + 1, width: max(0, bounds.width-volumeStart-3), height: 20)
             frames[2] = CGRect(x: 4, y: max(25, bounds.height-17), width: max(0,bounds.width-42), height: 16)
-            if configuration.isFolder { frames[5] = CGRect(x: 4, y: max(25, bounds.height-17), width: 18, height: 16); frames[2].origin.x += 20; frames[2].size.width -= 20 }
         }
         let volume = frames[4]
         let (fader, label, _) = TrackMixerHeightGeometry.volumeControls(volume, hasPhase: configuration.phase != nil,
@@ -667,11 +655,10 @@ private final class TrackMixerNativePanelView: NSView {
         place(buttonBox, frames[3])
         if !buttonBox.isHidden {
             let naturalBounds = CGRect(x: 0, y: 0, width: buttonsWidth, height: frames[3].height)
-            // Keep the same controls mounted and fit them between the folder and the divider.
+            // Keep the same controls mounted while the sidebar width changes.
             if buttonBox.bounds != naturalBounds { buttonBox.bounds = naturalBounds }
             if buttons.frame != naturalBounds { buttons.frame = naturalBounds }
         }
-        placeHost(folder, box: folderBox, rect: frames[5], visible: configuration.isFolder)
         place(readout, label, visible: visible); place(labelArea, label, visible: visible)
         place(volumeBox, fader, visible: visible)
         place(slider, CGRect(origin: .zero, size: fader.size), visible: visible)
@@ -1373,7 +1360,6 @@ struct TrackMixerRow: View, Equatable {
                             .foregroundStyle(Color(hex: titleColor))
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        if isFolder { TrackGroupButton(show: show, project: project, track: track.id, parent: track.parentTrackID) }
                         Spacer(minLength: 0)
                     }
                 HStack(spacing: 3) {
@@ -1492,6 +1478,7 @@ struct TrackMixerRow: View, Equatable {
                     Button(LocalizedStringKey(deletionTargets.count > 1 ? "Duplicate tracks" : "Duplicate track"), action: duplicateSelection)
                 }
                 if canLink { Button("Link tracks") { linkSelectedTracks() } }
+                if isFolder { Button("Ungroup") { show.ungroupTrack(track.id) } }
                 if track.parentTrackID != nil { Button("Remove from group") { show.removeTrackFromGroup(track.id) } }
                 if track.stereoLink != nil { Button("Unlink tracks") { show.unlinkTracks(track.id) } }
                 if let deleteSelection {
@@ -1643,11 +1630,10 @@ struct TrackMixerRow: View, Equatable {
             slider: slider, buttons: AnyView(continuousButtons(project: project)),
             compactButtons: AnyView(continuousButtons(project: project, compact: true)),
             compactButtonsWidth: compactWidth, allowsCompactHeight: track.allowsCompactMixerHeight,
-            folder: isFolder ? AnyView(TrackGroupButton(show: show, project: project, track: id, parent: track.parentTrackID)) : AnyView(Color.clear),
             phase: vinhetas || !draggable || track.compactMixerControls || !track.showsMixerComponent(.phase) ? nil : TrackMixerNativePhase(inverted: track.phaseInverted == true) {
                 guard show.snapshot.project.id == project else { return }; show.sendMixerControl(.phase, target: id)
             },
-            showsVolume: showsFader, isFolder: isFolder, expandedButtonsWidth: width,
+            showsVolume: showsFader, expandedButtonsWidth: width,
             mapVolume: { guard show.snapshot.project.id == project else { return }; ControlMappings.shared.begin(track: id, command: "volume") },
             customComponents: track.mixerComponentMask != 0,
             compactComponents: track.compactMixerControls)
@@ -1655,7 +1641,7 @@ struct TrackMixerRow: View, Equatable {
     private func continuousControlSlots(title: String, color: UInt32, project: UUID) -> some View {
             let lowerTitle = track.kind == .standard || track.kind == .video || track.kind == .timecode || track.kind == .click
             return TrackMixerContinuousContainer(meterWidth: showsTrackMeterScale ? 52 : 12,
-                                       standard: track.kind == .standard, lowerTitle: lowerTitle, folder: isFolder) {
+                                       standard: track.kind == .standard, lowerTitle: lowerTitle) {
                 Color.clear.jarasPlaced(at: 0)
                 Color.clear.jarasPlaced(at: 1)
                 Group {
@@ -1673,61 +1659,12 @@ struct TrackMixerRow: View, Equatable {
                         TrackVolumeFader(show: show, track: track.id, volume: track.volume, phaseInverted: track.phaseInverted == true, compact: true, showsPhase: track.kind != .timecode && track.kind != .click && track.role.rawValue != "vinhetas")
                     } else { Color.clear }
                 }.clipped().jarasPlaced(at: 4)
-                Group {
-                    if isFolder { TrackGroupButton(show: show, project: project, track: track.id, parent: track.parentTrackID) }
-                    else { Color.clear }
-                }.jarasPlaced(at: 5)
+                Color.clear.jarasPlaced(at: 5)
                 Color.clear.jarasPlaced(at: 6)
             }
     }
     #endif
 
-}
-struct TrackGroupSymbol: View {
-    let nested: Bool
-    var body: some View {
-        HStack(alignment: .center, spacing: 1) {
-            if nested { Image(systemName: "folder.fill").font(.jarasSystem(size: 8)) }
-            Image(systemName: "folder.fill").font(.jarasSystem(size: 12))
-                .overlay { if nested { Image(systemName: "minus").font(.jarasSystem(size: 7, weight: .heavy)).foregroundStyle(Color.black).offset(y: 1) } }
-        }.foregroundStyle(JarasTheme.green)
-    }
-}
-struct TrackGroupButton: View {
-    let show: ShowController
-    let project: UUID
-    let track: UUID
-    let parent: UUID?
-    var height: CGFloat = 20
-    private struct Request { let project: UUID; let track: UUID; let parent: UUID? }
-    @State private var request: Request?
-    @State private var confirming = false
-    @State private var hovering = false
-    var body: some View {
-        Button { request = Request(project: project, track: track, parent: parent); confirming = true } label: {
-            TrackGroupSymbol(nested: parent != nil).frame(width: 28, height: height)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color.black.opacity(hovering ? 0.24 : 0)))
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain).trackControlSelectionExclusion()
-            #if os(macOS)
-            .onHover { hovering = $0 }
-            #endif
-            .accessibilityLabel(parent == nil ? "Ungroup" : "Remove from group")
-            .jarasHelp(parent == nil ? "Ungroup" : "Remove from group")
-            .alert(Text(LocalizedStringKey(request?.parent == nil ? "Dissolve this track group?" : "Move this group out of its parent group?")),
-                   isPresented: $confirming) {
-                Button("Cancel", role: .cancel) { request = nil }
-                Button("Confirm", role: .destructive) {
-                    guard let pending = request else { return }
-                    request = nil
-                    guard show.snapshot.project.id == pending.project,
-                          let row = show.current?.tracks.first(where: { $0.id == pending.track }),
-                          row.parentTrackID == pending.parent else { return }
-                    if pending.parent == nil { show.ungroupTrack(pending.track) }
-                    else { show.removeTrackFromGroup(pending.track) }
-                }
-            }
-    }
 }
 struct GroupTrackConnector: Shape {
     let last: Bool

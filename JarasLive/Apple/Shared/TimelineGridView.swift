@@ -951,8 +951,8 @@ private struct TimelineGridContent: View, Equatable {
                                         if !remotePresentation {
                                             #if !os(macOS)
                                             Button { snapEnabled.toggle() } label: {
-                                                ControlIcon(name: "magnet", active: snapEnabled)
-                                                    .foregroundStyle(snapEnabled ? JarasTheme.accent : Color.secondary)
+                                                TransportControlIcon(name: "magnet")
+                                                    .foregroundStyle(snapEnabled ? JarasTheme.green : JarasTheme.yellow)
                                                     .frame(width: 24, height: 24).contentShape(Rectangle())
                                             }.buttonStyle(.plain).accessibilityLabel("Timeline snapping")
                                                 .accessibilityIdentifier("timeline-snap")
@@ -972,9 +972,9 @@ private struct TimelineGridContent: View, Equatable {
                                                 pendingTimebase = (show.snapshot.project.id, originalSong.id, originalSong.projectTime.timebase != .relative)
                                                 confirmingTimebase = true
                                             } label: {
-                                                ControlIcon(name: "itemTimebase", active: originalSong.projectTime.timebase == .relative && movingRegion == nil)
+                                                TransportControlIcon(name: "itemTimebase")
                                                     .font(.jarasSystem(size: 13, weight: .semibold))
-                                                    .foregroundStyle(originalSong.projectTime.timebase == .relative && movingRegion == nil ? JarasTheme.green : Color.yellow)
+                                                    .foregroundStyle(originalSong.projectTime.timebase == .relative && movingRegion == nil ? JarasTheme.green : JarasTheme.yellow)
                                                     .frame(width: 24, height: 24).contentShape(Rectangle())
                                             }.buttonStyle(.plain)
                                                 .accessibilityLabel("Relative timebase")
