@@ -355,7 +355,16 @@ func testSpectrumWorker(rate: Double) {
                 input.floatChannelData![0][i] = value
                 if channels == 2 { input.floatChannelData![1][i] = -0.25 * value }
             }
-            player.scheduleBuffer(input); try engine.start(); player.play()
+            let bypassInput = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate))!
+            bypassInput.frameLength = AVAudioFrameCount(rate)
+            for ch in 0..<channels {
+                bypassInput.floatChannelData![ch].initialize(repeating: 0.75, count: Int(rate))
+            }
+            player.scheduleBuffer(input)
+            // Queue the next block before the player runs out of audio.
+            player.scheduleBuffer(bypassInput)
+            try engine.start()
+            player.play()
             let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
             let ceiling = Float(pow(10.0, -6.0/20))
             var highest: Float = 0
@@ -372,10 +381,6 @@ func testSpectrumWorker(rate: Double) {
             let meters = JarasDynamics.takeCompressorPeaks(limiter).map(\.floatValue)
             precondition(meters[0] > 2 && meters[2] <= ceiling + 0.000001 && meters[2] > 0.49)
             JarasDynamics.configureLimiter(limiter, enabled: false, gain: 12, ceiling: -6, release: 0.01)
-            let bypassInput = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(rate))!
-            bypassInput.frameLength = AVAudioFrameCount(rate)
-            for ch in 0..<channels { for i in 0..<Int(rate) { bypassInput.floatChannelData![ch][i] = 0.75 } }
-            player.scheduleBuffer(bypassInput)
             for _ in 0..<Int(rate/512)-1 { let status = try engine.renderOffline(512, to: output); precondition(status == .success) }
             let expected: Float = 0.75
             precondition(abs(output.floatChannelData![0][400] - expected) < 0.00001, "bypass restores unprocessed audio: \(output.floatChannelData![0][400]) expected \(expected)")
