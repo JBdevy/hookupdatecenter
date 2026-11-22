@@ -1,6 +1,7 @@
 #pragma once
 #include "DrummerPadAssets.h"
 #include "FXPresets.h"
+#include "VinhetasPanel.h"
 
 namespace catlive {
 class DrummerPadEditor final : public Component, public DragAndDropTarget, private Timer {
@@ -55,6 +56,8 @@ class DrummerPadEditor final : public Component, public DragAndDropTarget, priva
     Slider master;
     Label level;
     var state;
+    std::unique_ptr<FileChooser> audioChooser;
+    std::array<uint64_t,48> audioRequests{};
     static inline WeakReference<Component> learner;
 public:
     DrummerPadEditor(AudioEngine &engine, ID id, String slot, String type, std::function<var()> getState,
@@ -151,10 +154,60 @@ public:
         const auto i=padAt(d.localPosition); if(i<0)return;
         File file(str(d.description,"file")); const auto path=drummer::reference(file);
         if(path.isEmpty()||!file.existsAsFile())return;
-        auto pad=slotAt(i); put(pad,"sample",path); put(pad,"name",file.getFileNameWithoutExtension());
-        commit(); refreshCells();
+        ++audioRequests[size_t(i)];
+        assignAudio(i, path, file.getFileNameWithoutExtension());
     }
 private:
+    void assignAudio(int i, const String &reference, const String &name) {
+        auto pad = slotAt(i);
+        put(pad, "sample", reference);
+        put(pad, "name", name);
+        commit();
+        refreshCells();
+    }
+    static File storeExternalSample(const File &source) {
+        const auto folder = VinhetasPanel::padSampleDirectory();
+        if (folder.createDirectory().failed()) return {};
+        TemporaryFile staged(folder.getChildFile(source.getFileName()));
+        if (!source.copyFileTo(staged.getFile())) return {};
+        auto destination = folder.getChildFile(source.getFileName());
+        for (;;) {
+            if (MoveFileW(staged.getFile().getFullPathName().toWideCharPointer(),
+                          destination.getFullPathName().toWideCharPointer())) return destination;
+            const auto error = GetLastError();
+            if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS) return {};
+            if (destination.hasIdenticalContentTo(staged.getFile())) return destination;
+            destination = folder.getNonexistentChildFile(source.getFileNameWithoutExtension(), source.getFileExtension());
+        }
+    }
+    void chooseAudio(int i) {
+        const auto request = ++audioRequests[size_t(i)];
+        audioChooser = std::make_unique<FileChooser>(localization::translate("Insert audio"), File{},
+            "*.wav;*.wave;*.aif;*.aiff;*.mp3", true, false, getTopLevelComponent());
+        const auto safe = SafePointer<DrummerPadEditor>(this);
+        audioChooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+            [safe, i, request](const FileChooser &picker) {
+                const auto source = picker.getResult();
+                if (!safe || source == File{} || safe->audioRequests[size_t(i)] != request) return;
+                static ThreadPool worker(1);
+                worker.addJob([safe, i, request, source] {
+                    auto error = VinhetasAudio::importError(source);
+                    auto reference = drummer::reference(source);
+                    const bool external = reference.isEmpty();
+                    if (external && error.isEmpty()) {
+                        const auto stored = storeExternalSample(source);
+                        if (stored == File{}) error = localization::translate("Could not load the pad audio.");
+                        else reference = drummer::reference(stored);
+                    }
+                    MessageManager::callAsync([safe, i, request, source, error, reference, external] {
+                        if (external && error.isEmpty()) VinhetasPanel::notifyPadSamplesChanged();
+                        if (!safe || safe->audioRequests[size_t(i)] != request) return;
+                        if (error.isNotEmpty()) safe->report(error);
+                        else safe->assignAudio(i, reference, source.getFileNameWithoutExtension());
+                    });
+                });
+            });
+    }
     var slotAt(int i) const { return get(state,"pads")[i]; }
     Array<var> entries() const { fxpresets::Store s; return s.entries(s.read(),"native:"+kind); }
     void commit() { write(state); }
@@ -191,6 +244,7 @@ private:
         preset.setButtonText(name);
     }
     void choose(const var &entry) {
+        for (auto &request : audioRequests) ++request;
         selected=str(entry,"id");
         state=drummer::kit(get(entry,"native"),count).clone();commit();
         master.setValue(num(state,"volume",1),dontSendNotification);
@@ -256,10 +310,12 @@ private:
         }),true);
     }
     void padMenu(int i) {
-        PopupMenu menu;menu.addItem(1,"Rename pad");menu.addItem(2,"Learn MIDI");
+        PopupMenu menu;menu.addItem(4,localization::translate("Insert audio"));
+        menu.addItem(1,"Rename pad");menu.addItem(2,"Learn MIDI");
         const int note=int(num(slotAt(i),"note",-1));if(note>=0)menu.addItem(3,"Unlearn Note "+String(note));
         menu.showMenuAsync(PopupMenu::Options(),[safe=SafePointer<DrummerPadEditor>(this),i](int action){
             if(!safe)return;
+            if(action==4)safe->chooseAudio(i);
             if(action==1)safe->prompt(i);
             if(action==2){learner=safe.getComponent();safe->audio.drummerLearnNote=-1;safe->learning=i;}
             if(action==3){auto pad=safe->slotAt(i);pad.getDynamicObject()->removeProperty("note");safe->cancelLearning();safe->commit();}

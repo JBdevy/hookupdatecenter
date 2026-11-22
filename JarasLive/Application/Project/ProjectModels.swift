@@ -12,6 +12,14 @@ public struct AudioFile: Codable, Equatable, Sendable { public var path: String;
 public struct ItemTempoReference: Codable, Equatable, Sendable { public var markerID: UUID; public var rate: Double; public init(markerID: UUID, rate: Double) { self.markerID = markerID; self.rate = rate } }
 public struct AudioClip: Codable, Identifiable, Equatable, Sendable { public var id: UUID; public var name: String; public var startTime: Double; public var duration: Double; public var separatedStemTracks: [UUID]?; public var sourceOffset: Double = 0; public var waveform: [Double] = []; public var audioFile: AudioFile?; public var gain: Double?; public var phaseInverted: Bool? = nil; public var pan: Double? = nil; public var normalizationGain: Double?; public var fadeIn: Double?; public var fadeOut: Double?; public var fadeInCurve: Double? = nil; public var fadeInSCurve: Double? = nil; public var fadeOutCurve: Double? = nil; public var fadeOutSCurve: Double? = nil;  public var fadeTimelineStart: Double?; public var fadeTimelineDuration: Double?; public var channelMode: Int?; public var waveformChannels: [[Double]]?; public var muted: Bool?; public var playbackRate: Double?; public var recordingLane: Int?; public var loopStart: Double?; public var loopLength: Double?; public var fx: NativeFXSettings?; public var timecode: TimecodeSettings?; public var timecodeStartOffset: Double?; public var timecodeEndOffset: Double?; public var fxBypassed: Bool?; public var text: String?; public var midi: MIDIItem?; public var frozenMIDI: Bool?; public var renderedTiming: Bool?; public var pitchSemitones: Double? = nil; public var regionOwnerID: UUID? = nil; public var automation: TrackAutomation? = nil; public var automationSourceOffset: Double? = nil; public var tempoBasePlaybackRate: Double? = nil; public var renderedTempo: Bool? = nil; public var clickDouble: Bool? = nil; public var tempoRateReferences: [ItemTempoReference]? = nil; public var audioRate: Double { playbackRate ?? 1 } }
 public extension AudioClip {
+    func isTeleprompterLyric(on track: Track) -> Bool {
+        track.kind.isTeleprompter && !isProjectionMedia && audioFile == nil && midi == nil
+    }
+    func hasSelectableMediaHeader(on track: Track) -> Bool {
+        if midi != nil || audioFile != nil { return true }
+        return track.kind == .standard && text == nil && timecode == nil &&
+            (track.audioFile != nil || !waveform.isEmpty || waveformChannels?.isEmpty == false)
+    }
     var isProjectionMedia: Bool { audioFile?.path.hasPrefix("Videos/") == true }
     var isImage: Bool { isProjectionMedia && ["png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "bmp", "webp", "avif"].contains(URL(fileURLWithPath: audioFile?.path ?? "").pathExtension.lowercased()) }
 }
@@ -49,8 +57,8 @@ public struct ProgramChangeLayout: Equatable, Sendable {
     }
 }
 public enum TrackMixerComponent: Int, CaseIterable, Sendable {
-    case patch = 1, fx = 2, envelope = 4, rec = 8, inputMonitor = 16, mute = 64, solo = 128, phase = 256
-    public static let compactMask = patch.rawValue | fx.rawValue | envelope.rawValue | rec.rawValue
+    case patch = 1, fx = 2, envelope = 4, rec = 8, inputMonitor = 16, pan = 32, mute = 64, solo = 128, phase = 256
+    public static let compactMask = patch.rawValue | fx.rawValue | envelope.rawValue | rec.rawValue | pan.rawValue
     public var title: String {
         switch self {
         case .patch: return "Patch"
@@ -58,6 +66,7 @@ public enum TrackMixerComponent: Int, CaseIterable, Sendable {
         case .envelope: return "Envelope"
         case .rec: return "Rec"
         case .inputMonitor: return "Input Monitor"
+        case .pan: return "Pan"
         case .mute: return "M"
         case .solo: return "S"
         case .phase: return "Phase"
@@ -67,6 +76,7 @@ public enum TrackMixerComponent: Int, CaseIterable, Sendable {
 public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var hiddenMixerComponents: Int? = nil
     public var supportsMixerComponents: Bool { kind == .standard && role.rawValue != "vinhetas" }
+    public var allowsCompactMixerHeight: Bool { supportsMixerComponents || kind == .programChange || kind == .click || kind.isTeleprompter }
     public var mixerComponentMask: Int { supportsMixerComponents ? hiddenMixerComponents ?? 0 : 0 }
     public func showsMixerComponent(_ component: TrackMixerComponent) -> Bool {
         mixerComponentMask & component.rawValue == 0
@@ -83,7 +93,7 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     /// Visual row proportion; absent in existing projects means the standard height.
     public var heightScale: Double? = nil
     /// Optional visual identity; unknown future identifiers survive round trips.
-    public var instrumentIcon: String? = "png:Sound Effects/noise"
+    public var instrumentIcon: String? = "png:Other/waveform"
     public var mute = false, solo = false
     public var output = 1
     public var automation: TrackAutomation?
@@ -172,13 +182,14 @@ public enum TrackHeightGeometry {
     public static func isValidScale(_ value: Double) -> Bool { value.isFinite && (minimumScale...maximumScale).contains(value) }
     public static func scale(_ value: Double?) -> Double { value.flatMap { isValidScale($0) ? $0 : nil } ?? 1 }
     public static let minimumLaneHeight = 66.0
-    public static let compactMinimumLaneHeight = 44.0
-    public static func laneLimits(count: Int, compact: Bool = false) -> ClosedRange<Double> {
-        let minimum = compact ? compactMinimumLaneHeight : minimumLaneHeight
+    public static let compactMinimumLaneHeight = 28.0
+    public static let compactControlHeight = 64.0
+    public static func laneLimits(count: Int, allowsCompactHeight: Bool = false) -> ClosedRange<Double> {
+        let minimum = allowsCompactHeight ? compactMinimumLaneHeight : minimumLaneHeight
         return count > 1 ? max(26, minimum / Double(count))...168 : minimum...240
     }
-    public static func laneHeight(base: Double, scale: Double, count: Int, compact: Bool = false) -> Double {
-        let limits = laneLimits(count: count, compact: compact)
+    public static func laneHeight(base: Double, scale: Double, count: Int, allowsCompactHeight: Bool = false) -> Double {
+        let limits = laneLimits(count: count, allowsCompactHeight: allowsCompactHeight)
         return min(limits.upperBound, max(limits.lowerBound, base * (count > 1 ? 0.7 : 1) * scale))
     }
     /// Stop a shared zoom at the first row limit, keeping all row proportions.
@@ -188,7 +199,7 @@ public enum TrackHeightGeometry {
         for (index, scale) in scales.enumerated() {
             let count = laneCounts.indices.contains(index) ? laneCounts[index] : 1
             let isCompact = compact.indices.contains(index) && compact[index]
-            let limits = laneLimits(count: count, compact: isCompact), multiplier = scale * (count > 1 ? 0.7 : 1)
+            let limits = laneLimits(count: count, allowsCompactHeight: isCompact), multiplier = scale * (count > 1 ? 0.7 : 1)
             // Full rows stop at their own floor while compact rows continue to shrink.
             if !hasCompact { lower = max(lower, limits.lowerBound / multiplier) }
             else if isCompact { lower = min(lower, limits.lowerBound / multiplier) }
@@ -756,7 +767,7 @@ public struct Project: Codable, Identifiable, Equatable, Sendable {
                 } else { ancestors.removeAll(keepingCapacity: true) }
                 ancestors.append(track.id)
                 try register(track.id)
-                if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video || track.kind == .click || track.kind == .programChange), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
+                if let fixed = track.fixedName { guard (track.name == fixed || (track.kind == .click && track.name == "Click") || (track.kind == .teleprompt && track.name == "Teleprompter")), (!track.solo || track.kind == .video || track.kind == .click || track.kind == .programChange), track.parentTrackID == nil else { throw ProjectError.invalid("Invalid special track") } }
                 guard track.clickSound == nil || track.kind == .click else { throw ProjectError.invalid("Custom click sound requires a Click track") }
                 if track.kind == .click { guard track.fx == nil, track.audioFile == nil, track.midiInput == nil, track.inputPatch == nil, track.midiChannel == nil, track.recordingChannels == nil, track.recordingFormat == nil else { throw ProjectError.invalid("Click tracks cannot record or contain FX") } }
                 if track.kind.isText { guard !track.mute, track.fx == nil, track.audioFile == nil, track.midiInput == nil, track.midiChannel == nil, track.recordingFormat == nil, track.recordingChannels == nil else { throw ProjectError.invalid("Text tracks cannot contain audio controls") } }
@@ -1199,7 +1210,14 @@ public enum TrackKind: String, CaseIterable, Sendable {
         case .standard: return nil
         }
     }
-    public var title: String { switch self { case .click: return "Click"; case .standard: return "Standard"; case .video: return "Video"; case .programChange: return "Program Change"; case .timecode: return "Timecode"; case .teleprompt: return "Teleprompter 1"; case .teleprompt2: return "Teleprompter 2"; case .chords: return "Chords" } }
+    public var title: String { switch self { case .click: return "Metronome"; case .standard: return "Standard"; case .video: return "Video"; case .programChange: return "Program Change"; case .timecode: return "Timecode"; case .teleprompt: return "Teleprompter 1"; case .teleprompt2: return "Teleprompter 2"; case .chords: return "Chords" } }
+    var defaultInstrumentIcon: String? {
+        switch self {
+        case .standard: return "png:Other/waveform"
+        case .click: return "png:Other/metronome"
+        default: return nil
+        }
+    }
     public var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 }
     public var isText: Bool { isTeleprompter || self == .chords }
     public var isSingleLane: Bool { isText || self == .video }

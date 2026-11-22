@@ -21,6 +21,13 @@ clip = scroll[start:scroll.index('\n#endif', start)]
 start = scroll.index('final class NativeTimelinePinnedView: NSView')
 pin = scroll[start:scroll.index('\n#endif', start)]
 grid = Path('Apple/Shared/TimelineGridView.swift').read_text()
+transfer = Path('Apple/Shared/VinhetasPanel.swift').read_text()
+diagnostics += '\nimport UniformTypeIdentifiers\ntypealias MixerDividerView = NSView\n'
+diagnostics += scroll[scroll.index('private protocol TimelineSetlistResizeHost:'):scroll.index('private final class WorkspaceSplitView<')]
+diagnostics += transfer[transfer.index('enum LibrarySamplerTransfer {'):transfer.index('enum PadAudioBuffer {')]
+transportView = Path('Apple/Shared/TransportView.swift').read_text()
+start = transportView.index('enum TimelineEditPreferences {')
+diagnostics += transportView[start:transportView.index('\n}', start) + 2] + '\n'
 head = grid[grid.index('private let markerLaneHeight:'):grid.index('struct TimelineHeaderBands')]
 start = grid.index('/// Moving needles update Core Animation layers')
 layer = grid[start:grid.index('private struct TimelineCursorAppearance<', start)].rsplit('#endif', 1)[0]
@@ -40,7 +47,8 @@ stub_track = 'public struct MultiLoopTrack: Codable, Equatable, Sendable {}\n'
 stub_track += 'final class GridDocumentView: NSView { var followsViewportWidth = false; func synchronizeHostedViewport() {} }\n'
 stubs = Path('Tests/Apple/TimelinePlaybackLayerTests.swift').read_text().split('@MainActor private final class PresentationJournal')[0]
 stubs = stubs.replace('let duration: Double; let parts:', 'let id = UUID(); let duration: Double; let parts:')
-stubs = stubs.replace('var isPlaying: Bool', '@Published var subCursorPreview = false\n    @Published var timelineFollowPaused = false\n    var subCursorVisible: Bool { subCursorPreview || snapshot.transport.subPlay.playing }\n    var isPlaying: Bool')
+stubs = stubs.replace('let endTime: Double }', 'var startTime: Double = 0; let endTime: Double }', 1)
+stubs = stubs.replace('var isPlaying: Bool', '@Published var timelineFollowPaused = false\n    var subCursorVisible: Bool { snapshot.transport.queuedRegionId != nil }\n    var isPlaying: Bool')
 stubs = stubs.replace('    private var sampledAt =', '    var timelinePlaybackIsPublishingTick = false\n    private var sampledAt =', 1)
 stubs = stubs.replace('subPlaying: Bool = false) {', 'subPlaying: Bool = false, tick: Bool = false) {', 1)
 stubs = stubs.replace('        generation += 1', '        timelinePlaybackIsPublishingTick = tick\n        defer { timelinePlaybackIsPublishingTick = false }\n        generation += 1', 1)

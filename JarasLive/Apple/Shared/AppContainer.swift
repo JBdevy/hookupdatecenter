@@ -180,9 +180,8 @@ enum AppStartupPresentation {
             #endif
             if !tabContext { TrackRecording.shared.bind(show) }
             audio.instrumentFile = { [weak audio] id in
-                guard let instrument = InstrumentLibrary.catalog.first(where: { $0.id == id }),
-                      let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: audio?.mediaDirectory) else { return nil }
-                return (file, instrument.percussion)
+                guard let file = InstrumentLibrary.shared.resolvedFile(id, projectDirectory: audio?.mediaDirectory) else { return nil }
+                return (file, InstrumentLibrary.category(id) == .drum)
             }
             show.selectedLoopArea = { [weak show] in
                 guard let area = TimelineAreaSelection.shared.range, area.song == show?.snapshot.transport.songId else { return nil }
@@ -326,7 +325,10 @@ enum AppStartupPresentation {
             AudioDeviceSettings.shared.mobileSessionEvent = { event in NativeProjectTabs.shared.handleAudioEvent(event) }
             #endif
         }
-        show.onStop = { [weak auth] in auth?.transportDidStop() }
+        show.onStop = { [weak auth, weak recorder = projectRecorder] in
+            recorder?.cancelCountIn()
+            auth?.transportDidStop()
+        }
         if tabContext { starting = false }
     }
     #if os(iOS)

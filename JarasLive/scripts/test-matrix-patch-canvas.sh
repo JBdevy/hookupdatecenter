@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 source = Path('Apple/Shared/MatrixPatchView.swift').read_text()
 models = source[source.index('private struct MatrixPatchRow'):source.index('struct MatrixPatchView:')]
-canvas = source[source.index('private final class MatrixPatchSurface:'):source.rindex('#endif')]
+canvas = source[source.index('private final class MatrixPatchSurface:'):source.index('#endif', source.index('private final class MatrixPatchDrawing:'))]
 tip = Path('Apple/Shared/NativeTooltips.swift').read_text()
 tip = tip[tip.index('@MainActor final class DesktopIconTooltipWindow'):tip.rindex('#endif')]
 destination = Path('Application/Project/MatrixPatch.swift').read_text()

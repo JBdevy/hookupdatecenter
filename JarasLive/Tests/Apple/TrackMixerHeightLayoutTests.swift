@@ -51,6 +51,14 @@ for lowerTitle in [false,true] {
     }
 }
 
+for height: CGFloat in [84, 120, 160, 240] {
+    let frames = TrackMixerHeightGeometry.frames(width: 320, height: height, meterWidth: 40,
+        standard: true, lowerTitle: true, controlsWidth: 180)
+    precondition(frames[3].minY == height - frames[4].maxY, "Buttons and fader must move together around the row centre")
+    precondition(frames[2].maxY == height - 1, "The name must stay at the bottom")
+    precondition(TrackMixerHeightGeometry.controlTop(height: height, groupHeight: 22) + 11 == height / 2)
+}
+
 // Keep the group action and the full button row in reach at the mixer minimum.
 precondition(SidebarWidthLimits.trackMixer < SidebarWidthLimits.trackMixerDefault)
 for width: CGFloat in [SidebarWidthLimits.trackMixer, SidebarWidthLimits.trackMixerDefault, 400] {
@@ -251,7 +259,7 @@ editableTitle.mouseDown(with: doubleClick)
 guard let field = editableTitle.subviews.compactMap({ $0 as? NSTextField }).first else {
     preconditionFailure("Double-clicking the title must open an inline field")
 }
-precondition(field.frame == editableTitle.bounds && field.stringValue == "Piano")
+precondition(editableTitle.bounds.contains(field.frame) && field.frame.width >= 84 && field.stringValue == "Piano")
 field.stringValue = "Piano Lead"
 field.currentEditor()?.string = "Piano Lead"
 editableTitle.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: field))

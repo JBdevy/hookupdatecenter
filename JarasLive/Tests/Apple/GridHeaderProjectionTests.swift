@@ -9,6 +9,8 @@ grid.headerHeight = 64
 let id = UUID()
 var item = GridSelectionItem(id: id, rect: CGRect(x: 0, y: 100, width: 10_000, height: 70),
     name: "Voz principal – Coração 🎤", duration: 100)
+item.hasSelectableMediaHeader = true
+item.blackTitle = true
 item.selectedBlackTitle = true
 grid.updateLayout(GridSelectionLayout(items: [item]), pixelsPerSecond: 30)
 func pixels(scale: Int = 1) -> Data {
@@ -31,7 +33,12 @@ let selectionInvalidations = HeaderProjectionProbe.invalidations
 grid.updateSelection([id])
 precondition(HeaderProjectionProbe.invalidations > selectionInvalidations, "Selecting an item must invalidate its native header immediately")
 let selectedPixels = pixels()
-precondition(deselectedPixels != selectedPixels, "Selected item title must visibly change color")
+let column = 680
+func alphaAt(_ pixels: Data, _ row: Int) -> UInt8 { pixels[(700 * row + column) * 4 + 3] }
+precondition(alphaAt(selectedPixels, 107) == 255 && alphaAt(deselectedPixels, 107) == 0,
+             "Selection fills the entire visible header, including beyond the title")
+precondition(alphaAt(selectedPixels, 135) == alphaAt(deselectedPixels, 135),
+             "Selection stripe leaves the waveform body untouched")
 grid.updateSelection([])
 precondition(pixels() == deselectedPixels, "Clearing selection must restore the original header")
 print("GRID_HEADER_SELECTION_INVALIDATION_AND_RESTORE_OK")

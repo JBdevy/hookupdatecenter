@@ -115,6 +115,11 @@ inline const std::vector<ActionDefinition> &actionDefinitions() {
         {"previousProjectTab", "Previous project tab", 5, ""},
         {"nextProjectTab", "Next project tab", 5, ""},
         {"toggleBarMixer", "Hoz-Mixer show/hide", 5, "alt + H"},
+        {"toggleFocus", "Track - I show/hide", 5, ""},
+        {"toggleLibrary", "Library show/hide", 5, ""},
+        {"toggleSelectedInputMonitor", "Input Monitor · Selected track", 5, ""},
+        {"toggleSelectedStripFXBypass", "By All Fx · Selected track", 5, ""},
+        {"toggleSessionFXBypass", "By Fx Session", 5, ""},
         {"toggleTracks", "Track Mixer show/hide", 5, "alt + T"}};
     return definitions;
 }
@@ -237,16 +242,6 @@ class ActionBindings final : public ChangeBroadcaster,
     std::function<String(const var &)> externalMIDIConflict;
     std::function<Result(const var &)> transferExternalMIDI;
     String learning, learningKind, error;
-    bool hasCustomInput(const ActionDefinition &definition, const String &kind, int number = 0) const {
-        if ((kind == "keyboard" && (definition.fixedKeyboard() || definition.continuous)) ||
-            (kind == "midi" && !definition.supportsMIDI()))
-            return false;
-        const auto saved =
-            get(settings.value("catlive.actions", object()), Identifier(targetID(definition.id, number)), object());
-        return saved.hasProperty(Identifier(kind)) &&
-               (kind == "midi" ? get(saved, "midi").isObject()
-                               : str(saved, "keyboard").isNotEmpty());
-    }
     var binding(const ActionDefinition &definition, int number = 0) const {
         auto value =
             get(settings.value("catlive.actions", object()), Identifier(targetID(definition.id, number)), object())

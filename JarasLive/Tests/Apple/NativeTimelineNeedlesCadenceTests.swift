@@ -57,12 +57,17 @@ MainActor.assumeIsolated {
     immediate("explicit sub seek below any discontinuity threshold") {
         show.snapshot.transport.subPlay.position += 0.0001
     }
+    precondition(needles.layer!.sublayers![2].isHidden)
+    let queuedID = UUID()
+    show.current = PresentationTestSong(duration: 1000, parts: [.init(id: queuedID, parentRegionID: nil, startTime: 42, endTime: 48)])
+    immediate("queue region") { engineUpdate { $0.queuedRegionId = queuedID } }
+    precondition(!needles.layer!.sublayers![2].isHidden && position(2) == 42)
     immediate("sub handoff inside engine tick") {
         engineUpdate { $0.subPlay.playing = true; $0.subPlay.position = 42 }
     }
     precondition(!needles.layer!.sublayers![2].isHidden)
     immediate("sub promotion inside engine tick") {
-        engineUpdate { $0.subPlay.playing = false; $0.subPlayPromotion = 1; $0.position = 42 }
+        engineUpdate { $0.subPlay.playing = false; $0.subPlayPromotion = 1; $0.position = 42; $0.queuedRegionId = nil }
     }
     immediate("region transition inside engine tick") { engineUpdate { $0.regionId = UUID() } }
     immediate("loop boundary inside engine tick") {
@@ -86,9 +91,9 @@ MainActor.assumeIsolated {
     precondition(!needles.hasTimerForTest && !needles.layer!.sublayers![1].isHidden)
     immediate("stopped edit seek") { show.snapshot.transport.editPosition = 333.125 }
     precondition(position(0) == 333.125)
-    immediate("sub preview start") { show.subCursorPreview = true }
+    immediate("queue shown") { show.snapshot.transport.queuedRegionId = queuedID }
     precondition(needles.hasTimerForTest)
-    immediate("sub preview stop") { show.subCursorPreview = false }
+    immediate("queue cancelled") { show.snapshot.transport.queuedRegionId = nil }
     precondition(!needles.hasTimerForTest)
     immediate("resume inside engine tick") { engineUpdate { $0.playing = true; $0.paused = false } }
     precondition(needles.hasTimerForTest)
@@ -210,6 +215,7 @@ MainActor.assumeIsolated {
     precondition(abs(position(1) - 50.005) < 1e-9,
         "a scheduled jump uses actual output time rather than the previous loop's boundary")
     show.publish(main: 50, sub: 70, subPlaying: true)
+    show.snapshot.transport.queuedRegionId = UUID()
     RunLoop.main.run(until: Date().addingTimeInterval(0.002))
     needles.freezeTimerForTest(); queries.removeAll(); needles.fireFrameForTest()
     precondition(queries.map(\.0) == [0, 1] && queries[0].1 == queries[1].1 && position(2) == 70.025,

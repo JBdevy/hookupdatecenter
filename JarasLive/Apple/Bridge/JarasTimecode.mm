@@ -176,6 +176,38 @@ struct MetronomeSignal {
     std::atomic<uint64_t> host{0}, generation{0};
     std::atomic<uint64_t> retimedGeneration{~uint64_t(0)};
     std::atomic<bool> running{false}, enabled{true};
+    std::atomic<uint64_t> countInHost{0};
+    std::atomic<double> countInPeriod{0};
+    std::atomic<unsigned> countInBeats{0};
+
+    void renderCountIn(const MetronomeProgram* p, const AudioTimeStamp* time,
+                       unsigned count, AudioBufferList* list) {
+        const auto host = countInHost.load(std::memory_order_acquire);
+        if (!host || !p || !(time->mFlags & kAudioTimeStampHostTimeValid)) return;
+        const auto beats = countInBeats.load(std::memory_order_relaxed);
+        const double beatFrames = countInPeriod.load(std::memory_order_relaxed) * sampleRate;
+        const double elapsed = double(int64_t(time->mHostTime - host)) * sampleRate / ticksPerSecond;
+        if (!beats || beatFrames <= 0 || elapsed + count <= -.5 || elapsed >= beats * beatFrames) return;
+        const auto start = std::llround(elapsed);
+        const auto end = std::llround(beatFrames * beats);
+        for (unsigned beat = 0; beat < beats; ++beat) {
+            const auto onset = std::llround(beat * beatFrames);
+            if (onset >= start + count) break;
+            const bool accent = p->mode == 1 || (p->mode == 0 && beat == 0);
+            const auto &sound = accent ? p->a : p->b;
+            const auto level = accent ? gainA.load(std::memory_order_relaxed) : gainB.load(std::memory_order_relaxed);
+            const auto first = std::max<int64_t>(0, onset - start);
+            const auto last = std::min<int64_t>({count, end - start, onset + int64_t(sound.size()) - start});
+            for (unsigned i = 0; i < list->mNumberBuffers; ++i) {
+                auto &buffer = list->mBuffers[i];
+                auto *data = static_cast<float*>(buffer.mData);
+                if (!data) continue;
+                for (auto frame = first; frame < last; ++frame)
+                    for (unsigned channel = 0; channel < buffer.mNumberChannels; ++channel)
+                        data[frame * buffer.mNumberChannels + channel] += sound[size_t(start + frame - onset)] * level;
+            }
+        }
+    }
     struct Jump { uint64_t version=0, host=0; double position=0, sample=NAN, first=0, last=0; };
     std::atomic<uint64_t> jumpVersion{0}, jumpHost{0};
     std::atomic<double> jumpPosition{0}, jumpSample{NAN}, jumpFirst{0}, jumpLast{0};
@@ -295,6 +327,7 @@ struct MetronomeSignal {
         renderedEnabled=nowEnabled;
         if(!active && gain==0) {
             for(unsigned b=0;b<list->mNumberBuffers;++b) if(list->mBuffers[b].mData) std::memset(list->mBuffers[b].mData,0,list->mBuffers[b].mDataByteSize);
+            renderCountIn(p, time, count, list);
             return;
         }
         bool rebaseBeat=p && renderedTimingRevision!=0 && renderedTimingRevision!=p->timingRevision;
@@ -362,7 +395,13 @@ struct MetronomeSignal {
                     if(!exactCrossing) { previousBeat=beat; previousSection=section; }
                     rebaseBeat=false;
                 }
-                if((beat!=previousBeat || section!=previousSection) && (previousPosition>=0 || phase<0.003)) {
+                // A resuming route may first render a buffer after the scheduled
+                // downbeat. Recover that pulse only when the transport actually
+                // started on it. A mid-beat seek or enabling while running must
+                // still wait for the next beat.
+                const bool lateStartBeat = previousPosition < 0 && !p->bounded && !jumped &&
+                    phase >= 0 && phase <= 0.050 && std::abs(position-phase-first) <= 0.5/sampleRate;
+                if((beat!=previousBeat || section!=previousSection) && (previousPosition>=0 || phase<0.003 || lateStartBeat)) {
                     const auto index=nextVoice++%voices.size();
                     voices[index]={0,p->mode==1 || (p->mode==0 && beat%tempo.beats==0),p};
                     voicePrograms[index].store(p);
@@ -398,6 +437,7 @@ struct MetronomeSignal {
                 if(data) for(unsigned ch=0;ch<buffer.mNumberChannels;++ch) data[sample*buffer.mNumberChannels+ch]=value;
             }
         }
+        renderCountIn(p, time, count, list);
     }
 };
 @interface JarasPreparedMetronomeProgram () {
@@ -443,6 +483,13 @@ struct MetronomeSignal {
     _signal->publish(std::move(value));
 }
 - (void)setEnabled:(BOOL)enabled { _signal->enabled.store(enabled, std::memory_order_release); }
+- (void)setCountInStart:(uint64_t)host period:(double)period beats:(NSUInteger)beats {
+    _signal->countInHost.store(0, std::memory_order_release);
+    if (!host) return;
+    _signal->countInPeriod.store(period, std::memory_order_relaxed);
+    _signal->countInBeats.store(unsigned(beats), std::memory_order_relaxed);
+    _signal->countInHost.store(host, std::memory_order_release);
+}
 - (void)scheduleJump:(double)position hostTime:(uint64_t)host sampleTime:(double)sampleTime loopStart:(double)first loopEnd:(double)last {
     _signal->scheduleJump(position,host,sampleTime,first,last);
 }

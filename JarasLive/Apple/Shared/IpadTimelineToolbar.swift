@@ -78,8 +78,8 @@ struct IpadTimelineToolbar: View {
                 Toggle(isOn: $showRegions) { Text(verbatim: "Region") }
                 Toggle(isOn: $showTempo) { Text(verbatim: "Tempo") }
             } label: {
-                TimelineBandsGlyph().stroke(style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
-                    .frame(width: 21, height: 17).frame(width: addControlWidth, height: 32)
+                ControlIcon(name: "timelineLanes", active: showRegions || showTempo)
+                    .frame(width: 21, height: 17).frame(width: addControlWidth, height: 32).contentShape(Rectangle())
             }.menuIndicator(.hidden)
                 .frame(width: addControlWidth, height: 32)
                 .background(JarasTheme.text.opacity(0.07), in: RoundedRectangle(cornerRadius: 4))
@@ -99,7 +99,7 @@ struct IpadTimelineToolbar: View {
 
     private var addButton: some View {
         Button(action: addTrack) {
-            Text(verbatim: "Add").frame(width: addControlWidth, height: 32).contentShape(Rectangle())
+            ControlIcon(name: "addTrack", size: 14).frame(width: addControlWidth, height: 32).contentShape(Rectangle())
         }.buttonStyle(IpadTimelineToolbarButtonStyle(color: JarasTheme.accent))
             .accessibilityLabel("Add Track")
             .accessibilityIdentifier("native-add-track")
@@ -107,15 +107,14 @@ struct IpadTimelineToolbar: View {
 
     @ViewBuilder private var timelineButtons: some View {
         Button { snapEnabled.toggle() } label: {
-            TimelineMagnetIcon().stroke(lineWidth: 1.5).frame(width: 17, height: 17)
+            ControlIcon(name: "magnet", active: snapEnabled)
                 .frame(width: 32, height: 32).contentShape(Rectangle())
         }.buttonStyle(IpadTimelineToolbarButtonStyle(color: snapEnabled ? JarasTheme.accent : JarasTheme.secondary))
             .accessibilityLabel("Timeline snapping")
             .accessibilityIdentifier("timeline-snap")
             .accessibilityValue(snapEnabled ? "On" : "Off")
-        TrackMixerComponentsButton(show: show)
         Button { showingVisibility = true } label: {
-            Image(systemName: "eye").frame(width: 32, height: 32).contentShape(Rectangle())
+            ControlIcon(name: "eye", active: showingVisibility).frame(width: 32, height: 32).contentShape(Rectangle())
         }.buttonStyle(IpadTimelineToolbarButtonStyle(color: JarasTheme.text))
             .accessibilityLabel("Visibilidade das pistas")
             .accessibilityIdentifier("native-track-visibility").help(Text(verbatim: "Hide/View-Tracks"))
@@ -124,14 +123,14 @@ struct IpadTimelineToolbar: View {
             pendingTimebase = TimebaseRequest(project: show.snapshot.project.id, song: song.id,
                                               relative: song.projectTime.timebase != .relative)
         } label: {
-            Image(systemName: "arrow.left.and.right").frame(width: 32, height: 32).contentShape(Rectangle())
+            ControlIcon(name: "itemTimebase", active: relativeTimebase).frame(width: 32, height: 32).contentShape(Rectangle())
         }.buttonStyle(IpadTimelineToolbarButtonStyle(color: relativeTimebase ? JarasTheme.green : .yellow))
             .accessibilityLabel("Relative timebase")
             .accessibilityIdentifier("timeline-timebase")
             .accessibilityValue(relativeTimebase ? "Enabled" : "Disabled")
             .disabled(show.current == nil)
         Button { show.setTimelineMovementLocked(!show.timelineMovementLocked) } label: {
-            Image(systemName: show.timelineMovementLocked ? "lock.fill" : "lock.open")
+            ControlIcon(name: show.timelineMovementLocked ? "lock" : "unlock", active: show.timelineMovementLocked)
                 .frame(width: 32, height: 32).contentShape(Rectangle())
         }.buttonStyle(IpadTimelineToolbarButtonStyle(color: show.timelineMovementLocked ? .black : JarasTheme.text,
                                                     background: show.timelineMovementLocked ? JarasTheme.yellow : nil))

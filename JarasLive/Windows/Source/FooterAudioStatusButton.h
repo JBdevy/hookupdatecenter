@@ -6,8 +6,11 @@ namespace catlive {
 class FooterAudioStatusButton final : public QuietButton, private Timer {
   public:
     std::function<String()> status;
+    static int widthForStatus(const String& text) {
+        return int(std::ceil(GlyphArrangement::getStringWidth(theme::font(9), text) * 1.04f)) + 6;
+    }
     void paintButton(Graphics &g,bool,bool) override {
-        auto area=getLocalBounds().toFloat().reduced(8,0);
+        auto area=getLocalBounds().toFloat().reduced(3,0);
         area.setX(std::max(area.getX(),area.getRight()-370.f));
         if(area.isEmpty())return;
         const auto font=theme::font(9);

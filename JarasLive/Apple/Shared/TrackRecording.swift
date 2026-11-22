@@ -99,8 +99,9 @@ private final class CaptureWriter: @unchecked Sendable {
             } catch { completion([], error.localizedDescription) }
         }
     }
-    func start(preview: (@Sendable (Double,[UUID:[[Double]]]) -> Void)? = nil) {
-        ring.beginCapture()
+    func start(atHostTime host: UInt64 = 0, preview: (@Sendable (Double,[UUID:[[Double]]]) -> Void)? = nil) {
+        if host == 0 { ring.beginCapture() }
+        else { ring.beginCapture(atHostTime: host) }
         queue.async {
             // beginCapture resets the shared ring's loss counter. Initial
             // takes belong to this new session, even if the ring was reused.
@@ -312,7 +313,9 @@ private final class CaptureWriter: @unchecked Sendable {
         }
         (projectAudio ?? StemAudioPlayback.shared).onLiveKeyboardMIDI = { [weak self] track, status, number, value in
             guard let self, self.recording else { return }
-            let position = self.startPosition + ProcessInfo.processInfo.systemUptime - self.midiStartTime
+            let timestamp = ProcessInfo.processInfo.systemUptime
+            guard timestamp >= self.midiStartTime else { return }
+            let position = self.recordingPosition(at: timestamp)
             self.midiTakes[track]?.receive(source: Int32.min, status: status, number: number, value: value, position: position)
         }
         selectionObservation = show.$mixerTrackSelection.removeDuplicates().sink { [weak self] selection in
@@ -343,6 +346,30 @@ private final class CaptureWriter: @unchecked Sendable {
         return TimelinePlaybackPresentation(transport: transport, elapsed: elapsed,
             songDuration: song?.duration ?? 0, mainBoundary: boundary).mainPosition
     }
+    struct MIDIPreviewPass {
+        let session: UUID
+        let index: Int
+        let start: Double
+        let currentPassReady: Bool
+    }
+
+    func midiPreviewPass(at audiblePosition: Double) -> MIDIPreviewPass? {
+        guard recording else { return nil }
+        guard let cycle = recordingCycle else {
+            return MIDIPreviewPass(session: previewSession, index: 0, start: startPosition, currentPassReady: true)
+        }
+        let elapsed = max(0, ProcessInfo.processInfo.systemUptime - midiStartTime)
+        let pass = cycle.pass(start: startPosition, elapsed: elapsed)
+        // Capture can cross the boundary slightly ahead of the output device.
+        // Only draw the new take once the shared grid cursor has wrapped.
+        let length = cycle.range.upperBound - cycle.range.lowerBound
+        let synchronized = abs(pass.position - audiblePosition) < length / 2
+        return MIDIPreviewPass(session: previewSession, index: pass.index,
+                               start: cycle.segment(start: startPosition, index: pass.index).start,
+                               currentPassReady: pass.index == capturePass && synchronized)
+    }
+    @Published private(set) var countingIn = false
+    private var pendingCountIn: UUID?
     @Published private(set) var recording = false
     @Published private(set) var busy = false
     @Published var error = ""
@@ -429,8 +456,8 @@ private final class CaptureWriter: @unchecked Sendable {
         mobileInput.setCapture(nil); tapInstalled = false
         guard let ring = captureRing else { return }
         let rings = monitorRings
-        let capture: @Sendable (AVAudioPCMBuffer) -> Void = { buffer in
-            ring.push(buffer)
+        let capture: @Sendable (AVAudioPCMBuffer, UInt64) -> Void = { buffer, hostTime in
+            ring.push(buffer, hostTime: hostTime)
             for monitor in rings { monitor.push(buffer) }
         }
         mobileInput.setCapture(capture)
@@ -452,8 +479,8 @@ private final class CaptureWriter: @unchecked Sendable {
         desktopInput.setCapture(nil); tapInstalled = false
         guard let ring = captureRing else { return }
         let rings = monitorRings
-        let capture: @Sendable (AVAudioPCMBuffer) -> Void = { buffer in
-            ring.push(buffer)
+        let capture: @Sendable (AVAudioPCMBuffer, UInt64) -> Void = { buffer, hostTime in
+            ring.push(buffer, hostTime: hostTime)
             for monitor in rings { monitor.push(buffer) }
         }
         desktopInput.setCapture(capture)
@@ -471,6 +498,10 @@ private final class CaptureWriter: @unchecked Sendable {
     private var activeTargets: [UUID: CaptureTarget] = [:]
     private var midiTakes: [UUID: MIDIRecordingTake] = [:]
     private var silentTakes: [UUID: AudioClip] = [:]
+    private var recordingCycle: RecordingCycle?
+    private var capturePass = 0
+    private var audioPassIDs: [UUID: [UUID]] = [:]
+    private var rollingTakes = false
     private var midiStartTime = 0.0
     private var recordingSong: UUID?
     private var recordingNames = RecordingNames(directory: nil)
@@ -695,8 +726,71 @@ private final class CaptureWriter: @unchecked Sendable {
             let take = MIDIRecordingTake(track: track.id, song: song, startTime: position, lane: lane, name: recordingNames.allocate(track: track.name, clips: track.clips))
             midiTakes[track.id] = take
             RecordingLaneLayout.shared.reserve(track: track, clip: AudioClip(id: take.id, name: take.name, startTime: position, duration: 0.01, recordingLane: lane, midi: MIDIItem(sourceBPM: take.sourceBPM)))
-            LiveRecordingPreview.shared.takes[take.id] = RecordingPreviewTake(start: position, duration: 0.01, channels: [])
+            LiveRecordingPreview.shared.takes[take.id] = RecordingPreviewTake(start: position, duration: 0.01, channels: [], midiHistory: take.previewHistory)
         }
+    }
+    /// Audio input keeps writing continuously. MIDI notes and silent armed tracks
+    /// open a new take at the transport boundary, even between two UI updates.
+    private func recordingPosition(at timestamp: Double) -> Double {
+        let elapsed = max(0, timestamp-midiStartTime)
+        guard let cycle = recordingCycle else { return startPosition+elapsed }
+        let pass = cycle.pass(start: startPosition, elapsed: elapsed)
+        if !rollingTakes, let show {
+            rollingTakes = true
+            defer { rollingTakes = false }
+            while capturePass < pass.index {
+                capturePass += 1
+                let held = midiTakes
+                let silent = Set(silentTakes.keys)
+                for track in held.keys { finishMIDITake(track, at: cycle.range.upperBound) }
+                updateSilentTakes([], at: cycle.range.upperBound)
+                let tracks = show.current?.tracks ?? []
+                updateMIDITargets(tracks.filter { held[$0.id] != nil }, position: cycle.range.lowerBound)
+                for (track, previous) in held {
+                    if var next = midiTakes[track] {
+                        previous.continueHeldNotes(into: &next)
+                        midiTakes[track] = next
+                    }
+                }
+                updateSilentTakes(tracks.filter { silent.contains($0.id) }, at: cycle.range.lowerBound)
+            }
+        }
+        return pass.position
+    }
+
+    private func updateAudioPreview(_ id: UUID, duration: Double, waveform: LiveRecordedWaveform?) {
+        let layout = RecordingLaneLayout.shared, preview = LiveRecordingPreview.shared
+        guard let base = layout.items[id], let original = preview.takes[id] else { return }
+        guard let cycle = recordingCycle, let track = show?.current?.tracks.first(where: { $0.id == base.track }),
+              original.start < cycle.range.upperBound else {
+            layout.update(id, duration: duration)
+            preview.takes[id]?.duration = max(0.01,duration)
+            if let waveform { preview.takes[id]?.waveform = waveform }
+            return
+        }
+        var ids = audioPassIDs[id] ?? [id]
+        var index = ids.count-1
+        while true {
+            let segment = cycle.segment(start: original.start, index: index)
+            let remaining = duration-segment.offset
+            guard remaining > 0 else { break }
+            var take = original
+            take.start = segment.start
+            take.duration = min(remaining,segment.limit)
+            take.sourceOffset = segment.offset
+            take.completedPass = remaining >= segment.limit
+            take.waveform = waveform ?? original.waveform
+            if index == ids.count {
+                var clip = base.clip
+                clip.id = UUID(); clip.startTime = take.start; clip.duration = take.duration
+                layout.reserve(track: track, clip: clip); ids.append(clip.id)
+            }
+            layout.update(ids[index], duration: take.duration)
+            preview.takes[ids[index]] = take
+            if !take.completedPass { break }
+            index += 1
+        }
+        audioPassIDs[id] = ids
     }
     private func finishMIDITake(_ track: UUID, at position: Double) {
         guard var take = midiTakes.removeValue(forKey: track) else { return }
@@ -726,7 +820,7 @@ private final class CaptureWriter: @unchecked Sendable {
     }
     private func receiveMIDI(device: Int32, status: UInt8, number: UInt8, value: UInt8, timestamp: Double) {
         guard recording, timestamp >= midiStartTime, let show else { return }
-        let position = startPosition + timestamp - midiStartTime
+        let position = recordingPosition(at: timestamp)
         let slots = AudioDeviceSettings.shared.midiSlots
         for track in show.current?.tracks ?? [] {
             guard midiTakes[track.id] != nil, track.acceptsMIDI(status: status), let slot = track.midiInput,
@@ -743,15 +837,53 @@ private final class CaptureWriter: @unchecked Sendable {
     private func accept(_ items: [CapturedItem], message: String?, project recordedProject: UUID?) {
         if let show, show.snapshot.project.id == recordedProject {
             for item in items {
-                addRecordedClip(item.clip, track: item.track)
-                RecordingLaneLayout.shared.remove(item.clip.id); LiveRecordingPreview.shared.takes[item.clip.id] = nil
+                let ids = audioPassIDs.removeValue(forKey: item.clip.id) ?? [item.clip.id]
+                if let cycle = recordingCycle, item.clip.startTime < cycle.range.upperBound {
+                    var index = 0
+                    while true {
+                        let segment = cycle.segment(start: item.clip.startTime, index: index)
+                        let remaining = item.clip.duration-segment.offset
+                        guard remaining > 0.000001 else { break }
+                        var clip = item.clip
+                        clip.id = index < ids.count ? ids[index] : UUID()
+                        clip.startTime = segment.start
+                        clip.duration = min(remaining,segment.limit)
+                        clip.sourceOffset += segment.offset
+                        addRecordedClip(clip, track: item.track)
+                        index += 1
+                    }
+                } else { addRecordedClip(item.clip, track: item.track) }
+                for id in ids {
+                    RecordingLaneLayout.shared.remove(id); LiveRecordingPreview.shared.takes[id] = nil
+                }
                 pendingTakes.remove(item.clip.id)
                 if !show.snapshot.project.songs.flatMap(\.tracks).flatMap(\.clips).contains(where: { $0.id == item.clip.id }) { error = show.message }
             }
         }
         if let message { error = message }
     }
+    func cancelCountIn() {
+        pendingCountIn = nil
+        countingIn = false
+        (projectAudio ?? StemAudioPlayback.shared).cancelRecordingCountIn()
+    }
+
+    private func countIn(_ meter: TimelineTempoSection, song: Song) async throws -> UInt64? {
+        let id = UUID()
+        pendingCountIn = id
+        countingIn = true
+        defer { if pendingCountIn == id { pendingCountIn = nil; countingIn = false } }
+        let audio = projectAudio ?? StemAudioPlayback.shared
+        let schedule = try await audio.scheduleRecordingCountIn(meter, song: song)
+        guard pendingCountIn == id else { audio.cancelRecordingCountIn(); return nil }
+        let now = mach_absolute_time()
+        let remaining = schedule.host > now ? AVAudioTime.seconds(forHostTime: schedule.host - now) : 0
+        try await Task.sleep(nanoseconds: UInt64(max(0, remaining - schedule.lead) * 1_000_000_000))
+        return pendingCountIn == id ? schedule.host : nil
+    }
+
     func toggle(show: ShowController) {
+        if countingIn { cancelCountIn(); return }
         if recording {
             finish()
             return
@@ -766,21 +898,58 @@ private final class CaptureWriter: @unchecked Sendable {
         let audioTracks = tracks.filter { $0.recordingMode != .midi }
         if audioTracks.contains(where: { $0.recordsOutput || hasRecordingInput($0) }),
            !AudioDestinationSpace.confirm(at: directory.appendingPathComponent("Stems", isDirectory: true)) { return }
+        let transport = show.snapshot.transport
+        let countMeter = !transport.playing && !transport.subPlay.playing &&
+            (transport.editPosition ?? transport.position) <= 0.000001 ? show.current?.tempoSection(at: 0) : nil
+        let songID = transport.songId
+        recordingCycle = transport.loop.enabled && transport.multiLoop == nil ? RecordingCycle(show.selectedLoopArea()) : nil
+        if let cycle = recordingCycle {
+            let cursor = transport.playing ? transport.position : transport.editPosition ?? transport.position
+            if cursor >= cycle.range.upperBound {
+                show.send(.seek, value: cycle.range.lowerBound)
+                if !transport.playing { show.send(.editSeek, value: cycle.range.lowerBound) }
+            }
+        }
+        capturePass = 0; audioPassIDs.removeAll()
         busy = true; self.show = show; error = ""; previewSession = UUID()
         (projectAudio ?? StemAudioPlayback.shared).setRecordingItemTracks(Set(tracks.map(\.id)))
         Task {
             do {
                 if !audioTracks.isEmpty { try await startAudioCapture(tracks: audioTracks) }
                 guard self.project == show.snapshot.project.id, show.canControl() else { abortCapturePreparation(); busy = false; return }
+                if !show.isPlaying { try await show.prepareRecordingPlayback() }
+                guard self.project == show.snapshot.project.id, show.canControl() else {
+                    abortCapturePreparation(); busy = false; return
+                }
+                var recordingHost: UInt64 = 0
+                if let countMeter, let countSong = show.current, !show.isPlaying, show.snapshot.transport.songId == songID,
+                   (show.snapshot.transport.editPosition ?? show.snapshot.transport.position) <= 0.000001 {
+                    guard let host = try await countIn(countMeter, song: countSong), self.project == show.snapshot.project.id,
+                          show.canControl() else { abortCapturePreparation(); busy = false; return }
+                    recordingHost = host
+                }
                 startPosition = show.snapshot.transport.playing ? show.snapshot.transport.position : show.snapshot.transport.editPosition ?? show.snapshot.transport.position
-                midiStartTime = ProcessInfo.processInfo.systemUptime
+                let now = mach_absolute_time()
+                let delay = recordingHost > now ? AVAudioTime.seconds(forHostTime: recordingHost - now) : 0
+                midiStartTime = ProcessInfo.processInfo.systemUptime + delay
                 recordingSong = show.snapshot.transport.songId
                 lastPosition = startPosition; lastTime = midiStartTime
                 updateMIDITargets(tracks.filter { $0.recordingMode == .midi }, position: startPosition)
                 updateSilentTakes(audioTracks.filter { !$0.recordsOutput && !hasRecordingInput($0) }, at: startPosition)
-                for output in outputWriters.values { output.setInitialPosition(startPosition); output.start() }
+                writer?.start(atHostTime: recordingHost)
+                for output in outputWriters.values {
+                    output.setInitialPosition(startPosition)
+                    output.start(atHostTime: recordingHost)
+                }
                 recording = true; busy = false; reconcileArming()
-                if !show.snapshot.transport.playing { show.send(.play) }
+                if !show.snapshot.transport.playing {
+                    if recordingHost != 0 {
+                        let audio = projectAudio ?? StemAudioPlayback.shared
+                        audio.recordingLaunchHost = recordingHost
+                        show.startRecordingPlayback(at: midiStartTime)
+                        audio.recordingLaunchHost = nil
+                    } else { show.send(.play) }
+                }
             } catch {
                 abortCapturePreparation()
                 busy = false; activeTargets = [:]; midiTakes = [:]
@@ -790,6 +959,7 @@ private final class CaptureWriter: @unchecked Sendable {
         }
     }
     private func abortCapturePreparation() {
+        cancelCountIn()
         let audio = projectAudio ?? StemAudioPlayback.shared
         for (id, output) in outputWriters {
             audio.detachOutputCapture(id)
@@ -830,9 +1000,7 @@ private final class CaptureWriter: @unchecked Sendable {
             Task { @MainActor in
                 guard let self, self.previewSession == session else { return }
                 for (id, duration) in durations {
-                    RecordingLaneLayout.shared.update(id, duration: duration)
-                    LiveRecordingPreview.shared.takes[id]?.duration = max(0.01, duration)
-                    if let waveform = waveforms[id] { LiveRecordingPreview.shared.takes[id]?.waveform = waveform }
+                    self.updateAudioPreview(id, duration: duration, waveform: waveforms[id])
                 }
             }
         }
@@ -894,13 +1062,11 @@ private final class CaptureWriter: @unchecked Sendable {
                 Task { @MainActor in
                     guard let self, self.previewSession == session else { return }
                     for (id, duration) in durations {
-                        RecordingLaneLayout.shared.update(id, duration: duration)
-                        LiveRecordingPreview.shared.takes[id]?.duration = max(0.01, duration)
-                        if let waveform = waveforms[id] { LiveRecordingPreview.shared.takes[id]?.waveform = waveform }
+                        self.updateAudioPreview(id, duration: duration, waveform: waveforms[id])
                     }
                 }
             }
-            writer.start()
+            if wasRecording { writer.start() }
             if captureRing == nil {
                 captureRing = ring
                 rebuildInputTap()
@@ -921,6 +1087,7 @@ private final class CaptureWriter: @unchecked Sendable {
     private var recordingGains: [UUID: Float] = [:]
     private var outputRecordingGains: [UUID: Float] = [:]
     func observe(_ snapshot: ShowSnapshot) {
+        if countingIn && (snapshot.transport.playing || snapshot.transport.subPlay.playing) { cancelCountIn() }
         // Playback samples carry no arming changes. With no configured REC
         // tracks or capture resources, there is nothing to reconcile or stop.
         // Automatic REC still takes the normal path while it is deselected.
@@ -937,14 +1104,27 @@ private final class CaptureWriter: @unchecked Sendable {
         var retained = armState; retained.retain(validTracks)
         if retained != armState { armState = retained; microphoneTracks.formIntersection(validTracks); reconcileArming() }
         guard recording else { reconcileArming(); releaseInputIfIdle(); return }
+        guard !rollingTakes else { return }
         guard snapshot.transport.songId == recordingSong else { finish(); return }
         guard snapshot.transport.playing else { finish(); return }
         let now = ProcessInfo.processInfo.systemUptime
-        if abs(snapshot.transport.position - lastPosition - (now - lastTime)) > 0.2 {
+        let expected = lastPosition + max(0,now-lastTime)
+        var deviation = abs(snapshot.transport.position-expected)
+        if let cycle = recordingCycle {
+            guard snapshot.transport.loop.enabled,
+                  snapshot.transport.loop.start == cycle.range.lowerBound,
+                  snapshot.transport.loop.end == cycle.range.upperBound else { finish(); return }
+            if expected >= cycle.range.upperBound-0.2, cycle.range.contains(snapshot.transport.position) {
+                let period = cycle.range.upperBound-cycle.range.lowerBound
+                deviation = abs((snapshot.transport.position-expected).remainder(dividingBy: period))
+            }
+        }
+        if deviation > 0.2 {
             finish(); error = "Recording stopped at the timeline jump. The take has been preserved."
         }
         lastTime = now; lastPosition = snapshot.transport.position
         guard recording else { return }
+        let capturePosition = recordingCycle == nil ? snapshot.transport.position : recordingPosition(at: now)
         if let song = snapshot.project.songs.first(where: { $0.id == recordingSong }) {
             let gains = Dictionary(uniqueKeysWithValues: song.tracks.filter { activeTargets[$0.id] != nil }.map { ($0.id, Float($0.volume)) })
             if gains != recordingGains { recordingGains = gains; writer?.updateGains(gains) }
@@ -955,17 +1135,19 @@ private final class CaptureWriter: @unchecked Sendable {
             }
         }
         for take in midiTakes.values {
-            let duration = max(0.01, snapshot.transport.position - take.startTime)
+            let duration = max(0.01, capturePosition - take.startTime)
             RecordingLaneLayout.shared.update(take.id, duration: duration)
-            LiveRecordingPreview.shared.takes[take.id]?.duration = duration
+            LiveRecordingPreview.shared.takes[take.id] = RecordingPreviewTake(start: take.startTime, duration: duration,
+                channels: [], midiHistory: take.previewHistory, heldNotes: take.previewHeld)
         }
         for take in silentTakes.values {
-            let duration = max(0.01, snapshot.transport.position - take.startTime)
+            let duration = max(0.01, capturePosition - take.startTime)
             RecordingLaneLayout.shared.update(take.id, duration: duration)
             LiveRecordingPreview.shared.takes[take.id]?.duration = duration
         }
     }
     func finishAndWait() async {
+        cancelCountIn()
         while busy {
             do { try await Task.sleep(nanoseconds: 20_000_000) }
             catch { return }
@@ -978,8 +1160,11 @@ private final class CaptureWriter: @unchecked Sendable {
         }
     }
     func finish() {
+        if countingIn { cancelCountIn(); return }
         guard recording else { return }
-        let end = lastPosition + max(0, ProcessInfo.processInfo.systemUptime - lastTime)
+        cancelCountIn()
+        let now = ProcessInfo.processInfo.systemUptime
+        let end = recordingCycle == nil ? lastPosition + max(0, now - lastTime) : recordingPosition(at: now)
         recording = false; busy = true
         for track in Array(midiTakes.keys) { finishMIDITake(track, at: end) }
         updateSilentTakes([], at: end)
@@ -1008,6 +1193,7 @@ private final class CaptureWriter: @unchecked Sendable {
     private var pendingWriterFinishes = 0
     private func finishCleanup() {
         (projectAudio ?? StemAudioPlayback.shared).recordingDidFinish()
+        recordingCycle = nil; audioPassIDs.removeAll()
         activeTargets = [:]; pendingTakes = []
         previewSession = UUID(); LiveRecordingPreview.shared.takes = [:]; RecordingLaneLayout.shared.clear()
         busy = false; reconcileArming(); releaseInputIfIdle()
@@ -1184,7 +1370,7 @@ struct TrackRecordingSettings: View {
         }
     }
 }
-/// Track arming stays solid; the transport pulses only its background while recording.
+/// Recording and track arming use a steady active colour.
 struct RecordingButtonStyle: ButtonStyle {
     let active: Bool
     var width: CGFloat = 22
@@ -1195,30 +1381,16 @@ struct RecordingButtonStyle: ButtonStyle {
     var idleTransportBackground = JarasTheme.yellow
     var idleTransportForeground = Color.black
     private let red = Color(red: 1, green: 0.12, blue: 0.12)
-    @State private var pulseStart = Date()
     func makeBody(configuration: Configuration) -> some View {
-        if transport {
-            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !active)) { context in
-                let grey = active ? 0.5 - 0.5 * cos(max(0, context.date.timeIntervalSince(pulseStart)) * .pi / 0.6) : 0
-                label(configuration: configuration, grey: grey)
-            }.onChange(of: active) { _ in pulseStart = Date() }
-        } else {
-            label(configuration: configuration, grey: 0)
-        }
-    }
-    private func label(configuration: Configuration, grey: Double) -> some View {
         configuration.label
             .font(.jarasSystem(size: fontSize, weight: .semibold))
             .lineLimit(1).minimumScaleFactor(0.75)
             .frame(width: width, height: height)
             .foregroundStyle(active ? Color.black : transport ? idleTransportForeground : Color.red)
             .background {
-                ZStack {
-                    transport ? (active ? JarasTheme.liveOffRed : idleTransportBackground).opacity(configuration.isPressed ? 0.85 : 1) :
+                transport ? (active ? JarasTheme.liveOffRed : idleTransportBackground).opacity(configuration.isPressed ? 0.85 : 1) :
                         active ? red.opacity(configuration.isPressed ? 0.75 : 1) :
                         (configuration.isPressed ? Color(hex: 0x282828) : TrackMixerButtonAppearance.trackControl)
-                    Color(hex: 0x454545).opacity(grey)
-                }
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .contentShape(Rectangle())
@@ -1231,25 +1403,17 @@ struct TransportRecordButton: View {
     var width = TransportControlMetrics.playbackWidth
     @ObservedObject private var recorder = TrackRecording.shared
     var body: some View {
-        #if os(macOS)
         let idleBackground = Color(hex: 0x454545)
         let idleForeground = Color.white
-        #else
-        let idleBackground = JarasTheme.yellow
-        let idleForeground = Color.black
-        #endif
         Button { recorder.toggle(show: show) } label: {
             Label {
                 Text("REC")
             } icon: {
-                Image(systemName: recorder.recording ? "stop.circle.fill" : "record.circle")
-                    #if os(macOS)
-                    .foregroundStyle(recorder.recording ? Color.black : JarasTheme.liveOffRed)
-                    #endif
+                ControlIcon(name: "record", active: recorder.recording || recorder.countingIn, size: 13)
             }
-        }.buttonStyle(RecordingButtonStyle(active: recorder.recording, width: width,
+        }.buttonStyle(RecordingButtonStyle(active: recorder.recording || recorder.countingIn, width: width,
             height: TransportControlMetrics.playbackHeight, fontSize: TransportControlMetrics.font, cornerRadius: 6,
             transport: true, idleTransportBackground: idleBackground, idleTransportForeground: idleForeground))
-            .disabled(recorder.busy).jarasHelp("Record armed tracks").accessibilityLabel("Record")
+            .disabled(recorder.busy && !recorder.countingIn).jarasHelp("Record armed tracks").accessibilityLabel("Record")
     }
 }

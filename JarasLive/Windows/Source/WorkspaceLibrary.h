@@ -6,6 +6,7 @@
 #include "Instrument.h"
 #include "InlineMixerTrackName.h"
 #include "LibraryNoteEditor.h"
+#include "LibraryMIDIChords.h"
 #include "TimelineRegionLabels.h"
 #include "VinhetasPanel.h"
 #include "VST3Catalog.h"
@@ -66,6 +67,10 @@ class WorkspaceLibrary final : public Component, private Timer {
             if (!previewingInstrument) session.audio.setLibrarySampleGain(previewGain());
             if (!previewVolume.isMouseButtonDown()) persist();
         };
+        for (auto* list : { &folders, &contents }) {
+            list->setColour(ListBox::backgroundColourId, Colours::transparentBlack);
+            list->setOpaque(false);
+        }
         folders.setRowHeight(26);
         contents.setRowHeight(28);
         contents.setRowSelectedOnMouseDown(false);
@@ -126,8 +131,8 @@ class WorkspaceLibrary final : public Component, private Timer {
         divider.toFront(false);
     }
     void paint(Graphics &g) override {
-        g.fillAll(theme::panel);
-        g.setColour(theme::display);
+        g.fillAll(theme::mixerPanelBackground());
+        g.setColour(theme::libraryEntriesBackground());
         g.fillRect(getLocalBounds().withTrimmedLeft(folders.getWidth()));
         g.setColour(theme::line);
         g.drawHorizontalLine(31, 0, float(folders.getWidth()));
@@ -159,6 +164,12 @@ class WorkspaceLibrary final : public Component, private Timer {
             if (navigation || rows.size() != 1 || !isPositiveAndBelow(rows[0], getNumRows())) return {};
             const auto &row = entries[size_t(rows[0])];
             String identity;
+            if (row.kind == "midiChord") {
+                auto payload = object();
+                put(payload, "type", "catlive-midi-chord");
+                put(payload, "name", row.key);
+                return payload;
+            }
             if (row.kind == "native") identity = row.key;
             else if (row.kind == "external") identity = "vst3:" + str(row.payload, "classID").toUpperCase();
             else if (row.kind == "preset") identity = str(row.payload, "plugin");
@@ -204,6 +215,7 @@ class WorkspaceLibrary final : public Component, private Timer {
     bool preparingPreview = false;
     bool previewingInstrument = false;
     bool importing = false;
+    bool importingSoundFonts = false;
     static constexpr int playOffset = 42, starOffset = 24;
     static File root() {
         return File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/Library");
@@ -233,6 +245,7 @@ class WorkspaceLibrary final : public Component, private Timer {
         return identity;
     }
     void rebuildFolders() {
+        collapseCategories.setToggleState(!expanded.empty(), dontSendNotification);
         auto &rows = folderRows.entries;
         rows.clear();
         const auto folder = [&](String title, String key) {
@@ -241,16 +254,18 @@ class WorkspaceLibrary final : public Component, private Timer {
         };
         if (folder("Instruments", "instruments")) {
             for (auto [key, title] : std::vector<std::pair<String, String>>{
-                {"pianos","Grand Pianos"}, {"upright","Upright"}, {"electric","Electric"}, {"keyboard","Keyboard"},
+                {"user","User"}, {"pianos","Grand Pianos"}, {"upright","Upright"}, {"electric","Electric"}, {"keyboard","Keyboard"},
                 {"organ","Organ"}, {"strings","Strings"}, {"guitar","Guitar"}, {"bass","Bass"}, {"synth","Synth"},
                 {"synthPad","Synth Pad"}, {"lead","Lead"}, {"acordeon","Acordeon"}, {"brass","Brass"}, {"mallets","Mallets"}, {"drum","Drum"}
             }) rows.push_back({title, key, "instrumentCategory"});
         }
+        rows.push_back({{}, {}, {}, {}, {}, true});
         if (folder("Plugins", "plugins")) {
             rows.push_back({"All", {}, "pluginCategory"});
             rows.push_back({"Native", "native", "pluginCategory"});
             for (const auto &type : libraryPluginCategories(VST3Catalog::shared())) rows.push_back({type, type, "pluginCategory"});
         }
+        rows.push_back({{}, {}, {}, {}, {}, true});
         if (folder("Samplers", "samplers")) {
             rows.push_back({"User", "user", "user"});
             if (expanded.count("user"))
@@ -260,6 +275,10 @@ class WorkspaceLibrary final : public Component, private Timer {
                 rows.push_back({"Pads", "Pads", "padSamplerCategory"});
             for (const auto &category : nativeSampleCategories())
                 rows.push_back({category, category, "nativeSamplerCategory"});
+        }
+        rows.push_back({{}, {}, {}, {}, {}, true});
+        if (folder("Midi", "midi")) {
+            for (auto category : {"Major", "Minor", "Other"}) rows.push_back({category, category, "chordCategory"});
         }
         rows.push_back({{}, {}, {}, {}, {}, true});
         if (folder("Presets", "presets")) {
@@ -357,7 +376,7 @@ class WorkspaceLibrary final : public Component, private Timer {
         auto &rows = categoryEntries;
         rows.clear();
         if (current.kind == "instrumentCategory") {
-            for (const auto &item : instrumentAssets::catalog())
+            for (const auto &item : instrumentAssets::availableCatalog(session.mediaDirectory))
                 if (str(item, "category") == current.key)
                     rows.push_back({str(item, "name"), str(item, "id"), "instrument", item});
         } else if (current.kind == "pluginCategory" || (current.kind == "favorites" && current.key == "plugins")) {
@@ -379,6 +398,11 @@ class WorkspaceLibrary final : public Component, private Timer {
                 samplesFor(rows, str(category, "id"), true);
             samplesFor(rows, "Pads", true);
             for (const auto &category : nativeSampleCategories()) samplesFor(rows, category, true, true);
+        } else if (current.kind == "chordCategory") {
+            if (auto* chords = libraryChords::catalog().getArray())
+                for (const auto& chord : *chords)
+                    if (str(chord,"category") == current.key)
+                        rows.push_back({str(chord,"name"),str(chord,"name"),"midiChord"});
         } else if (current.kind == "presetCategory") {
             for (const auto &preset : fxpresets::Store::entries(presets, current.key))
                 rows.push_back({pluginName(current.key) + " - " + str(preset, "name"), str(preset, "id"), "preset", preset});
@@ -491,26 +515,18 @@ class WorkspaceLibrary final : public Component, private Timer {
                 g.strokePath(caret, PathStrokeType(1.2f));
             }
             const float y = height * .5f;
-            if (row.kind == "folder" && row.key == "favorites") {
-                g.setColour(theme::secondary);
-                drawDesktopToolbarSymbol(g, "star.fill", {20.f, y - 6.5f, 13.f, 13.f});
-            } else if (row.kind == "note" || (row.kind == "folder" && row.key == "annotation")) {
-                g.setColour(theme::secondary);
-                drawDesktopToolbarSymbol(g, row.kind == "note" ? "doc.text" : "note.text", {20.f, y - 7.f, 14.f, 14.f});
-            } else if (row.kind == "regions" || row.kind == "markers") {
-                g.setColour(theme::secondary);
-                if (row.kind == "regions") g.drawRoundedRectangle(20, y - 5, 13, 10, 1.8f, 1.2f);
-                else {
-                    Path flag;
-                    flag.startNewSubPath(21, y + 6); flag.lineTo(21, y - 6);
-                    flag.lineTo(33, y - 6); flag.lineTo(30, y - 2); flag.lineTo(21, y - 2);
-                    g.strokePath(flag, PathStrokeType(1.2f));
-                }
-            } else {
-                g.setColour(theme::green);
-                g.fillRoundedRectangle(20, y - 5, 6, 4, 1.2f);
-                g.fillRoundedRectangle(20, y - 3, 13, 8, 1.5f);
-            }
+            String icon = "folder.fill";
+            if (row.kind == "folder") {
+                if (row.key == "favorites") icon = "star.fill";
+                else if (row.key == "annotation") icon = "note.text";
+                else if (row.key == "midi") icon = "pianokeys";
+                else icon = "library." + row.key;
+            } else if (row.kind == "note") icon = "doc.text";
+            else if (row.kind == "regions") icon = "rectangle";
+            else if (row.kind == "markers") icon = "flag";
+            else if (row.kind == "pluginCategory" && row.key.isEmpty()) icon = "square.grid.2x2";
+            drawControlIcon(g, icon, selected || (disclosure(row) && expanded.count(row.key)),
+                            {19.f, y - 8.f, 16.f, 16.f}, 1.f);
             start = 39;
         } else if (row.kind == "sample" || row.kind == "native" || row.kind == "external") {
             const float y = height * .5f;
@@ -531,7 +547,7 @@ class WorkspaceLibrary final : public Component, private Timer {
         } else if (row.kind == "instrument") {
             const auto file = instrumentAssets::resolve(row.key, session.mediaDirectory);
             const bool available = file.existsAsFile();
-            if (!available || supportsInstrumentPreview(row)) {
+            {
                 const float x = float(width - 17), y = height * .5f;
                 g.setColour(Colours::white.withAlpha(.10f));
                 g.fillEllipse(x - 9, y - 9, 18.f, 18.f);
@@ -558,9 +574,6 @@ class WorkspaceLibrary final : public Component, private Timer {
         g.setColour(Colours::white);
         g.setFont(theme::mediumFont(12));
         g.drawFittedText(row.title, start, 0, std::max(1, width - start - trailing), height, Justification::centredLeft, 1);
-    }
-    static bool supportsInstrumentPreview(const Row &row) {
-        return str(row.payload, "category") != "drum";
     }
     void click(Row row, const MouseEvent &event, bool navigation) {
         if (row.separator) return;
@@ -592,7 +605,7 @@ class WorkspaceLibrary final : public Component, private Timer {
         } else if (row.kind == "instrument" && event.x >= width - 29) {
             const auto file = instrumentAssets::resolve(row.key, session.mediaDirectory);
             if (file.existsAsFile()) {
-                if (supportsInstrumentPreview(row)) togglePreview(file, true);
+                togglePreview(file, true, str(row.payload, "category") == "drum");
             } else if (!downloads.count(row.key)) {
                 downloads[row.key] = instrumentAssets::startDownload(row.payload);
                 contents.repaint();
@@ -601,6 +614,8 @@ class WorkspaceLibrary final : public Component, private Timer {
     }
     void contextMenu(const Row &row, Point<int> position) {
         PopupMenu menu;
+        if (row.kind == "folder" && row.key == "instruments")
+            menu.addItem(8, localization::translate(String::fromUTF8("Import SF2…")), !importingSoundFonts);
         if (row.kind == "user") menu.addItem(1, localization::translate("Create category"));
         if (row.kind == "samplerCategory") {
             menu.addItem(2, localization::translate("Add Samplers"), !importing);
@@ -622,12 +637,13 @@ class WorkspaceLibrary final : public Component, private Timer {
                     case 4: safe->deleteNote(row.key); break;
                     case 6: safe->confirmDeleteCategory(row); break;
                     case 7: safe->confirmDeletePadSamples(); break;
+                    case 8: safe->chooseSoundFonts(); break;
                     case 5:
                         try {
                             const auto file = instrumentAssets::installedFile(row.key);
                             instrumentAssets::uninstall(row.key);
                             if (safe->previewFile == file) safe->stopPreview();
-                            safe->contents.repaint();
+                            safe->reloadEntries();
                         }
                         catch (const std::exception &error) { safe->warn(String::fromUTF8(error.what())); }
                         break;
@@ -847,6 +863,56 @@ class WorkspaceLibrary final : public Component, private Timer {
         if (current.kind == "note" && current.key == id) select({});
         rebuildFolders();
     }
+    void chooseSoundFonts() {
+        if (importingSoundFonts) return;
+        chooser = std::make_unique<FileChooser>(localization::translate(String::fromUTF8("Import SF2…")),
+                                               File::getSpecialLocation(File::userDocumentsDirectory), "*.sf2");
+        chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles |
+            FileBrowserComponent::canSelectMultipleItems, [safe=SafePointer<WorkspaceLibrary>(this)](const FileChooser &dialog) {
+                const auto files = dialog.getResults();
+                if (!safe || files.isEmpty()) return;
+                safe->expanded.insert("instruments");
+                safe->rebuildFolders();
+                safe->select({"User","user","instrumentCategory"});
+                safe->search.setText({},sendNotificationSync);
+                safe->importingSoundFonts = true;
+                sampleWorker().addJob([safe,files] {
+                    StringArray failures;
+                    const auto destination = instrumentAssets::library().getChildFile("User");
+                    const auto directory = destination.createDirectory();
+                    for (const auto &file : files) {
+                        try {
+                            if (directory.failed()) throw std::runtime_error("Could not create the User instrument folder.");
+                            const auto label = file.getFileNameWithoutExtension();
+                            File target;
+                            for (int index = 1; ; ++index) {
+                                const auto suffix = index == 1 ? String{} : " (" + String(index) + ")";
+                                auto name = label;
+                                auto id = instrumentAssets::userInstrumentID(name+suffix);
+                                while (!instrumentAssets::validID(id)) {
+                                    name = name.dropLastCharacters(1);
+                                    id = instrumentAssets::userInstrumentID(name+suffix);
+                                }
+                                target = destination.getChildFile(id+".sf2");
+                                if (!target.exists()) break;
+                            }
+                            TemporaryFile staging(target);
+                            if (!file.copyFileTo(staging.getFile())) throw std::runtime_error("Could not copy SF2.");
+                            Instrument bank;
+                            bank.loadSoundFont(staging.getFile());
+                            if (!staging.overwriteTargetFileWithTemporary()) throw std::runtime_error("Could not save SF2.");
+                        } catch (const std::exception &) { failures.add(file.getFileName()); }
+                    }
+                    MessageManager::callAsync([safe,failures] {
+                        if (!safe) return;
+                        safe->importingSoundFonts = false;
+                        safe->reloadEntries();
+                        if (!failures.isEmpty())
+                            safe->warn(localization::translate("Could not import SF2:") + " " + failures.joinIntoString(", "));
+                    });
+                });
+            });
+    }
     void addSamples(const Row &row) {
         if (importing) return;
         select(row);
@@ -878,7 +944,7 @@ class WorkspaceLibrary final : public Component, private Timer {
                 });
             });
     }
-    void togglePreview(const File &file, bool instrument = false) {
+    void togglePreview(const File &file, bool instrument = false, bool drums = false) {
         const bool same = previewFile == file;
         stopPreview();
         if (same) return;
@@ -887,13 +953,13 @@ class WorkspaceLibrary final : public Component, private Timer {
         preparingPreview = true;
         const auto generation = previewGeneration;
         auto safe = SafePointer<WorkspaceLibrary>(this);
-        sampleWorker().addJob([safe, generation, file, instrument] {
+        sampleWorker().addJob([safe, generation, file, instrument, drums] {
             std::shared_ptr<VinhetasAudio::Sample> decoded;
             String failure;
             try {
                 if (instrument) {
                     decoded = std::make_shared<VinhetasAudio::Sample>();
-                    decoded->pcm = Instrument::renderLibraryPreview(file);
+                    decoded->pcm = Instrument::renderLibraryPreview(file, drums);
                     decoded->rate = Instrument::previewSampleRate;
                 } else {
                     decoded = VinhetasAudio::decode(file, 3.);

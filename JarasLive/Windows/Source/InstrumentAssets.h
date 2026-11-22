@@ -9,7 +9,40 @@ inline const Array<var> &catalog(){
 }
 inline bool validID(const String &id){return id.isNotEmpty()&&id.length()<120&&id.containsOnly("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_");}
 inline File library(){return File::getSpecialLocation(File::userApplicationDataDirectory).getChildFile("Hook Developer/CatLive/Instruments");}
+inline String userInstrumentID(const String &name) {
+    return "user-" + Base64::toBase64(name).replaceCharacter('+','-').replaceCharacter('/','_').removeCharacters("=");
+}
+inline String userInstrumentName(const String &id) {
+    if (!id.startsWith("user-") || !validID(id)) return {};
+    auto encoded = id.substring(5).replaceCharacter('-','+').replaceCharacter('_','/');
+    encoded = encoded.paddedRight('=', (encoded.length()+3)/4*4);
+    MemoryOutputStream decoded;
+    if (!Base64::convertFromBase64(decoded, encoded)) return {};
+    const auto name = decoded.toUTF8();
+    return userInstrumentID(name) == id ? name : String{};
+}
+inline Array<var> userInstruments(const File &project) {
+    Array<var> result;
+    std::set<String> ids;
+    for (const auto &folder : {library().getChildFile("User"), project.getChildFile("Instruments")}) {
+        for (const auto &file : folder.findChildFiles(File::findFiles, false, "*.sf2")) {
+            const auto id = file.getFileNameWithoutExtension();
+            const auto name = userInstrumentName(id);
+            if (name.isEmpty() || !ids.insert(id).second) continue;
+            auto entry = object(); put(entry,"id",id); put(entry,"name",name); put(entry,"category","user");
+            result.add(std::move(entry));
+        }
+    }
+    std::sort(result.begin(),result.end(),[](const auto &a,const auto &b) { return str(a,"name").compareNatural(str(b,"name")) < 0; });
+    return result;
+}
+inline Array<var> availableCatalog(const File &project) {
+    auto entries = userInstruments(project);
+    entries.addArray(catalog());
+    return entries;
+}
 inline File installedFile(const String &id,const File &root=library()){
+    if (userInstrumentName(id).isNotEmpty()) return root.getChildFile("User").getChildFile(id+".sf2");
     if(!validID(id)||std::none_of(catalog().begin(),catalog().end(),[&](const var &entry){return str(entry,"id")==id;}))
         throw std::runtime_error("Invalid instrument identity.");
     return root.getChildFile(id+".sf2");
@@ -22,9 +55,11 @@ inline void uninstall(const String &id,const File &root=library()){
 inline File resolve(const String &id,const File &project){
     if(!validID(id))throw std::runtime_error("Invalid instrument identity.");
     const auto local=project.getChildFile("Instruments/"+id+".sf2");
-    return local.existsAsFile()?local:library().getChildFile(id+".sf2");
+    if (local.existsAsFile()) return local;
+    const auto root = userInstrumentName(id).isNotEmpty() ? library().getChildFile("User") : library();
+    return root.getChildFile(id+".sf2");
 }
-inline String name(const String &id){for(auto item:catalog())if(str(item,"id")==id)return str(item,"name");return id;}
+inline String name(const String &id){if(auto name=userInstrumentName(id);name.isNotEmpty())return name;for(auto item:catalog())if(str(item,"id")==id)return str(item,"name");return id;}
 inline std::vector<var> settings(const var &fx,bool includeBypassed=false){
     std::vector<var> result;
     for(auto item:list(get(fx,"inserted"))){

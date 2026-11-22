@@ -172,8 +172,10 @@ import Combine
     @State private var homeOpen = false
     @State private var addingTrack = false
     @State private var advancedOpen = false
+    @State private var matrixOpen = false
     @AppStorage("jaras.native.hozMixer.open") private var hozMixerOpen = false
     @State private var sharingProject = false
+    @State private var exportingAudio = false
     @State private var regionLoops: FXTarget?
     @State private var itemMenu: FXTarget?
     @State private var itemMenuAction: String?
@@ -192,7 +194,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        homeOpen || clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || meterEditorOpen || regionActions != nil || detectingRegion != nil || sharingProject || advancedOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
+        homeOpen || clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || meterEditorOpen || regionActions != nil || detectingRegion != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -200,7 +202,9 @@ import Combine
                 NativeRemoteWorkspace(state: state, computerName: UIDevice.current.name,
                     timer: local.timer, send: local.send, exitRemote: {
                         onExit()
-                    }, local: true, openHome: { homeOpen = true }, localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openPlugin: { fx = .init(track: $0, effect: $1) },
+                    }, local: true, openHome: { homeOpen = true },
+                    openNativeProject: { documents.browse(onlyCatLiveProject: true) }, exportNativeAudio: { exportingAudio = true },
+                    localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openPlugin: { fx = .init(track: $0, effect: $1) },
                     openSelectedPatch: { patch = .init(track: $0.first, targets: $0.map { Optional($0) }) },
                     openTrackAutomation: { automationTrack = $0 },
                     openTrackDetails: { presentTrackDetails($0) },
@@ -221,6 +225,7 @@ import Combine
                     toggleRegionStop: { show.toggleRegionStop() }, stopsAtRegionEnd: local.stopsAtRegionEnd,
                     shareProject: { sharingProject = true },
                     groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, nativeAdvancedOpen: advancedOpen,
+                    openMatrixPatch: { matrixOpen = true }, nativeMatrixOpen: matrixOpen,
                     openMeterEditor: { if show.transportMeterEditingAllowed { meterEditorOpen = true } },
                     toggleHozMixer: { hozMixerOpen.toggle() }, hozMixerOpen: hozMixerOpen, openSettings: { settingsSection = .general; settingsOpen = true }, nativeSettingsOpen: settingsOpen, openAudioSettings: { settingsSection = .audio; settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
@@ -245,6 +250,13 @@ import Combine
         .environment(\.multitrackAction, documents.openMultitrackExport)
         .environment(\.nativeGridFileDrop, documents.dropAtNativeGrid)
         .modifier(MultitrackSheet(presentation: documents.multitrack))
+        .fullScreenCover(isPresented: $exportingAudio) {
+            ScrollView {
+                AudioExportView(project: show.snapshot.project, song: show.current,
+                                mediaDirectory: documents.currentURL?.deletingLastPathComponent())
+                    .frame(maxWidth: .infinity)
+            }.background(JarasTheme.panel).preferredColorScheme(.dark)
+        }
     }
     private func presentTrackDetails(_ ids: Set<UUID>, iconOnly: Bool = false) {
         let tracks = (show.current?.tracks ?? []).filter { ids.contains($0.id) }
@@ -407,6 +419,10 @@ import Combine
         } else if sharingProject {
             IpadCompactModal(preferredSize: CGSize(width: 580, height: 400)) {
                 ScrollView { PortableProjectExportView(documents: documents, close: { sharingProject = false }) }
+            }
+        } else if matrixOpen {
+            IpadCompactModal(preferredSize: CGSize(width: 960, height: 650), onDismiss: { matrixOpen = false }) {
+                MatrixPatchView(show: show, close: { matrixOpen = false })
             }
         } else if advancedOpen {
             IpadCompactModal(preferredSize: CGSize(width: 760, height: 500)) {
@@ -1456,10 +1472,9 @@ struct IpadDialogButtonStyle: ButtonStyle {
                 Label {
                     if (controlWidth ?? 47) >= 42 { Text(verbatim: "REC") }
                 } icon: {
-                    Image(systemName: recorder.recording ? "stop.circle.fill" : "record.circle")
-                        .foregroundStyle(recorder.recording ? Color.black : JarasTheme.liveOffRed)
+                    ControlIcon(name: "record", active: recorder.recording || recorder.countingIn, size: 13)
                 }
-            }.buttonStyle(RecordingButtonStyle(active: recorder.recording, width: controlWidth ?? 47,
+            }.buttonStyle(RecordingButtonStyle(active: recorder.recording || recorder.countingIn, width: controlWidth ?? 47,
                     height: 28, fontSize: 10, cornerRadius: 6, transport: true,
                     idleTransportBackground: Color(hex: 0x454545), idleTransportForeground: .white))
                 .overlay {

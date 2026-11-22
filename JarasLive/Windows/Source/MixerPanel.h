@@ -63,7 +63,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         viewport.setViewedComponent(nullptr, false);
     }
     void paint(Graphics &g) override {
-        g.fillAll(theme::background);
+        g.fillAll(theme::mixerPanelBackground());
         g.setColour(theme::line);
         g.drawHorizontalLine(0, 0, (float)getWidth());
     }
@@ -604,7 +604,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 teleprompterPatch.setBounds((getWidth()-44)/2,y,44,21);
                 fader.setBounds(43+controlsOffset(),y+24,24,24);
             } else {
-                fader.setBounds(39 + controlsOffset() + (id.empty() ? 0 : 6), y + faderOffset, 31, std::max(1,available-faderOffset));
+                fader.setBounds(45 + controlsOffset(), y + faderOffset, 31, std::max(1,available-faderOffset));
                 const auto gain = gainReadoutBounds();
                 peak->setBounds(gain.getX(), gain.getY() - 12, gain.getWidth(), 12);
             }
@@ -704,10 +704,10 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             if(pendingSelection&&e.getDistanceFromDragStart()<=8)mixer.selectTrack(id,e.mods);
             pendingSelection=false;
             if (pressedSlot >= 0 && !e.mods.isPopupMenu() && e.getDistanceFromDragStart() <= 8) {
-                if (pressedPower) {
-                    if (powerBounds(pressedSlot).contains(e.getPosition())) changeEffect(pressedEffect, false);
-                } else if (e.mods.isAltDown() || e.mods.isShiftDown()) {
+                if (e.mods.isAltDown() || e.mods.isShiftDown()) {
                     if (pressedEffect.isNotEmpty()) changeEffect(pressedEffect,e.mods.isAltDown());
+                } else if (pressedPower) {
+                    if (powerBounds(pressedSlot).contains(e.getPosition())) changeEffect(pressedEffect, false);
                 } else mixer.openEffects(id,pressedEffect.isEmpty() ? String("Library") : pressedEffect);
             }
             dragging = false; pressedPower = false; pressedSlot = -1; pressedEffect.clear();
@@ -798,23 +798,28 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             const float travel = position(-60) - position(12);
             if (travel < 12.f) return;
             constexpr std::array<int, 17> priority{0,-60,12,-24,-40,-12,-6,-18,-30,-50,6,-3,-9,-15,-21,-35,-45};
-            std::array<float, priority.size()> labelY{};
+            // Track - I and the expanded mixer have a 128-point reference travel on Mac.
+            // The compact Hoz Mixer reserves more room for its footer and uses 114.
+            const double labelTravel = std::min<double>(travel, mixer.focusedTrack || layout().slots.getHeight() > 0 ? 128. : 114.);
+            const auto fraction = [](int db) { return 1. - (db + 60.) / 72.; };
+            std::array<int, priority.size()> labels{};
             size_t used = 0;
             const int minorStep = travel >= 216.f ? 1 : travel >= 72.f ? 3 : 6;
             const int right = roundToInt(fader.getBounds().getCentreX() - meterDisplay::railThickness / 2 - 1);
             for (int db : priority) {
                 const auto y = position(db);
-                if (std::any_of(labelY.begin(), labelY.begin() + used, [y](float other) { return std::abs(other-y) < 9.5f; }))
+                if (std::any_of(labels.begin(), labels.begin() + used, [&](int other) { return std::abs(fraction(db)-fraction(other))*labelTravel < 9.5; }))
                     continue;
-                labelY[used++] = y;
+                labels[used++] = db;
                 g.setColour(Colours::white.withAlpha(.82f));
                 g.setFont(theme::font(8));
-                g.drawText(db > 0 ? "+" + String(db) : String(std::abs(db)), right-26, roundToInt(y)-5,
+                const auto text = db == -60 ? String::fromUTF8("−∞") : db > 0 ? "+" + String(db) : String(std::abs(db));
+                g.drawText(text, right-26, roundToInt(y)-5,
                            19, 10, Justification::centredRight, false);
             }
             for (int db = -60; db <= 12; ++db) {
                 const auto y = position(db);
-                const bool labelled = std::find(labelY.begin(), labelY.begin()+used,y) != labelY.begin()+used;
+                const bool labelled = std::find(labels.begin(), labels.begin()+used,db) != labels.begin()+used;
                 if (!labelled && db % minorStep != 0) continue;
                 g.setColour(Colours::white.withAlpha(labelled ? .63f : .32f));
                 g.drawHorizontalLine(roundToInt(y), float(right - (db==0 ? 6 : labelled ? 4 : 2)), float(right));
@@ -1056,7 +1061,7 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
                 return sections(0, controlsY + controls + 4, controlsY, controls);
             }
             const int inner=std::max(0,height-22);
-            const int controls=std::min(205,std::max(100,inner-40-(mixer.focusedTrack ? 87 : 0)));
+            const int controls=std::min(205,std::max(100,inner-40));
             const int slots=std::max(0,inner-controls-40);
             return sections(slots,13+slots+controls+4,13+slots,controls);
         }

@@ -239,17 +239,26 @@ function paintItem(ctx,r,width){
   const {clip,track}=r,header=Math.min(21,r.h*.42),fill=color(track.color,'#515151');
   ctx.save();ctx.beginPath();ctx.roundRect(r.x,r.y,r.w,r.h,3);ctx.clip();
   ctx.globalAlpha=clip.muted ? .55 : 1;ctx.fillStyle=fill;ctx.fillRect(r.x,r.y,r.w,r.h);
-  ctx.fillStyle='#484848';ctx.fillRect(r.x,r.y,r.w,header);
-  const sourceName=(clip.name||clip.audioFile||track.audioFile||track.name||'').split(/[\\/]/).pop();
-  const fullName=ctx.measureText(sourceName).width,space=r.w-9;
-  let labelX=r.x+5;
-  if(space>fullName+74){ctx.fillStyle='#eee';ctx.fillText(`${gainLabel((clip.gain??1)*(clip.normalizationGain??1))} dB`,labelX,r.y+14);labelX+=55;}
-  if(space>22){ctx.fillStyle=clip.muted?'#ff5050':'#eee';ctx.fillText('M',labelX,r.y+14);labelX+=21;}
-  ctx.fillStyle='#eee';clippedText(ctx,sourceName,labelX,r.y+14,r.x+r.w-labelX-3);
-  const body={x:r.x,y:r.y+header,w:r.w,h:r.h-header};
+  const lyric=(track.role==='teleprompt'||track.role==='teleprompt2') && !clip.audioFile && !clip.midi;
+  const media=clip.audioFile || clip.midi || (!clip.text && !clip.timecode && !lyric &&
+    (track.audioFile || clip.waveform?.length || clip.waveformChannels?.length));
+  const highlight=state.items.has(clip.id) && media;
+  if(!lyric){
+    ctx.globalAlpha=highlight?1:ctx.globalAlpha;
+    ctx.fillStyle=highlight?'#d8d8d8':'#484848';ctx.fillRect(r.x,r.y,r.w,header);
+    const ink=highlight?'#171717':'#eee';
+    const sourceName=(clip.name||clip.audioFile?.path||track.audioFile?.path||(typeof clip.audioFile==='string'?clip.audioFile:'')||(typeof track.audioFile==='string'?track.audioFile:'')||track.name||'').split(/[\\/]/).pop();
+    const fullName=ctx.measureText(sourceName).width,space=r.w-9;
+    let labelX=r.x+5;
+    if(space>fullName+74){ctx.fillStyle=ink;ctx.fillText(`${gainLabel((clip.gain??1)*(clip.normalizationGain??1))} dB`,labelX,r.y+14);labelX+=55;}
+    if(space>22){ctx.fillStyle=clip.muted?'#ff5050':ink;ctx.fillText('M',labelX,r.y+14);labelX+=21;}
+    ctx.fillStyle=ink;clippedText(ctx,sourceName,labelX,r.y+14,r.x+r.w-labelX-3);
+    ctx.globalAlpha=clip.muted ? .55 : 1;
+  }
+  const body=lyric ? r : {x:r.x,y:r.y+header,w:r.w,h:r.h-header};
   const start=Math.max(clip.startTime,state.offset),end=Math.min(clip.startTime+clip.duration,state.offset+width/state.scale);
   if(!clip.midi&&!clip.text&&(clip.audioFile||track.audioFile)&&end>start)paintWaveform(ctx,r,body,start,end);
-  if(clip.text){ctx.fillStyle='#eee';ctx.font='10px Inter';clippedText(ctx,String(clip.text).replace(/\n/g,' '),r.x+4,body.y+13,r.w-8);}
+  if(clip.text){ctx.fillStyle=lyric?'#000':'#eee';ctx.font='10px Inter';clippedText(ctx,String(clip.text).replace(/\n/g,' '),r.x+4,body.y+13,r.w-8);}
   if(clip.midi){const notes=clip.midi.notes??[];ctx.fillStyle='#ddd';for(const note of notes){const nx=r.x+((note.startTime??note.start??0)*state.scale);const ny=body.y+body.h*(1-(note.pitch??60)/127);ctx.fillRect(nx,ny,Math.max(2,(note.duration??.1)*state.scale),2);}}
   ctx.restore();ctx.save();ctx.beginPath();ctx.roundRect(r.x,r.y,r.w,r.h,3);
   if(state.items.has(clip.id)){ctx.strokeStyle='#000';ctx.lineWidth=5;ctx.stroke();ctx.strokeStyle='#80ff9c';ctx.lineWidth=3;}else{ctx.strokeStyle=fill;ctx.lineWidth=.6;}ctx.stroke();ctx.restore();

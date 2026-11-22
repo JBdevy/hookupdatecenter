@@ -74,11 +74,11 @@ private final class LibraryRowDragView: NSView, NSDraggingSource {
 private actor LibrarySoundFontPreviewRenderer {
     static let shared = LibrarySoundFontPreviewRenderer()
 
-    func render(_ url: URL) throws -> AVAudioPCMBuffer {
+    func render(_ url: URL, drums: Bool) throws -> AVAudioPCMBuffer {
         // Banks can be hundreds of MB. Serialize loads and skip queued work
         // when a new preview replaces it.
         try Task.checkCancellation()
-        return try JarasSoundFont.libraryPreview(at: url)
+        return try JarasSoundFont.libraryPreview(at: url, drums: drums)
     }
 }
 
@@ -185,7 +185,7 @@ private struct LibraryColumns<Folders: View, Entries: View>: View {
                 folders.frame(width: column)
                 Rectangle().fill(theme.line.opacity(0.65)).frame(width: 1)
                 entries.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .background(theme.display)
+                    .background(theme.libraryEntriesBackground)
                     .clipped()
             }
             .overlay(alignment: .leading) {
@@ -215,6 +215,7 @@ struct WorkspaceLibrary: View {
         case samplerCategory(UUID)
         case padSamplers
         case nativeSamplers(String)
+        case midiChords(String)
         case preset(String)
         case favoritePlugins, favoriteSamplers
         case annotation(UUID)
@@ -260,6 +261,7 @@ struct WorkspaceLibrary: View {
     @State private var instrumentsExpanded = false
     @State private var pluginsExpanded = false
     @State private var samplersExpanded = false
+    @State private var midiExpanded = false
     @State private var userExpanded = false
     @State private var presetsExpanded = false
     @State private var favoritesExpanded = false
@@ -277,6 +279,10 @@ struct WorkspaceLibrary: View {
     @State private var importingSamplers = false
     @State private var preview: (id: UUID, url: URL, instrumentID: String?)?
     @State private var previewPreparation: Task<Void, Never>?
+    @State private var importingSoundFonts = false
+    #if os(iOS)
+    @State private var pickingSoundFonts = false
+    #endif
     @State private var selection: Selection?
     @State private var searchText = ""
     @State private var presets: [FXPreset] = []
@@ -336,14 +342,18 @@ struct WorkspaceLibrary: View {
             folderToolbar
             ScrollView {
                 VStack(spacing: 2) {
-                    folder("Instruments", expanded: $instrumentsExpanded, shaded: false)
+                    folder("Instruments", expanded: $instrumentsExpanded, shaded: false, icon: "library.instruments")
+                        .contextMenu {
+                            Button("Import SF2…", action: chooseSoundFonts).disabled(importingSoundFonts)
+                        }
                     if instrumentsExpanded {
                         ForEach(Array(InstrumentCategory.allCases.enumerated()), id: \.element) { index, category in
                             navigationRow(category == .pianos ? "Grand Pianos" : category.rawValue,
                                           icon: "folder.fill", target: .instrument(category), shaded: index.isMultiple(of: 2))
                         }
                     }
-                    folder("Plugins", expanded: $pluginsExpanded, shaded: true)
+                    Divider().padding(.vertical, 3)
+                    folder("Plugins", expanded: $pluginsExpanded, shaded: true, icon: "library.plugins")
                     if pluginsExpanded {
                         navigationRow("All", icon: "square.grid.2x2", target: .plugins(nil), shaded: false)
                         navigationRow("Native", icon: "folder.fill", target: .plugins("Native"), shaded: true)
@@ -351,7 +361,8 @@ struct WorkspaceLibrary: View {
                             navigationRow(type, icon: "folder.fill", target: .plugins(type), shaded: index.isMultiple(of: 2))
                         }
                     }
-                    folder("Samplers", expanded: $samplersExpanded, shaded: false)
+                    Divider().padding(.vertical, 3)
+                    folder("Samplers", expanded: $samplersExpanded, shaded: false, icon: "library.samplers")
                     if samplersExpanded {
                         folder("User", expanded: $userExpanded, shaded: true)
                             .contextMenu {
@@ -388,7 +399,14 @@ struct WorkspaceLibrary: View {
                         }
                     }
                     divider
-                    folder("Presets", expanded: $presetsExpanded, shaded: false)
+                    folder("Midi", expanded: $midiExpanded, shaded: true, icon: "pianokeys")
+                    if midiExpanded {
+                        ForEach(LibraryMIDIChord.categories, id: \.self) { category in
+                            navigationRow(category, icon: "folder.fill", target: .midiChords(category), shaded: false)
+                        }
+                    }
+                    divider
+                    folder("Presets", expanded: $presetsExpanded, shaded: false, icon: "library.presets")
                     if presetsExpanded {
                         ForEach(Array(presetPlugins.enumerated()), id: \.element) { index, plugin in
                             navigationRow(pluginName(plugin), icon: "folder.fill", target: .preset(plugin),
@@ -434,9 +452,14 @@ struct WorkspaceLibrary: View {
     var body: some View {
         LibraryColumns(theme: theme, folders: folders, entries: VStack(spacing: 0) {
             if showsSearch { searchField }
+            #if os(iOS)
+            details.fileImporter(isPresented: $pickingSoundFonts, allowedContentTypes: [UTType(filenameExtension: "sf2") ?? .data],
+                                 allowsMultipleSelection: true, onCompletion: importSoundFonts)
+            #else
             details
+            #endif
         })
-        .background(theme.panel)
+        .background(theme.mixerPanelBackground)
         .foregroundStyle(JarasTheme.text)
         .accessibilityIdentifier("workspace-library-panel")
         .onAppear { instruments.refresh(); loadPresets(); refreshPadSamples() }
@@ -488,19 +511,14 @@ struct WorkspaceLibrary: View {
                 instrumentsExpanded = false
                 pluginsExpanded = false
                 samplersExpanded = false
+                midiExpanded = false
                 userExpanded = false
                 presetsExpanded = false
                 favoritesExpanded = false
                 annotationExpanded = false
             } label: {
-                Group {
-                    #if os(macOS)
-                    DesktopToolbarSymbol(name: "arrow.up.and.down.text.horizontal").frame(width: 16, height: 16)
-                    #else
-                    Image(systemName: "arrow.up.and.down.text.horizontal")
-                        .font(.jarasSystem(size: 12, weight: .semibold))
-                    #endif
-                }
+                ControlIcon(name: "arrow.up.and.down.text.horizontal",
+                            active: instrumentsExpanded || pluginsExpanded || samplersExpanded || midiExpanded || presetsExpanded || favoritesExpanded || annotationExpanded)
                     .frame(width: 25, height: 23)
                     .background(theme.display, in: RoundedRectangle(cornerRadius: 5))
                     .contentShape(Rectangle())
@@ -544,14 +562,7 @@ struct WorkspaceLibrary: View {
             } else {
                 Color.clear.frame(width: 11)
             }
-            Group {
-                #if os(macOS)
-                if icon == "star.fill" { DesktopToolbarSymbol(name: icon).frame(width: 13, height: 13) }
-                else { Image(systemName: icon).font(.jarasSystem(size: 12, weight: .medium)) }
-                #else
-                Image(systemName: icon).font(.jarasSystem(size: 12, weight: .medium))
-                #endif
-            }.foregroundStyle(icon == "folder.fill" ? JarasTheme.green : theme.secondary)
+            ControlIcon(name: icon, active: selected || chevron == "chevron.down", size: 16)
             Text(verbatim: name).font(.jarasSystem(size: 12, weight: .medium)).lineLimit(1)
             Spacer(minLength: 0)
         }
@@ -600,6 +611,23 @@ struct WorkspaceLibrary: View {
             pluginList(type: type)
         case .samplerCategory, .padSamplers, .nativeSamplers, .favoriteSamplers:
             samplerList
+        case .midiChords(let category):
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(LibraryMIDIChord.catalog.filter { $0.category == category && matchesSearch($0.name) }, id: \.name) { chord in
+                        HStack(spacing: 6) {
+                            ControlIcon(name: "pianokeys", size: 13)
+                            Text(verbatim: chord.name)
+                            Spacer()
+                        }.font(.jarasSystem(size: 12, weight: .medium))
+                            .padding(.horizontal, 8).frame(height: 27).contentShape(Rectangle())
+                            .modifier(LibraryRowDrag(title: chord.name, type: UTType(exportedAs: LibraryMIDIChord.transferType),
+                                data: { Data(chord.name.utf8) }, provider: {
+                                    NSItemProvider(item: Data(chord.name.utf8) as NSData, typeIdentifier: LibraryMIDIChord.transferType)
+                                }))
+                    }
+                }
+            }
         case .preset(let plugin):
             presetList(plugin)
         case .favoritePlugins:
@@ -614,8 +642,35 @@ struct WorkspaceLibrary: View {
         }
     }
 
+    private func chooseSoundFonts() {
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.title = JarasLocalization.string("Import SF2…")
+        panel.allowedContentTypes = [UTType(filenameExtension: "sf2") ?? .data]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.begin { result in
+            if result == .OK { importSoundFonts(.success(panel.urls)) }
+        }
+        #else
+        pickingSoundFonts = true
+        #endif
+    }
+
+    private func importSoundFonts(_ result: Result<[URL], Error>) {
+        guard case .success(let files) = result, !files.isEmpty else { return }
+        instrumentsExpanded = true
+        selection = .instrument(.user)
+        searchText = ""
+        importingSoundFonts = true
+        Task {
+            await instruments.importSoundFonts(files)
+            importingSoundFonts = false
+        }
+    }
+
     private func instrumentList(_ category: InstrumentCategory) -> some View {
-        let entries = InstrumentLibrary.catalog.filter { $0.category == category && matchesSearch($0.name) }
+        let entries = instruments.entries.filter { $0.category == category && matchesSearch($0.name) }
         return VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 LazyVStack(spacing: 2) {
@@ -624,6 +679,7 @@ struct WorkspaceLibrary: View {
                     }
                 }.padding(6)
             }
+            if importingSoundFonts { ProgressView().controlSize(.small).padding(8) }
             if !instruments.error.isEmpty {
                 Text(verbatim: instruments.error).font(.jarasCaption).foregroundStyle(.red).padding(8)
             }
@@ -637,7 +693,6 @@ struct WorkspaceLibrary: View {
                 .contentShape(Rectangle())
                 .modifier(effectDrag(instrument.name, identity: "native:Instruments:" + instrument.id))
             if available {
-                if !instrument.percussion {
                     let playing = preview?.instrumentID == instrument.id
                     Button {
                         if let file = instruments.previewFile(instrument) { togglePreview(file, instrumentID: instrument.id) }
@@ -648,7 +703,6 @@ struct WorkspaceLibrary: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel(playing ? Text("Stop") : Text("Play"))
                     .accessibilityIdentifier("library-preview-" + instrument.id)
-                }
             } else {
                 if let progress = instruments.progress[instrument.id] {
                     instrumentDownloadProgress(progress)
@@ -1023,7 +1077,7 @@ struct WorkspaceLibrary: View {
         }
     }
 
-    nonisolated private static func copySampler(_ source: URL, into directory: URL) throws {
+    @discardableResult nonisolated static func copySampler(_ source: URL, into directory: URL, reuseIdentical: Bool = false) throws -> URL {
         let accessed = source.startAccessingSecurityScopedResource()
         defer { if accessed { source.stopAccessingSecurityScopedResource() } }
         let manager = FileManager.default
@@ -1038,11 +1092,16 @@ struct WorkspaceLibrary: View {
         let base = source.deletingPathExtension().lastPathComponent
         var target = directory.appendingPathComponent(source.lastPathComponent)
         var copyNumber = 2
-        while manager.fileExists(atPath: target.path) {
+        while true {
+            do {
+                try manager.moveItem(at: temporary, to: target)
+                return target
+            } catch let error as CocoaError where error.code == .fileWriteFileExists {
+                if reuseIdentical && manager.contentsEqual(atPath: temporary.path, andPath: target.path) { return target }
+            }
             target = directory.appendingPathComponent("\(base) \(copyNumber)").appendingPathExtension(source.pathExtension)
             copyNumber += 1
         }
-        try manager.moveItem(at: temporary, to: target)
     }
 
     private func togglePreview(_ url: URL, instrumentID: String? = nil) {
@@ -1058,8 +1117,9 @@ struct WorkspaceLibrary: View {
             defer { if preview?.id == id { previewPreparation = nil } }
             do {
                 let buffer: AVAudioPCMBuffer
-                if instrumentID != nil {
-                    buffer = try await LibrarySoundFontPreviewRenderer.shared.render(url)
+                if let instrumentID {
+                    let drums = InstrumentLibrary.category(instrumentID) == .drum
+                    buffer = try await LibrarySoundFontPreviewRenderer.shared.render(url, drums: drums)
                 } else {
                     buffer = try await Task.detached(priority: .userInitiated) { try Self.decodeSampler(url) }.value
                 }

@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 source = Path('Apple/Bridge/JarasRecording.mm').read_text()
 ring = source[source.index('@implementation JarasCaptureRing'):source.index('@implementation JarasMP3Encoder')]
-headers = '#import <AVFoundation/AVFoundation.h>\n#import "JarasRecording.h"\n#include <atomic>\n#include <vector>\n#include <algorithm>\n#include <thread>\n#include <memory>\n#include <cmath>\n'
+headers = '#import <AVFoundation/AVFoundation.h>\n#import "JarasRecording.h"\n#include <atomic>\n#include <vector>\n#include <algorithm>\n#include <thread>\n#include <memory>\n#include <cmath>\n#include <mach/mach_time.h>\n'
 Path(sys.argv[1]).write_text(headers + ring)
 PY
 cp Tests/Apple/InputMeterCaptureTests.swift "$meter_test_dir/main.swift"

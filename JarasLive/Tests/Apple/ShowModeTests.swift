@@ -53,7 +53,8 @@ final class FakePower: @unchecked Sendable {
         precondition(!model.enabled && !model.error.isEmpty)
         var levels: [UInt32: Float] = [1: 0.75, 2: 0.4]
         var writes: [(UInt32, Float)] = []
-        let brightness = MacShowLidBrightness(backend: .init(displays: { [1] }, read: { levels[$0] }, write: { display, level in levels[display] = level; writes.append((display,level)); return true }), watchesHardware: false)
+        var builtin: [UInt32] = [1]
+        let brightness = MacShowLidBrightness(backend: .init(displays: { builtin }, read: { levels[$0] }, write: { display, level in levels[display] = level; writes.append((display,level)); return true }), watchesHardware: false)
         brightness.lidChanged(closed: true)
         precondition(writes.isEmpty, "Disabled Show Mode cannot change brightness")
         brightness.setEnabled(true); brightness.lidChanged(closed: true)
@@ -63,10 +64,16 @@ final class FakePower: @unchecked Sendable {
         brightness.lidChanged(closed: true); brightness.setEnabled(false)
         precondition(levels[1] == 0.75, "Disabling Show Mode restores brightness")
         brightness.setEnabled(true); brightness.lidChanged(closed: true); levels[1] = 0.5; brightness.lidChanged(closed: false)
-        precondition(levels[1] == 0.5, "A manual brightness adjustment is preserved")
+        precondition(levels[1] == 0.75, "A system wake brightness must not replace the saved value")
+        brightness.lidChanged(closed: true)
+        builtin = []
+        brightness.lidChanged(closed: false)
+        builtin = [3]
+        for _ in 0..<100 where levels[3] != 0.75 { try await Task.sleep(nanoseconds: 10_000_000) }
+        precondition(levels[3] == 0.75 && levels[2] == 0.4, "Retry restores the reconnected panel under its new display ID")
         brightness.lidChanged(closed: true); brightness.stop()
-        precondition(levels[1] == 0.5, "Shutdown restores the saved brightness")
-        print("MAC_SHOW_LID_BRIGHTNESS_MINIMUM_RESTORE_MANUAL_OVERRIDE_AND_EXTERNAL_DISPLAY_UNCHANGED_OK")
+        precondition(levels[3] == 0.75, "Shutdown restores the saved brightness")
+        print("MAC_SHOW_LID_BRIGHTNESS_SAVED_VALUE_AND_RECONNECTED_PANEL_OK")
         print("MAC_SHOW_MODE_OK: query only, enabled/disabled, authorization cancellation, verified system state; no real power settings changed")
     }
 }

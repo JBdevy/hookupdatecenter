@@ -64,7 +64,16 @@ inline void draw(Graphics &g, const std::optional<std::string> &id, juce::Rectan
         draw(g, *icon, bounds);
     } else if (const auto *artwork = findArtwork(id)) {
         const auto image = ImageCache::getFromFile(artwork->file);
-        if (image.isValid()) g.drawImage(image, bounds, RectanglePlacement::centred);
+        if (!image.isValid()) return;
+        if (artwork->id == "png:Other/waveform") {
+            const auto size = std::min(bounds.getWidth(), bounds.getHeight());
+            bounds = bounds.withSizeKeepingCentre(size, size);
+            Graphics::ScopedSaveState saved(g);
+            Path shape;
+            shape.addRoundedRectangle(bounds, 4.f);
+            g.reduceClipRegion(shape);
+            g.drawImage(image, bounds, RectanglePlacement::centred);
+        } else g.drawImage(image, bounds, RectanglePlacement::centred);
     }
 }
 } // namespace catlive::trackIcons

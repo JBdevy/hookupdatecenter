@@ -765,7 +765,7 @@ let ruler = TimelineRulerView(frame: NSRect(x: 0,y: 0,width: 400,height: 24))
 document.addSubview(ruler)
 var seeks = 0
 var rulerFreeSeeks: [Bool] = []
-ruler.seek = { _,_,free in seeks += 1; rulerFreeSeeks.append(free) }
+ruler.seek = { _,free in seeks += 1; rulerFreeSeeks.append(free) }
 func pointer(_ type: NSEvent.EventType) -> NSEvent {
     NSEvent.mouseEvent(with: type,location: ruler.convert(NSPoint(x: 100,y: 12),to: nil),modifierFlags: [],timestamp: ProcessInfo.processInfo.systemUptime,windowNumber: window.windowNumber,context: nil,eventNumber: 1,clickCount: 1,pressure: 1)!
 }
@@ -783,6 +783,9 @@ ruler.mouseUp(with: pointer(.leftMouseUp))
 precondition(seeks == 0, "native modal opening cancels a pending ruler press")
 ruler.rightMouseDown(with: pointer(.rightMouseDown))
 ruler.rightMouseUp(with: pointer(.rightMouseUp))
+precondition(seeks == 0, "a secondary ruler click leaves both transport cursors alone")
+ruler.mouseDown(with: pointer(.leftMouseDown))
+ruler.mouseUp(with: pointer(.leftMouseUp))
 precondition(seeks == 1, "the ruler resumes immediately after closing the modal")
 let shifted = NSEvent.mouseEvent(with: .leftMouseUp, location: ruler.convert(NSPoint(x: 113.75, y: 12),to: nil), modifierFlags: .shift, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
 ruler.mouseDown(with: shifted); ruler.mouseUp(with: shifted)
@@ -799,8 +802,8 @@ precondition(seeks == seeksBeforeVerticalDrag, "a vertical ruler drag returning 
 print("RULER_PURE_RELEASE_ONLY_AND_VERTICAL_DRAG_NO_SEEK_OK")
 var intervals: [(Double, Double)] = []
 ruler.selectTime = { intervals.append(($0, $1)) }
-func selectionEvent(_ type: NSEvent.EventType, x: CGFloat) -> NSEvent {
-    NSEvent.mouseEvent(with: type, location: ruler.convert(NSPoint(x: x, y: 12), to: nil), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+func selectionEvent(_ type: NSEvent.EventType, x: CGFloat, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+    NSEvent.mouseEvent(with: type, location: ruler.convert(NSPoint(x: x, y: 12), to: nil), modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
 }
 for (start, end): (CGFloat, CGFloat) in [(100, 300), (300, 100)] {
     let before = seeks
@@ -810,6 +813,10 @@ for (start, end): (CGFloat, CGFloat) in [(100, 300), (300, 100)] {
     precondition(seeks == before, "right drag selects an interval without moving the Sub Play cursor")
     precondition(intervals.last!.0 == start / 400 && intervals.last!.1 == end / 400, "both ruler drag directions preserve their endpoints")
 }
+ruler.mouseDown(with: selectionEvent(.leftMouseDown, x: 50, modifiers: .control))
+ruler.mouseDragged(with: selectionEvent(.leftMouseDragged, x: 250))
+ruler.mouseUp(with: selectionEvent(.leftMouseUp, x: 250))
+precondition(intervals.last!.0 == 50.0 / 400 && intervals.last!.1 == 250.0 / 400 && seeks == seeksBeforeVerticalDrag)
 ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: 100))
 gate.setBlocked(true, for: window); gate.setBlocked(false, for: window)
 let beforeCancelled = intervals.count
@@ -818,7 +825,7 @@ ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: 300))
 precondition(intervals.count == beforeCancelled, "opening a modal cancels the pending interval gesture")
 let retainedRulerFrame = ruler.frame
 var projectedRulerSeeks: [Double] = []
-ruler.seek = { fraction, _, _ in projectedRulerSeeks.append(fraction) }
+ruler.seek = { fraction, _ in projectedRulerSeeks.append(fraction) }
 for width: CGFloat in [800, 200, 400] {
     ruler.documentWidth = width
     ruler.mouseDown(with: pointer(.leftMouseDown))

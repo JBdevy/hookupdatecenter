@@ -6,6 +6,7 @@
 #include <thread>
 #include <memory>
 #include <cmath>
+#include <mach/mach_time.h>
 #include "JarasMacAudioInput.inc"
 #include "../../Core/ThirdParty/Lame/lame.h"
 
@@ -21,25 +22,28 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
     std::vector<float> _samples;
     std::unique_ptr<std::atomic<float>[]> _inputPeaks;
     NSUInteger _channels, _capacity;
-    std::atomic<uint64_t> _read, _write, _dropped, _inputBlockFrames;
+    std::atomic<uint64_t> _read, _write, _dropped, _inputBlockFrames, _startHost;
     // Bit 0 accepts input; bit 1 belongs to the single realtime producer.
     std::atomic<unsigned> _captureState;
 }
 - (instancetype)initWithChannels:(NSUInteger)channels capacity:(NSUInteger)frames {
-    if ((self = [super init])) { _channels=channels; _capacity=frames; _samples.resize(channels*frames); _read=0; _write=0; _dropped=0; _inputBlockFrames=0; _captureState=1; _inputPeaks=std::make_unique<std::atomic<float>[]>(channels); for(NSUInteger c=0;c<channels;++c) _inputPeaks[c]=0; }
+    if ((self = [super init])) { _channels=channels; _capacity=frames; _samples.resize(channels*frames); _read=0; _write=0; _dropped=0; _inputBlockFrames=0; _startHost=0; _captureState=1; _inputPeaks=std::make_unique<std::atomic<float>[]>(channels); for(NSUInteger c=0;c<channels;++c) _inputPeaks[c]=0; }
     return self;
 }
-- (void)beginCapture {
+- (void)beginCapture { [self beginCaptureAtHostTime:0]; }
+- (void)beginCaptureAtHostTime:(uint64_t)hostTime {
     // The preceding writer has finished before a ring can be reused.
     [self endCapture]; [self waitForPendingCapture];
     _read=0; _write=0; _dropped=0; _inputBlockFrames=0;
+    _startHost.store(hostTime, std::memory_order_relaxed);
     _captureState.store(1, std::memory_order_release);
 }
 - (void)endCapture { _captureState.fetch_and(~1u, std::memory_order_acq_rel); }
 - (void)waitForPendingCapture {
     while (_captureState.load(std::memory_order_acquire) & 2u) std::this_thread::yield();
 }
-- (void)pushBuffer:(AVAudioPCMBuffer *)buffer {
+- (void)pushBuffer:(AVAudioPCMBuffer *)buffer { [self pushBuffer:buffer hostTime:0]; }
+- (void)pushBuffer:(AVAudioPCMBuffer *)buffer hostTime:(uint64_t)hostTime {
     if (!buffer.floatChannelData || buffer.format.channelCount != _channels || !_capacity) return;
     // Input indication is independent of recording and monitor audibility.
     for(NSUInteger c=0;c<_channels;++c) {
@@ -53,13 +57,23 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
     // The input tap may batch far more frames than its requested buffer size.
     // Publish the actual producer quantum before publishing the corresponding PCM.
     _inputBlockFrames.store(std::max<uint64_t>(_inputBlockFrames.load(std::memory_order_relaxed), buffer.frameLength), std::memory_order_relaxed);
+    uint64_t skipped=0;
+    const auto startHost=_startHost.load(std::memory_order_relaxed);
+    if(startHost) {
+        const auto firstHost=hostTime ? hostTime : mach_absolute_time();
+        if(startHost>firstHost) {
+            const auto frames=[AVAudioTime secondsForHostTime:startHost-firstHost]*buffer.format.sampleRate;
+            skipped=uint64_t(std::min(double(buffer.frameLength),std::ceil(frames-1e-8)));
+        }
+    }
+    const auto available=buffer.frameLength-skipped;
     auto write=_write.load(std::memory_order_relaxed), read=_read.load(std::memory_order_acquire);
-    auto count=std::min<uint64_t>(buffer.frameLength, _capacity-(write-read));
+    auto count=std::min<uint64_t>(available, _capacity-(write-read));
     auto channels=buffer.floatChannelData;
     for(uint64_t f=0;f<count;++f) for(NSUInteger c=0;c<_channels;++c)
-        _samples[((write+f)%_capacity)*_channels+c]=channels[c][f*buffer.stride];
+        _samples[((write+f)%_capacity)*_channels+c]=channels[c][(f+skipped)*buffer.stride];
     _write.store(write+count,std::memory_order_release);
-    _dropped.fetch_add(buffer.frameLength-count,std::memory_order_relaxed);
+    _dropped.fetch_add(available-count,std::memory_order_relaxed);
     _captureState.fetch_and(~2u, std::memory_order_release);
 }
 - (NSUInteger)readFrames:(float *)destination maximum:(NSUInteger)frames {

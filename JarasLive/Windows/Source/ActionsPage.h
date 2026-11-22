@@ -250,7 +250,7 @@ class ActionsPage final : public Component, private ChangeListener {
                 targets.insert(targets.begin(), 0);
                 for (const int number : targets)
                     for (const auto &inputKind : {String("keyboard"), String("midi")})
-                        if (actions.hasCustomInput(definition, inputKind, number))
+                        if (actions.inputLabel(definition, inputKind, number).isNotEmpty())
                             add(definition, inputKind, number);
                 continue;
             }

@@ -21,7 +21,7 @@ class SpecialTrackControls final : public Component, private Timer {
         insert.onClick=[this]{action(id,"click");};media.onClick=[this]{action(id,"media");};addText.onClick=[this]{action(id,"text");};settings.onClick=[this]{action(id,"settings");};
         copy.onClick=[this]{action(id,"pcCopyPaste");};
         patch.setComponentID("specialPatch");
-        patch.onClick=[this]{const auto *t=track();action(id,t&&t->role.id=="generatedClick"?"clickPatch":"pcPatch");};scan.onClick=[this]{action(id,"pcScan");};
+        patch.onClick=[this]{const auto *t=track();action(id,t&&t->role.id=="programChange"?"pcPatch":"patch");};scan.onClick=[this]{action(id,"pcScan");};
         mtc.onClick=[this]{action(id,"mtc");};ltc.onClick=[this]{action(id,"ltc");};refresh();
     }
     void timerCallback() override {
@@ -51,11 +51,21 @@ class SpecialTrackControls final : public Component, private Timer {
         fullLyrics.setVisible(false);
         for(auto *b:{&insert,&media,&addText,&settings,&patch,&copy,&scan,&mtc,&ltc})b->setVisible(false);
         const auto *t=track();if(!t)return;const auto &role=t->role.id;
+        if (jaras::isTeleprompterRole(t->role)) {
+            const int width = std::max(0, getWidth() - 6);
+            const int patchWidth = std::min(40, width);
+            const int textWidth = (width - patchWidth) / 2;
+            const int height = std::min(24, getHeight());
+            patch.setBounds(0, 0, patchWidth, height);
+            addText.setBounds(patchWidth + 3, 0, textWidth, height);
+            fullLyrics.setBounds(patchWidth + textWidth + 6, 0, width - patchWidth - textWidth, height);
+            patch.setVisible(true); addText.setVisible(true); fullLyrics.setVisible(true);
+            return;
+        }
         std::vector<TextButton*> buttons;
         if(role=="programChange")buttons={&patch,&copy,&scan};else if(role=="generatedClick")buttons={&patch,&insert};else if(role=="timecode")buttons={&settings,&mtc,&ltc};else if(role=="video")buttons={&media};
-        else if(jaras::isTeleprompterRole(t->role)||role=="chords")buttons={&addText};
-        if(jaras::isTeleprompterRole(t->role))buttons.push_back(&fullLyrics);
-        if(getWidth()<100 || jaras::isTeleprompterRole(t->role)){int y=0;for(auto *b:buttons){b->setBounds(0,y,getWidth(),21);b->setVisible(true);y+=24;}}
+        else if(role=="chords")buttons={&addText};
+        if(getWidth()<100){int y=0;for(auto *b:buttons){b->setBounds(0,y,getWidth(),21);b->setVisible(true);y+=24;}}
         else{int x=0;for(auto *b:buttons){int width=(b==&patch||b==&copy||b==&scan)?50:b==&settings?30:(b==&mtc||b==&ltc?38:role=="generatedClick"?47:102);b->setBounds(x,0,width,std::min(24,getHeight()));b->setVisible(true);x+=width+3;}}
     }
 };

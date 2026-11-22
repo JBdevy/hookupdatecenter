@@ -6,8 +6,8 @@ import Combine
     @ObservedObject private var timer = TeleprompterTimerController.shared
     var body: some View {
         Button { timer.showConfiguration() } label: {
-            DesktopToolbarLabel(title: Text(verbatim: "Timer"), active: timer.configurationOpen || timer.running)
-        }.buttonStyle(.plain).accessibilityLabel("Timer")
+            DesktopToolbarLabel(title: "Timer", systemImage: "stopwatch", active: timer.configurationOpen || timer.running)
+        }.buttonStyle(.plain).accessibilityLabel("Timer").help(Text(verbatim: "Timer"))
     }
 }
 

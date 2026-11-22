@@ -94,7 +94,7 @@ int main() { @autoreleasepool {
         assert(input.device==77&&input.bufferFrames==frames&&probe::frames==frames);
         assert(input.format.sampleRate==48000&&input.format.channelCount==4);
         __block UInt32 received=0;
-        [input setCapture:^(AVAudioPCMBuffer *buffer) {
+        [input setCapture:^(AVAudioPCMBuffer *buffer, uint64_t) {
             received+=buffer.frameLength;
             assert(buffer.frameLength==frames);
             for(int ch=0;ch<4;++ch)assert(std::abs(buffer.floatChannelData[ch][0]-float(ch+1)*.1f)<.00001);

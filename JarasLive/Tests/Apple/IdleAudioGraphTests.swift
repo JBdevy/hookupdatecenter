@@ -30,6 +30,50 @@ private final class RenderProbe: @unchecked Sendable {
     Mirror(reflecting: audio).children.first { $0.label == "renderEnabled" }!.value as! Bool
 }
 
+// A monitoring refresh can retire both Drummer inserts while an SF2 finishes
+// loading. Every removed mixer must be out of the chain before it is detached.
+@MainActor private func testInstrumentReconnection() throws {
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let engine = AVAudioEngine()
+    try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+    let audio = StemAudioPlayback(engine: engine, realtime: true)
+    audio.open(directory: FileManager.default.temporaryDirectory)
+    defer { audio.prepareForClosing() }
+    var fx = NativeFXSettings()
+    let compact = fx.appendNative("Drummer Pad 16")
+    let full = fx.appendNative("Drummer Pad 48")
+    var track = Track(id: UUID(), name: "Drummer reconnect", role: .keys)
+    track.fx = fx
+    var project = Project.empty(name: "Input monitor reconnect")
+    project.songs[0].tracks = [track]
+    var state = ShowSnapshot(project: project, transport: TransportState(playing: false,
+        songId: project.songs[0].id, position: 0, queue: QueueState(), loop: LoopState(enabled: false),
+        subPlay: SubPlayState(playing: false, position: 0)))
+    try audio.update(state, revision: 1)
+    let chain = audio.effects(for: track.id)!
+    let retired = [chain.drummerVoices[compact]!, chain.drummerVoices[full]!]
+    fx.removeEffect(compact)
+    state.project.songs[0].tracks[0].fx = fx
+    try audio.update(state, revision: 2)
+    fx.removeEffect(full)
+    fx.appendNative("Instruments", instrument: "probe")
+    state.project.songs[0].tracks[0].fx = fx
+    try audio.update(state, revision: 3)
+    let instrument = chain.instrumentInput(for: "Instruments")!
+    let probe = RenderProbe()
+    probe.set(0.125)
+    let source = probe.node(format)
+    engine.attach(source)
+    engine.connect(source, to: instrument, format: format)
+    audio.setArmedInstrumentTracks([track.id])
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 512)!
+    for _ in 0..<4 { require(try engine.renderOffline(512, to: buffer) == .success) }
+    print("Live input level",buffer.floatChannelData![0][256],"pulls",probe.calls)
+    require(abs(buffer.floatChannelData![0][256]) > 0.01, "Live instrument input must reach Main after reconnecting")
+    require(retired.allSatisfy { $0.source.node.engine == nil && $0.mixer.engine == nil })
+    print("DRUMMER_REMOVE_AND_LIVE_INSTRUMENT_RECONNECT_OK")
+}
+
 @MainActor private func testIdlePolicies() async throws {
     let rate = 48000.0
     let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
@@ -210,6 +254,8 @@ private final class RenderProbe: @unchecked Sendable {
 Task { @MainActor in
     do {
         UserDefaults.standard.setVolatileDomain(["jaras.metronome.enabled": false], forName: UserDefaults.argumentDomain)
+        try testInstrumentReconnection()
+        if CommandLine.arguments.contains("--reconnect-only") { exit(0) }
         try await testIdlePolicies()
         try await testFirstPCM()
         exit(0)

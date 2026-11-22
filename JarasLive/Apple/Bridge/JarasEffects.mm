@@ -23,6 +23,15 @@
 #endif
 #include "JarasPadSource.inc"
 
+#include "../../Core/MIDI/ChordName.hpp"
+
+@implementation JarasMIDIChord
++ (NSString *)nameForPitchClasses:(uint16_t)classes bass:(NSInteger)bass {
+    const auto name = jaras::midi::chordName(classes, int(bass));
+    return [NSString stringWithUTF8String:name.c_str()];
+}
+@end
+
 @implementation JarasAudioOutputConnection
 + (BOOL)startPlayer:(AVAudioPlayerNode *)player error:(NSError **)error {
     @try { [player play]; return YES; }

@@ -1,4 +1,5 @@
 #include "Instrument.h"
+#include "../../Core/Audio/LibraryDrumPreview.hpp"
 #define TSF_IMPLEMENTATION
 #include "../../Core/ThirdParty/TinySoundFont/tsf.h"
 namespace catlive {
@@ -80,7 +81,7 @@ void Instrument::configure(const var &parameters, bool drums) {
     sf.hold = (float)jlimit(0., 10., num(parameters, "hold", 10));
     sf.decay = (float)jlimit(.001, 10., num(parameters, "decay", 10));
     sf.sustain = (float)jlimit(0., 1., num(parameters, "sustain", 1));
-    sf.release = (float)jlimit(.001, 20., num(parameters, "release", drums ? 20 : .3));
+    sf.release = (float)jlimit(.001, 20., num(parameters, "release", drums ? 20 : .16));
     sf.drums = drums;
     sf.monophonic = flag(controllers, "monophonic");
     const auto curve = str(velocity, "curve", "medium");
@@ -96,18 +97,25 @@ void Instrument::configure(const var &parameters, bool drums) {
     sf.filterRelease = (float)jlimit(.001, 20., num(cutoff, "release", .3));
     sf.filterDepth = (float)jlimit(0., 10., num(cutoff, "depth"));
 }
-AudioBuffer<float> Instrument::renderLibraryPreview(const File &file) {
-    constexpr int heldFrames = previewSampleRate * 6 / 5, frames = previewSampleRate * 2;
+AudioBuffer<float> Instrument::renderLibraryPreview(const File &file, bool drums) {
+    constexpr int heldFrames = previewSampleRate * 6 / 5;
+    const int frames = drums ? jaras::audio::libraryDrumPreview::length(previewSampleRate) : previewSampleRate * 2;
     // The CatLive Keyboard labels MIDI note 60 as C3.
     constexpr std::array<int, 4> chord{60, 64, 67, 71};
     Instrument instrument;
     instrument.prepare(previewSampleRate);
     auto parameters = object();
     put(parameters, "gain", -12.);
-    instrument.configure(parameters);
+    instrument.configure(parameters, drums);
     instrument.loadSoundFont(file);
     MidiBuffer midi;
-    for (const auto note : chord) {
+    if (drums) {
+        auto &preset = instrument.impl->sf.font->presets[0];
+        for (int i = 0; i < preset.regionNum; ++i) preset.regions[i].loop_mode = TSF_LOOPMODE_NONE;
+        jaras::audio::libraryDrumPreview::hits(previewSampleRate, [&](int offset, int pitch, int channel, int velocity) {
+            midi.addEvent(MidiMessage::noteOn(channel, pitch, uint8(velocity)), offset);
+        });
+    } else for (const auto note : chord) {
         midi.addEvent(MidiMessage::noteOn(1, note, uint8(90)), 0);
         midi.addEvent(MidiMessage::noteOff(1, note), heldFrames);
     }

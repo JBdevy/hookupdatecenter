@@ -531,7 +531,7 @@ struct Kernel {
     std::atomic<Chain *> published{nullptr}; std::atomic<unsigned> readers{0}; std::unique_ptr<Chain> current;std::vector<std::unique_ptr<Chain>> retired;
     void process(AudioBufferList *b,unsigned n,const AudioTimeStamp* timestamp){
         jaras::ScopedAudioDenormals denormals;
-        sequence.render(catMIDIClock(timestamp,sampleRate.load()),sampleRate.load(),n);
+        catRenderMIDISequence(sequence,timestamp,sampleRate.load(),n);
         if(!published.load())return;
         readers.fetch_add(1);auto chain=published.load();
         const auto transport=transportClock.render(catMIDIClock(timestamp,sampleRate.load()),sampleRate.load(),n,publishedTempo.load());

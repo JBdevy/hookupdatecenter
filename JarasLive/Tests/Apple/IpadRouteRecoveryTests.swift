@@ -37,6 +37,7 @@ enum Command { case stopAll }
     func setLocalAudioAvailable(_ value: Bool) {
         available = value; Events.values.append(value ? "record-on" : "record-off")
     }
+    func cancelCountIn() { }
     func finish() { }
     func waitForLocalHardwareSuspension() async throws { }
     // PRODUCTION_FINISH_AND_WAIT

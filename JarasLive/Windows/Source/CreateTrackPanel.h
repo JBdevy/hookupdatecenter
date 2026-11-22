@@ -13,7 +13,7 @@ class CreateTrackPanel final : public Component {
         name.setComponentID("createTrackName");
         addAndMakeVisible(type);
         type.addItemList({String::fromUTF8("Padrão"), "Timecode", "Teleprompter 1",
-                          "Teleprompter 2", "Cifras", "Click", "Program Change"},
+                          "Teleprompter 2", "Cifras", "Metronome", "Program Change"},
                          1);
         type.setSelectedId(1, dontSendNotification);
         type.onChange = [this] { update(); };
@@ -118,11 +118,14 @@ class CreateTrackPanel final : public Component {
                             jaras::Track track;
                             track.id = uuid();
                             track.role.id = kind;
-                            if (kind == "other") track.color = 0x828282;
+                            if (kind == "other") {
+                                track.color = 0x828282;
+                                track.instrumentIcon = "png:Other/waveform";
+                            }
                             track.name =
                                 kind == "other"
                                     ? utf8(label + (quantity > 1 ? " " + String(i + 1) : String()))
-                                    : jaras::fixedTrackName(track.role);
+                                    : kind == "generatedClick" ? "Metronome" : jaras::fixedTrackName(track.role);
                             if (kind == "other" && inputChannels > 0) {
                                 track.inputPatch = jaras::OutputPatch{1, std::min(2, inputChannels)};
                             }
@@ -133,6 +136,7 @@ class CreateTrackPanel final : public Component {
                             }
                             if (kind == "generatedClick") {
                                 track.color = 0xffff00;
+                                track.instrumentIcon = "png:Other/metronome";
                                 for (const auto &region : song.parts)
                                     if (!region.parentRegionID) {
                                         jaras::AudioClip clip;

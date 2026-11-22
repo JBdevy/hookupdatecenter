@@ -163,6 +163,7 @@ struct MappingTransferRequest: Identifiable {
     #if os(iOS)
     @discardableResult func endNativeSession(_ session: UUID) -> Bool {
         guard bindingSession == session else { return false }
+        KeyboardMIDIMonitor.shared.disconnect(Set(sources.values.map(\.id)))
         for source in sources.keys { MIDIPortDisconnectSource(port, source) }
         sources.removeAll(); pressedMIDI.removeAll(); pendingVolumes.removeAll(); pendingFX.removeAll()
         cancelProgramChangeScan()
@@ -181,7 +182,10 @@ struct MappingTransferRequest: Identifiable {
             return offline == 0 && selected.contains(id)
         })
         let disconnected = sources.keys.filter { !available.contains($0) }
-        if !disconnected.isEmpty { StemAudioPlayback.shared.releaseMIDINotes(); pressedMIDI.removeAll() }
+        if !disconnected.isEmpty {
+            KeyboardMIDIMonitor.shared.disconnect(Set(disconnected.compactMap { sources[$0]?.id }))
+            StemAudioPlayback.shared.releaseMIDINotes(); pressedMIDI.removeAll()
+        }
         for source in disconnected { MIDIPortDisconnectSource(port, source); sources.removeValue(forKey: source) }
         for source in available where sources[source] == nil {
             var id: Int32 = 0; var name: Unmanaged<CFString>?
@@ -594,7 +598,7 @@ struct ControlMappingsList: View {
     @ObservedObject private var mappings = ControlMappings.shared
     var body: some View {
         let actionBindings = mappings.actions.entries.filter {
-            $0.midi != nil || ($0.keyboard != nil && $0.keyboard != $0.action.defaultKeyboard)
+            $0.midi != nil || $0.keyboard != nil
         }
         if mappings.current.isEmpty && actionBindings.isEmpty { Text("No mappings yet.").foregroundStyle(JarasTheme.secondary) }
         ForEach(actionBindings) { binding in
@@ -606,8 +610,10 @@ struct ControlMappingsList: View {
                             Text(input.label).font(.jarasCaption).foregroundStyle(JarasTheme.secondary)
                         }
                         Spacer()
-                        Button("Edit") { mappings.beginAction(binding.action, kind: kind, trackNumber: binding.trackNumber) }
-                        Button { mappings.removeActionInput(binding.action, kind: kind, trackNumber: binding.trackNumber) } label: { Image(systemName: "trash") }.accessibilityLabel("Remove mapping")
+                        if kind != "keyboard" || !binding.action.fixedKeyboard {
+                            Button("Edit") { mappings.beginAction(binding.action, kind: kind, trackNumber: binding.trackNumber) }
+                            Button { mappings.removeActionInput(binding.action, kind: kind, trackNumber: binding.trackNumber) } label: { Image(systemName: "trash") }.accessibilityLabel("Remove mapping")
+                        }
                     }.padding(10).background(JarasTheme.panel).cornerRadius(6)
                 }
             }

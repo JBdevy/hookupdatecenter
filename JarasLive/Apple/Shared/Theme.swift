@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 
 private struct JarasNativePaletteKey: EnvironmentKey {
     static let defaultValue = false
@@ -49,6 +50,8 @@ enum JarasInterfaceTheme: String {
     var panelHex: UInt32 { self == .dark ? JarasTheme.displayHex : 0x2b2b2b }
     var panel: Color { Color(hex: panelHex) }
     var display: Color { Color(hex: self == .dark ? JarasTheme.displayHex : 0x202020) }
+    var mixerPanelBackground: Color { self == .dark ? Color(hex: 0x181818) : panel }
+    var libraryEntriesBackground: Color { self == .dark ? Color(hex: 0x121212) : display }
     var scrollRailHex: UInt32 { self == .dark ? 0x1f1f1f : 0x1c1c1c }
     var titlebar: Color { self == .dark ? background : JarasTheme.workspaceToolbar }
     var line: Color { Color(hex: self == .dark ? 0x444444 : 0x494949) }
@@ -209,24 +212,59 @@ struct DesktopToolbarChrome: ViewModifier {
 }
 
 struct DesktopToolbarLabel: View {
-    let title: Text
-    var systemImage: String? = nil
+    let title: String
+    let systemImage: String
     var active = false
     @Environment(\.compactDesktopToolbar) private var compact
     var tone: DesktopToolbarTone? = nil
 
     var body: some View {
-        HStack(spacing: compact ? 3 : 4) {
-            if let systemImage { DesktopToolbarSymbol(name: systemImage).frame(width: compact ? 12 : 14, height: 14) }
-            title
-        }.modifier(DesktopToolbarChrome(tone: tone ?? (active ? .selected : .neutral)))
+        ControlIcon(name: systemImage, active: (tone ?? (active ? .selected : .neutral)) != .neutral, size: compact ? 16 : 18)
+            .accessibilityElement(children: .ignore)
+            .frame(width: compact ? 16 : 18, height: compact ? 16 : 18)
+            .modifier(DesktopToolbarChrome(tone: tone ?? (active ? .selected : .neutral)))
+            .accessibilityLabel(Text(LocalizedStringKey(title)))
+            .desktopIconTooltip(title == "File" ? nil : title)
     }
 }
 
 #endif
 
+/// The desktop and iPad controls use the same sRGB artwork as the Windows build.
+struct ControlIcon: View {
+    let name: String
+    var active = false
+    var size: CGFloat = 18
+
+    private static func load(_ state: String) -> [String: CGImage] {
+        guard let url = Bundle.main.url(forResource: state, withExtension: "png", subdirectory: "ControlIcons"),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let sheet = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let list = Bundle.main.url(forResource: "controlNames", withExtension: "txt", subdirectory: "ControlIcons"),
+              let names = try? String(contentsOf: list, encoding: .utf8) else { return [:] }
+        let tile = sheet.width / 8
+        var result = [String: CGImage]()
+        for (i, name) in names.split(separator: "\n").enumerated() {
+            result[String(name)] = sheet.cropping(to: CGRect(x: (i % 8) * tile, y: (i / 8) * tile, width: tile, height: tile))
+        }
+        return result
+    }
+    private static let off = load("controlsOff"), on = load("controlsOn")
+
+    var body: some View {
+        Group {
+            if let icon = (active ? Self.on : Self.off)[name] {
+                Image(decorative: icon, scale: CGFloat(icon.width) / size).renderingMode(.original).resizable().interpolation(.high)
+            } else {
+                DesktopToolbarSymbol(name: name)
+            }
+        }.aspectRatio(1, contentMode: .fit).frame(width: size, height: size).accessibilityHidden(true)
+    }
+}
+
 struct DesktopToolbarSymbol: View {
     let name: String
+    var decorative = true
 
     private struct Artwork {
         let outline: Path
@@ -271,7 +309,9 @@ struct DesktopToolbarSymbol: View {
 
     var body: some View {
         Group {
-            if let icon = Self.symbols[name] {
+            if name == "info.circle" {
+                Image(systemName: name).resizable().scaledToFit().font(.system(size: 17, weight: .semibold))
+            } else if let icon = Self.symbols[name] {
                 Canvas { context, layout in
                     let size = min(layout.width, layout.height)
                     let scale = size / 24
@@ -284,7 +324,7 @@ struct DesktopToolbarSymbol: View {
             } else {
                 Image(systemName: name).resizable().scaledToFit()
             }
-        }.accessibilityHidden(true)
+        }.accessibilityHidden(decorative)
     }
 }
 

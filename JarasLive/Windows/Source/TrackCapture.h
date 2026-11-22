@@ -74,9 +74,9 @@ class TrackCapture {
         if (specs.size() > 512 || rate <= 0 || bpm <= 0)
             throw std::runtime_error("Invalid recording configuration.");
         silence.fill(0);
-        events.reserve(65536);
+
         thread.startThread(Thread::Priority::high);
-        for (const auto &spec : specs) entries.push_back(prepareTarget(spec, bits));
+        for (const auto &spec : specs) entries.push_back(prepareTarget(spec, bits, (int)entries.size()));
     }
     // File opening, writer setup and capacity allocation happen outside the
     // device callback lock. Applying a change only moves prepared entries.
@@ -85,7 +85,7 @@ class TrackCapture {
         change.active = active;
         change.additions.reserve(specs.size());
         change.next.reserve(entries.size() + specs.size());
-        for (const auto &spec : specs) change.additions.push_back(prepareTarget(spec, bits));
+        for (const auto &spec : specs) change.additions.push_back(prepareTarget(spec, bits, (int)(entries.size() + change.additions.size())));
         return change;
     }
     // Read only by the audio thread alongside applyTargets(). No allocation.
@@ -106,11 +106,15 @@ class TrackCapture {
         return frames;
     }
   private:
-    Entry prepareTarget(const Target &spec, int bits) {
+    Entry prepareTarget(const Target &spec, int bits, int index) {
         if (spec.channels < 1 || spec.channels > 2 || spec.input < 1 || spec.input > 128)
             throw std::runtime_error("Invalid recording patch.");
         Entry entry;
         entry.target = spec;
+        if (spec.midi && spec.preview) {
+            spec.preview->midiLog = events;
+            spec.preview->midiTarget = index;
+        }
         entry.gain = spec.gain;
         entry.processing = std::make_shared<ProcessingState>();
         if (!spec.midi && !spec.silent) {
@@ -194,17 +198,13 @@ class TrackCapture {
                     if (message.getRawDataSize() > 3 || !message.getChannel() ||
                         (channelFilter && message.getChannel() != channelFilter))
                         continue;
-                    if (events.size() == events.capacity()) {
-                        ++dropped;
-                        continue;
-                    }
-                    Event event;
+                    RecordedMIDIEvents::Event event;
                     event.target = (int)target;
                     event.frame =
                         entries[target].frames + jlimit(0, std::max(0, count - 1), metadata.samplePosition);
                     event.length = message.getRawDataSize();
                     std::copy_n(message.getRawData(), event.length, event.bytes.begin());
-                    events.push_back(event);
+                    if (!events->append(event)) ++dropped;
                 }
     }
     // Called by the control thread, never by the device callback. Prepare
@@ -271,52 +271,14 @@ class TrackCapture {
             if (entry.target.midi) {
                 jaras::MIDIItem item;
                 item.sourceBPM = bpm;
-                struct Held {
-                    int64 start = -1;
-                    int velocity = 0;
-                    bool released = false;
-                };
-                std::array<Held, 2048> held{};
-                std::array<bool, 16> sustain{};
-                auto finishNote = [&](int key, int64 at) {
-                    auto &note = held[(size_t)key];
-                    if (note.start >= 0 && at > note.start) {
-                        jaras::MIDINote n;
-                        n.id = uuid();
-                        n.start = note.start / rate * bpm / 60;
-                        n.length = (at - note.start) / rate * bpm / 60;
-                        n.pitch = key % 128;
-                        n.channel = key / 128 + 1;
-                        n.velocity = note.velocity;
-                        item.notes.push_back(n);
-                    }
-                    note = {};
-                };
-                for (const auto &event : events)
-                    if (event.target == (int)target) {
-                        MidiMessage message(event.bytes.data(), event.length);
-                        const int channel = message.getChannel() - 1;
-                        const int key = channel * 128 + message.getNoteNumber();
-                        if (message.isNoteOn()) {
-                            finishNote(key, event.frame);
-                            held[(size_t)key] = {event.frame, message.getVelocity(), false};
-                        } else if (message.isNoteOff()) {
-                            if (sustain[(size_t)channel])
-                                held[(size_t)key].released = true;
-                            else
-                                finishNote(key, event.frame);
-                        } else if (message.isController() && message.getControllerNumber() == 64) {
-                            sustain[(size_t)channel] = message.getControllerValue() >= 64;
-                            if (!sustain[(size_t)channel])
-                                for (int note = 0; note < 128; ++note)
-                                    if (held[(size_t)(channel * 128 + note)].released)
-                                        finishNote(channel * 128 + note, event.frame);
-                        } else if (message.isAllNotesOff() || message.isAllSoundOff())
-                            for (int note = 0; note < 128; ++note)
-                                finishNote(channel * 128 + note, event.frame);
-                    }
-                for (int key = 0; key < 2048; ++key)
-                    finishNote(key, entry.frames);
+                RecordedMIDINotes capture;
+                capture.read(*events, (int)target);
+                for (const auto &note : capture.notes) {
+                    const auto end = note.end < 0 ? entry.frames : note.end;
+                    if (end > note.start)
+                        item.notes.push_back({uuid(), note.start / rate * bpm / 60,
+                            (end-note.start) / rate * bpm / 60, note.pitch, note.velocity, note.channel});
+                }
                 take.midi = std::move(item);
             }
             takes.push_back(std::move(take));
@@ -445,14 +407,9 @@ class TrackCapture {
         std::deque<float> gains;
         std::shared_ptr<ProcessingState> state;
     };
-    struct Event {
-        int target = 0, length = 0;
-        int64 frame = 0;
-        std::array<uint8, 3> bytes{};
-    };
     TimeSliceThread thread{"CatLive multitrack recording"};
     std::vector<Entry> entries;
-    std::vector<Event> events;
+    std::shared_ptr<RecordedMIDIEvents> events = std::make_shared<RecordedMIDIEvents>();
     std::array<float, 4096> silence{}, mono{}, gainSamples{};
     double rate, bpm;
     int64 frames = 0;

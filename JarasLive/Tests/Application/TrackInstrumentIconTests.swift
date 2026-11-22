@@ -18,14 +18,14 @@ final class TrackInstrumentIconTests: XCTestCase {
         var project = Project.empty(name: "Icons")
         let track = Track(id: UUID(), name: "Piano", role: .keys)
         project.songs[0].tracks = [track]
-        XCTAssertEqual(track.instrumentIcon, "png:Sound Effects/noise")
+        XCTAssertEqual(track.instrumentIcon, "png:Sound Effects/glitch")
         XCTAssertEqual(try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project)).songs[0].tracks[0].instrumentIcon,
                        track.instrumentIcon)
         project.songs[0].tracks[0].instrumentIcon = nil
         let legacy = try JSONEncoder().encode(project)
         XCTAssertFalse(String(decoding: legacy, as: UTF8.self).contains("instrumentIcon"))
         XCTAssertNil(try JSONDecoder().decode(Project.self, from: legacy).songs[0].tracks[0].instrumentIcon)
-        for icon in ["piano", "backingVocals", "futureInstrument"] {
+        for icon in ["piano", "backingVocals", "png:Sound Effects/noise", "futureInstrument"] {
             project.songs[0].tracks[0].instrumentIcon = icon
             let reopened = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(project))
             XCTAssertEqual(reopened.songs[0].tracks[0].instrumentIcon, icon)
@@ -43,10 +43,10 @@ final class TrackInstrumentIconTests: XCTestCase {
         XCTAssertTrue(rows[0].compactMixerControls)
         XCTAssertFalse(rows[1].compactMixerControls)
         XCTAssertTrue(rows[0].showsMixerComponent(.inputMonitor))
-        XCTAssertEqual(TrackHeightGeometry.laneHeight(base: 30, scale: 1, count: 1, compact: rows[0].compactMixerControls), 44)
-        XCTAssertEqual(TrackHeightGeometry.laneHeight(base: 30, scale: 1, count: 1, compact: rows[1].compactMixerControls), 66)
+        XCTAssertEqual(TrackHeightGeometry.laneHeight(base: 30, scale: 1, count: 1, allowsCompactHeight: rows[0].supportsMixerComponents), 30)
+        XCTAssertEqual(TrackHeightGeometry.laneHeight(base: 30, scale: 1, count: 1, allowsCompactHeight: rows[1].supportsMixerComponents), 30)
         let mixed = TrackHeightGeometry.globalLimits(scales: [1, 1], laneCounts: [1, 1], compact: [true, false])
-        XCTAssertEqual(mixed.lowerBound, 44)
+        XCTAssertEqual(mixed.lowerBound, TrackHeightGeometry.compactMinimumLaneHeight)
         let decoded = try ProjectDocumentCodec.decode(ProjectDocumentCodec.encode(show.snapshot.project))
         XCTAssertEqual(decoded.songs[0].tracks[0].hiddenMixerComponents, rows[0].hiddenMixerComponents)
         let both: Set<UUID> = [first.id, second.id]

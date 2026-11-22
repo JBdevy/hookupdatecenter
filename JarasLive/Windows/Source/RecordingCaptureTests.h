@@ -273,6 +273,43 @@ inline void outputExcludesItems(const File &directory) {
                 "Output capture lost live audio/FX/fader or included an existing item");
     }
 }
+inline void loopPasses(const File &directory) {
+    Session session; session.inspection=true; session.audio.prepareOffline(48000);
+    auto project=Session::makeEmptyProject("Loop capture");
+    auto &song=project.songs.front(); song.duration=20;
+    jaras::Track track; track.id=uuid(); track.name="Output"; track.role.id="other"; track.recordingOutput=true;
+    auto midi=track; midi.id=uuid(); midi.name="MIDI"; midi.recordingOutput=false; midi.recordingChannels=0;
+    song.tracks={track,midi};
+    session.restoreSnapshot(ProjectCodec::encode(project)); session.mediaDirectory=directory; session.audio.setOffline(true);
+    session.cycleRecordArm(track.id); session.cycleRecordArm(midi.id);
+    session.selectTimeRange(0,.04); session.command(jaras::CommandKind::toggleLoop);
+    session.toggleRecording();
+    AudioBuffer<float> output(2,480);
+    for (int i=0;i<10;++i) session.audio.render(output.getArrayOfWritePointers(),2,480);
+    require(session.audio.isRecording(),"Loop return stopped REC");
+    const auto position=session.recordingPianoFrame();
+    require(position && std::abs(position->position-.02)<.00003 && std::abs(position->passOffset-.08)<.00003,
+            "MIDI Preview must return to the active pass while captured audio continues");
+    require(session.extendRecordingLoops() && session.recordingItems.size()==6,"Preview needs one item per lap on each track");
+    require(!session.extendRecordingLoops(),"A second paint duplicated loop passes");
+    session.toggleRecording(true);
+    const auto deadline=Time::getMillisecondCounterHiRes()+10000;
+    while (session.busy && Time::getMillisecondCounterHiRes()<deadline) floatingControlTests::pump();
+    for (const auto &row:session.song()->tracks) {
+        const auto &clips=row.clips;
+        require(clips.size()==3,"Expected two complete passes plus the partial take on Stop");
+        std::set<ID> ids;
+        for (int i=0;i<3;++i) {
+            const auto &clip=clips[(size_t)i]; ids.insert(clip.id);
+            require(std::abs(clip.startTime)<1e-8 && std::abs(clip.duration-(i==2?.02:.04))<.00003,"Loop capture drifted or lost its final partial pass");
+            if (row.id==midi.id) require(clip.midi.has_value(),"MIDI passes must remain editable MIDI items");
+            else require(clip.audioFile && clips.front().audioFile && clip.audioFile->path==clips.front().audioFile->path &&
+                    std::abs(clip.sourceOffset-i*.04)<.00003,"Audio files must advance without repeated or dropped samples");
+        }
+        require(ids.size()==3,"Loop takes must have independent IDs");
+    }
+}
+
 inline void immediateReplay(const File &directory) {
     Session session;session.inspection=true;session.audio.prepareOffline(48000);
     auto project=Session::makeEmptyProject("Recording readiness");auto &song=project.songs.front();song.duration=20;
@@ -424,6 +461,7 @@ void registerTests(const File &directory, Register &&test) {
     });
     test("Recording live arming preserves existing takes and timestamps", [=] { liveArming(folder); });
     test("Recording output excludes existing items while keeping them audible", [=] { outputExcludesItems(folder); });
+    test("Loop recording creates successive audio and MIDI takes", [=] { loopPasses(folder); });
     test("Recording immediate Play waits for the completed take and prepared graph", [=] { immediateReplay(folder); });
     test("Recording preview tolerates stalled UI without dropping captured time", [] { previewBackpressure(); });
     test("Recording pre/post fader and FX print only input with matching live waveform", [=] { stages(folder); });

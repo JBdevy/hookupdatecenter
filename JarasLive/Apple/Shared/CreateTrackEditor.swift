@@ -24,11 +24,14 @@ struct CreateTrackEditor: View {
         #endif
     }
     private var unavailable: Bool { specialTrackExists || !availableKinds.contains(kind) }
+    private func trackKindLabel(_ kind: TrackKind) -> Text {
+        kind == .click ? Text(verbatim: kind.title) : Text(LocalizedStringKey(kind.title))
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Criar pista").font(.jarasTitle2.bold())
             Picker("Type", selection: $kind) {
-                ForEach(availableKinds, id: \.self) { kind in Text(LocalizedStringKey(kind.title)).tag(kind) }
+                ForEach(availableKinds, id: \.self) { kind in trackKindLabel(kind).tag(kind) }
             }
             #if os(iOS)
             .pickerStyle(.menu).padding(10).frame(maxWidth: .infinity)
@@ -54,7 +57,7 @@ struct CreateTrackEditor: View {
                 if invalidCount {
                     Text("Enter a positive whole number.").font(.jarasCaption).foregroundStyle(.red)
                 }
-            } else { Text(LocalizedStringKey(kind.title)).foregroundStyle(JarasTheme.secondary) }
+            } else { trackKindLabel(kind).foregroundStyle(JarasTheme.secondary) }
             if specialTrackExists {
                 Text(String(format: JarasLocalization.string("A %@ track already exists."), JarasLocalization.string(kind.title)))
                     .font(.jarasCaption).foregroundStyle(.orange)

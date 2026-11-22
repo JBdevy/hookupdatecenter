@@ -190,12 +190,12 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
 @implementation JarasMobileAudioInput {
     AudioUnit _unit;
     AVAudioPCMBuffer *_buffer;
-    void (^_capture)(AVAudioPCMBuffer *);
+    void (^_capture)(AVAudioPCMBuffer *, uint64_t);
     BOOL _running;
 }
 - (AVAudioFormat *)format { return _buffer.format; }
 - (BOOL)running { return _running; }
-- (void)setCapture:(void (^)(AVAudioPCMBuffer *))capture {
+- (void)setCapture:(void (^)(AVAudioPCMBuffer *, uint64_t))capture {
     // Caller stops the unit first: the realtime callback never loads a block
     // whose ownership is being changed by the control thread.
     _capture = [capture copy];
@@ -208,7 +208,7 @@ static OSStatus mobileOutputRender(void *context, AudioUnitRenderActionFlags *fl
     if (frames > _buffer.frameCapacity) return kAudioUnitErr_TooManyFramesToProcess;
     _buffer.frameLength = frames;
     const auto status = AudioUnitRender(_unit, flags, time, 1, frames, _buffer.mutableAudioBufferList);
-    if (status == noErr && _capture) _capture(_buffer);
+    if (status == noErr && _capture) _capture(_buffer, time->mFlags & kAudioTimeStampHostTimeValid ? time->mHostTime : 0);
     return status;
 }
 static OSStatus mobileInputRender(void *context, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *time,

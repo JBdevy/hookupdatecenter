@@ -427,7 +427,7 @@ struct IpadNativeVideoButton: View {
     var body: some View {
         Button { video.toggle() } label: {
             HStack(spacing: 3) {
-                DesktopToolbarSymbol(name: "video").frame(width: 14, height: 14)
+                ControlIcon(name: "video", active: visible, size: 16)
                 Text("Video").font(.jarasSystem(size: 11, weight: .semibold))
             }.lineLimit(1)
                 .frame(width: 62, height: 32).foregroundStyle(JarasTheme.toolbarTint(active: visible))

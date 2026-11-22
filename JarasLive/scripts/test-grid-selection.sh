@@ -11,6 +11,9 @@ diagnostics = scroll[scroll.index('enum TimelineLayoutDiagnostics'):scroll.index
 diagnostics += scroll[scroll.index('struct GridRowReveal:'):scroll.index('/// The grid owns these scroll views.')]
 diagnostics += scroll[scroll.index('enum TimelineVerticalBar {'):scroll.index('struct GridScrollView<')]
 diagnostics += '\nprivate final class GridDocumentView: NSView { var followsViewportWidth = false; func synchronizeHostedViewport() {} }\n'
+# The fixture exercises grid gestures with no attached setlist resize host.
+diagnostics += "\nprivate final class MixerDividerView: NSView {}\n"
+diagnostics += scroll[scroll.index('private protocol TimelineSetlistResizeHost:'):scroll.index('private final class WorkspaceSplitView<')]
 def native_class(name):
     start = scroll.index('final class ' + name)
     return scroll[start:scroll.index('\n#endif', start)]

@@ -1,4 +1,5 @@
 #pragma once
+#include <bitset>
 #include "../../Core/Audio/StopTransition.hpp"
 #include "../../Core/Transport/SongPluginTempo.hpp"
 #include "../../Core/Loop/MultiLoopMixer.hpp"
@@ -37,6 +38,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void setLibrarySampleGain(float gain);
     void stopLibrarySample();
     bool librarySamplePlaying() const;
+    String midiInputChord();
+    bool startRecordingCountIn(double bpm,int beats,int unit);
+    bool recordingCountInPlaying() const;
+    void stopRecordingCountIn();
     bool hasRecordingInputs(int first, int count) const;
 
     struct State {
@@ -619,7 +624,16 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     };
     std::unique_ptr<LibrarySampleVoice> librarySample;
     audio::RealtimeBorrowedPointer<LibrarySampleVoice> librarySampleSlot;
+    struct CountIn {
+        double period = 0, elapsed = 0;
+        int beats = 0;
+        std::atomic<bool> finished{false};
+    };
+    std::unique_ptr<CountIn> recordingCountIn;
+    audio::RealtimeBorrowedPointer<CountIn> recordingCountInSlot;
+    void renderCountIn(float* const* out, int channels, int frames, double sampleRate);
     std::atomic<bool> librarySampleOutputReady{false};
+    static void renderPreviewVoice(audio::RealtimeBorrowedPointer<LibrarySampleVoice> &, AudioBuffer<float> &,int,double);
     void renderLibrarySample(AudioBuffer<float> &, int samples, double sampleRate);
     struct RecordingOutput { ID track; std::unique_ptr<NativeFX> fx; };
     struct RecordingState {
@@ -635,6 +649,9 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     std::array<int, 128> inputMapping{};
     std::atomic<bool> recording{false};
     std::atomic<uint64> recordingDrops{0};
+    std::array<std::array<std::bitset<128>,16>,6> heldInputNotes;
+    std::atomic<unsigned> chordPitches{0};
+    void publishInputChord();
     RealtimeMIDIInput midiInput, midiSlots[6], virtualKeyboardInput;
     MidiBuffer slotMessages[6], keyboardMidi;
     String midiDevices[6];

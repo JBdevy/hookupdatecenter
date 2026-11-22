@@ -225,6 +225,12 @@ void orderSpecialTracks(Project& project) {
         return track.role.id == "programChange" ? -1 : track.role.id == "timecode" ? 0 : track.role.id == "teleprompt" ? 1 : track.role.id == "teleprompt2" ? 2 : track.role.id == "chords" ? 3 : track.role.id == "vinhetas" ? 4 : track.role.id == "generatedClick" ? 5 : track.role.id == "video" ? 6 : 7;
     };
     for (auto& song : project.songs) {
+        for (auto& track : song.tracks) {
+            if (track.role.id == "generatedClick" && track.name == "Click") track.name = "Metronome";
+            if (track.instrumentIcon != "png:Sound Effects/glitch" && track.instrumentIcon != "png:Other/waveform") continue;
+            if (track.role.id == "generatedClick") track.instrumentIcon = "png:Other/metronome";
+            else if (track.role.id == "vinhetas" || !fixedTrackName(track.role).empty()) track.instrumentIcon.reset();
+        }
         const auto earlier = [&](const Track& a, const Track& b) { return rank(a) < rank(b); };
         if (!std::is_sorted(song.tracks.begin(), song.tracks.end(), earlier))
             std::stable_sort(song.tracks.begin(), song.tracks.end(), earlier);
@@ -417,7 +423,7 @@ void validate(const Project& p) {
             ancestors.push_back(t.id);
             unique(t.id);
             const auto fixed = fixedTrackName(t.role);
-            require(fixed.empty() || ((t.name == fixed || (t.role.id == "teleprompt" && t.name == "Teleprompter")) && (!t.solo || t.role.id == "video" || t.role.id == "generatedClick" || t.role.id == "programChange") && !t.parentTrackID), "Invalid special track");
+            require(fixed.empty() || ((t.name == fixed || (t.role.id == "generatedClick" && t.name == "Metronome") || (t.role.id == "teleprompt" && t.name == "Teleprompter")) && (!t.solo || t.role.id == "video" || t.role.id == "generatedClick" || t.role.id == "programChange") && !t.parentTrackID), "Invalid special track");
             const bool textTrack = isTeleprompterRole(t.role) || t.role.id == "chords";
             if (textTrack || t.role.id == "video") {
                 std::vector<const AudioClip*> ordered;

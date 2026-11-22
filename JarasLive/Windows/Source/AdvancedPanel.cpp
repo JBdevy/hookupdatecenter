@@ -138,8 +138,14 @@ void AdvancedPanel::convertTimelineAudio() {
     });
 }
 
-AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function<void(String)> fail)
-    : appearance(settings), session(value), error(std::move(fail)) {
+AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function<void(String)> fail, Presentation mode)
+    : presentation(mode), appearance(settings), session(value), error(std::move(fail)) {
+    if (mode == Presentation::keyboard) {
+        setName("Keyboard");
+        addAndMakeVisible(page);
+        select(6);
+        return;
+    }
     setName("Advanced");
     timerCallback();startTimerHz(4);
     setWantsKeyboardFocus(true);
@@ -155,7 +161,8 @@ AdvancedPanel::AdvancedPanel(Appearance &settings, Session &value, std::function
         tab->getProperties().set("fontSize", 13);
         tab->setColour(TextButton::buttonOnColourId, theme::green.withAlpha(.15f));
         tab->setColour(TextButton::textColourOnId, Colours::white);
-        const char *icons[]{"metronome", "grid", "record.circle", "waveform", "video", "setlist", "piano", "grid", "mixer", "railMixer"};
+        const char *icons[]{"tabs.metronome", "square.grid.3x3", "tabs.record", "tabs.waveform", "video",
+                            "list.bullet.indent", "pianokeys", "square.grid.3x2.fill", "slider.horizontal.3", "slider.vertical.3"};
         tab->getProperties().set("leadingIcon", icons[i]);
         tab->onClick = [this, i] { select(i); };
     }
@@ -209,12 +216,14 @@ ToggleButton &AdvancedPanel::toggle(const String &name, const String &key, bool 
 }
 void AdvancedPanel::colourRow(const String &name, const String &key, uint32 initial, int y,
                               bool reset) {
-    label(name, 18, y, reset ? 370 : 490);
+    const int swatchX = presentation == Presentation::keyboard ? 274 : reset ? 440 : 560;
+    label(name, 18, y, swatchX - 26);
     auto *swatch = new TextButton();
     fields.add(swatch);
     page.addAndMakeVisible(swatch);
     swatch->setName(name);
-    swatch->setBounds(reset ? 440 : 560, y + 2, 44, 22);
+    swatch->setComponentID(key);
+    swatch->setBounds(swatchX, y + 2, 44, 22);
     swatch->setColour(TextButton::buttonColourId, appearance.colour(key, initial));
     auto safe = SafePointer<AdvancedPanel>(this);
     auto button = SafePointer<TextButton>(swatch);
@@ -261,7 +270,7 @@ void AdvancedPanel::select(int index) {
     timebase = nullptr;
     for (int i = 0; i < tabs.size(); ++i)
         tabs[i]->setToggleState(i == index, dontSendNotification);
-    label(tabs[index]->getButtonText(), 18, 16, 560, 28, true);
+    if (presentation == Presentation::advanced) label(tabs[index]->getButtonText(), 18, 16, 560, 28, true);
     contentHeight = 300;
     if (index == 0) {
         label("BPM:", 18, 58, 42);
@@ -452,14 +461,22 @@ void AdvancedPanel::select(int index) {
             colourRow(names[i], colourKeys[i], colourDefaults[i], 142 + i * 40);
     }
     if (index == 6) {
-        label("Keyboard style", 18, 58, 280);
+        const bool compact = presentation == Presentation::keyboard;
+        const int x = compact ? 194 : 330, width = compact ? 124 : 190, y = compact ? 96 : 58;
+        if (compact) {
+            colourRow("White key highlight", "jaras.keyboard.whiteColor", 0x54ff93, 12);
+            colourRow("Black key highlight", "jaras.keyboard.blackColor", 0x54ff93, 54);
+        }
+        label("Keyboard style", 18, y, x-28);
         auto &style = choice("Keyboard style", {"Default", "Black"}, appearance.value("jaras.keyboard.style", "default").toString()=="black" ? 2 : 1,
-            330, 59, 190, [this](int id) { save("jaras.keyboard.style", id==2 ? "black" : "default"); });
+            x, y+1, width, [this](int id) { save("jaras.keyboard.style", id==2 ? "black" : "default"); });
+        style.setComponentID("jaras.keyboard.style");
         style.getProperties().set("preserveNames", true);
-        label("MIDI channel", 18, 104, 280);
+        label("MIDI channel", 18, y+46, x-28);
         StringArray channels{"Omni"}; for (int i=1;i<=16;++i) channels.add(String(i));
-        choice("MIDI channel", channels, jlimit(0,16,(int)appearance.value("jaras.keyboard.channel",0))+1,
-            330, 105, 190, [this](int id) { save("jaras.keyboard.channel", id-1); });
+        auto &channel = choice("MIDI channel", channels, jlimit(0,16,(int)appearance.value("jaras.keyboard.channel",0))+1,
+            x, y+47, width, [this](int id) { save("jaras.keyboard.channel", id-1); });
+        channel.setComponentID("jaras.keyboard.channel");
     }
     if (index == 8 || index == 9) {
         const String key = index == 8 ? theme::trackMixerStyleKey : theme::hozMixerStyleKey;
@@ -513,6 +530,7 @@ void AdvancedPanel::applyTiming() {
 void AdvancedPanel::paint(Graphics &g) {
     g.setColour(theme::background);
     g.fillRoundedRectangle(getLocalBounds().toFloat(), 16);
+    if (presentation == Presentation::keyboard) return;
     g.setColour(theme::panel);
     g.fillRect(0, 0, 136, getHeight() - 52);
     g.setColour(theme::line);
@@ -520,6 +538,7 @@ void AdvancedPanel::paint(Graphics &g) {
     g.drawHorizontalLine(getHeight() - 52, 0, (float)getWidth());
 }
 void AdvancedPanel::resized() {
+    if (presentation == Presentation::keyboard) { page.setBounds(getLocalBounds()); return; }
     const int tabStep = jlimit(32, 42, (getHeight() - 72) / tabs.size());
     for (int i = 0; i < tabs.size(); ++i)
         tabs[i]->setBounds(10, 10 + i * tabStep, 116, tabStep - 6);

@@ -1,3 +1,4 @@
+#include "../../Core/MIDI/ChordName.hpp"
 #include "MediaSource.h"
 #include "ProjectionSelection.h"
 #include "MeterDisplay.h"
@@ -2749,6 +2750,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             if(renderMetronome&&channel>=0&&channel<channels&&out[channel])FloatVectorOperations::add(out[channel],buffer.getReadPointer(std::min(1,c)),samples);
         }
     }
+    if (!offlineMode && !offlineRendering) renderCountIn(out, channels, samples, sr);
     auto automationTime=[&](int head,int frame,unsigned delay) {
         if(delay>unsigned(frame)&&latencyPlan)return latencyPlan->timeline[head].previous(delay-unsigned(frame)).position;
         const int sample=frame-int(delay);
@@ -3168,8 +3170,50 @@ void AudioEngine::stopLibrarySample() {
 bool AudioEngine::librarySamplePlaying() const {
     return librarySample && !librarySample->finished.load() && librarySampleOutputReady.load();
 }
+bool AudioEngine::startRecordingCountIn(double bpm,int beats,int unit) {
+    if (!librarySampleOutputReady.load() || !std::isfinite(bpm) || bpm <= 0 || beats <= 0 || unit <= 0) return false;
+    const double beat = 60. / bpm * 4 / unit;
+    if (!std::isfinite(beat) || beat <= 0) return false;
+    stopRecordingCountIn();
+    recordingCountIn = std::make_unique<CountIn>();
+    recordingCountIn->period = beat;
+    recordingCountIn->beats = beats;
+    recordingCountInSlot.publish(recordingCountIn.get());
+    return true;
+}
+bool AudioEngine::recordingCountInPlaying() const {
+    return recordingCountIn && !recordingCountIn->finished.load() && librarySampleOutputReady.load();
+}
+void AudioEngine::stopRecordingCountIn() {
+    if (!recordingCountIn) return;
+    recordingCountInSlot.withdrawAndWait();
+    recordingCountIn.reset();
+}
 void AudioEngine::renderLibrarySample(AudioBuffer<float> &output, int frames, double sampleRate) {
-    auto lease = librarySampleSlot.read();
+    renderPreviewVoice(librarySampleSlot,output,frames,sampleRate);
+}
+void AudioEngine::renderCountIn(float* const* out, int channels, int frames, double sampleRate) {
+    auto lease = recordingCountInSlot.read();
+    auto* count = lease.get();
+    if (!count || count->finished.load(std::memory_order_relaxed)) return;
+    const double duration = count->beats * count->period;
+    for (int frame = 0; frame < frames; ++frame) {
+        const double time = count->elapsed + frame / sampleRate;
+        const auto beat = int64(std::floor(time / count->period + 1e-9));
+        if (beat >= count->beats) break;
+        const float click = metronome.pulse(beat,std::max(0., time - beat * count->period),count->beats,
+                                            metronomeMode,metronomeGainA,metronomeGainB);
+        for (int c = 0; c < metronomeChannels; ++c) {
+            const int route = metronomeOutput - 1 + c;
+            if (route >= 0 && route < channels && out[route]) out[route][frame] += click;
+        }
+    }
+    count->elapsed += frames / sampleRate;
+    if (count->elapsed + .5 / sampleRate >= duration) count->finished.store(true, std::memory_order_release);
+}
+void AudioEngine::renderPreviewVoice(audio::RealtimeBorrowedPointer<LibrarySampleVoice> &slot,
+                                     AudioBuffer<float> &output,int frames,double sampleRate) {
+    auto lease = slot.read();
     auto *voice = lease.get();
     if (!voice || voice->finished.load(std::memory_order_relaxed)) return;
     const auto &source = voice->sample->pcm;
@@ -3228,7 +3272,11 @@ void AudioEngine::setMIDISlot(int slot, const String &identifier) {
     const auto resolved = midiDeviceCompatibility::resolve(identifier, true);
     if (resolved != identifier) devices.setMidiInputDeviceEnabled(resolved, true);
     const ScopedLock lock(midiRoutingLock);
-    if(midiDevices[slot] != resolved)midiProgramChanges[size_t(slot)].store(0);
+    if (midiDevices[slot] != resolved) {
+        midiProgramChanges[size_t(slot)].store(0);
+        heldInputNotes[size_t(slot)] = {};
+        publishInputChord();
+    }
     midiDevices[slot] = resolved;
 }
 void AudioEngine::handleNoteOn(MidiKeyboardState *,int channel,int note,float velocity) {
@@ -3241,24 +3289,47 @@ void AudioEngine::handleNoteOff(MidiKeyboardState *,int channel,int note,float v
     message.setTimeStamp(Time::getMillisecondCounterHiRes()*.001);
     virtualKeyboardInput.addMessageToQueue(message);
 }
+void AudioEngine::publishInputChord() {
+    std::bitset<128> notes;
+    for (const auto &device : heldInputNotes) for (const auto &channel : device) notes |= channel;
+    unsigned pitches = 0, bass = 12;
+    for (unsigned pitch=0; pitch<notes.size(); ++pitch) if (notes.test(pitch)) {
+        if (bass == 12) bass = pitch % 12;
+        pitches |= 1u << (pitch % 12);
+    }
+    chordPitches.store(pitches | (bass << 12),std::memory_order_release);
+}
+String AudioEngine::midiInputChord() {
+    const auto held = chordPitches.load(std::memory_order_acquire);
+    const auto name = jaras::midi::chordName(static_cast<uint16_t>(held & 0xfff),int(held >> 12));
+    return String::fromUTF8(name.c_str());
+}
 void AudioEngine::handleIncomingMidiMessage(MidiInput *source, const MidiMessage &message) {
     if (message.isNoteOn()) {
         int waiting = -1;
         drummerLearnNote.compare_exchange_strong(waiting, message.getNoteNumber());
     }
-    if(source && message.isProgramChange()) {
-        const auto value=(++programChangeSerial<<12) | uint64((message.getChannel()-1)<<7) | uint64(message.getProgramChangeNumber());
-        const ScopedLock lock(midiRoutingLock);
-        for(int slot=0;slot<6;++slot)if(midiDevices[slot]==source->getIdentifier())midiProgramChanges[size_t(slot)].store(value);
+    const bool padEvent = vinhetas.handlesMIDI(message);
+    if (!padEvent) midiInput.addMessageToQueue(message);
+    if (!source) return;
+    const auto program = message.isProgramChange();
+    const auto programValue = program ? (++programChangeSerial<<12) | uint64((message.getChannel()-1)<<7) |
+                                                  uint64(message.getProgramChangeNumber()) : 0;
+    const bool on = message.isNoteOn(), off = message.isNoteOff();
+    const bool clear = message.isAllNotesOff() || message.isAllSoundOff();
+    const ScopedLock lock(midiRoutingLock);
+    bool chordChanged = false;
+    for (size_t slot = 0; slot < heldInputNotes.size(); ++slot) {
+        if (midiDevices[slot] != source->getIdentifier()) continue;
+        if (program) midiProgramChanges[slot].store(programValue);
+        if (on || off || clear) {
+            auto &notes = heldInputNotes[slot][size_t(message.getChannel()-1)];
+            if (clear) notes.reset(); else notes.set(size_t(message.getNoteNumber()),on);
+            chordChanged = true;
+        }
+        if (!padEvent) midiSlots[slot].addMessageToQueue(message);
     }
-    if(vinhetas.handlesMIDI(message))return;
-    midiInput.addMessageToQueue(message);
-    if (source) {
-        const ScopedLock lock(midiRoutingLock);
-        for (int slot = 0; slot < 6; ++slot)
-            if (midiDevices[slot] == source->getIdentifier())
-                midiSlots[slot].addMessageToQueue(message);
-    }
+    if (chordChanged) publishInputChord();
 }
 void AudioEngine::loadSoundFont(const File &file) {
     auto prepared=instrument.prepareSoundFont(file);

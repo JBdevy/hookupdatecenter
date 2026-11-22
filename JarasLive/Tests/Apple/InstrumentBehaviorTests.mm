@@ -17,6 +17,23 @@ int main(int argc,char**argv) { @autoreleasepool {
         auto on=[&](int key,int velocity=100) { renderer.enqueue({0x90,uint8_t(key),uint8_t(velocity)}); render(); };
         auto off=[&](int key) { renderer.enqueue({0x80,uint8_t(key),0}); render(); };
         auto sounding=[&](int key) { int count=0; for(int i=0;i<renderer.font->voiceNum;++i) { const auto& v=renderer.font->voices[i]; if(v.playingPreset>=0 && v.playingKey==key && v.ampenv.segment<TSF_SEGMENT_RELEASE) ++count; } return count; };
+        // Manual hardware rendering may provide only sample time to a source node.
+        // The transport schedules against the device host clock.
+        const auto epoch = [AVAudioTime hostTimeForSeconds:1234.0];
+        renderer.sequence.setNotes({{.005,.05,36,120,0}});
+        renderer.sequence.configure(0,0,1234.0,true,0,0);
+        float peak = 0;
+        for (int frame = 0; frame < rate/16; frame += 64) {
+            jaras::realtimeClock = {epoch + [AVAudioTime hostTimeForSeconds:double(frame)/rate],
+                                    double(frame), double(rate), double([AVAudioTime hostTimeForSeconds:1])};
+            AudioTimeStamp time{}; time.mFlags=kAudioTimeStampSampleTimeValid; time.mSampleTime=frame;
+            renderer.render(reinterpret_cast<AudioBufferList*>(&output),64,&time);
+            for (float sample : left) peak = std::max(peak,std::abs(sample));
+        }
+        expect(peak > .00001f,"Sample-only hardware pulls must play the scheduled MIDI item");
+        jaras::realtimeClock={};
+        renderer.sequence.configure(0,0,1234.0,false,0,0);
+        reset();
         renderer.drums.store(true); renderer.release.store(20);
         on(46); expect(sounding(46)>0,"open hi-hat sounds");
         on(42); expect(sounding(46)==0 && sounding(42)>0,"closed hi-hat chokes open even with maximum release");

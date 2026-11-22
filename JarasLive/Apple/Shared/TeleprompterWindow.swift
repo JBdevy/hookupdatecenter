@@ -612,13 +612,13 @@ struct TeleprompterToggleButton: View {
     }
     var body: some View {
         Button { controller.toggle(show: show) } label: {
-            DesktopToolbarLabel(title: Text(verbatim: "TP\(index)"), tone: controller.visible ? .live : .neutral)
+            DesktopToolbarLabel(title: "TP\(index)", systemImage: "teleprompter\(index)", tone: controller.visible ? .live : .neutral)
         }.buttonStyle(.plain)
             .contextMenu {
                 Button("Configurações") { controller.showSettings() }
                 Button("TP Remoto") { controller.showRemote(show: show, directory: directory) }
             }
-            .accessibilityLabel("Teleprompter \(index)")
+            .accessibilityLabel("Teleprompter \(index)").help(Text(verbatim: "TP\(index)"))
     }
 }
 struct TeleprompterPreviewButton: View {
@@ -626,9 +626,10 @@ struct TeleprompterPreviewButton: View {
     @State private var choosingPage = false
     var body: some View {
         Button { controller.togglePreview() } label: {
-            DesktopToolbarLabel(title: Text("Preview"), tone: controller.previewActive ? .live : .neutral)
+            DesktopToolbarLabel(title: "Preview", systemImage: "eye", tone: controller.previewActive ? .live : .neutral)
         }.buttonStyle(.plain)
             .overlay(TeleprompterRightClick(action: { choosingPage = true }))
+            .help(Text("Preview"))
             .popover(isPresented: $choosingPage) {
                 VStack(alignment: .leading,spacing: 12) {
                     Text("Preview").font(.jarasHeadline)

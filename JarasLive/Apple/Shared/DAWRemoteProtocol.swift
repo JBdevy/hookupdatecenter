@@ -850,7 +850,21 @@ enum DAWRemoteItemLayout {
         max((track.laneCount ?? 1) > 1 ? 26 : 24, defaultLaneHeight * ((track.laneCount ?? 1) > 1 ? 0.7 : 1) * heightScale(scale) * (track.heightScale ?? 1))
     }
     static func rowHeight(_ track: DAWRemoteState.Track, scale: Double = 1, minimum: Double = 0) -> Double {
-        max(track.compactComponents == true ? min(44, minimum) : minimum, track.minimumHeight ?? 0, laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1)))
+        max(track.compactComponents == true ? min(TrackHeightGeometry.compactMinimumLaneHeight, minimum) : minimum, track.minimumHeight ?? 0, laneHeight(track, scale: scale) * Double(max(1, track.laneCount ?? 1)))
+    }
+    static func resizedTrackHeightScale(_ track: DAWRemoteState.Track, scale: Double,
+                                        minimum: Double, translation: Double) -> Double? {
+        guard translation.isFinite else { return nil }
+        let count = max(1, track.laneCount ?? 1)
+        let unit = defaultLaneHeight * (count > 1 ? 0.7 : 1) * heightScale(scale) * Double(count)
+        var shortest = track
+        shortest.heightScale = TrackHeightGeometry.minimumScale
+        let floor = rowHeight(shortest, scale: scale, minimum: minimum)
+        let start = rowHeight(track, scale: scale, minimum: minimum)
+        let ceiling = max(start, Double(count) * TrackHeightGeometry.laneLimits(count: count).upperBound)
+        let height = min(ceiling, max(floor, start + translation))
+        guard abs(height - start) > 0.01 else { return nil }
+        return min(TrackHeightGeometry.maximumScale, max(TrackHeightGeometry.minimumScale, height / unit))
     }
     /// Remote shows one region. Lanes occupied only by another song must not
     /// leave empty space here; overlapping visible items share the same compact
@@ -1185,6 +1199,11 @@ extension DAWRemoteState {
             current = region
         }
         return current ?? list.first { $0.id == currentRegion }
+    }
+    func nativeTransportSongName(selectedRegionID: UUID?) -> String {
+        if playing || paused { return transportDisplayRegion?.name ?? "—" }
+        guard let selectedRegionID else { return "—" }
+        return (timelineRegions + regions).first { $0.id == selectedRegionID }?.name ?? "—"
     }
     var currentSongName: String {
         if let region = transportDisplayRegion { return region.name }

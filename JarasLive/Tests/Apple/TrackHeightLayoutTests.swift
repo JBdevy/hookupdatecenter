@@ -44,6 +44,16 @@ MainActor.assumeIsolated {
     let nativeMinimum = TrackHeightGeometry.minimumLaneHeight
     precondition(DAWRemoteItemLayout.rowHeight(remoteFirst, scale: 0.1, minimum: nativeMinimum) == nativeMinimum)
     precondition(DAWRemoteItemLayout.rowHeight(remoteSecond, scale: 0.1, minimum: nativeMinimum) == nativeMinimum)
+    var resizedRemote = remoteSecond
+    resizedRemote.heightScale = DAWRemoteItemLayout.resizedTrackHeightScale(remoteSecond, scale: 1,
+        minimum: nativeMinimum, translation: 24)
+    precondition(abs(DAWRemoteItemLayout.rowHeight(resizedRemote, minimum: nativeMinimum) - 204.6) < 1e-9,
+        "Dragging a multilane row changes only its height by the pointer distance")
+    resizedRemote.heightScale = DAWRemoteItemLayout.resizedTrackHeightScale(remoteSecond, scale: 1,
+        minimum: nativeMinimum, translation: -400)
+    precondition(DAWRemoteItemLayout.rowHeight(resizedRemote, minimum: nativeMinimum) == nativeMinimum)
+    precondition(DAWRemoteItemLayout.resizedTrackHeightScale(resizedRemote, scale: 1,
+        minimum: nativeMinimum, translation: -24) == nil, "Dragging against a floor must not edit the project")
     let region = DAWRemoteState.Region(id: UUID(), name: "Region", start: 0, end: 10, color: 0)
     let compact = DAWRemoteItemLayout.tracks([remoteSecond], within: region)[0]
     precondition(compact.heightScale == 1.5 && compact.laneCount == 1)

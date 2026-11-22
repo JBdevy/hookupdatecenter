@@ -416,7 +416,7 @@ private struct NativeProjectPicker: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let reaper = UTType(filenameExtension: "rpp") ?? UTType(importedAs: "com.cockos.reaper.project", conformingTo: .data)
         let logic = UTType(filenameExtension: "logicx") ?? UTType(importedAs: "com.apple.logicx.project", conformingTo: .package)
-        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .temporaryDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.audio, .movie, .image] : kind == .trackMedia ? [.image, .movie] : kind == .reaper ? [reaper] : kind == .logic ? [logic, .package] : kind == .project ? [.catLiveProject, .catLivePackage, .zip, reaper, logic] : [.catLivePackage, .zip]
+        let types: [UTType] = (kind == .stems || kind == .storage || kind == .packageDestination || kind == .temporaryDestination || kind == .projectFolder) ? [.folder] : kind == .trackAudio ? [.audio, .movie, .image] : kind == .trackMedia ? [.image, .movie] : kind == .reaper ? [reaper] : kind == .logic ? [logic, .package] : kind == .projectFile ? [.catLiveProject] : kind == .project ? [.catLiveProject, .catLivePackage, .zip, reaper, logic] : [.catLivePackage, .zip]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: kind == .trackAudio || kind == .trackMedia)
         picker.directoryURL = directory
         picker.allowsMultipleSelection = kind == .stems

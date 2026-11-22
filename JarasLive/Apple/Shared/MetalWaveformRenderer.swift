@@ -220,6 +220,8 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
     #if os(macOS)
     private var windowVisibility: NSKeyValueObservation?
     private var windowOcclusion: NSObjectProtocol?
+    private var visibleDrawableRetry: DispatchWorkItem?
+    private var drawableRetryDelay: TimeInterval = 1.0 / 30
     #endif
     private(set) var submittedFrameCount: UInt64 = 0
     private(set) var coalescedFrameCount: UInt64 = 0
@@ -343,6 +345,9 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         // and scheduling a transparent Retina texture on every zoom frame.
         if frame.isEmpty {
             pending = nil
+            #if os(macOS)
+            finishDrawableRecovery()
+            #endif
             visibleBuffers.removeAll(keepingCapacity: false)
             for presentation in scheduledPresentations.values { presentation.lease.finish(2) }
             scheduledPresentations.removeAll(keepingCapacity: true)
@@ -399,8 +404,36 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         setNeedsDisplay()
         #else
         draw()
+        // During project opening AppKit can show the window before Metal can
+        // present its first drawable. An unchanged viewport won't submit again.
+        scheduleVisibleDrawableRetry()
         #endif
     }
+
+    #if os(macOS)
+    private var canRetryVisibleDrawable: Bool {
+        pending != nil && window?.isVisible == true && window?.occlusionState.contains(.visible) == true &&
+            !isHiddenOrHasHiddenAncestor && !visibleRect.isEmpty
+    }
+
+    private func scheduleVisibleDrawableRetry() {
+        guard visibleDrawableRetry == nil, canRetryVisibleDrawable else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.visibleDrawableRetry = nil
+            if self.canRetryVisibleDrawable { self.renderLatest() }
+        }
+        visibleDrawableRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + drawableRetryDelay, execute: work)
+        drawableRetryDelay = min(drawableRetryDelay * 2, 1)
+    }
+
+    private func finishDrawableRecovery() {
+        visibleDrawableRetry?.cancel()
+        visibleDrawableRetry = nil
+        drawableRetryDelay = 1.0 / 30
+    }
+    #endif
 
     /// Projection caches may not submit again when a hidden window becomes
     /// drawable. Recover only unfinished content; ready surfaces stay idle.
@@ -483,6 +516,9 @@ private final class MetalWaveformRenderView: MTKView, MTKViewDelegate {
         }
         pending = nil
         drawableRetryUsed = false
+        #if os(macOS)
+        finishDrawableRecovery()
+        #endif
         submittedFrameCount &+= 1
         command.label = "Timeline waveform viewport"
         let sequence = submittedFrameCount

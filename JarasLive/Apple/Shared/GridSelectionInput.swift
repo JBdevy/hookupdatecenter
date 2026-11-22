@@ -103,6 +103,8 @@ struct GridSelectionItem {
     enum HeaderMode { case full, volumeAndMute, titleOnly, titleAndMute }
     var headerMode = HeaderMode.full
     var headerHidden = false
+    static let selectedHeaderWhite: CGFloat = 216.0 / 255
+    var hasSelectableMediaHeader = false
     var blackTitle = false
     var selectedBlackTitle = false
     var headerRect: CGRect { visibleHeader ?? rect }
@@ -849,6 +851,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let rect: CGRect
         let name: String
         let blackTitle: Bool
+        let selectionBand: CGRect?
         let gain: Double
         let pan: Double
         let phase: Bool
@@ -885,6 +888,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
     private struct HeaderDrawing {
         let item: GridSelectionItem
         let gainLabel: String?
+        let band: CGRect?
     }
     private var preparedHeaderProjection: PreparedHeaderProjection?
     private struct VisibleTitleKey: Hashable { let name: String; let black: Bool }
@@ -1104,7 +1108,8 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         let visible = body.offsetBy(dx: origin.x - viewport.minX, dy: origin.y - viewport.minY)
         var drawings: [HeaderDrawing] = []
         let headers = (candidates(in: visible) + recordingHeaders.filter { $0.rect.intersects(visible) }).compactMap { source -> HeaderPixels? in
-            guard source.name != nil, source.rect.width >= (headersPinned ? 20 : 14),
+            let highlight = source.hasSelectableMediaHeader && selected.contains(source.id)
+            guard source.name != nil, highlight || source.rect.width >= (headersPinned ? 20 : 14),
                   source.rect.maxX >= visible.minX, source.rect.minX <= visible.maxX else { return nil }
             var source = source
             if let liveHeaderGain, liveHeaderGain.id == source.id || (selected.contains(liveHeaderGain.id) && selected.contains(source.id)) { source.gain = liveHeaderGain.value }
@@ -1116,9 +1121,11 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             item.visibleHeader = item.visibleHeader?.offsetBy(dx: dx, dy: dy)
             if let liveHeaderPan, liveHeaderPan.id == item.id || (selected.contains(liveHeaderPan.id) && selected.contains(item.id)) { item.pan = liveHeaderPan.value }
             let fadeRects = item.fadeDrawingRects(in: body)
-            drawings.append(HeaderDrawing(item: item, gainLabel: gainLabel))
+            let band = highlight ? CGRect(x: item.rect.minX, y: item.rect.minY, width: item.rect.width,
+                height: min(GridSelectionItem.headerHeight, item.rect.height)).intersection(body) : nil
+            drawings.append(HeaderDrawing(item: item, gainLabel: gainLabel, band: band))
             return HeaderPixels(id: item.id, hidden: item.headerHidden, mode: item.headerMode, rect: item.headerRect, name: item.name!,
-                blackTitle: selected.contains(item.id) ? item.selectedBlackTitle : item.blackTitle, gain: item.gain, pan: item.pan,
+                blackTitle: highlight || (selected.contains(item.id) ? item.selectedBlackTitle : item.blackTitle), selectionBand: band, gain: item.gain, pan: item.pan,
                 phase: item.phaseInverted, muted: item.muted, hasFX: item.hasFX, bypass: item.fxBypassed,
                 editable: item.editable, midi: item.midiEditable, text: item.textEditable, fadeRects: fadeRects, fadeCurves: [item.fadeInCurve, item.fadeInSCurve, item.fadeOutCurve, item.fadeOutSCurve])
         }
@@ -1727,7 +1734,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
             let muted = selectedMIDIItems.allSatisfy(\.muted)
             let toggle = NSMenuItem(title: JarasLocalization.string(muted ? "Unmute items" : "Mute items"), action: #selector(muteMIDISelection), keyEquivalent: "")
             toggle.target = self; menu.addItem(toggle)
-            for (channels, title) in [(1, "Convert Mono"), (2, "Convert Stereo")] {
+            for (channels, title) in [(1, "Convert To Audio Mono"), (2, "Convert To Audio Stereo")] {
                 let option = NSMenuItem(title: JarasLocalization.string(title), action: #selector(freezeMIDISelection(_:)), keyEquivalent: "")
                 option.tag = channels; option.target = self; menu.addItem(option)
             }
@@ -1922,8 +1929,18 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         defer { visibleTitles = nextTitles }
         for drawing in projection.drawings {
                 let item = drawing.item
+                if let band = drawing.band, !band.isEmpty {
+                    context.saveGState()
+                    context.clip(to: band)
+                    let radius: CGFloat = item.rect.width < 20 ? 0 : 3
+                    context.addPath(CGPath(roundedRect: item.rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+                    context.setFillColor(NSColor(srgbRed: GridSelectionItem.selectedHeaderWhite, green: GridSelectionItem.selectedHeaderWhite,
+                                                 blue: GridSelectionItem.selectedHeaderWhite, alpha: 1).cgColor)
+                    context.fillPath()
+                    context.restoreGState()
+                }
                 if headersHidden { drawItemFades(item); continue }
-                let black = selected.contains(item.id) ? item.selectedBlackTitle : item.blackTitle
+                let black = drawing.band != nil || (selected.contains(item.id) ? item.selectedBlackTitle : item.blackTitle)
                 if let rect = item.muteRect {
                     GridSelectionHeaderControls.button(in: rect, muted: item.muted, context: context)
                     GridSelectionHeaderText.mute.drawCentered(in: rect.insetBy(dx: 1, dy: 0))
@@ -1953,7 +1970,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
                 let titleInset = item.headerTitleInset(gainLabel: drawing.gainLabel)
                 let nameRect = CGRect(x: item.headerRect.minX + titleInset + 4, y: item.rect.minY + 1,
                                       width: max(0, item.headerRect.width - titleInset - 8), height: min(GridSelectionItem.headerHeight - 1, item.rect.height - 1))
-                if nameRect.width >= 10 {
+                if nameRect.width >= 10, item.name?.isEmpty == false {
                     let key = VisibleTitleKey(name: item.name ?? "", black: black)
                     let title = nextTitles[key] ?? visibleTitles[key] ?? GridSelectionHeaderText.title(key.name, black: key.black)
                     nextTitles[key] = title

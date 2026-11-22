@@ -267,15 +267,20 @@ inline std::vector<jaras::TimelineMarker> markers(const jaras::Song &song,const 
         const std::function<std::vector<Transient>(const jaras::AudioFile&)> &source,const std::atomic<bool>*cancel=nullptr) {
     auto region=sourceRegion;region.endTime=jaras::TempoEditMap::tempoEditEnd(song,region);
     std::vector<Transient> pulses;
-    for(const auto &track:song.tracks)if(track.role.id=="click"||text(track.name).trim().equalsIgnoreCase("click"))
+    bool hasClickAtRegionStart = false;
+    for (const auto &track : song.tracks) {
+        const bool analyzesAudio = track.role.id == "click" || text(track.name).trim().equalsIgnoreCase("click");
+        if (!analyzesAudio && track.role.id != "generatedClick") continue;
         for(const auto &clip:track.clips)if(clip.startTime<region.endTime&&clip.startTime+clip.duration>region.startTime){
             if(region.parentRegionID&&clip.startTime<region.startTime)continue;
-            const auto &file=clip.audioFile?clip.audioFile:track.audioFile;if(!file)continue;
+            if (clip.startTime <= region.startTime) hasClickAtRegionStart = true;
+            const auto &file=clip.audioFile?clip.audioFile:track.audioFile;if(!analyzesAudio || !file)continue;
             for(auto pulse:source(*file)){
                 const double position=clip.startTime+(pulse.position-clip.sourceOffset)/std::max(.001,clip.playbackRate);
                 if(position>=std::max(clip.startTime,region.startTime)&&position<std::min(clip.startTime+clip.duration,region.endTime)){pulse.position=position;pulses.push_back(std::move(pulse));}
             }
         }
+    }
     std::sort(pulses.begin(),pulses.end(),[](const auto &a,const auto &b){return a.position<b.position;});std::vector<Transient> unique;
     for(const auto &p:pulses)if(unique.empty()||p.position-unique.back().position>.08)unique.push_back(p);
     unique=primaryTransients(unique);
@@ -286,7 +291,7 @@ inline std::vector<jaras::TimelineMarker> markers(const jaras::Song &song,const 
     for(size_t i=0;i<spans.size();++i){const auto &span=spans[i];
         jaras::TimelineMarker m;m.id=uuid();m.name="TEMPO";m.position=span.position;m.color=0x999999;m.tempoBPM=span.bpm;m.tempoBeats=signature.value_or(song.beatsPerBar);m.tempoUnit=signature?4:song.beatUnit;m.tempoTimebase="global";m.tempoReferenceBPM=span.bpm;result.push_back(m);
     }
-    if(!result.empty()&&result.front().position>region.startTime){auto m=result.front();m.id=uuid();m.position=region.startTime;result.insert(result.begin(),m);}
+    if(hasClickAtRegionStart&&!result.empty()&&result.front().position>region.startTime){auto m=result.front();m.id=uuid();m.position=region.startTime;result.insert(result.begin(),m);}
     return result;
 }
 // Only analysis inputs belong in this signature: moving the edit cursor,

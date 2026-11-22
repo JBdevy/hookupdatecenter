@@ -24,7 +24,9 @@ wrapper = '''    @discardableResult func invalidateHeaderProjectionIfNeeded() ->
 '''
 source = source.replace(needle, wrapper + needle)
 (out / 'GridSelectionInput.swift').write_text(source)
-typography = '// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.', 1)[1]
+theme = Path('Apple/Shared/Theme.swift').read_text()
+colors = 'extension Color {' + theme.split('extension Color {', 1)[1].split('\n}', 1)[0] + '\n}\n'
+typography = colors + '// App-owned typography.' + theme.split('// App-owned typography.', 1)[1]
 (out / 'main.swift').write_text('import SwiftUI\n' + typography + '\n' + Path('Tests/Apple/GridHeaderProjectionTests.swift').read_text())
 PY
 swiftc Application/Project/ItemFadeCurve.swift -swift-version 5 -target "$(uname -m)-apple-macos12.0" Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift "$test_dir/GridSelectionInput.swift" "$test_dir/main.swift" -o "$test_dir/test"

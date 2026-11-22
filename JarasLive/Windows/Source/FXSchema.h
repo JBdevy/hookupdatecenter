@@ -54,7 +54,7 @@ inline var complete(const var &source, bool initialEQBands = false, int depth = 
     auto instrument = get(result, "instrumentParameters");
     if (instrument.isObject()) {
         for (const auto &[key, value] : std::initializer_list<std::pair<const char *, double>>{
-                 {"gain", 0}, {"attack", 0}, {"hold", 10}, {"decay", 10}, {"sustain", 1}, {"release", .3}})
+                 {"gain", 0}, {"attack", 0}, {"hold", 10}, {"decay", 10}, {"sustain", 1}, {"release", str(result, "instrumentID").startsWith("drum-") ? 20. : .16}})
             missing(instrument, key, value);
         auto controllers = get(instrument, "controllers");
         if (controllers.isObject()) { missing(controllers, "modulation", false); missing(controllers, "pitchBend", false); }

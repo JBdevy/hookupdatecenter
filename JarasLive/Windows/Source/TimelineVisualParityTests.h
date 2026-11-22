@@ -73,7 +73,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(hasBar(4) && hasBar(7) && hasBar(8.25) && hasBar(8.25 + 8. / 3.) && !hasBar(10),
                 "Grid should restart and restore the global tempo at the region end");
     });
-    test("Timeline cursor lane separates numbered lines from short ruler ticks", [&] {
+    test("Timeline cursor lane separates continuous grid lines from ruler-only ticks", [&] {
         Session session; session.inspection = true; session.audio.prepareOffline(48000);
         session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));
         Auth auth; Lighting lighting(session);
@@ -103,9 +103,15 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
             require(3 * contrast(y) >= 2 * std::min(contrast(y - 1), contrast(y + 1)),
                     "Numbered columns must run across the ruler lane boundaries without a visible break");
         }
-        require(light(1, bottom - 5) >= 200 && light(1, bottom - 12) == background(1, bottom - 12) &&
+        for (const int y : {bottom - 16, bottom - 12, bottom - 5}) {
+            const int tickContrast = light(1, y) - background(1, y);
+            const int gridContrast = light(2, y) - background(2, y);
+            require(tickContrast > 0 && std::abs(tickContrast - gridContrast) <= 1,
+                    "Ruler-only marks must match the grid columns throughout the cursor lane");
+        }
+        require(light(1, top + 5) == background(1, top + 5) &&
                 light(1, bottom + 5) == background(1, bottom + 5),
-                "Ruler-only marks must fill half of the cursor lane and stop at its bottom");
+                "Ruler-only marks must stay in the cursor lane");
 
         // At the overview in the Mac reference, measures 33 to 65 span about
         // 191 points, with a continuous column for every two measures.

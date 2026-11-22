@@ -287,22 +287,36 @@ private enum MetronomePreferences {
 @MainActor final class KeyboardMIDIMonitor: ObservableObject {
     static let shared = KeyboardMIDIMonitor()
     @Published private(set) var notes: Set<UInt8> = []
+    @Published private(set) var chord = ""
     private struct Source: Hashable { let device: Int32; let channel: UInt8 }
     private var held: [Source: Set<UInt8>] = [:]
     var channel: Int = max(0, min(16, UserDefaults.standard.integer(forKey: "jaras.keyboard.channel"))) {
-        didSet { held.removeAll(); notes = []; UserDefaults.standard.set(channel, forKey: "jaras.keyboard.channel") }
+        didSet { updateDisplays(); UserDefaults.standard.set(channel, forKey: "jaras.keyboard.channel") }
     }
     func receive(source: Int32, status: UInt8, number: UInt8, value: UInt8) {
-        guard status >= 0x80, status < 0xf0, channel == 0 || Int(status & 15) + 1 == channel else { return }
+        guard status >= 0x80, status < 0xf0 else { return }
         let source = Source(device: source, channel: status & 15)
         switch status & 0xf0 {
         case 0x90 where value > 0: held[source, default: []].insert(number)
-        case 0x80, 0x90: held[source]?.remove(number)
+        case 0x80, 0x90:
+            held[source]?.remove(number)
+            if held[source]?.isEmpty == true { held[source] = nil }
         case 0xb0 where number == 120 || number == 123: held[source] = nil
         default: return
         }
-        let next = Set(held.values.flatMap { $0 })
+        updateDisplays()
+    }
+    func disconnect(_ devices: Set<Int32>) {
+        held = held.filter { !devices.contains($0.key.device) }
+        updateDisplays()
+    }
+    private func updateDisplays() {
+        let next = Set(held.filter { channel == 0 || Int($0.key.channel) + 1 == channel }.values.flatMap { $0 })
         if notes != next { notes = next }
+        let input = held.values.flatMap { $0 }
+        let pitchClasses = input.reduce(UInt16(0)) { $0 | (1 << ($1 % 12)) }
+        let name = JarasMIDIChord.name(pitchClasses: pitchClasses, bass: input.min().map { Int($0 % 12) } ?? -1)
+        if chord != name { chord = name }
     }
 }
 
@@ -385,6 +399,25 @@ private final class SourcePlayer: @unchecked Sendable {
     }
 }
 
+enum HorizontalTrackFaderScale {
+    private static func unityPosition(_ travel: CGFloat) -> Double {
+        let width = Double(max(1, travel))
+        return (width - min(32, width / 2)) / width
+    }
+
+    static func fraction(decibels: Double, travel: CGFloat) -> CGFloat {
+        let db = min(12, max(-60, decibels))
+        let unity = unityPosition(travel)
+        return db <= 0 ? (db + 60) / 60 * unity : unity + db / 12 * (1 - unity)
+    }
+
+    static func decibels(fraction: CGFloat, travel: CGFloat) -> Double {
+        let fraction = Double(min(1, max(0, fraction)))
+        let unity = unityPosition(travel)
+        return fraction <= unity ? fraction / unity * 60 - 60 : (fraction - unity) / (1 - unity) * 12
+    }
+}
+
 enum MixerMeterStyle {
     static let railThickness: CGFloat = 14
     static let railRadius = railThickness / 2
@@ -402,6 +435,12 @@ enum MixerMeterStyle {
         min(1, max(0, (decibels + 60) / 72))
     }
     static let clippingStart = fraction(decibels: 0)
+    static func signalLight(_ amplitude: Double) -> CGColor {
+        if amplitude > 1 { return clippingColor }
+        if amplitude >= pow(10, -17.0 / 20) { return cgColor(signalColors[1]) }
+        if amplitude > 0.001 { return cgColor(signalColors[0]) }
+        return cgColor(0x151515)
+    }
     static let gradientStops: [CGFloat] = [0, fraction(decibels: -20), fraction(decibels: -17), 1]
     static let gradientColors = signalColors.flatMap { [cgColor($0), cgColor($0)] }
 
@@ -474,6 +513,7 @@ final class MixerRailLayers {
     private var lastLevels: SIMD2<Double>?
     private var previousCompact = false
     private var previousLinked = false
+    private var previousFixedUpperSpan = false
     private var previousTheme: JarasInterfaceTheme?
 
     init(flipped: Bool) {
@@ -497,8 +537,9 @@ final class MixerRailLayers {
     }
 
     func update(size nextSize: CGSize, levels: SIMD2<Double>, compact: Bool = false, linked: Bool = false,
-                theme: JarasInterfaceTheme = .current) {
-        let styleChanged = previousCompact != compact || previousLinked != linked || previousTheme != theme
+                theme: JarasInterfaceTheme = .current, fixedUpperSpan: Bool = false) {
+        let styleChanged = previousCompact != compact || previousLinked != linked ||
+            previousTheme != theme || previousFixedUpperSpan != fixedUpperSpan
         guard size != nextSize || lastLevels != levels || styleChanged else { return }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
@@ -511,14 +552,20 @@ final class MixerRailLayers {
             layer.cornerRadius = min(MixerMeterStyle.railRadius, width / 2, height / 2)
             layer.backgroundColor = linked ? MixerMeterStyle.linkedBackground : MixerMeterStyle.railBackground(for: theme)
             gradient.frame = rail
+            gradient.locations = MixerMeterStyle.gradientStops.map { stop in
+                let mapped = fixedUpperSpan ? HorizontalTrackFaderScale.fraction(decibels: stop * 72 - 60, travel: width) : stop
+                return NSNumber(value: Double(mapped))
+            }
             ink.frame = rail
             gradient.startPoint = compact ? CGPoint(x: 0.5, y: flipped ? 1 : 0) : CGPoint(x: 0, y: 0.5)
             gradient.endPoint = compact ? CGPoint(x: 0.5, y: flipped ? 0 : 1) : CGPoint(x: 1, y: 0.5)
         }
         size = nextSize; lastLevels = levels; previousCompact = compact; previousLinked = linked; previousTheme = theme
+        previousFixedUpperSpan = fixedUpperSpan
         for (index, channel) in channels.enumerated() {
-            var fill = MixerMeterStyle.fill(in: layer.bounds, channel: index,
-                level: MixerMeterStyle.fraction(levels[index]), vertical: compact)
+            let linear = MixerMeterStyle.fraction(levels[index])
+            let level = fixedUpperSpan ? HorizontalTrackFaderScale.fraction(decibels: linear * 72 - 60, travel: layer.bounds.width) : linear
+            var fill = MixerMeterStyle.fill(in: layer.bounds, channel: index, level: level, vertical: compact)
             if compact && !flipped { fill.origin.y = 0 }
             channel.frame = fill
             let tip = clippingTips[index]
@@ -526,6 +573,11 @@ final class MixerRailLayers {
             if !tip.isHidden {
                 let full = MixerMeterStyle.fill(in: layer.bounds, channel: index, level: 1, vertical: compact)
                 var redZone = MixerMeterStyle.clippingTip(full, vertical: compact)
+                if fixedUpperSpan {
+                    let unity = HorizontalTrackFaderScale.fraction(decibels: 0, travel: full.width)
+                    let width = full.width * (1 - unity)
+                    redZone = CGRect(x: full.maxX - width, y: full.minY, width: width, height: full.height)
+                }
                 if compact && !flipped { redZone.origin.y = full.maxY - redZone.maxY }
                 tip.frame = redZone.intersection(fill)
             }
@@ -975,6 +1027,17 @@ struct TimecodePlaybackSpan {
         recordingGraphNeedsRestart = true
         #endif
     }
+    #if os(macOS)
+    private func recoverGraphAfterRecording() throws {
+        guard recordingGraphNeedsRestart, padVoices.isEmpty, recordingTaps.isEmpty else { return }
+        // An input-only session may have added its first player branch.
+        // Allocate its render resources before the next playback.
+        stopEngine()
+        voiceClockAnchors.removeAll()
+        try startEngineIfNeeded()
+        recordingGraphNeedsRestart = false
+    }
+    #endif
     // Keep live sources and their unknown plugin tails clocked until Stop.
     // An open device alone needs only deviceSilence, not every track's FX.
     private var renderEnabled = false
@@ -1022,7 +1085,9 @@ struct TimecodePlaybackSpan {
         } else {
             let bus = trackBus(for: track)
             node = postFX ? (postFader ? bus.controls : bus.processedMix) : bus.mix
-            node.installTap(onBus: 0, bufferSize: 512, format: node.outputFormat(forBus: 0)) { buffer, _ in ring.push(buffer) }
+            node.installTap(onBus: 0, bufferSize: 512, format: node.outputFormat(forBus: 0)) { buffer, time in
+                ring.push(buffer, hostTime: time.isHostTimeValid ? time.hostTime : 0)
+            }
         }
         recordingTaps[track] = node
         refreshGraphRendering()
@@ -1039,8 +1104,8 @@ struct TimecodePlaybackSpan {
         if mainCaptureTapInstalled { masterGain.removeTap(onBus: 0); mainCaptureTapInstalled = false }
         let rings = Array(mainCaptureRings.values)
         guard !rings.isEmpty else { return }
-        masterGain.installTap(onBus: 0, bufferSize: 512, format: masterGain.outputFormat(forBus: 0)) { buffer, _ in
-            for ring in rings { ring.push(buffer) }
+        masterGain.installTap(onBus: 0, bufferSize: 512, format: masterGain.outputFormat(forBus: 0)) { buffer, time in
+            for ring in rings { ring.push(buffer, hostTime: time.isHostTimeValid ? time.hostTime : 0) }
         }
         mainCaptureTapInstalled = true
     }
@@ -1054,6 +1119,63 @@ struct TimecodePlaybackSpan {
     private var padTracks: [UUID: UUID] = [:]
     private var padCompletions: [UUID: @MainActor () -> Void] = [:]
     private var librarySamplerSource: JarasPadSource?
+
+    private var countInToken: UUID?
+    private var countInCleanup: Task<Void, Never>?
+    var recordingLaunchHost: UInt64?
+
+    func scheduleRecordingCountIn(_ meter: TimelineTempoSection, song: Song) async throws -> (host: UInt64, lead: Double) {
+        guard realtime, outputAllowed, licenseAllowed, let metronome else {
+            throw ProjectError.invalid(JarasLocalization.string("Audio output is unavailable"))
+        }
+        let token = UUID()
+        countInToken = token
+        countInCleanup?.cancel()
+        refreshGraphRendering()
+        var scheduled = false
+        defer { if !scheduled && countInToken == token { cancelRecordingCountIn() } }
+        #if os(macOS)
+        try recoverGraphAfterRecording()
+        #endif
+        if !outputIsRunning || !deviceSessionActive { try prepareDevice() }
+        prepareMetronomeProgram(song: song, generator: metronome)
+        while let task = metronomeSoundPreparation {
+            await task.value
+            guard countInToken == token, self.metronome === metronome, outputAllowed, licenseAllowed else {
+                throw CancellationError()
+            }
+        }
+        guard metronomeSoundRevision == MetronomeSettings.shared.soundRevision else {
+            throw ProjectError.invalid(MetronomeSettings.shared.error)
+        }
+        let rate = hardwareFormat.sampleRate
+        let block = Double(AudioDeviceSettings.shared.bufferFrames) / max(1, rate)
+        let renderHost = manualHardwareRenderTime?.hostTime ?? engine.outputNode.lastRenderTime?.hostTime ?? 0
+        let start = max(renderHost, mach_absolute_time()) + AVAudioTime.hostTime(forSeconds: max(0.02, block * 2))
+        metronome.setCountInStart(start, period: meter.barSeconds / Double(meter.beats), beats: UInt(meter.beats))
+        let duration = (meter.barSeconds * rate).rounded() / rate
+        let end = start + AVAudioTime.hostTime(forSeconds: duration)
+        let now = mach_absolute_time()
+        let wait = end > now ? AVAudioTime.seconds(forHostTime: end - now) : 0
+        countInCleanup = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((wait + block) * 1e9))
+            guard let self, !Task.isCancelled, self.countInToken == token else { return }
+            self.countInToken = nil
+            self.countInCleanup = nil
+            self.refreshGraphRendering()
+        }
+        scheduled = true
+        return (end, min(duration / 2, max(0.12, block * 4)))
+    }
+
+    func cancelRecordingCountIn() {
+        countInCleanup?.cancel()
+        countInCleanup = nil
+        countInToken = nil
+        refreshGraphRendering()
+        recordingLaunchHost = nil
+        metronome?.setCountInStart(0, period: 0, beats: 0)
+    }
 
     func playLibrarySampler(_ id: UUID, buffer: AVAudioPCMBuffer, gain: Float, finished: @escaping @MainActor () -> Void) throws {
         guard outputAllowed, licenseAllowed, let librarySamplerSource else {
@@ -1198,13 +1320,13 @@ struct TimecodePlaybackSpan {
         // External processors can generate audio without transport or REC,
         // including a keyboard in their own editor or an effect generator.
         // Their capability is unknown, so retain their existing render policy.
-        let enabled = requested || instrumentRenderPending || liveRenderPending
+        let enabled = requested || countInToken != nil || instrumentRenderPending || liveRenderPending
             || !inputMonitors.isEmpty || !recordingTaps.isEmpty || !padVoices.isEmpty
             || !effectTails.isEmpty || !boundaryTails.isEmpty || !clockedIdlePlayers.isEmpty
             || !masterEffects.externalNodes.isEmpty
             || trackBuses.values.contains { !$0.effects.externalNodes.isEmpty }
         #else
-        let enabled = requested || deviceSessionActive
+        let enabled = requested || countInToken != nil || deviceSessionActive
         #endif
         guard realtime, renderEnabled != enabled else { return }
         renderEnabled = enabled
@@ -4280,7 +4402,11 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
             guard running else { continue }
             let position = head == 0 ? transport.position : transport.subPlay.position
             let host = audioHostTime(position: position, head: head) ?? mach_absolute_time()
-            let clock = realtime ? AVAudioTime.seconds(forHostTime: host) : Double(engine.manualRenderingSampleTime) / hardwareFormat.sampleRate
+            let anchor = realtime ? headAudioClock[head] : nil
+            let startPosition = anchor?.position ?? position
+            // Share the fixed playback epoch with the stems. A fresh anchor at
+            // each UI position can briefly put the render callback before Play.
+            let clock = realtime ? AVAudioTime.seconds(forHostTime: anchor?.host ?? mach_absolute_time()) : Double(engine.manualRenderingSampleTime) / hardwareFormat.sampleRate
             let loopStart = head == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0
             let loopEnd = head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0
             for (id, plan) in midiTakePlans {
@@ -4308,7 +4434,7 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
                     voice.effects.setMIDISequence(plan.notes, instrumentsOnly: true, preserveHeld: preserveHeld)
                     voice.planRevision = midiPlanRevision; voice.planSong = midiPlanSong
                 }
-                voice.effects.setMIDISequenceClock(head: 0, position: position, clock: clock, running: true, loopStart: loopStart, loopEnd: loopEnd)
+                voice.effects.setMIDISequenceClock(head: 0, position: startPosition, clock: clock, running: true, loopStart: loopStart, loopEnd: loopEnd)
                 var externalActive = Set<String>()
                 for entry in values.external {
                     guard let plugin = entry.target.plugin, let parameter = entry.target.parameter,
@@ -4391,17 +4517,18 @@ for (key, sampler) in samplers where key.track == source.track { sampler.setSequ
         for head in 0..<2 {
             let position = head == 0 ? transport.position : transport.subPlay.position
             let running = head == 0 ? transport.playing : transport.subPlay.playing
-            let host = audioHostTime(position: position, head: head) ?? mach_absolute_time()
-            let clock = realtime ? AVAudioTime.seconds(forHostTime: host) : Double(engine.manualRenderingSampleTime) / hardwareFormat.sampleRate
+            let anchor = realtime ? headAudioClock[head] : nil
+            let startPosition = anchor?.position ?? position
+            let clock = realtime ? AVAudioTime.seconds(forHostTime: anchor?.host ?? mach_absolute_time()) : Double(engine.manualRenderingSampleTime) / hardwareFormat.sampleRate
             let start = head == 0 && transport.loop.enabled ? transport.loop.start ?? 0 : 0
             let end = head == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0
 
-            for (key, sampler) in samplers { sampler.sequenceHead(Int32(head), position: position, clock: clock, running: running && !recordingItemTracks.contains(key.track), loopStart: start, loopEnd: end) }
+            for (key, sampler) in samplers { sampler.sequenceHead(Int32(head), position: startPosition, clock: clock, running: running && !recordingItemTracks.contains(key.track), loopStart: start, loopEnd: end) }
 
-            for (id, bus) in trackBuses { bus.effects.drumClock(head: head, position: position, clock: clock, running: running && !recordingItemTracks.contains(id), loopStart: start, loopEnd: end) }
+            for (id, bus) in trackBuses { bus.effects.drumClock(head: head, position: startPosition, clock: clock, running: running && !recordingItemTracks.contains(id), loopStart: start, loopEnd: end) }
 
             #if os(macOS)
-            for (id, bus) in trackBuses { bus.effects.setMIDISequenceClock(head: head, position: position, clock: clock, running: running && !recordingItemTracks.contains(id), loopStart: start, loopEnd: end) }
+            for (id, bus) in trackBuses { bus.effects.setMIDISequenceClock(head: head, position: startPosition, clock: clock, running: running && !recordingItemTracks.contains(id), loopStart: start, loopEnd: end) }
             #endif
         }
     }
@@ -4740,6 +4867,10 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
         // current transport snapshot. Clock updates cannot reopen this gate.
         metronome?.setEnabled(MetronomeSettings.shared.enabled)
         if metronome != nil { configureRoutes([metronomeRoute], patches: [MetronomeSettings.shared.output]) }
+        if let metronome, let latestPlayback,
+           let song = latestPlayback.snapshot.project.songs.first(where: { $0.id == latestPlayback.snapshot.transport.songId }) {
+            prepareMetronomeProgram(song: song, generator: metronome)
+        }
         let settings = MetronomeSettings.shared
         func gain(_ db: Double) -> Float { db <= -60 ? 0 : Float(pow(10, min(6, db) / 20)) }
         metronome?.setGainA(gain(settings.gainA), gainB: gain(settings.gainB))
@@ -4805,8 +4936,7 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
                 loopEnd: index == 0 && transport.loop.enabled ? transport.loop.end ?? 0 : 0, sampleTime: sample)
         }
     }
-    private func updateMetronome(song: Song, transport: TransportState) {
-        guard let metronome else { return }
+    private func prepareMetronomeProgram(song: Song, generator metronome: JarasMetronomeGenerator) {
         let settings = MetronomeSettings.shared
         let key = MetronomePreparationKey(song: song.id, revision: settings.soundRevision, bpm: song.bpm,
             beats: song.meterBeats, unit: song.meterUnit, duration: song.duration, markers: song.markers)
@@ -4839,9 +4969,15 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
                           !(error is CancellationError) else { return }
                     MetronomeSettings.shared.error = error.localizedDescription
                     self.metronomeSoundPreparation = nil
+                    self.metronomePreparationKey = nil
                 }
             }
         }
+    }
+    private func updateMetronome(song: Song, transport: TransportState) {
+        guard let metronome else { return }
+        let settings = MetronomeSettings.shared
+        prepareMetronomeProgram(song: song, generator: metronome)
         func gain(_ db: Double) -> Float { db <= -60 ? 0 : Float(pow(10, min(6, db) / 20)) }
         metronome.setGainA(gain(settings.gainA), gainB: gain(settings.gainB))
         let host = audioHostTime(position: transport.position, head: 0) ?? mach_absolute_time()
@@ -5225,15 +5361,7 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
         try prepareChangedMobileTrackGraph()
         #endif
         #if os(macOS)
-        if running, !transportWasRunning, recordingGraphNeedsRestart,
-           padVoices.isEmpty, recordingTaps.isEmpty {
-            // Recording can add the first player branch to an input-only live
-            // graph. Reallocate its render resources once before the next Play.
-            stopEngine()
-            voiceClockAnchors.removeAll()
-            try startEngineIfNeeded()
-            recordingGraphNeedsRestart = false
-        }
+        if running, !transportWasRunning { try recoverGraphAfterRecording() }
         #endif
         if running {
             cancelVoicePreparation()
@@ -5637,7 +5765,10 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
                 #else
                 let enqueueMargin = 0.05
                 #endif
-                setHeadAudioClock((position, base + AVAudioTime.hostTime(forSeconds: enqueueMargin + preroll)), head: head)
+                let normalDeadline = base + AVAudioTime.hostTime(forSeconds: enqueueMargin + preroll)
+                let deadline = head == 0 ? recordingLaunchHost ?? normalDeadline : normalDeadline
+                if head == 0 { recordingLaunchHost = nil }
+                setHeadAudioClock((position, deadline), head: head)
             }
             var scheduledPositions = scheduled.map { schedulingPosition + $0.4 }
             if realtime, continuingHead, let anchor = headAudioClock[head] {
@@ -6033,7 +6164,8 @@ struct VerticalTrackMeter: NSViewRepresentable {
     private let scaleLabels = [CATextLayer(), CATextLayer(), CATextLayer()]
     private let peakLabel = CATextLayer()
     private let compactRail = MixerRailLayers(flipped: false)
-    enum Presentation { case bars, peak, peakLabel, compact }
+    private let signalLight = CALayer()
+    enum Presentation { case bars, peak, peakLabel, compact, dot }
     var presentation = Presentation.bars {
         didSet {
             guard presentation != oldValue else { return }
@@ -6055,7 +6187,7 @@ struct VerticalTrackMeter: NSViewRepresentable {
         super.init(frame: frameRect)
         let actions = Dictionary(uniqueKeysWithValues:
             ["position", "bounds", "hidden", "string", "contentsScale", "colors", "locations", "opacity", "backgroundColor", "borderColor"].map { ($0, NSNull()) })
-        let layerGroups: [[CALayer]] = [backgrounds, levelClips, gradients, barClippingTips, scaleLabels, [compactRail.layer, peakLabel]]
+        let layerGroups: [[CALayer]] = [backgrounds, levelClips, gradients, barClippingTips, scaleLabels, [compactRail.layer, peakLabel, signalLight]]
         for group in layerGroups {
             for content in group { content.actions = actions }
         }
@@ -6208,6 +6340,13 @@ struct VerticalTrackMeter: NSViewRepresentable {
             barClippingTips[channel].frame = CGRect(x: 0, y: rect.height - tipHeight, width: rect.width, height: tipHeight)
         }
         compactRail.layer.isHidden = presentation != .compact
+        signalLight.isHidden = presentation != .dot
+        let diameter = min(10, bounds.width, bounds.height)
+        signalLight.frame = CGRect(x: bounds.midX - diameter / 2, y: bounds.midY - diameter / 2,
+                                   width: diameter, height: diameter)
+        signalLight.cornerRadius = diameter / 2
+        signalLight.borderWidth = 0.5
+        signalLight.borderColor = MixerMeterStyle.railBorder
         for (index, fraction) in [1.0, 0.5, 0.0].enumerated() {
             let label = scaleLabels[index]
             let size = (label.string as! NSAttributedString).size()
@@ -6241,6 +6380,7 @@ struct VerticalTrackMeter: NSViewRepresentable {
             for label in scaleLabels { layer.addSublayer(label) }
             layer.addSublayer(peakLabel)
             layer.addSublayer(compactRail.layer)
+            layer.addSublayer(signalLight)
             installedLayer = layer
             geometryScale = 0; pendingDrawing = true; pendingPeak = true
         }
@@ -6251,6 +6391,9 @@ struct VerticalTrackMeter: NSViewRepresentable {
         // Let all meters share the window's display commit rather than forcing
         // a global layout/commit separately for every track's amplitude tick.
         updateLayerGeometry()
+        if pendingDrawing, presentation == .dot {
+            signalLight.backgroundColor = MixerMeterStyle.signalLight(max(levels.x, levels.y))
+        }
         if pendingDrawing, presentation == .compact {
             compactRail.update(size: CGSize(width: min(bounds.width, 10), height: bounds.height), levels: levels, compact: true)
         }
@@ -6265,7 +6408,7 @@ struct VerticalTrackMeter: NSViewRepresentable {
         }
         pendingDrawing = false
         if pendingPeak {
-            peakLabel.isHidden = !showScale || presentation == .compact
+            peakLabel.isHidden = !showScale || presentation == .compact || presentation == .dot
             if !peakLabel.isHidden {
                 let clipping = (peakDB ?? -24) > 0
                 let text = NSAttributedString(string: peakDB.map { String(format: "%+.2f", $0) } ?? "",

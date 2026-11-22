@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 
 enum InstrumentCategory: String, CaseIterable, Identifiable {
+    case user = "User"
     case pianos = "Grand Piano", upright = "Upright", electric = "Electric", keyboard = "Keyboard"
     case organ = "Organ", strings = "Strings", guitar = "Guitar", bass = "Bass"
     case synth = "Synth", synthPad = "Synth Pad", lead = "Lead", acordeon = "Acordeon"
@@ -9,6 +10,7 @@ enum InstrumentCategory: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var folder: String {
         switch self {
+        case .user: return "User"
         case .pianos: return "01-Grand Piano"
         case .upright: return "02-Upright"
         case .electric: return "03-Eletric"
@@ -32,7 +34,9 @@ struct LibraryInstrument: Identifiable {
     let name: String
     let category: InstrumentCategory
     var percussion: Bool { category == .drum }
-    var url: URL { URL(string: "https://pub-1b271ca25cc347ce82f835a8125d6d93.r2.dev/")!.appendingPathComponent(category.folder).appendingPathComponent(name + ".sf2") }
+    var url: URL? {
+        guard category != .user else { return nil }
+        return URL(string: "https://pub-1b271ca25cc347ce82f835a8125d6d93.r2.dev/")!.appendingPathComponent(category.folder).appendingPathComponent(name + ".sf2") }
 }
 @MainActor final class InstrumentLibrary: ObservableObject {
     static let shared = InstrumentLibrary()
@@ -299,7 +303,10 @@ struct LibraryInstrument: Identifiable {
         LibraryInstrument(id: "drum-kit-2", name: "Drum Kit 2", category: .drum),
         LibraryInstrument(id: "drum-kit-3", name: "Drum Kit 3", category: .drum)
     ]
-    static func category(_ id: String?) -> InstrumentCategory? { catalog.first { $0.id == id }?.category }
+    static func category(_ id: String?) -> InstrumentCategory? {
+        if let id, importedName(id) != nil { return .user }
+        return catalog.first { $0.id == id }?.category
+    }
     static func controllers(_ category: InstrumentCategory?) -> InstrumentControllerParameters {
         InstrumentControllerParameters(modulation: category == .synthPad || category == .strings, pitchBend: category == .bass || category == .lead, monophonic: category == .lead)
     }
@@ -307,9 +314,27 @@ struct LibraryInstrument: Identifiable {
         var value = InstrumentParameters(drums: category(id) == .drum)
         value.controllers = controllers(category(id)); return value
     }
-    static func displayName(_ id: String?) -> String { catalog.first { $0.id == id }?.name ?? "Instrument" }
+    static func displayName(_ id: String?) -> String {
+        id.flatMap(importedName) ?? catalog.first { $0.id == id }?.name ?? "Instrument"
+    }
+    nonisolated static func importedName(_ id: String) -> String? {
+        guard id.hasPrefix("user-"), id.utf8.count < 120,
+              id.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) ||
+                                 (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { return nil }
+        var encoded = String(id.dropFirst(5)).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        encoded += String(repeating: "=", count: (4-encoded.count%4)%4)
+        guard let data = Data(base64Encoded: encoded), let name = String(data: data, encoding: .utf8),
+              !name.isEmpty else { return nil }
+        return name
+    }
+    private nonisolated static func importedID(_ name: String) -> String {
+        "user-" + Data(name.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
     let directory: URL
     @Published private(set) var downloaded: Set<String> = []
+    @Published private(set) var imported: [LibraryInstrument] = []
+    var entries: [LibraryInstrument] { Self.catalog + imported }
     @Published private(set) var installed: Set<String> = []
     @Published private(set) var progress: [String:Double] = [:]
     @Published private(set) var sources: [String:URL] = [:]
@@ -330,15 +355,15 @@ struct LibraryInstrument: Identifiable {
         if let bundled = projectDirectory?.appendingPathComponent("Instruments", isDirectory: true)
             .appendingPathComponent(id).appendingPathExtension("sf2"),
            FileManager.default.fileExists(atPath: bundled.path) { return bundled }
-        return directory.appendingPathComponent(id).appendingPathExtension("sf2")
+        let root = Self.importedName(id) == nil ? directory : directory.appendingPathComponent("User", isDirectory: true)
+        return root.appendingPathComponent(id).appendingPathExtension("sf2")
     }
     func resolvedFile(_ id: String, projectDirectory: URL?) -> URL? {
-        guard Self.catalog.contains(where: { $0.id == id }) else { return nil }
+        guard Self.category(id) != nil else { return nil }
         let source = file(id, projectDirectory: projectDirectory)
         return FileManager.default.fileExists(atPath: source.path) ? source : nil
     }
     func previewFile(_ instrument: LibraryInstrument) -> URL? {
-        guard !instrument.percussion else { return nil }
         return resolvedFile(instrument.id, projectDirectory: projectDirectory)
     }
     func setProjectDirectory(_ directory: URL?) {
@@ -347,13 +372,58 @@ struct LibraryInstrument: Identifiable {
         refresh()
     }
     func refresh() {
-        installed = Set(Self.catalog.filter { FileManager.default.fileExists(atPath: file($0.id).path) }.map(\.id))
-        downloaded = Set(Self.catalog.filter { resolvedFile($0.id, projectDirectory: projectDirectory) != nil }.map(\.id))
-        sources = Dictionary(uniqueKeysWithValues: Self.catalog.map { ($0.id, $0.url) })
+        let userFolder = directory.appendingPathComponent("User", isDirectory: true)
+        let projectBanks = projectDirectory?.appendingPathComponent("Instruments", isDirectory: true)
+        var userBanks: [String: LibraryInstrument] = [:]
+        for folder in [userFolder, projectBanks].compactMap({ $0 }) {
+            let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                                                                       options: [.skipsHiddenFiles])) ?? []
+            for file in files where file.pathExtension.lowercased() == "sf2" {
+                let id = file.deletingPathExtension().lastPathComponent
+                if let name = Self.importedName(id), (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                    userBanks[id] = LibraryInstrument(id: id, name: name, category: .user)
+                }
+            }
+        }
+        imported = userBanks.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        installed = Set(entries.filter { FileManager.default.fileExists(atPath: file($0.id).path) }.map(\.id))
+        downloaded = Set(entries.filter { resolvedFile($0.id, projectDirectory: projectDirectory) != nil }.map(\.id))
+        sources = Dictionary(uniqueKeysWithValues: Self.catalog.compactMap { instrument in instrument.url.map { (instrument.id, $0) } })
+    }
+
+    func importSoundFonts(_ files: [URL]) async {
+        let destination = directory.appendingPathComponent("User", isDirectory: true)
+        let failures = await Task.detached(priority: .userInitiated) {
+            var failures: [String] = []
+            for url in files {
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                let staging = destination.appendingPathComponent("." + UUID().uuidString).appendingPathExtension("sf2")
+                defer { try? FileManager.default.removeItem(at: staging) }
+                do {
+                    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: url, to: staging)
+                    try autoreleasepool { _ = try JarasSoundFont(url: staging, sampleRate: 44_100) }
+                    let label = url.deletingPathExtension().lastPathComponent.precomposedStringWithCanonicalMapping
+                    var index = 1
+                    while true {
+                        let suffix = index == 1 ? "" : " (\(index))"
+                        var name = label
+                        while Self.importedID(name + suffix).utf8.count >= 120 { name.removeLast() }
+                        let target = destination.appendingPathComponent(Self.importedID(name + suffix)).appendingPathExtension("sf2")
+                        do { try FileManager.default.moveItem(at: staging, to: target); break }
+                        catch CocoaError.fileWriteFileExists { index += 1 }
+                    }
+                } catch { failures.append(url.lastPathComponent) }
+            }
+            return failures
+        }.value
+        refresh()
+        error = failures.isEmpty ? "" : JarasLocalization.string("Could not import SF2:") + " " + failures.joined(separator: ", ")
     }
 
     func uninstall(_ id: String) {
-        guard jobs[id] == nil, Self.catalog.contains(where: { $0.id == id }) else { return }
+        guard jobs[id] == nil, Self.category(id) != nil else { return }
         error = ""
         do {
             // Uninstall only the catalog download. Portable projects own their
@@ -469,10 +539,10 @@ struct InstrumentBrowser: View {
             #endif
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 5) {
-                    if !InstrumentLibrary.catalog.contains(where: { $0.category == category }) {
+                    if !library.entries.contains(where: { $0.category == category }) {
                         Text("No instruments available yet").font(.jarasCallout).foregroundStyle(JarasTheme.secondary).padding(24)
                     }
-                    ForEach(InstrumentLibrary.catalog.filter { $0.category == category }) { instrument in
+                    ForEach(library.entries.filter { $0.category == category }) { instrument in
                         HStack(spacing: 12) {
                             Button { selected = instrument.id } label: {
                                 HStack { Image(systemName: "pianokeys"); Text(instrument.name); Spacer() }.frame(maxWidth: .infinity).frame(height: max(32, touchHeight)).contentShape(Rectangle())
@@ -499,6 +569,6 @@ struct InstrumentBrowser: View {
                 }
             }
             if !library.error.isEmpty { Text(LocalizedStringKey(library.error)).font(.jarasCaption).foregroundStyle(.red) }
-        }.onAppear { library.refresh(); if let instrument = InstrumentLibrary.catalog.first(where: { $0.id == selected }) { category = instrument.category } }
+        }.onAppear { library.refresh(); if let instrument = library.entries.first(where: { $0.id == selected }) { category = instrument.category } }
     }
 }

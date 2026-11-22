@@ -364,7 +364,7 @@ export function buildFXParameterMenu(context = {}) {
  */
 export const DIRECT_GESTURES = Object.freeze(Object.fromEntries(Object.entries({
   save: {context: 'exportPortable'},
-  timelineHeader: {context: 'seekSubplay', rightDragStart: 'beginTimeSelection', rightDrag: 'updateTimeSelection', rightDragEnd: 'endTimeSelection'},
+  timelineHeader: {rightDragStart: 'beginTimeSelection', rightDrag: 'updateTimeSelection', rightDragEnd: 'endTimeSelection'},
   pianoRoll: {rightDown: 'beginNoteSelection', rightDrag: 'updateNoteSelection', rightUp: 'endNoteSelection'},
   marker: {context: 'editMarker', altClick: 'removeMarker'},
   fxButton: {shiftClick: 'setBypass', altClick: 'removeAllFX'},

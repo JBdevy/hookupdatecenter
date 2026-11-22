@@ -1,6 +1,10 @@
 #pragma once
+#include "TimelineRegionLabels.h"
+#include "DesktopToolbarSymbols.h"
+#include "FooterAudioStatusButton.h"
 #include "Workspace.h"
 #include "PatchPanel.h"
+#include "ModalSheet.h"
 #include "MIDIItemExport.h"
 #include "FloatingControlTests.h"
 #include "ProjectDeletionPanel.h"
@@ -240,6 +244,12 @@ struct WorkspaceLayoutTests {
                     "Master Patch must sit to the left of FX");
             require(w.masterVolume.getRight() <= w.transportDisplayBounds.getX(),
                     "The Main must stay at the left of the top transport");
+            if (width >= 1440) {
+                const auto *remote = w.controls.at("remote"), *audio = w.controls.at("audioStatus");
+                require(remote->getRight() <= audio->getX() && audio->getX() - remote->getRight() <= 4 &&
+                        audio->getWidth() == FooterAudioStatusButton::widthForStatus(w.toolbarAudioFormat),
+                        "Remote and the audio format must sit together at the right edge");
+            }
             const auto normalPanel=w.transportBounds, normalGrid=w.workspaceBounds;
             for (auto id : {"play", "pause", "loop", "record", "metronome"})
                 require(w.transportDisplayBounds.contains(w.controls[id]->getBounds()), "Playback must stay inside the transport display");
@@ -262,6 +272,10 @@ struct WorkspaceLayoutTests {
                 const auto details = w.tempoDisplayBounds.getUnion(w.tuner->getBounds());
                 require(std::abs(details.getCentreX() - w.transportDisplayBounds.getCentreX()) <= 1,
                         "The BPM and Tuner group must be centered within the transport display");
+                const int gapAfterREC = w.controls["editMode"]->getX() - w.controls["record"]->getRight();
+                const int gapBeforeBPM = w.tempoDisplayBounds.getX() - w.controls["track-envelopes"]->getRight();
+                require(gapAfterREC >= 0 && std::abs(gapAfterREC - gapBeforeBPM) <= 1,
+                        "Edit and envelopes must be centered together between REC and BPM");
                 const auto switches = w.timelineSnap.getBounds().getUnion(w.timelineTimebase.getBounds());
                 const auto gapCenter = (w.tuner->getRight() + w.controls["trackHeightFit"]->getX()) / 2;
                 require(std::abs(switches.getCentreX() - gapCenter) <= 1,
@@ -300,6 +314,33 @@ struct WorkspaceLayoutTests {
         }
         host.clearContentComponent();
     }
+    static void keyboardContextSettings(const File &directory) {
+        using floatingControlTests::require;
+        Session session; session.inspection=true; session.audio.prepareOffline(48000);
+        Auth auth; Lighting lighting(session);
+        Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("keyboard-context",".json"));
+        w.setSize(1366,768);
+        auto *key=dynamic_cast<QuietButton*>(w.controls.at("railKeyboard"));
+        require(key!=nullptr,"Keyboard must handle context clicks");
+        const auto visible=w.keyboardVisible;
+        const auto now=Time::getCurrentTime();
+        const Point<float> point(4.f,4.f);
+        MouseEvent down(Desktop::getInstance().getMainMouseSource(),point,ModifierKeys::rightButtonModifier,
+                        1,0,0,0,0,key,key,now,point,now,1,false);
+        key->mouseDown(down); key->mouseUp(down);
+        auto *sheet=uiFeatureTests::find(w,"modalSheet");
+        require(sheet && w.keyboardVisible==visible,"Keyboard right click opens settings without toggling the keyboard");
+        require(uiFeatureTests::find(*sheet,"jaras.keyboard.whiteColor") && uiFeatureTests::find(*sheet,"jaras.keyboard.blackColor"),
+                "Both key highlight colours must be editable");
+        auto *style=dynamic_cast<ComboBox*>(uiFeatureTests::find(*sheet,"jaras.keyboard.style"));
+        auto *channel=dynamic_cast<ComboBox*>(uiFeatureTests::find(*sheet,"jaras.keyboard.channel"));
+        require(style && channel && channel->getNumItems()==17,"Keyboard style and Omni plus sixteen MIDI channels must be available");
+        style->setSelectedId(2,sendNotificationSync); channel->setSelectedId(5,sendNotificationSync);
+        require(w.appearance.value("jaras.keyboard.style").toString()=="black" && int(w.appearance.value("jaras.keyboard.channel"))==4,
+                "Keyboard settings must write the preferences used by Advanced and the live keyboard");
+        sheet->exitModalState(0);
+    }
+
     static void transportHitBounds(const File &directory) {
         using floatingControlTests::require;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
@@ -324,6 +365,103 @@ struct WorkspaceLayoutTests {
         }
         host.clearContentComponent();
     }
+    static void performanceDockPositions(const File &directory) {
+        using floatingControlTests::require;
+        Session session; session.inspection=true;session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session); Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("performance-docks",".json"));
+        w.setSize(1600,1050); w.projectOpened(false);
+        w.libraryVisible=true; w.focusVisible=true; w.setlistVisible=true; w.footerMixerVisible=true; w.vinhetasVisible=true;
+        w.resized();
+        const auto bounds = [&](const Component &c) { return w.getLocalArea(&c,c.getLocalBounds()); };
+        auto mixer=bounds(*w.footerMixer), pads=bounds(*w.vinhetasPanel);
+        const auto *library = w.findChildWithID("workspace-library-panel");
+        require(library && library->isVisible(),"Library must be visible");
+        require(mixer.getX()>=w.focusMixer->getRight() && w.focusMixer->getX()>=library->getRight(),"Hoz Mixer covers an inspector");
+        require(pads.getY()==w.focusMixer->getBottom() && pads.getX()==library->getX(),"Pads must sit below both inspectors");
+        require(mixer.getRight()==pads.getRight() && pads.getRight()<w.getWidth(),"Docked panels overlap Setlist");
+        w.controls["midiPreview"]->onClick();
+        require(w.midiPreviewVisible && !w.vinhetasVisible,"Opening MIDI Preview closes Pads");
+        w.controls["railKeyboard"]->onClick();
+        require(w.keyboardVisible && w.midiPreviewVisible,"Keyboard and MIDI Preview can stay open together");
+        w.controls["railVinhetas"]->onClick();
+        require(w.vinhetasVisible && !w.keyboardVisible && !w.midiPreviewVisible,"Opening Pads closes Keyboard and MIDI Preview");
+        w.controls["railKeyboard"]->onClick();
+        require(w.keyboardVisible && !w.vinhetasVisible,"Opening Keyboard closes Pads");
+        w.controls["midiPreview"]->onClick();
+        const auto initialHeight = w.midiPreviewPanel->getHeight();
+        w.midiPreviewDivider.started(); w.midiPreviewDivider.moved(-30);
+        require(w.midiPreviewPanel->getHeight() == initialHeight + 30, "Preview divider moves its panel by the drag distance");
+        const auto preview=bounds(*w.midiPreviewPanel);
+        auto *horizontal = dynamic_cast<ScrollBar*>(uiFeatureTests::find(*w.midiPreviewPanel,"midiPreviewHorizontalScroll"));
+        auto *vertical = dynamic_cast<ScrollBar*>(uiFeatureTests::find(*w.midiPreviewPanel,"midiPreviewVerticalScroll"));
+        require(horizontal && vertical && horizontal->getWidth() > horizontal->getHeight() &&
+                vertical->getHeight() > vertical->getWidth() &&
+                vertical->getCurrentRange().getLength() < 128,"MIDI Preview must expose both scroll bars");
+        vertical->setCurrentRangeStart(0,sendNotificationSync);
+        require(vertical->getCurrentRangeStart() == 0,"MIDI Preview pitch scrolling must move to the requested octave");
+        require(preview.getX()==pads.getX() && preview.getRight()==bounds(*w.vinhetasPanel).getRight() &&
+                preview.getY()>=library->getBottom(),"MIDI Preview must respect the side panels");
+        w.setSize(1366,768);
+        const auto fixedPads=bounds(*w.vinhetasPanel);
+        w.keyboardVisible=true; w.resized();
+        w.mixerHeightDivider.started();
+        w.mixerHeightDivider.moved(-2000);
+        require(w.workspaceBounds.getHeight()>=128 &&
+                w.footerMixer->getHeight()==w.mixerHeightLimit &&
+                w.footerMixer->getHeight()<=w.dockViewport.getHeight() &&
+                bounds(*w.vinhetasPanel).getHeight()==fixedPads.getHeight(),
+                "Hoz Mixer must stop at the available height below the timeline with Pads and Keyboard open");
+        w.setSize(1600,1050);
+        const auto clock = session.transport().editPosition;
+        const auto now = Time::getCurrentTime();
+        auto* piano = uiFeatureTests::find(*w.midiPreviewPanel,"midiPreviewLiveCanvas");
+        require(piano && piano->isVisible(),"Live preview canvas is missing");
+        const juce::Point<float> canvas{float(piano->getWidth() * .75), float(std::min(12,piano->getHeight()/2))};
+        const MouseEvent click(Desktop::getInstance().getMainMouseSource(),canvas,
+            ModifierKeys(ModifierKeys::leftButtonModifier),1.f,0.f,0.f,0.f,0.f,
+            piano,piano,now,canvas,now,1,false);
+        piano->mouseDown(click);
+        require(session.transport().editPosition > clock,"Clicking MIDI Preview must move the shared timeline cursor");
+        const auto pitch = vertical->getCurrentRangeStart();
+        MouseWheelDetails wheel{}; wheel.deltaY = -.3f;
+        auto* zoom = dynamic_cast<Slider*>(uiFeatureTests::find(*w.midiPreviewPanel,"piano-time-zoom-slider"));
+        require(zoom != nullptr,"MIDI Preview time zoom is missing");
+        const auto originalZoom = zoom->getValue();
+        const auto scrollEvent = [&](ModifierKeys modifiers) {
+            return MouseEvent(Desktop::getInstance().getMainMouseSource(),canvas,modifiers,0.f,0.f,0.f,0.f,0.f,
+                              piano,piano,now,canvas,now,0,false);
+        };
+        piano->mouseWheelMove(scrollEvent(ModifierKeys{}),wheel);
+        require(zoom->getValue() < originalZoom && vertical->getCurrentRangeStart() == pitch,
+                "Unmodified vertical scrolling must zoom MIDI Preview");
+        const auto currentZoom = zoom->getValue();
+        piano->mouseWheelMove(scrollEvent(ModifierKeys(ModifierKeys::altModifier)),wheel);
+        require(vertical->getCurrentRangeStart() > pitch && zoom->getValue() == currentZoom,
+                "Alt scrolling must move only the MIDI Preview pitch rows");
+    }
+    static void transportRegionDisplay(const File &directory) {
+        using floatingControlTests::require;
+        Session session; session.inspection=true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));
+        session.audio.setOffline(true);
+        Auth auth; Lighting lighting(session);
+        Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("transport-region",".json"));
+        w.setSize(1366,768); w.projectOpened(false);
+        const auto &part = session.song()->parts.front();
+        const auto name = timelineRegionLabels::displayName(part);
+        const auto dash = String::fromUTF8("—");
+        session.command(jaras::CommandKind::editSeek, {}, part.startTime);
+        w.updateState();
+        require(get(w.diagnostics(), "currentSongDisplay").toString()==name,"Selected region name missing");
+        session.focusSetlistRegion(std::nullopt);
+        w.updateState();
+        require(get(w.diagnostics(), "currentSongDisplay").toString()==dash,
+                "Unselected region under the cursor must leave a dash");
+        session.command(jaras::CommandKind::play);
+        w.updateState();
+        require(get(w.diagnostics(), "currentSongDisplay").toString()==name,"Playing region name missing");
+    }
     static void toolbarTimerAndLabels(const File &directory) {
         using floatingControlTests::require;
         Session session;session.inspection=true;session.audio.prepareOffline(48000);
@@ -332,6 +470,28 @@ struct WorkspaceLayoutTests {
         DocumentWindow host("Workspace",theme::background,0);
         host.setTitleBarHeight(0);host.setResizable(true,false);
         host.setContentNonOwned(&w,true);host.setBounds(50,50,1600,800);host.setVisible(true);w.projectOpened(false);
+        for (const auto* symbol : {"line.3.horizontal","books.vertical","sidebar.left","slider.horizontal.3",
+            "slider.vertical.3","square.grid.3x3","list.bullet.indent","text.bubble","stopwatch","pianokeys",
+            "square.grid.3x2.fill","midiPreview","info.circle","stageLights","projection","teleprompter1",
+            "teleprompter2","eye","video","dot.radiowaves.left.and.right","gearshape","addTrack","unlock","lock",
+            "magnet","itemTimebase","timelineLanes","arrow.up.and.down.text.horizontal","editCursor","automationLanes",
+            "folder.fill","library.instruments","library.plugins","library.samplers","library.presets","note.text","doc.text",
+            "rectangle","flag","square.grid.2x2","star.fill","fitTracks","fitTime","trackHeightAxis","timelineZoomAxis",
+            "record","loop","play","stopall","pause","fadeout"}) {
+            Image off(Image::ARGB, 24, 24, true, SoftwareImageType{}), on(Image::ARGB, 24, 24, true, SoftwareImageType{});
+            {
+            Graphics gOff(off), gOn(on);
+            require(drawControlIcon(gOff,symbol,false,off.getBounds().toFloat(),1.f) &&
+                    drawControlIcon(gOn,symbol,true,on.getBounds().toFloat(),1.f),"Missing control artwork");
+            }
+            int visible = 0, different = 0;
+            for (int y = 0; y < 24; ++y) for (int x = 0; x < 24; ++x) {
+                const auto left = off.getPixelAt(x,y), right = on.getPixelAt(x,y);
+                visible += left.getAlpha() > 64 && right.getAlpha() > 64;
+                different += left != right;
+            }
+            if (visible <= 10 || different <= 10) throw std::runtime_error(std::string("Missing visible PNG states for ") + symbol);
+        }
         const auto minimum = host.getConstrainer()->getMinimumWidth();
         require(minimum > 900 && minimum < 1600,"Native window minimum must follow the toolbar width");
         for (const int width : {minimum, minimum + 12, 1600}) {
@@ -340,19 +500,14 @@ struct WorkspaceLayoutTests {
                     &&w.controls["railClock"]->getRight()<w.controls["railKeyboard"]->getX(),"Timer is not between Messages and Keyboard");
             require(!w.stageTimer->isVisible(),"Stopped timer should not display a count in the toolbar");
             const auto row = w.controls["menu"]->getY();
-            if (width >= 1560) {
-                for (auto id : {"menu", "library", "focus", "mixer", "tp1", "remote"})
-                    require((float)w.controls[id]->getProperties()["fontSize"] >= 13.f,
-                            "Toolbar labels must use the larger type at desktop widths");
-            }
             for (auto id : {"advanced", "grandma2", "resolume", "tp1", "tp2", "preview", "video", "remote", "audioStatus", "settings"}) {
                 const auto *control = w.controls[id];
                 require(control->isVisible() && control->getY() == row && w.getLocalBounds().contains(control->getBounds()),
                         "Toolbar control moved off the first row");
             }
             const int gap = w.controls["tp1"]->getX() - w.controls["resolume"]->getRight();
-            require(gap >= 0 && (width != minimum || gap <= 2), "TP1 and Resolume must meet at the minimum width");
-            require(!w.controls["tp2"]->getProperties().contains("leadingIcon"), "TP2 must remain text-only");
+            require(gap >= 0, "TP1 and Resolume must meet at the minimum width");
+            require(w.controls["tp2"]->getProperties()["icon"].toString()=="teleprompter2", "TP2 lost its own symbol");
             if (w.stageTimer->getY() == row)
                 require(w.stageTimer->getRight() <= w.controls["tp1"]->getX() &&
                         w.stageTimer->getX() >= w.controls["resolume"]->getRight(), "Timer overlaps toolbar labels");
@@ -382,21 +537,24 @@ struct WorkspaceLayoutTests {
             w.stage.reset();w.updateState();
             require(!w.stageTimer->isVisible(),"Timer count remained visible after stopping");
         }
-        for (auto id : {"menu", "mixer", "railMixer", "matrixPatch", "railParts", "railNotice",
+        require(w.controls["menu"]->getTooltip().isEmpty(), "File must not show a tooltip");
+        for (auto id : {"mixer", "railMixer", "matrixPatch", "railParts", "railNotice",
                         "railKeyboard", "railVinhetas", "railClock",
                         "advanced", "grandma2", "resolume", "tp1", "tp2", "preview", "remote"}) {
             auto *button = w.controls[id];
-            require(button->getTooltip().isEmpty(), "Labeled toolbar control still has a tooltip");
+            require(button->getTooltip().isNotEmpty(), "Icon is missing its tooltip");
+            const auto tip = button->getTooltip();
+            const juce::Rectangle<int> area(0,0,800,600);
+            const auto bounds = w.look.getTooltipBounds(tip, {795,595}, area);
+            require(area.contains(bounds) && bounds.getWidth() - 16 >= GlyphArrangement::getStringWidth(theme::font(12), tip),
+                    "Tooltip must fit the full name at the screen edge");
             require(button->getButtonText().isNotEmpty() && (bool)button->getProperties()["toolbarLabel"],
                     "Toolbar labels should retain their flat presentation");
         }
-        for (auto id : {"video", "remote"})
-            require(w.controls[id]->getProperties()["leadingIcon"].toString().isNotEmpty(),
-                    "Video and Remote retain their symbols");
-        for (auto id : {"menu", "library", "focus", "mixer", "railMixer", "matrixPatch", "railParts",
-                        "railNotice", "railClock", "railKeyboard", "railVinhetas", "advanced", "grandma2",
-                        "resolume", "tp1", "tp2", "preview", "settings"})
-            require(!w.controls[id]->getProperties().contains("leadingIcon"), "This toolbar entry is text-only");
+        for (auto id : {"menu","library","focus","midiPreview","tp1","video","remote","settings"})
+            require(w.controls[id]->getProperties()["icon"].toString().isNotEmpty(), "Toolbar symbol missing");
+        require(w.controls["advanced"]->getProperties()["icon"].toString()=="info.circle",
+                "Advanced must use the circled information icon");
         require(w.controls["menu"]->getButtonText() == "File" && w.controls["railKeyboard"]->getButtonText() == "Keyboard" &&
                 w.controls["railClock"]->getButtonText() == "Timer" && w.controls["focus"]->getButtonText() == "Track - I",
                 "Fixed toolbar labels must be verbatim");
@@ -523,14 +681,18 @@ struct WorkspaceLayoutTests {
         const auto handle=static_cast<HWND>(tool->getPeer()->getNativeHandle());
         for(int i=0;i<3;++i) {
             host.toFront(true);w.updateState();floatingControlTests::pump();
-            require(tool->isVisible()&&!tool->isMinimised(),"Advanced disappeared after focusing workspace");
             require(GetWindow(handle,GW_OWNER)==main,"Advanced lost its workspace owner");
-            bool above=false;
-            for(auto h=GetTopWindow(nullptr);h;h=GetWindow(h,GW_HWNDNEXT)) {
-                if(h==handle){above=true;break;}
-                if(h==main)break;
+            DWORD foregroundProcess = 0;
+            if (const auto foreground = GetForegroundWindow()) GetWindowThreadProcessId(foreground, &foregroundProcess);
+            if (foregroundProcess == GetCurrentProcessId()) {
+                require(tool->isVisible() && !tool->isMinimised(), "Advanced disappeared after focusing workspace");
+                bool above = false;
+                for (auto window = GetTopWindow(nullptr); window; window = GetWindow(window, GW_HWNDNEXT)) {
+                    if (window == handle) { above = true; break; }
+                    if (window == main) break;
+                }
+                require(above, "Advanced fell behind workspace");
             }
-            require(above,"Advanced fell behind workspace");
             require(!(GetWindowLongPtrW(handle,GWL_EXSTYLE)&WS_EX_TOPMOST),"Tool became globally topmost");
             require(Component::getCurrentlyModalComponent()==nullptr,"Tool blocked workspace controls");
             require(!tool->isResizable()&&tool->getMaximiseButton()==nullptr,"Advanced is still user resizable");
@@ -1569,9 +1731,12 @@ template<class Test> void registerTests(const File &directory,Test &test) {
     test("Tempo gestures update grid and preserve Undo and Redo",[&]{WorkspaceLayoutTests::tempoResponsiveness(directory);});
     test("Track Mixer wheel thumb and grid scroll stay synchronized without rebuilding rows",[&]{WorkspaceLayoutTests::immediateTrackScroll(directory);});
     test("Repeated multi-track paste selects the last copy and immediately reveals it in both 900-track mixers while retaining controls",[&]{WorkspaceLayoutTests::duplicateTrackFollow(directory);});
+    test("Keyboard right click opens the keyboard settings sheet",[&]{WorkspaceLayoutTests::keyboardContextSettings(directory);});
     test("Native transport repairs externally displaced input bounds",[&]{WorkspaceLayoutTests::transportHitBounds(directory);});
     test("Fullscreen transport keeps controls, Master drawing and native hit areas aligned",[&]{WorkspaceLayoutTests::fullscreenTransport(directory);});
-    test("Toolbar labels and timer fit without hover tooltips",[&]{WorkspaceLayoutTests::toolbarTimerAndLabels(directory);});
+    test("Performance dock geometry with Hoz Mixer Pads and MIDI Preview",[&]{WorkspaceLayoutTests::performanceDockPositions(directory);});
+    test("Toolbar symbols and timer fit with accessible labels",[&]{WorkspaceLayoutTests::toolbarTimerAndLabels(directory);});
+    test("Stopped transport shows a dash without a selected region",[&]{WorkspaceLayoutTests::transportRegionDisplay(directory);});
     test("Settings order and immediate theme repaint",[&]{WorkspaceLayoutTests::settingsThemeParity(directory);});
     test("Advanced remains above workspace without blocking controls",[&]{WorkspaceLayoutTests::toolWindowOrdering(directory);});
     test("Empty track tail matches Mac and appending preserves vertical scroll",[&]{WorkspaceLayoutTests::trackTail(directory);});

@@ -16,6 +16,10 @@ end=scroll.index('\n#endif',start)
 clip_start=scroll.index('private final class TimelineClipView: NSClipView')
 clip_end=scroll.index('\n#endif',clip_start)
 grid=Path('Apple/Shared/TimelineGridView.swift').read_text()
+transfer=Path('Apple/Shared/VinhetasPanel.swift').read_text()
+diagnostics+='\nimport UniformTypeIdentifiers\ntypealias MixerDividerView = NSView\n'
+diagnostics+=scroll[scroll.index('private protocol TimelineSetlistResizeHost:'):scroll.index('private final class WorkspaceSplitView<')]
+diagnostics+=transfer[transfer.index('enum LibrarySamplerTransfer {'):transfer.index('enum PadAudioBuffer {')]
 models=Path('Application/Project/ProjectModels.swift').read_text()
 geometry=models[models.index('public enum TrackHeightGeometry'):models.index('public struct TrackLinkOriginal')]
 limits=grid[grid.index('enum TimelineZoomLimits'):grid.index('\nenum TimelineSnapPreference')]

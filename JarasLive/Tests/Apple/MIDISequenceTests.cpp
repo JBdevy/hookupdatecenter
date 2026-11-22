@@ -88,6 +88,28 @@ static void timingEditRegressions(double rate) {
     }
     std::cout<<"MIDI_TIMING_EDITS_PRESERVE_IDENTIFIED_HELD_NOTES_WITHOUT_REATTACK_AND_KEEP_SEEK_LOOP_STOP_DUAL_HEAD_OK "<<rate<<"\n";
 }
+static void verifyHardwareClockJitter(double rate) {
+    auto sequence = std::make_unique<CatMIDISequence>();
+    constexpr double host = 1000, frames = 128;
+    const double block = frames / rate;
+    sequence->setNotes({{0, 8*block, 36, 110, 0}, {9*block, 11*block, 36, 110, 0}});
+    sequence->configure(0, 0, host, true, 0, 0);
+    unsigned on = 0, off = 0;
+    for (int index = 0; index < 12; ++index) {
+        const double jitter = index == 0 ? 0 : (index % 2 ? -16 : 20) / rate;
+        sequence->render(host + index * block + jitter, rate, frames, index * frames);
+        on += attacks(*sequence);
+        off += releases(*sequence);
+    }
+    assert(on == 2 && off == 2);
+    // A real seek still chases the note while the device sample cursor is continuous.
+    sequence->configure(0, 2*block, host + 12*block, true, 0, 0);
+    sequence->render(host + 12*block, rate, frames, 12*frames);
+    assert(attacks(*sequence) == 1 && releases(*sequence) == 0);
+    sequence->stop();
+    sequence->render(host + 13*block, rate, frames, 13*frames);
+    assert(attacks(*sequence) == 0 && releases(*sequence) == 1);
+}
 int main() {
     {
         auto sequence=std::make_unique<CatMIDISequence>();
@@ -123,4 +145,6 @@ int main() {
     s->render(6.1,48000,128);assert(s->count==1&&s->events[0].offset==0);
     std::cout<<"MIDI_AUDIO_CLOCK_SAMPLE_OFFSETS_SEEK_CHASE_STOP_LOOP_DUAL_HEAD_AND_REPLACEMENT_OK\n";
     timingEditRegressions(44100);timingEditRegressions(48000);
+    verifyHardwareClockJitter(44100);verifyHardwareClockJitter(48000);
+    std::cout<<"MIDI_HARDWARE_TIMESTAMP_JITTER_NO_RETRIGGER_WITH_SEEK_AND_STOP_OK\n";
 }

@@ -59,5 +59,5 @@ presentation='''struct FixtureRegionEditorPresentation: ViewModifier {
 '''
 Path(sys.argv[1]).write_text(editor+'\n'+environment+'\n'+'\n'.join(fixtures)+'\n'+presentation+'\n'+Path('Tests/Apple/RegionPopoverTests.swift').read_text())
 PY
-swiftc -suppress-warnings -swift-version 5 Apple/Shared/NativeTooltips.swift "$test_dir/main.swift" -o "$test_dir/test"
+swiftc -suppress-warnings -swift-version 5 Apple/Shared/NativeTimelineInputGate.swift Apple/Shared/NativeTooltips.swift "$test_dir/main.swift" -o "$test_dir/test"
 "$test_dir/test"

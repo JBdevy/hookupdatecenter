@@ -18,5 +18,5 @@ cache = declaration('@MainActor private final class TrackLayoutCache').replace('
 key = declaration('struct TimelineRenderKey:')
 Path(sys.argv[2]).write_text('import Foundation\n' + rows.replace('@MainActor private struct TrackRowLayout', '@MainActor struct TrackRowLayout') + '\n' + cache + '\n' + key)
 PYTHON
-swiftc -swift-version 5 Application/Controls/NativeFXParameter.swift Application/Project/{ProjectModels,TrackAutomation,ItemFade,ItemFadeCurve,MIDIItem,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Layout.swift" "$build_dir/Rows.swift" Tests/Apple/RecordingLaneLayoutTests.swift -o "$build_dir/test"
+swiftc -swift-version 5 Application/Controls/NativeFXParameter.swift Application/Project/{DrummerPadKit,ProjectModels,TrackAutomation,ItemFade,ItemFadeCurve,MIDIItem,ProjectDocumentCodec,ProjectDocumentAppearance,MultiLoop,AudioFileRead,TimelineTempo,OutputPatch,TrackRouting,ClipRepetition,NativeFXSettings,RecordingOverview,StemProjectImporter,MediaFileNames,HookImportRules}.swift "$build_dir/Layout.swift" "$build_dir/Rows.swift" Tests/Apple/RecordingLaneLayoutTests.swift -o "$build_dir/test"
 "$build_dir/test"

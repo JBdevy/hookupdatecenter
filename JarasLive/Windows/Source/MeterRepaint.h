@@ -9,6 +9,20 @@ namespace catlive::meterDisplay {
 inline constexpr float fractionForDB(float db) noexcept {
     return std::clamp((db + 60.f) / 72.f, 0.f, 1.f);
 }
+inline double horizontalTrackUnity(double travel) noexcept {
+    const auto width = std::max(1., travel);
+    return (width - std::min(32., width / 2)) / width;
+}
+inline double horizontalTrackFraction(double db, double travel) noexcept {
+    const auto unity = horizontalTrackUnity(travel);
+    db = std::clamp(db, -60., 12.);
+    return db <= 0 ? (db + 60) / 60 * unity : unity + db / 12 * (1 - unity);
+}
+inline double horizontalTrackDB(double fraction, double travel) noexcept {
+    const auto unity = horizontalTrackUnity(travel);
+    fraction = std::clamp(fraction, 0., 1.);
+    return fraction <= unity ? fraction / unity * 60 - 60 : (fraction - unity) / (1 - unity) * 12;
+}
 inline float fraction(float amplitude) noexcept {
     return amplitude > 0 && std::isfinite(amplitude)
         ? fractionForDB(20.f * std::log10(amplitude)) : 0.f;

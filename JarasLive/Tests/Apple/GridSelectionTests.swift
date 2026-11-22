@@ -956,7 +956,7 @@ menuGrid.items += [
 menuGrid.updateSelection([contextMIDI, contextMIDIMuted, contextAudibleID])
 let midiContext = menuGrid.itemContextMenu(for: contextMIDI)
 precondition(midiContext.items.count == 5)
-precondition(midiContext.items.map(\.title) == ["Config rate", "Mute items", "Convert Mono", "Convert Stereo", "Unify items"])
+precondition(midiContext.items.map(\.title) == ["Config rate", "Mute items", "Convert To Audio Mono", "Convert To Audio Stereo", "Unify items"])
 invoke(midiContext, "configureRateSelection")
 precondition(rateRequest == [contextMIDI, contextMIDIMuted, contextAudibleID], "MIDI Config rate must include the selected media")
 let timecodeContext = UUID()

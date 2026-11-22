@@ -12,7 +12,7 @@ struct PadRenderer {
         float *left = static_cast<float *>(buffers->mBuffers[0].mData);
         float *right = static_cast<float *>(buffers->mBuffers[1].mData);
         std::fill_n(left, frames, 0.f); std::fill_n(right, frames, 0.f);
-        sequence.render(catMIDIClock(time, rate), rate, frames);
+        catRenderMIDISequence(sequence, time, rate, frames);
         unsigned cursor = 0;
         for (unsigned i = 0; i < sequence.count; ++i) {
             const auto &e = sequence.events[i];

@@ -70,7 +70,7 @@ inline constexpr float railThickness = 14.f;
 inline constexpr float yellowTransitionStart = fractionForDB(-20.f), yellowTransitionEnd = fractionForDB(-17.f);
 inline const Colour signalGreen{0xff239653}, railBorder{0xff2d3236};
 inline void rail(Graphics &g, juce::Rectangle<float> bounds, const std::array<float, 2>& levels,
-                 bool vertical) {
+                 bool vertical, bool fixedUpperSpan = false) {
     if (bounds.isEmpty()) return;
     Path outline;
     const float radius = std::min(bounds.getWidth(), bounds.getHeight()) / 2;
@@ -85,10 +85,14 @@ inline void rail(Graphics &g, juce::Rectangle<float> bounds, const std::array<fl
                               : Point<float>(bounds.getRight(), bounds.getCentreY());
     const Colour red(0xfff44336);
     ColourGradient gradient(signalGreen, start, theme::yellow, end, false);
-    gradient.addColour(yellowTransitionStart, signalGreen);
-    gradient.addColour(yellowTransitionEnd, theme::yellow);
+    const auto dbPosition = [&](float db) {
+        return fixedUpperSpan ? (float)horizontalTrackFraction(db, bounds.getWidth()) : fractionForDB(db);
+    };
+    gradient.addColour(dbPosition(-20.f), signalGreen);
+    gradient.addColour(dbPosition(-17.f), theme::yellow);
     for (int channel = 0; channel < 2; ++channel) {
-        const auto amount = fraction(levels[(size_t)channel]);
+        const auto amplitude = levels[(size_t)channel];
+        const auto amount = amplitude > 0.f && std::isfinite(amplitude) ? dbPosition(20.f * std::log10(amplitude)) : 0.f;
         const auto gap = std::min(1.f, vertical ? bounds.getWidth() : bounds.getHeight());
         const auto thickness = ((vertical ? bounds.getWidth() : bounds.getHeight()) - gap) / 2;
         const auto fill = vertical
@@ -100,7 +104,7 @@ inline void rail(Graphics &g, juce::Rectangle<float> bounds, const std::array<fl
         g.fillRect(fill);
         if (levels[(size_t)channel] > 1.f) {
             g.setColour(red);
-            const auto threshold = fractionForDB(0.f);
+            const auto threshold = dbPosition(0.f);
             g.fillRect(vertical ? fill.withBottom(bounds.getBottom() - bounds.getHeight() * threshold)
                                 : fill.withLeft(bounds.getX() + bounds.getWidth() * threshold));
         }

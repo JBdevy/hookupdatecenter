@@ -61,6 +61,26 @@ class CatMIDISequence {
     std::array<Transition,32768> transitions{};
     unsigned transitionCount=0;
     bool overflow=false;
+    double renderEpoch = 0, epochSample = 0, nextSample = NAN, renderRate = 0;
+
+    double continuousClock(double hostTime, double rate, unsigned frames, double sample) {
+        if (!std::isfinite(sample)) {
+            nextSample = NAN;
+            return hostTime;
+        }
+        const double expected = renderEpoch + (sample - epochSample) / rate;
+        // A continuous device sample counter identifies adjacent pulls. Host
+        // timestamps can wobble between those pulls without a transport seek.
+        // Reanchor on a render discontinuity, device change or missed deadline.
+        if (renderRate != rate || !std::isfinite(nextSample) ||
+            std::abs(sample - nextSample) > 0.5 || std::abs(hostTime - expected) > 0.020) {
+            renderEpoch = hostTime;
+            epochSample = sample;
+            renderRate = rate;
+        }
+        nextSample = sample + frames;
+        return renderEpoch + (sample - epochSample) / rate;
+    }
     void enqueue(Transition value) {
         if(transitionCount<transitions.size()) transitions[transitionCount++]=value;else overflow=true;
     }
@@ -112,8 +132,9 @@ public:
         c.generation.fetch_add(1,std::memory_order_release);
     }
     void stop() {for(unsigned h=0;h<2;++h) configure(h,0,0,false,0,0);}
-    void render(double clock,double rate,unsigned frames) {
+    void render(double clock,double rate,unsigned frames,double sampleTime=NAN) {
         count=0;transitionCount=0;overflow=false;if(rate<=0||!std::isfinite(clock))return;
+        clock=continuousClock(clock,rate,frames,sampleTime);
         readers.fetch_add(1,std::memory_order_seq_cst);auto* plan=published.load(std::memory_order_seq_cst);
         for(unsigned head=0;head<2;++head) {
             auto& c=clocks[head];auto serial=c.generation.load(std::memory_order_acquire);if(serial&1)continue;
