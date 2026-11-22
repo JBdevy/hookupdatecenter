@@ -58,3 +58,4 @@ tabs.metronome
 tabs.waveform
 tabs.transport
 tabs.record
+metronome

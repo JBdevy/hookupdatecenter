@@ -85,7 +85,7 @@ enum JarasTheme {
     static let accent = Color(hex: 0x79f59a)
     static let green = Color(hex: 0x69ed91)
     static let workspaceToolbar = Color(hex: 0x2a2a2a)
-    static let desktopTransportGradient = [Color(hex: 0x262626), Color(hex: 0x1a1a1a)]
+    static let workspaceTransportGradient = [Color(hex: 0x1d1029), Color(hex: 0x0b0710)]
     static let licenseTitleGreen = Color(hex: 0x54ff93)
     static let transportPlay = Color(hex: 0x24f06a)
     static let liveOffRed = Color(hex: 0xff3030)

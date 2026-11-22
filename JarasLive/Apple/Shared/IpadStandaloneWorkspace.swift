@@ -1488,8 +1488,11 @@ struct IpadDialogButtonStyle: ButtonStyle {
                 }
             }
             if only == nil || only == .metronome {
-            Button { metronome.enabled.toggle() } label: { Image(systemName: "metronome") }
-                .buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : JarasTheme.panel, active: metronome.enabled, fontSize: 12, width: controlWidth ?? 30, height: 28))
+            Button { metronome.enabled.toggle() } label: {
+                ControlIcon(name: "metronome", active: metronome.enabled, size: 17)
+            }.buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : Color(hex: 0x454545),
+                active: metronome.enabled, inactiveOpacity: 1, fontSize: TransportControlMetrics.font,
+                width: controlWidth ?? 30, height: TransportControlMetrics.metronomeButtonHeight, bordered: false))
                 .overlay {
                     if let configureMetronome {
                         IpadTapHoldTouchSurface(tap: { metronome.enabled.toggle() }, hold: configureMetronome)
