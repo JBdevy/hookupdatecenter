@@ -14,8 +14,8 @@ namespace catlive {
 // Windows control. The Library still stores its portable colored text runs.
 class LibraryNoteEditor final : public Component, private AsyncUpdater {
   public:
-    LibraryNoteEditor(String text, std::function<void(String)> save)
-        : initial(std::move(text)), changed(std::move(save)) {
+    LibraryNoteEditor(String text, std::function<void(String)> save, bool focus = true)
+        : initial(std::move(text)), changed(std::move(save)), focusOnAttach(focus) {
         setComponentID("library-note-editor");
         addAndMakeVisible(host);
     }
@@ -54,6 +54,7 @@ class LibraryNoteEditor final : public Component, private AsyncUpdater {
   private:
     String initial;
     std::function<void(String)> changed;
+    const bool focusOnAttach;
     HWNDComponent host;
     HWND editor = nullptr;
     std::unique_ptr<NoteTextServices> textServices;
@@ -90,7 +91,7 @@ class LibraryNoteEditor final : public Component, private AsyncUpdater {
                     SendMessageW(editor, EM_SETEVENTMASK, 0, ENM_CHANGE);
                     host.setHWND(container);
                     resized();
-                    if (!isCurrentlyBlockedByAnotherModalComponent()) ::SetFocus(editor);
+                    if (focusOnAttach && !isCurrentlyBlockedByAnotherModalComponent()) ::SetFocus(editor);
                     return;
                 }
                 DestroyWindow(container);

@@ -2783,6 +2783,26 @@ private struct TrackMixFeedbackPanel: View {
                                     .environment(\.openFX, openNativeFX)
                                     .frame(height: max(0, dockHeight - 18))
                             }
+                            if previewHeight > 0, let localShow {
+                                VStack(spacing: 0) {
+                                    let gripHeight = min(14, previewHeight)
+                                    Color.clear.frame(height: gripHeight)
+                                        .overlay { Capsule().fill(JarasTheme.secondary).frame(width: 48, height: 3) }
+                                        .contentShape(Rectangle())
+                                        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                                            .updating($nativeMIDIPreviewResize) { drag, value, _ in value = drag.translation.height }
+                                            .onEnded { drag in
+                                                nativeMIDIPreviewHeight = min(previewMaximum, max(previewMinimum, previewInitial - drag.translation.height))
+                                            })
+                                        .accessibilityLabel("Resize MIDI Preview")
+                                        .accessibilityAdjustableAction { direction in
+                                            nativeMIDIPreviewHeight = min(previewMaximum, max(previewMinimum, previewInitial + (direction == .increment ? 24 : -24)))
+                                        }
+                                    RecordingPianoPreview(show: localShow)
+                                        .frame(height: previewHeight - gripHeight)
+                                        .clipped()
+                                }.frame(height: previewHeight, alignment: .top).clipped()
+                            }
                         }.frame(width: max(0, contentWidth - libraryWidth - focusWidth - baseSetlist - parts.total)).clipped()
                         let setlistWidth = prompterFullscreen ? 0 : prompterPanel == nil ? normalSetlist : max(1, contentWidth - 10) * prompterSetlistFraction
                         // Clipping only hides drawing; constrain touches too so a narrow
@@ -2824,29 +2844,6 @@ private struct TrackMixFeedbackPanel: View {
                     if local, nativeVinhetasOpen, !nativeVinhetasDetached, !prompterFullscreen, let localShow {
                         IpadVinhetasPanel(touchMenusEnabled: editingTracks, createTrack: { _ = localShow.createVinhetasTrack() })
                             .frame(height: padsHeight)
-                    }
-                    if previewHeight > 0, let localShow {
-                        HStack(spacing: 0) {
-                            VStack(spacing: 0) {
-                                let gripHeight = min(14, previewHeight)
-                                Color.clear.frame(height: gripHeight)
-                                    .overlay { Capsule().fill(JarasTheme.secondary).frame(width: 48, height: 3) }
-                                    .contentShape(Rectangle())
-                                    .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                                        .updating($nativeMIDIPreviewResize) { drag, value, _ in value = drag.translation.height }
-                                        .onEnded { drag in
-                                            nativeMIDIPreviewHeight = min(previewMaximum, max(previewMinimum, previewInitial - drag.translation.height))
-                                        })
-                                    .accessibilityLabel("Resize MIDI Preview")
-                                    .accessibilityAdjustableAction { direction in
-                                        nativeMIDIPreviewHeight = min(previewMaximum, max(previewMinimum, previewInitial + (direction == .increment ? 24 : -24)))
-                                    }
-                                RecordingPianoPreview(show: localShow)
-                                    .frame(height: previewHeight - gripHeight)
-                                    .clipped()
-                            }.frame(height: previewHeight, alignment: .top).clipped()
-                            Color.clear.frame(width: normalSetlist + parts.total)
-                        }
                     }
                     if local && nativePianoOpen && !prompterFullscreen {
                         FooterPianoKeyboard().frame(height: 108)
@@ -3124,9 +3121,9 @@ private struct TrackMixFeedbackPanel: View {
             Label {
                 Text(verbatim: "Save")
             } icon: {
-                ControlIcon(name: state.pendingSave ? "save" : "check", active: state.pendingSave, size: 14)
+                ControlIcon(name: state.pendingSave ? "save" : "check", active: state.pendingSave, size: 17)
             }
-                .font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
+                .labelStyle(.iconOnly)
                 .frame(width: local ? 56 : 72, height: 28)
                 .foregroundStyle(state.pendingSave ? Color.black : JarasTheme.secondary)
                 .modifier(RemoteControlSurface(color: state.pendingSave ? JarasTheme.green : nil))
@@ -3137,9 +3134,12 @@ private struct TrackMixFeedbackPanel: View {
     }
 
     private var transportSetlistButton: some View {
-        Button("Setlist") {
+        Button {
             if prompterPanel == nil { toggleMainSetlist() } else { togglePrompterSetlist() }
+        } label: {
+            TransportControlIcon(name: "setlist", size: 17)
         }
+        .accessibilityLabel("Setlist")
         .buttonStyle(TransportButtonStyle(color: mainSetlistVisible ? JarasTheme.green : Color(hex: 0xc44545),
             active: true, fontSize: 11, width: 62, height: 28))
         .accessibilityValue(mainSetlistVisible ? "Shown" : "Hidden")

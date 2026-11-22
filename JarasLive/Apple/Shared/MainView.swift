@@ -94,6 +94,8 @@ struct MainView: View {
     @AppStorage("jaras.layout.library.open", store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
     @AppStorage("jaras.layout.focus.open", store: WorkspaceLayoutPreferences.storage) private var focusOpen = false
     @State private var midiPreviewOpen = false
+    @State private var proNotesOpen = false
+    @State private var proSamplersOpen = false
     @StateObject private var midiPreviewWindow = RecordingPianoWindow()
     @StateObject private var detachedMixer = DetachedMixerWindow()
     @StateObject private var detachedParts = DetachedPartsWindow()
@@ -300,8 +302,14 @@ struct MainView: View {
         // control. Their own layouts still receive the current proposed size.
         #if os(macOS)
         let share: (() -> Void)? = shareProject
+        let notesOpen = proNotesOpen, samplersOpen = proSamplersOpen
+        let notesAction = { proNotesOpen.toggle(); if proNotesOpen { proSamplersOpen = false } }
+        let samplersAction = { proSamplersOpen.toggle(); if proSamplersOpen { proNotesOpen = false } }
+        let closeDocks = { proNotesOpen = false; proSamplersOpen = false }
         #else
         let share: (() -> Void)? = nil
+        let notesOpen = false, samplersOpen = false
+        let notesAction: () -> Void = {}, samplersAction: () -> Void = {}, closeDocks: () -> Void = {}
         #endif
         let transport = TransportView(show: show, documents: documents, remotePresentation: remotePresentation,
             mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
@@ -309,7 +317,8 @@ struct MainView: View {
             mixerCollapsed: mixerWidth <= 0, setlistCollapsed: setlistCollapsed,
             toggleMixer: toggleMixer, toggleSetlist: toggleSetlist,
             setlistPlacement: setlistPlacement, placeSetlist: placeSetlist,
-            shareProject: share)
+            shareProject: share, proNotesOpen: notesOpen, proSamplersOpen: samplersOpen,
+            toggleProNotes: notesAction, toggleProSamplers: samplersAction, closeProDocks: closeDocks)
         let editor = VStack(spacing: 0) {
             #if os(macOS)
             if desktopExtras && documents.projectTabCount > 1 { DesktopProjectTabBar().frame(height: 24) }
@@ -365,6 +374,8 @@ struct MainView: View {
                 transport
                     #if os(macOS)
                     GeometryReader { geometry in
+                        SectionListDock(visible: proNotesOpen || proSamplersOpen, storageKey: "catlive.proDock.width",
+                                        minimumPrimaryWidth: 700, defaultFraction: 0.22) {
                         SectionListDock(visible: partsRightOpen && setlistWidth > 0 && setlistPlacement != .detached, storageKey: "catlive.sections.width", minimumPrimaryWidth: 620, defaultFraction: 0.22) {
                         NativeWorkspaceSplit(width: CGFloat(setlistWidth), restoreWidth: CGFloat(setlistRestoreWidth),
                             minimum: SidebarWidthLimits.setlist, scrollController: setlistScrollController,
@@ -389,7 +400,7 @@ struct MainView: View {
                                         ? 192 * min(1.5, max(1, partsHeightScale)) : 0,
                                     mixerOpen: footerMixerOpen,
                                     previewOpen: desktopExtras && midiPreviewOpen && !midiPreviewWindow.detached
-                                ) { workspaceHeight, mixerHeight in
+                                ) { workspaceHeight, mixerHeight, preview in
                                     HStack(alignment: .top, spacing: 0) {
                                         if desktopExtras && libraryOpen {
                                             let available = max(100, editing.size.width - (focusOpen ? FooterHorizontalMixer.focusWidth : 0) - 220)
@@ -400,15 +411,18 @@ struct MainView: View {
                                                 .frame(width: FooterHorizontalMixer.focusWidth)
                                         }
                                         VStack(spacing: 0) {
-                                            SectionListDock(visible: partsLeftOpen && !partsLeftHorizontal, storageKey: "catlive.parts.left.width",
-                                                            minimumPrimaryWidth: 260 + max(0, CGFloat(mixerWidth)), defaultFraction: 0.24, leading: true) {
-                                                TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
-                                                                 toggleMixer: toggleMixer).equatable()
-                                                    .foregroundStyle(JarasTheme.text)
-                                            } sections: { SmoothSeekPanel(show: show, placement: .left) }
-                                            timelineDocks(mixerLimit: mixerHeight)
+                                            VStack(spacing: 0) {
+                                                SectionListDock(visible: partsLeftOpen && !partsLeftHorizontal, storageKey: "catlive.parts.left.width",
+                                                                minimumPrimaryWidth: 260 + max(0, CGFloat(mixerWidth)), defaultFraction: 0.24, leading: true) {
+                                                    TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
+                                                                     toggleMixer: toggleMixer).equatable()
+                                                        .foregroundStyle(JarasTheme.text)
+                                                } sections: { SmoothSeekPanel(show: show, placement: .left) }
+                                                timelineDocks(mixerLimit: mixerHeight)
+                                            }.frame(height: workspaceHeight, alignment: .top).clipped()
+                                            preview
                                         }
-                                    }.frame(height: workspaceHeight, alignment: .top).clipped()
+                                    }
                                 } lowerDocks: {
                                     performanceDocks()
                                 }
@@ -420,6 +434,10 @@ struct MainView: View {
                                 .foregroundStyle(JarasTheme.text)
                         }
                         } sections: { SmoothSeekPanel(show: show) }
+                        } sections: {
+                            if proNotesOpen { WorkspaceNotesDock(theme: interfaceTheme) }
+                            else { WorkspaceLibrary(theme: interfaceTheme, show: show, samplersOnly: true) }
+                        }
                         .frame(width: geometry.size.width, height: geometry.size.height)
                     }
                     #else
@@ -1500,7 +1518,7 @@ private struct DesktopWorkspaceDocks<Upper: View, Lower: View>: View {
     let partsHeight: CGFloat
     let mixerOpen: Bool
     let previewOpen: Bool
-    @ViewBuilder let upper: (CGFloat, CGFloat) -> Upper
+    @ViewBuilder let upper: (CGFloat, CGFloat, DesktopMIDIPreviewDock) -> Upper
     @ViewBuilder let lowerDocks: () -> Lower
     @AppStorage("jaras.midiPreview.height", store: WorkspaceLayoutPreferences.storage) private var savedHeight = 273.0
     @State private var liveHeight: CGFloat?
@@ -1512,23 +1530,40 @@ private struct DesktopWorkspaceDocks<Upper: View, Lower: View>: View {
         let maximum = min(723.55859375, spare - mixerReserve)
         let minimum = min(273, maximum)
         let previewHeight = previewOpen ? min(maximum, max(minimum, liveHeight ?? savedHeight)) : 0
+        let workspaceHeight = max(0, availableHeight - otherDocks)
         VStack(spacing: 0) {
-            upper(max(0, availableHeight - otherDocks - previewHeight), spare - previewHeight)
-            if previewHeight > 0 {
-                let gripHeight = min(10, previewHeight)
-                VStack(spacing: 0) {
-                    FooterMixerResizeInput(height: previewHeight, minimum: minimum, maximum: maximum,
-                        changed: { liveHeight = $0 },
-                        ended: { height in savedHeight = height; liveHeight = nil },
-                        cancelled: { liveHeight = nil })
-                        .frame(height: gripHeight)
-                        .accessibilityLabel("Resize MIDI Preview")
-                    RecordingPianoPreview(show: show)
-                        .frame(height: previewHeight - gripHeight)
-                        .clipped()
-                }.frame(height: previewHeight, alignment: .top).clipped()
-            }
+            upper(workspaceHeight - previewHeight, spare - previewHeight,
+                DesktopMIDIPreviewDock(show: show, height: previewHeight, minimum: minimum, maximum: maximum,
+                    changed: { liveHeight = $0 },
+                    ended: { height in savedHeight = height; liveHeight = nil },
+                    cancelled: { liveHeight = nil }))
+                .frame(height: workspaceHeight, alignment: .top).clipped()
             lowerDocks()
+        }
+    }
+}
+
+private struct DesktopMIDIPreviewDock: View {
+    let show: ShowController
+    let height: CGFloat
+    let minimum: CGFloat
+    let maximum: CGFloat
+    let changed: (CGFloat) -> Void
+    let ended: (CGFloat) -> Void
+    let cancelled: () -> Void
+
+    var body: some View {
+        if height > 0 {
+            let gripHeight = min(10, height)
+            VStack(spacing: 0) {
+                FooterMixerResizeInput(height: height, minimum: minimum, maximum: maximum,
+                    changed: changed, ended: ended, cancelled: cancelled)
+                    .frame(height: gripHeight)
+                    .accessibilityLabel("Resize MIDI Preview")
+                RecordingPianoPreview(show: show)
+                    .frame(height: height - gripHeight)
+                    .clipped()
+            }.frame(height: height, alignment: .top).clipped()
         }
     }
 }

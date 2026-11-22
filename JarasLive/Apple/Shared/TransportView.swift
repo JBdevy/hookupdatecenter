@@ -72,6 +72,9 @@ struct TransportView: View {
     @State private var showingExport = false
     #endif
     @State private var showingFadeout = false
+    #if os(macOS)
+    @AppStorage("jaras.transport.proMode", store: WorkspaceLayoutPreferences.storage) private var proMode = false
+    #endif
     let show: ShowController
     @StateObject private var updates: ShowPresentationObserver
     var documents: ProjectDocuments? = nil
@@ -85,18 +88,28 @@ struct TransportView: View {
     var setlistPlacement: SetlistPlacement = .right
     var placeSetlist: (SetlistPlacement) -> Void = { _ in }
     var shareProject: (() -> Void)?
+    var proNotesOpen = false
+    var proSamplersOpen = false
+    var toggleProNotes: () -> Void = {}
+    var toggleProSamplers: () -> Void = {}
+    var closeProDocks: () -> Void = {}
     init(show: ShowController, documents: ProjectDocuments? = nil, remotePresentation: Bool = false,
          mediaDirectory: URL? = nil, toggleNavigation: @escaping () -> Void = {},
          mixerCollapsed: Bool = false, setlistCollapsed: Bool = false,
          toggleMixer: @escaping () -> Void = {}, toggleSetlist: @escaping () -> Void = {},
          setlistPlacement: SetlistPlacement = .right, placeSetlist: @escaping (SetlistPlacement) -> Void = { _ in },
-         shareProject: (() -> Void)? = nil) {
+         shareProject: (() -> Void)? = nil, proNotesOpen: Bool = false, proSamplersOpen: Bool = false,
+         toggleProNotes: @escaping () -> Void = {}, toggleProSamplers: @escaping () -> Void = {},
+         closeProDocks: @escaping () -> Void = {}) {
         self.show = show; self.documents = documents; self.remotePresentation = remotePresentation
         self.mediaDirectory = mediaDirectory; self.toggleNavigation = toggleNavigation
         self.mixerCollapsed = mixerCollapsed; self.setlistCollapsed = setlistCollapsed
         self.toggleMixer = toggleMixer; self.toggleSetlist = toggleSetlist
         self.setlistPlacement = setlistPlacement; self.placeSetlist = placeSetlist
         self.shareProject = shareProject
+        self.proNotesOpen = proNotesOpen; self.proSamplersOpen = proSamplersOpen
+        self.toggleProNotes = toggleProNotes; self.toggleProSamplers = toggleProSamplers
+        self.closeProDocks = closeProDocks
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     @ViewBuilder private func setlistPositionOption(_ title: String, _ placement: SetlistPlacement) -> some View {
@@ -137,7 +150,9 @@ struct TransportView: View {
         let mainWidth: CGFloat = remotePresentation ? 266 : 222
         let statusWidth = width - 16 - groupSpacing - mainWidth
         let detailWidth = TransportControlMetrics.desktopDetailsWidth
-        let actionWidth = 2 * buttonWidth + 6 + ((documents?.projectTabCount ?? 0) > 1 ? 62 : 0)
+        let activeProMode = proMode && !remotePresentation
+        let modeWidth: CGFloat = remotePresentation ? 0 : 74
+        let actionWidth = 2 * buttonWidth + 6 + modeWidth + ((documents?.projectTabCount ?? 0) > 1 ? 62 : 0)
         let automationWidth = TransportControlMetrics.envelopeWidth
         let editGroupSpacing: CGFloat = 8
         let playbackRoom = statusWidth - detailWidth - actionWidth - automationWidth - playbackSpacing - editGroupSpacing - 30
@@ -150,6 +165,7 @@ struct TransportView: View {
         let playbackWidth = preferredWidth
         let playbackSpan: CGFloat? = nil
         let titleInset: CGFloat = 202
+        let activeProMode = false
         #endif
         let transport = show.snapshot.transport
         let running = transport.playing || show.preparingAudio
@@ -168,44 +184,41 @@ struct TransportView: View {
             MasterStrip(show: show).frame(width: mainWidth)
 
             TransportDisplaysLive(show: show, displaysTuner: !remotePresentation, titleInset: titleInset,
-                                  desktopPlaybackSpan: playbackSpan, keyWidth: playbackWidth) {
+                                  desktopPlaybackSpan: playbackSpan, keyWidth: playbackWidth, proMode: activeProMode) {
                 #if os(macOS)
                 HStack(spacing: 6) {
                     if let documents, documents.projectTabCount > 1 { projectTabControls(documents) }
+                    if activeProMode {
+                        proPanelButton("Notes", icon: "note.text", active: proNotesOpen, action: toggleProNotes)
+                        proPanelButton("Samplers", icon: "library.samplers", active: proSamplersOpen, action: toggleProSamplers)
+                    }
+                    if !remotePresentation {
+                        Button {
+                            proMode.toggle()
+                            if !proMode { closeProDocks() }
+                        } label: {
+                            Text(verbatim: "Pro Mode")
+                        }.buttonStyle(TransportButtonStyle(color: proMode ? JarasTheme.green : Color(hex: 0x454545),
+                            active: proMode, inactiveOpacity: 1, fontSize: 10, width: 68,
+                            height: TransportControlMetrics.height, bordered: false))
+                            .accessibilityAddTraits(proMode ? .isSelected : [])
+                    }
                     saveButton
                     setlistButton(width: buttonWidth)
                 }.fixedSize(horizontal: true, vertical: false)
                 #endif
             } playback: {
-                HStack(spacing: playbackSpacing) {
-                    Button { show.send(running ? .stop : .play) } label: {
-                        Label { playbackTitle } icon: { TransportControlIcon(name: running ? "stopall" : "play", size: 14) }
-                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: transport.playing,
-                        width: playbackWidth, height: TransportControlMetrics.playbackHeight))
-                        .accessibilityLabel(playbackTitle).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
-                        #if !os(macOS)
-                        .contextMenu { Button("Fadeout…") { showingFadeout = true } }
-                        #endif
-                    #if os(macOS)
-                    if !remotePresentation {
-                        Button { show.triggerTransportFadeout() } label: {
-                            HStack(spacing: 2) {
-                                TransportControlIcon(name: "fadeout", size: 13)
-                                Text(verbatim: "Fadeout")
-                            }
-                        }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, inactiveOpacity: 1, inactiveForeground: .black, fontSize: 10,
-                            width: playbackWidth, height: TransportControlMetrics.playbackHeight, bordered: false))
-                            .accessibilityLabel("Fadeout").jarasHelp("Fadeout")
-                            .immediateRightClick { showingFadeout = true }
-                    }
-                    #endif
-                    Button { show.send(.pause) } label: { TransportControlIcon(name: "pause", size: 14) }
-                        .buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(paused), active: paused, inactiveOpacity: 1,
-                            width: playbackWidth, height: TransportControlMetrics.playbackHeight, bordered: false))
-                        .accessibilityLabel("Pause").jarasHelp("Pause").disabled(!transport.playing)
-                    RepeatControl(active: transport.loop.enabled, width: playbackWidth) { show.send(.toggleLoop) }
-                    TransportRecordButton(show: show, width: playbackWidth)
-                }.fixedSize(horizontal: true, vertical: false)
+                #if os(macOS)
+                if activeProMode {
+                    ProTransportButtons(show: show, configureFadeout: { showingFadeout = true })
+                } else {
+                    standardPlayback(running: running, paused: paused, title: playbackTitle,
+                        width: playbackWidth, spacing: playbackSpacing, playing: transport.playing, repeatEnabled: transport.loop.enabled)
+                }
+                #else
+                standardPlayback(running: running, paused: paused, title: playbackTitle,
+                    width: playbackWidth, spacing: playbackSpacing, playing: transport.playing, repeatEnabled: transport.loop.enabled)
+                #endif
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
@@ -219,9 +232,51 @@ struct TransportView: View {
                 setlistButton(width: buttonWidth * 2 + 6)
             }.fixedSize(horizontal: true, vertical: false)
             #endif
-        }.padding(.horizontal, 8).padding(.vertical, 6)
-            .background(interfaceTheme.panel)
+        }
+        .padding(.horizontal, 8)
     }
+
+    private func standardPlayback(running: Bool, paused: Bool, title: Text, width: CGFloat, spacing: CGFloat,
+                                  playing: Bool, repeatEnabled: Bool) -> some View {
+        HStack(spacing: spacing) {
+            Button { show.send(running ? .stop : .play) } label: {
+                Label { title } icon: { TransportControlIcon(name: running ? "stopall" : "play", size: 14) }
+            }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: playing,
+                width: width, height: TransportControlMetrics.playbackHeight, bordered: false))
+                .accessibilityLabel(title).jarasHelp(ControlMappings.shared.shortcutHelp(.playStop))
+                #if !os(macOS)
+                .contextMenu { Button("Fadeout…") { showingFadeout = true } }
+                #endif
+            #if os(macOS)
+            if !remotePresentation {
+                Button { show.triggerTransportFadeout() } label: {
+                    HStack(spacing: 2) {
+                        TransportControlIcon(name: "fadeout", size: 13)
+                        Text(verbatim: "Fadeout")
+                    }
+                }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, inactiveOpacity: 1, inactiveForeground: .black, fontSize: 10,
+                    width: width, height: TransportControlMetrics.playbackHeight, bordered: false))
+                    .accessibilityLabel("Fadeout").jarasHelp("Fadeout")
+                    .immediateRightClick { showingFadeout = true }
+            }
+            #endif
+            Button { show.send(.pause) } label: { TransportControlIcon(name: "pause", size: 14) }
+                .buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(paused), active: paused, inactiveOpacity: 1,
+                    width: width, height: TransportControlMetrics.playbackHeight, bordered: false))
+                .accessibilityLabel("Pause").jarasHelp("Pause").disabled(!playing)
+            RepeatControl(active: repeatEnabled, width: width) { show.send(.toggleLoop) }
+            TransportRecordButton(show: show, width: width)
+        }.fixedSize(horizontal: true, vertical: false)
+    }
+
+    #if os(macOS)
+    private func proPanelButton(_ label: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) { TransportControlIcon(name: icon, size: 16) }
+            .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.green : Color(hex: 0x454545),
+                active: active, inactiveOpacity: 1, width: 30, height: TransportControlMetrics.height, bordered: false))
+            .accessibilityLabel(LocalizedStringKey(label)).jarasHelp(label)
+    }
+    #endif
 
     private var saveButton: some View {
         ProjectSaveButton(pending: show.needsSave, saving: show.saving, message: show.message,
@@ -241,7 +296,7 @@ struct TransportView: View {
     }
     #endif
     private func setlistButton(width: CGFloat) -> some View {
-        PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist",
+        PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", icon: "setlist",
             label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist",
             tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
             .frame(width: width, height: TransportControlMetrics.height)
@@ -336,18 +391,21 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
     @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     let desktopPlaybackSpan: CGFloat?
     let keyWidth: CGFloat
+    let proMode: Bool
     #if os(macOS)
     @Environment(\.desktopTimelineToolbar) private var timelineToolbar
     #endif
     @StateObject private var updates: ShowPresentationObserver
 
-    init(show: ShowController, displaysTuner: Bool, titleInset: CGFloat, desktopPlaybackSpan: CGFloat?, keyWidth: CGFloat, @ViewBuilder actions: () -> Actions,
+    init(show: ShowController, displaysTuner: Bool, titleInset: CGFloat, desktopPlaybackSpan: CGFloat?, keyWidth: CGFloat,
+         proMode: Bool, @ViewBuilder actions: () -> Actions,
          @ViewBuilder playback: () -> Playback) {
         self.show = show
         self.displaysTuner = displaysTuner
         self.titleInset = titleInset
         self.desktopPlaybackSpan = desktopPlaybackSpan
         self.keyWidth = keyWidth
+        self.proMode = proMode
         self.actions = actions()
         self.playback = playback()
         _updates = StateObject(wrappedValue: show.presentationObserver)
@@ -401,49 +459,62 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
             #if os(macOS)
             let halfHeight = geometry.size.height / 2
             VStack(spacing: 0) {
-                title.frame(height: halfHeight)
-                    .overlay(alignment: .trailing) { noticeView.frame(width: noticeWidth).padding(.trailing, 8) }
-                if let desktopPlaybackSpan {
-                    let bottomInset: CGFloat = 4
-                    HStack(alignment: .bottom, spacing: 8) {
-                        playback.padding(.bottom, bottomInset)
-                        GeometryReader { room in
-                            let detailsWidth = TransportControlMetrics.desktopDetailsWidth
-                            let toolsWidth = timelineToolbar == nil ? 0 : TransportControlMetrics.desktopToolsWidth
-                            let toolsSpan = toolsWidth > 0 ? toolsWidth + 10 : 0
-                            let editSpan = keyWidth + 3 + TransportControlMetrics.envelopeWidth
-                            let detailStart = editSpan + 8
-                            let scale = min(1, max(1, room.size.width - detailStart) / (detailsWidth + toolsSpan))
-                            let detailsHalf = detailsWidth * scale / 2
-                            // The room excludes playback and actions. Translate the
-                            // panel's midpoint into this space before fitting the controls.
-                            let panelCenter = geometry.size.width / 2 - (6 + desktopPlaybackSpan + 8)
-                            let rightLimit = room.size.width - toolsSpan * scale - detailsHalf
-                            let center = max(detailStart + detailsHalf, min(panelCenter, rightLimit))
-                            let bottom = room.size.height - bottomInset
-                            // REC ends eight points before this room; BPM starts at center - detailsHalf.
-                            desktopEditControls
-                                .position(x: (center - detailsHalf - 8) / 2,
-                                          y: bottom - TransportControlMetrics.playbackHeight / 2)
-                            details.frame(width: detailsWidth)
-                                .scaleEffect(scale)
-                                .position(x: center, y: bottom - TransportControlMetrics.detailHeight * scale / 2)
-                            if let timelineToolbar {
-                                let toolbarStart = center + detailsHalf
-                                let toolbarSpan = room.size.width - toolbarStart
-                                DesktopTimelineToolbarView(show: show, controls: timelineToolbar)
-                                    .frame(width: max(toolsWidth, toolbarSpan / scale))
-                                    .scaleEffect(scale)
-                                    .position(x: toolbarStart + toolbarSpan / 2, y: bottom - 12 * scale)
-                            }
+                if proMode {
+                    details.frame(maxWidth: .infinity).frame(height: halfHeight)
+                        .overlay(alignment: .leading) {
+                            TransportTimeDisplay(show: show).foregroundStyle(JarasTheme.licenseTitleGreen).padding(.leading, 8)
                         }
-                        .frame(minWidth: min(max(0, geometry.size.width - desktopPlaybackSpan - 230), 200))
-                        actions.padding(.bottom, bottomInset)
-                    }.padding(.leading, 6).padding(.trailing, 8).frame(height: halfHeight)
+                        .overlay(alignment: .trailing) { noticeView.frame(width: noticeWidth).padding(.trailing, 8) }
+                    HStack(spacing: 6) {
+                        playback
+                        Spacer(minLength: 6)
+                        actions
+                    }.padding(.horizontal, 8).frame(height: halfHeight)
                 } else {
-                    details.offset(y: -4).frame(maxWidth: .infinity).frame(height: halfHeight)
-                        .overlay(alignment: .leading) { playback.padding(.leading, 6) }
-                        .overlay(alignment: .trailing) { actions.padding(.trailing, 8) }
+                    title.frame(height: halfHeight)
+                        .overlay(alignment: .trailing) { noticeView.frame(width: noticeWidth).padding(.trailing, 8) }
+                    if let desktopPlaybackSpan {
+                        let bottomInset: CGFloat = 4
+                        HStack(alignment: .bottom, spacing: 8) {
+                            playback.padding(.bottom, bottomInset)
+                            GeometryReader { room in
+                                let detailsWidth = TransportControlMetrics.desktopDetailsWidth
+                                let toolsWidth = timelineToolbar == nil ? 0 : TransportControlMetrics.desktopToolsWidth
+                                let toolsSpan = toolsWidth > 0 ? toolsWidth + 10 : 0
+                                let editSpan = keyWidth + 3 + TransportControlMetrics.envelopeWidth
+                                let detailStart = editSpan + 8
+                                let scale = min(1, max(1, room.size.width - detailStart) / (detailsWidth + toolsSpan))
+                                let detailsHalf = detailsWidth * scale / 2
+                                // The room excludes playback and actions. Translate the
+                                // panel's midpoint into this space before fitting the controls.
+                                let panelCenter = geometry.size.width / 2 - (6 + desktopPlaybackSpan + 8)
+                                let rightLimit = room.size.width - toolsSpan * scale - detailsHalf
+                                let center = max(detailStart + detailsHalf, min(panelCenter, rightLimit))
+                                let bottom = room.size.height - bottomInset
+                                // REC ends eight points before this room; BPM starts at center - detailsHalf.
+                                desktopEditControls
+                                    .position(x: (center - detailsHalf - 8) / 2,
+                                              y: bottom - TransportControlMetrics.playbackHeight / 2)
+                                details.frame(width: detailsWidth)
+                                    .scaleEffect(scale)
+                                    .position(x: center, y: bottom - TransportControlMetrics.detailHeight * scale / 2)
+                                if let timelineToolbar {
+                                    let toolbarStart = center + detailsHalf
+                                    let toolbarSpan = room.size.width - toolbarStart
+                                    DesktopTimelineToolbarView(show: show, controls: timelineToolbar)
+                                        .frame(width: max(toolsWidth, toolbarSpan / scale))
+                                        .scaleEffect(scale)
+                                        .position(x: toolbarStart + toolbarSpan / 2, y: bottom - 12 * scale)
+                                }
+                            }
+                            .frame(minWidth: min(max(0, geometry.size.width - desktopPlaybackSpan - 230), 200))
+                            actions.padding(.bottom, bottomInset)
+                        }.padding(.leading, 6).padding(.trailing, 8).frame(height: halfHeight)
+                    } else {
+                        details.offset(y: -4).frame(maxWidth: .infinity).frame(height: halfHeight)
+                            .overlay(alignment: .leading) { playback.padding(.leading, 6) }
+                            .overlay(alignment: .trailing) { actions.padding(.trailing, 8) }
+                    }
                 }
             }
             #else
@@ -477,6 +548,61 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
         }
     }
 }
+
+#if os(macOS)
+private struct ProTransportButtons: View {
+    let show: ShowController
+    let configureFadeout: () -> Void
+    @ObservedObject private var recorder = TrackRecording.shared
+
+    var body: some View {
+        let transport = show.snapshot.transport
+        let canStop = transport.playing || transport.paused == true || transport.subPlay.playing || show.preparingAudio
+        let canSubplay = transport.subPlay.playing ||
+            (transport.playing && (transport.queuedRegionId != nil || transport.queue.songId != nil))
+        let recording = recorder.recording || recorder.countingIn
+        HStack(spacing: 0) {
+            navigation(.projectStart)
+            navigation(.previousTimelinePoint)
+            navigation(.nextTimelinePoint)
+            navigation(.projectEnd)
+            control("Stop", icon: "stopall", enabled: canStop) { show.send(.stopAll) }
+            control("Play", icon: "play", tint: transport.playing ? JarasTheme.green : .white) { show.send(.play) }
+            control("Pause", icon: "pause", tint: transport.paused == true ? JarasTheme.yellow : .white,
+                enabled: transport.playing || transport.paused == true) { show.send(.pause) }
+            control("Sub Play", icon: "subplay", tint: transport.subPlay.playing ? JarasTheme.yellow : .white,
+                enabled: canSubplay) { show.performAction(.subPlayStop) }
+            control("Fadeout", icon: "fadeout", tint: JarasTheme.yellow) { show.triggerTransportFadeout() }
+                .immediateRightClick { configureFadeout() }
+            control("Record", icon: "record", tint: recording ? .white : JarasTheme.liveOffRed,
+                selectedColor: recording ? JarasTheme.liveOffRed : nil, enabled: !recorder.busy || recorder.countingIn) {
+                recorder.toggle(show: show)
+            }
+            control("Repeat", icon: "loop", tint: transport.loop.enabled ? JarasTheme.yellow : .white) {
+                show.send(.toggleLoop)
+            }
+        }
+        .padding(2)
+        .background(Color(hex: 0x343434), in: RoundedRectangle(cornerRadius: 7))
+        .overlay { RoundedRectangle(cornerRadius: 7).strokeBorder(.white.opacity(0.22)).allowsHitTesting(false) }
+        .fixedSize()
+    }
+
+    private func navigation(_ action: DAWAction) -> some View {
+        control(action.title, icon: action.rawValue) { show.performAction(action) }
+    }
+
+    private func control(_ title: String, icon: String, tint: Color = .white,
+                         selectedColor: Color? = nil, enabled: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            TransportControlIcon(name: icon, size: 14, color: tint)
+                .frame(width: 26, height: 22).contentShape(Rectangle())
+                .background(selectedColor ?? .clear, in: RoundedRectangle(cornerRadius: 4))
+        }.buttonStyle(.plain).disabled(!enabled).opacity(enabled ? 1 : 0.36)
+            .accessibilityLabel(LocalizedStringKey(title)).jarasHelp(title)
+    }
+}
+#endif
 
 #if os(macOS)
 private struct DesktopTimelineToolbarView: View {
@@ -1008,12 +1134,16 @@ struct FooterSongDisplays: View {
 private struct PanelCollapseButton: View {
     let collapsed: Bool
     let title: String
+    var icon: String? = nil
     let label: String
     let tooltip: String
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Text(verbatim: title).font(.jarasSystem(size: 9, weight: .bold))
+            Group {
+                if let icon { TransportControlIcon(name: icon, size: 17) }
+                else { Text(verbatim: title).font(.jarasSystem(size: 9, weight: .bold)) }
+            }
                 .foregroundStyle(collapsed ? Color.white : Color.black)
                 .frame(maxWidth: .infinity).frame(height: TransportControlMetrics.height)
                 .background(collapsed ? Color(hex: 0x454545) : JarasTheme.green)
@@ -1215,10 +1345,9 @@ private struct ProjectSaveButton: View {
             Label {
                 Text(verbatim: "Save")
             } icon: {
-                ControlIcon(name: pending ? "save" : "check", active: pending, size: 14)
+                ControlIcon(name: pending ? "save" : "check", active: pending, size: 17)
             }
-                .font(.jarasSystem(size: TransportControlMetrics.font, weight: .semibold))
-                .lineLimit(1).minimumScaleFactor(0.8)
+                .labelStyle(.iconOnly)
                 .frame(width: buttonWidth, height: TransportControlMetrics.height)
                 .foregroundStyle(pending ? Color.black : .white)
                 .background(RoundedRectangle(cornerRadius: 6).fill(pending ? JarasTheme.green : Color(hex: 0x454545)))
@@ -1544,7 +1673,7 @@ private struct RepeatControl: View {
         Button(action: action) { TransportControlIcon(name: "loop", size: 14) }
             .buttonStyle(TransportButtonStyle(color: active ? JarasTheme.yellow : Color(hex: 0x454545),
                 active: active, inactiveOpacity: 1, fontSize: TransportControlMetrics.font,
-                width: width, height: TransportControlMetrics.playbackHeight))
+                width: width, height: TransportControlMetrics.playbackHeight, bordered: false))
             .accessibilityLabel("Repeat").jarasHelp("Repeat (R)")
     }
 }
