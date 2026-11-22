@@ -162,7 +162,7 @@ struct TransportView: View {
         let actionsHeight = activeProMode ? TransportControlMetrics.proHeight : TransportControlMetrics.height
         let modeWidth: CGFloat = remotePresentation ? 0 : 74
         let actionWidth = 2 * TransportControlMetrics.iconWidth + 6 + modeWidth + ((documents?.projectTabCount ?? 0) > 1 ? 62 : 0)
-        let automationWidth = TransportControlMetrics.envelopeWidth
+        let automationWidth = TransportEditingButtons.controlWidth
         let editGroupSpacing: CGFloat = 8
         let playbackRoom = statusWidth - detailWidth - actionWidth - automationWidth - playbackSpacing - editGroupSpacing - 30
         let compactWidth = max(43, floor((playbackRoom - 5 * playbackSpacing) / 6))
@@ -193,7 +193,7 @@ struct TransportView: View {
             MasterStrip(show: show).frame(width: mainWidth)
 
             TransportDisplaysLive(show: show, displaysTuner: !remotePresentation, titleInset: titleInset,
-                                  desktopPlaybackSpan: playbackSpan, keyWidth: playbackWidth, proMode: activeProMode) {
+                                  desktopPlaybackSpan: playbackSpan, proMode: activeProMode) {
                 #if os(macOS)
                 HStack(spacing: 6) {
                     if let documents, documents.projectTabCount > 1 { projectTabControls(documents) }
@@ -404,21 +404,19 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
     let playback: Playback
     @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     let desktopPlaybackSpan: CGFloat?
-    let keyWidth: CGFloat
     let proMode: Bool
     #if os(macOS)
     @Environment(\.desktopTimelineToolbar) private var timelineToolbar
     #endif
     @StateObject private var updates: ShowPresentationObserver
 
-    init(show: ShowController, displaysTuner: Bool, titleInset: CGFloat, desktopPlaybackSpan: CGFloat?, keyWidth: CGFloat,
+    init(show: ShowController, displaysTuner: Bool, titleInset: CGFloat, desktopPlaybackSpan: CGFloat?,
          proMode: Bool, @ViewBuilder actions: () -> Actions,
          @ViewBuilder playback: () -> Playback) {
         self.show = show
         self.displaysTuner = displaysTuner
         self.titleInset = titleInset
         self.desktopPlaybackSpan = desktopPlaybackSpan
-        self.keyWidth = keyWidth
         self.proMode = proMode
         self.actions = actions()
         self.playback = playback()
@@ -426,13 +424,8 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
     }
 
     #if os(macOS)
-    private var desktopEditControls: some View {
-        HStack(spacing: 3) {
-            TimelineEditButton(show: show, key: TimelineEditPreferences.desktop, width: keyWidth,
-                               height: TransportControlMetrics.playbackHeight)
-            TransportEnvelopeButton(show: show, width: TransportControlMetrics.envelopeWidth,
-                                    height: TransportControlMetrics.playbackHeight)
-        }.fixedSize()
+    private var desktopEditControls: TransportEditingButtons {
+        TransportEditingButtons(show: show, key: TimelineEditPreferences.desktop)
     }
     #endif
     var body: some View {
@@ -486,7 +479,7 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
                                 let detailsWidth = TransportControlMetrics.desktopDetailsWidth
                                 let toolsWidth = timelineToolbar == nil ? 0 : TransportControlMetrics.desktopToolsWidth
                                 let toolsSpan = toolsWidth > 0 ? toolsWidth + 10 : 0
-                                let editSpan = keyWidth + 3 + TransportControlMetrics.envelopeWidth
+                                let editSpan = TransportEditingButtons.span
                                 let detailStart = editSpan + 8
                                 let scale = min(1, max(1, room.size.width - detailStart) / (detailsWidth + toolsSpan))
                                 let detailsHalf = detailsWidth * scale / 2
@@ -558,9 +551,8 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
     @ViewBuilder private func proLayout(width: CGFloat, regionName: String, playing: Bool) -> some View {
         let controlsHeight = TransportControlMetrics.proHeight
         let compact = width < 1220
-        let editWidth: CGFloat = 29
         let detailSpacing: CGFloat = 8
-        let editSpan = 2 * editWidth + 2 * detailSpacing
+        let editSpan = TransportEditingButtons.span + 2 * detailSpacing
         let switchesSpan: CGFloat = timelineToolbar == nil ? 0 : 53 + detailSpacing
         let zoomControls = Group {
             if let timelineToolbar {
@@ -574,10 +566,7 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
             .lineLimit(1)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityLabel("Current song").accessibilityValue(regionName)
-        let editing = HStack(spacing: detailSpacing) {
-            TimelineEditButton(show: show, key: TimelineEditPreferences.desktop, width: editWidth, height: controlsHeight)
-            TransportEnvelopeButton(show: show, width: editWidth, height: controlsHeight)
-        }.fixedSize()
+        let editing = desktopEditControls
         let details = HStack(spacing: detailSpacing) {
             TempoControl(show: show)
             if displaysTuner { RegionTunerControl(show: show) }
@@ -819,8 +808,6 @@ struct ProTransportButtons: View {
     var body: some View {
         let transport = show.snapshot.transport
         let running = transport.playing || show.preparingAudio
-        let canSubplay = transport.subPlay.playing ||
-            (transport.playing && (transport.queuedRegionId != nil || transport.queue.songId != nil))
         let recording = recorder.recording || recorder.countingIn
         HStack(spacing: 0) {
             navigation(.projectStart)
@@ -831,8 +818,6 @@ struct ProTransportButtons: View {
                 tint: running ? JarasTheme.green : .white) { show.send(running ? .stop : .play) }
             control("Pause", icon: "pause", tint: transport.paused == true ? JarasTheme.yellow : .white,
                 enabled: transport.playing || transport.paused == true) { show.send(.pause) }
-            control("Sub Play", icon: "subplay", tint: transport.subPlay.playing ? JarasTheme.yellow : .white,
-                enabled: canSubplay) { show.performAction(.subPlayStop) }
             control("Fadeout", icon: "fadeout", tint: JarasTheme.yellow) { show.triggerTransportFadeout() }
                 .immediateRightClick { configureFadeout() }
             control("Record", icon: "record", tint: recording ? .white : JarasTheme.liveOffRed,
@@ -1726,7 +1711,6 @@ enum TransportControlMetrics {
     static let proHeight: CGFloat = 30
     static let playbackWidth: CGFloat = 60
     #if os(macOS)
-    static let envelopeWidth: CGFloat = 28
     static let desktopDetailsWidth: CGFloat = 384
     static let desktopToolsWidth: CGFloat = 252
     static let playbackHeight: CGFloat = 24
@@ -1755,7 +1739,24 @@ extension EnvironmentValues {
         set { self[TransportControlWidthKey.self] = newValue }
     }
 }
-struct TimelineEditButton: View {
+struct TransportEditingButtons: View {
+    static let controlWidth: CGFloat = 28
+    private static let spacing: CGFloat = 4
+    static var span: CGFloat { 2 * controlWidth + spacing }
+
+    let show: ShowController
+    let key: String
+
+    var body: some View {
+        let height = TransportControlMetrics.playbackHeight
+        HStack(spacing: Self.spacing) {
+            TimelineEditButton(show: show, key: key, width: Self.controlWidth, height: height)
+            TransportEnvelopeButton(show: show, width: Self.controlWidth, height: height)
+        }.fixedSize()
+    }
+}
+
+private struct TimelineEditButton: View {
     @AppStorage private var enabled: Bool
     let show: ShowController?
     let width: CGFloat
@@ -1779,7 +1780,7 @@ struct TimelineEditButton: View {
     }
 }
 
-struct TransportEnvelopeButton: View {
+private struct TransportEnvelopeButton: View {
     @ObservedObject var show: ShowController
     let width: CGFloat
     let height: CGFloat
