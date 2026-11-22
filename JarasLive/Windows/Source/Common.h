@@ -126,7 +126,7 @@ inline constexpr uint32 darkBackgroundRGB = 0x0f0f0f;
 inline const Colour darkBackground{0xff000000u | darkBackgroundRGB};
 inline Colour background = darkBackground, panel = darkBackground, display = darkBackground, titlebar = darkBackground;
 inline Colour scrollRail{0xff1f1f1f}, homeBackground{0xff0f0f0f}, line{0xff444444}, secondary{0xffb9b9b9};
-inline const Colour transportPanelTop{0xff262626}, transportPanelBottom{0xff1a1a1a};
+inline const Colour transportPanelTop{0xff1d1029}, transportPanelBottom{0xff0b0710};
 inline const Colour transportPanelBorder{0xff505050};
 inline const Colour transportDetailTop{0xff1f1f1f}, transportDetailBottom{0xff1a1a1a}, transportDetailBorder{0xff3b3b3b};
 inline const Colour lightDarkBackground{0xff242424}, lightDarkPanel{0xff2b2b2b}, lightDarkDisplay{0xff202020};

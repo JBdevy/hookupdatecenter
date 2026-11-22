@@ -59,3 +59,4 @@ CATLIVE_TOOLBAR_SYMBOL("tabs.metronome", "m 5 21 l 8 4 l 16 4 l 19 21 z m 12 17 
 CATLIVE_TOOLBAR_SYMBOL("tabs.waveform", "m 2 12 l 5 12 m 6 9 l 6 15 m 9 6 l 9 18 m 12 3 l 12 21 m 15 7 l 15 17 m 18 9 l 18 15 m 19 12 l 22 12", "")
 CATLIVE_TOOLBAR_SYMBOL("tabs.transport", "m 14 5 l 14 19 m 20 5 l 20 19", "m 3 5 l 12 12 l 3 19 z")
 CATLIVE_TOOLBAR_SYMBOL("tabs.record", "m 12 2.5 c 17.25 2.5 21.5 6.75 21.5 12 c 21.5 17.25 17.25 21.5 12 21.5 c 6.75 21.5 2.5 17.25 2.5 12 c 2.5 6.75 6.75 2.5 12 2.5 z", "m 12 8 c 14.2 8 16 9.8 16 12 c 16 14.2 14.2 16 12 16 c 9.8 16 8 14.2 8 12 c 8 9.8 9.8 8 12 8 z")
+CATLIVE_TOOLBAR_SYMBOL("metronome", "m 4 21 l 8.5 3.5 l 14.5 3.5 l 19 21 z m 8 17.5 l 12 17.5 l 20.5 7.5", "m 18 7 l 20 5 l 22 7 l 20 9 z")

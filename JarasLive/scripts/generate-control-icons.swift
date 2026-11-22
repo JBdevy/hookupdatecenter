@@ -1,5 +1,6 @@
 // Run from the JarasLive root with swift scripts/generate-control-icons.swift.
 import AppKit
+import ImageIO
 
 let resources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
 let folder = resources.appendingPathComponent("ControlIcons")
@@ -32,12 +33,20 @@ func path(_ definition: String) -> CGPath {
 let tile = 96, columns = 8
 let width = columns * tile, height = ((rows.count + columns - 1) / columns) * tile
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
+let movingHeadURL = resources.appendingPathComponent("ControlIconSources/StageLights.png")
+guard let movingHeadSource = CGImageSourceCreateWithURL(movingHeadURL as CFURL, nil),
+      let movingHead = CGImageSourceCreateImageAtIndex(movingHeadSource, 0, nil),
+      let movingHeadIndex = rows.firstIndex(where: { $0[0] == "stageLights" }) else {
+    fatalError("Missing the grandMA2 moving-head icon or its atlas slot")
+}
 for active in [false, true] {
     let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                         space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.saveGState()
     ctx.translateBy(x: 0, y: CGFloat(height))
     ctx.scaleBy(x: CGFloat(tile) / 24, y: -CGFloat(tile) / 24)
     for (index, row) in rows.enumerated() {
+        if index == movingHeadIndex { continue }
         let name = row[0]
         ctx.saveGState()
         ctx.translateBy(x: CGFloat(index % columns * 24), y: CGFloat(index / columns * 24))
@@ -45,7 +54,7 @@ for active in [false, true] {
         ctx.translateBy(x: 1.5, y: 1.5)
         ctx.scaleBy(x: 0.875, y: 0.875)
         let outline = path(row[1]), filled = path(row[2])
-        let darkInk = ["pause", "fadeout"].contains(name) || (active && ["editCursor", "automationLanes", "lock", "loop", "record", "play", "stopall"].contains(name))
+        let darkInk = ["pause", "fadeout"].contains(name) || (active && ["editCursor", "automationLanes", "lock", "loop", "record", "play", "stopall", "metronome"].contains(name))
         let folder = name.hasPrefix("library.") || name == "folder.fill"
         let top: [CGFloat] = name == "record" && !active ? [1.0,0.39,0.36] : folder && !active ? [0.49,0.91,0.60] : darkInk ? [0.12,0.17,0.15] : active ? [0.68,1,0.78] : [0.95,0.96,0.98]
         let bottom: [CGFloat] = name == "record" && !active ? [0.92,0.12,0.12] : folder && !active ? [0.19,0.65,0.34] : darkInk ? [0.025,0.05,0.04] : active ? [0.26,0.90,0.48] : [0.66,0.70,0.75]
@@ -80,6 +89,18 @@ for active in [false, true] {
             ink(CGPath(rect: CGRect(x: 15.5, y: 3.5, width: 4, height: 4), transform: nil))
         }
         ctx.restoreGState()
+    }
+    ctx.restoreGState()
+    let cell = CGRect(x: movingHeadIndex % columns * tile,
+                      y: height - (movingHeadIndex / columns + 1) * tile, width: tile, height: tile)
+    let scale = CGFloat(tile - 4) / CGFloat(max(movingHead.width, movingHead.height))
+    let artSize = CGSize(width: CGFloat(movingHead.width) * scale, height: CGFloat(movingHead.height) * scale)
+    ctx.interpolationQuality = .high
+    ctx.draw(movingHead, in: CGRect(x: cell.midX - artSize.width / 2, y: cell.midY - artSize.height / 2,
+                                   width: artSize.width, height: artSize.height))
+    if active {
+        ctx.setFillColor(red: 0.44, green: 0.96, blue: 0.60, alpha: 1)
+        ctx.fillEllipse(in: CGRect(x: cell.maxX - 17, y: cell.minY + 6, width: 12, height: 12))
     }
     let bitmap = NSBitmapImageRep(cgImage: ctx.makeImage()!)
     try bitmap.representation(using: .png, properties: [:])!.write(to: folder.appendingPathComponent(active ? "controlsOn.png" : "controlsOff.png"))

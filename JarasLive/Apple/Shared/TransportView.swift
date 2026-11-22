@@ -355,18 +355,11 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
 
     #if os(macOS)
     private var desktopEditControls: some View {
-        let active = show.allTrackAutomationLanesVisible
-        return HStack(spacing: 3) {
+        HStack(spacing: 3) {
             TimelineEditButton(show: show, key: TimelineEditPreferences.desktop, width: keyWidth,
-                               height: TransportControlMetrics.playbackHeight, idleColor: Color(hex: 0x454545), bordered: false)
-            Button { show.toggleAllTrackAutomationLanes() } label: {
-                ControlIcon(name: "automationLanes", active: active, size: 17)
-            }.buttonStyle(TransportButtonStyle(color: active ? JarasTheme.green : Color(hex: 0x454545),
-                active: active, inactiveOpacity: 1, width: TransportControlMetrics.envelopeWidth,
-                height: TransportControlMetrics.playbackHeight, bordered: false))
-                .accessibilityLabel("Track envelopes").accessibilityIdentifier("track-envelopes")
-                .accessibilityAddTraits(active ? .isSelected : [])
-                .disabled(!show.canToggleAllTrackAutomationLanes)
+                               height: TransportControlMetrics.playbackHeight)
+            TransportEnvelopeButton(show: show, width: TransportControlMetrics.envelopeWidth,
+                                    height: TransportControlMetrics.playbackHeight)
         }.fixedSize()
     }
     #endif
@@ -465,8 +458,7 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
         .background {
             #if os(macOS)
             RoundedRectangle(cornerRadius: 7)
-                .fill(LinearGradient(colors: interfaceTheme == .dark ? [interfaceTheme.background, interfaceTheme.background] : JarasTheme.desktopTransportGradient,
-                                     startPoint: .top, endPoint: .bottom))
+                .fill(LinearGradient(colors: JarasTheme.workspaceTransportGradient, startPoint: .top, endPoint: .bottom))
             #else
             RoundedRectangle(cornerRadius: 7)
                 .fill(LinearGradient(colors: interfaceTheme.transportGradient,
@@ -1365,12 +1357,9 @@ struct TimelineEditButton: View {
     let show: ShowController?
     let width: CGFloat
     let height: CGFloat
-    let idleColor: Color
-    let bordered: Bool
 
-    init(show: ShowController?, key: String, width: CGFloat, height: CGFloat, idleColor: Color, bordered: Bool) {
+    init(show: ShowController?, key: String, width: CGFloat, height: CGFloat) {
         self.show = show; self.width = width; self.height = height
-        self.idleColor = idleColor; self.bordered = bordered
         _enabled = AppStorage(wrappedValue: false, key)
     }
 
@@ -1380,10 +1369,27 @@ struct TimelineEditButton: View {
             if !enabled, let show, show.snapshot.transport.beatSeek != nil { show.send(.cancelBeatSeek) }
         } label: {
             ControlIcon(name: "editCursor", active: enabled, size: 17)
-        }.buttonStyle(TransportButtonStyle(color: enabled ? JarasTheme.green : idleColor,
-            active: enabled, inactiveOpacity: 1, width: width, height: height, bordered: bordered))
+        }.buttonStyle(TransportButtonStyle(color: enabled ? JarasTheme.green : Color(hex: 0x454545),
+            active: enabled, inactiveOpacity: 1, width: width, height: height, bordered: false))
             .accessibilityLabel("Edit").accessibilityIdentifier("editMode")
             .accessibilityAddTraits(enabled ? .isSelected : [])
+    }
+}
+
+struct TransportEnvelopeButton: View {
+    @ObservedObject var show: ShowController
+    let width: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        let active = show.allTrackAutomationLanesVisible
+        Button { show.toggleAllTrackAutomationLanes() } label: {
+            ControlIcon(name: "automationLanes", active: active, size: 17)
+        }.buttonStyle(TransportButtonStyle(color: active ? JarasTheme.green : Color(hex: 0x454545),
+            active: active, inactiveOpacity: 1, width: width, height: height, bordered: false))
+            .accessibilityLabel("Track envelopes").accessibilityIdentifier("track-envelopes")
+            .accessibilityAddTraits(active ? .isSelected : [])
+            .disabled(!show.canToggleAllTrackAutomationLanes)
     }
 }
 
@@ -1422,15 +1428,18 @@ struct TransportButtonStyle: ButtonStyle {
 }
 struct TransportPreview: PreviewProvider { static var previews: some View { TransportView(show: try! AppContainer(preview: true).show).frame(width: 980) } }
 
-private struct MetronomeModeButton: View {
+struct MetronomeModeButton: View {
     @ObservedObject private var settings = MetronomeSettings.shared
+    let width: CGFloat
     private var mode: Int { min(2, max(0, settings.mode)) }
     private var label: String { ["A-B", "A", "B"][mode] }
+
+    init(width: CGFloat = 32) { self.width = width }
 
     var body: some View {
         Button { settings.mode = (mode + 1) % 3 } label: { Text(verbatim: label) }
             .buttonStyle(TransportButtonStyle(color: Color(hex: 0x454545), inactiveOpacity: 1,
-                fontSize: 10, width: 32, height: TransportControlMetrics.metronomeButtonHeight, bordered: false))
+                fontSize: 10, width: width, height: TransportControlMetrics.metronomeButtonHeight, bordered: false))
             .accessibilityLabel("Click mode").accessibilityValue(label)
     }
 }
@@ -1441,16 +1450,12 @@ private struct MetronomeControl: View {
     @State private var configuring = false
     var body: some View { control }
     private var control: some View {
-        Button { settings.enabled.toggle() } label: { Image(systemName: "metronome") }
-            #if os(macOS)
+        Button { settings.enabled.toggle() } label: {
+            ControlIcon(name: "metronome", active: settings.enabled, size: 17)
+        }
             .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : Color(hex: 0x454545),
                 active: settings.enabled, inactiveOpacity: 1, fontSize: TransportControlMetrics.font,
                 width: max(30, (buttonWidth / 2).rounded()), height: TransportControlMetrics.metronomeButtonHeight, bordered: false))
-            #else
-            .buttonStyle(TransportButtonStyle(color: settings.enabled ? JarasTheme.yellow : JarasTheme.panel,
-                active: settings.enabled, fontSize: TransportControlMetrics.font,
-                width: max(30, (buttonWidth / 2).rounded()), height: TransportControlMetrics.metronomeButtonHeight))
-            #endif
             .accessibilityLabel("Metronome").accessibilityValue(settings.enabled ? "On" : "Off")
             .jarasHelp("Metronome · Right-click to configure")
             .immediateRightClick { configuring = true }

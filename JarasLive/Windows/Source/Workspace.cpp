@@ -6481,9 +6481,8 @@ void Workspace::syncNativeTransport() {
         if (surfaceBounds.contains(model->getBounds())) {
             const auto panelColourAt = [&](int y) {
                 const auto proportion = (float)(y - surfaceBounds.getY()) / surfaceBounds.getHeight();
-                const bool dark = theme::background == theme::darkBackground;
-                const auto top = onTempoPanel ? theme::transportDetailTop : dark ? theme::background : theme::transportPanelTop;
-                const auto bottom = onTempoPanel ? theme::transportDetailBottom : dark ? theme::background : theme::transportPanelBottom;
+                const auto top = onTempoPanel ? theme::transportDetailTop : theme::transportPanelTop;
+                const auto bottom = onTempoPanel ? theme::transportDetailBottom : theme::transportPanelBottom;
                 return top.interpolatedWith(bottom, proportion).getARGB();
             };
             state.surface = panelColourAt(model->getY());
@@ -6521,7 +6520,7 @@ void Workspace::syncNativeTransport() {
         auto icon = model->getProperties()["leadingIcon"].toString();
         if (icon.isEmpty() && StringArray{"play", "pause", "loop", "record", "metronome"}.contains(id)) icon = id;
         state.icon = icon.toWideCharPointer();
-        static const StringArray pngIcons{"play","stopall","fadeout","pause","loop","record"};
+        static const StringArray pngIcons{"play","stopall","fadeout","pause","loop","record","metronome"};
         if (pngIcons.contains(icon)) {
             // Native transport HWNDs own their render targets. Share immutable PNG pixels between them.
             static const auto bitmaps = [] {
@@ -6634,9 +6633,8 @@ void Workspace::paint(Graphics &g) {
         g.setFont(durationFont);
         g.drawText(durationText, durationBounds, Justification::centred, false);
     }
-    if (theme::background == theme::darkBackground) g.setColour(theme::background);
-    else g.setGradientFill(ColourGradient(theme::transportPanelTop, 0, (float)transportDisplayBounds.getY(),
-                                         theme::transportPanelBottom, 0, (float)transportDisplayBounds.getBottom(), false));
+    g.setGradientFill(ColourGradient(theme::transportPanelTop, 0, (float)transportDisplayBounds.getY(),
+                                    theme::transportPanelBottom, 0, (float)transportDisplayBounds.getBottom(), false));
     g.fillRoundedRectangle(transportDisplayBounds.toFloat(), 7);
     g.setColour(theme::transportPanelBorder);
     g.drawRoundedRectangle(transportDisplayBounds.toFloat().reduced(.5f), 7, 1);

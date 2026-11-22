@@ -1280,7 +1280,6 @@ private struct TrackMixFeedbackPanel: View {
     @State private var liveLibraryWidth: Double?
     @AppStorage(WorkspaceLibrary.folderWidthKey, store: WorkspaceLayoutPreferences.storage)
     private var nativeLibraryFoldersWidth = WorkspaceLibrary.defaultFolderWidth
-    @ObservedObject private var nativeMetronome = MetronomeSettings.shared
     @AppStorage("jaras.ipad.parts.left.preferredWidth") private var nativeLeftPartsWidth = 240.0
     @AppStorage("jaras.ipad.vinhetas.open") private var nativeVinhetasOpen = false
     @State private var remoteVinhetasOpen = false
@@ -3168,12 +3167,8 @@ private struct TrackMixFeedbackPanel: View {
             }
             .padding(.horizontal, 6).padding(.vertical, 3)
             .background {
-                if local && nativeInterfaceTheme == .dark {
-                    RoundedRectangle(cornerRadius: 7).fill(nativeInterfaceTheme.background)
-                } else {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(LinearGradient(colors: JarasTheme.desktopTransportGradient, startPoint: .top, endPoint: .bottom))
-                }
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(LinearGradient(colors: JarasTheme.workspaceTransportGradient, startPoint: .top, endPoint: .bottom))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 7).strokeBorder(JarasInterfaceTheme.lightDark.transportBorder)
@@ -3305,18 +3300,10 @@ private struct TrackMixFeedbackPanel: View {
                     EmptyView()
                 }
             }
-            TimelineEditButton(show: localShow, key: TimelineEditPreferences.native, width: width, height: 28,
-                               idleColor: JarasTheme.panel, bordered: true)
+            TimelineEditButton(show: localShow, key: TimelineEditPreferences.native, width: width, height: 28)
                 .padding(.leading, 3)
             if let localShow {
-                let active = localShow.allTrackAutomationLanesVisible
-                Button { localShow.toggleAllTrackAutomationLanes() } label: {
-                    ControlIcon(name: "automationLanes", active: active, size: 17)
-                }.buttonStyle(TransportButtonStyle(color: active ? JarasTheme.green : JarasTheme.panel,
-                    active: active, inactiveOpacity: 1, width: min(28, width), height: 28))
-                    .accessibilityLabel("Track envelopes")
-                    .accessibilityAddTraits(active ? .isSelected : [])
-                    .disabled(!localShow.canToggleAllTrackAutomationLanes)
+                TransportEnvelopeButton(show: localShow, width: min(28, width), height: 28)
             }
         }.fixedSize()
     }
@@ -3326,9 +3313,7 @@ private struct TrackMixFeedbackPanel: View {
                 HStack(spacing: 10) {
                     if visible.contains(.metronome), let localShow {
                         HStack(spacing: 8) {
-                            Button(["A–B", "A", "B"][min(2, max(0, nativeMetronome.mode))]) {
-                                nativeMetronome.mode = (min(2, max(0, nativeMetronome.mode)) + 1) % 3
-                            }.buttonStyle(TransportButtonStyle(color: JarasTheme.panel, fontSize: 10, width: 30, height: 28))
+                            MetronomeModeButton(width: 30)
                             IpadAudioTransportButtons(show: localShow, configureMetronome: openMetronome, only: .metronome, controlWidth: 30)
                         }
                     }
