@@ -2374,6 +2374,10 @@ public struct ShowTimelinePresentationState: Equatable {
                 globalDefaults?.set(snapshot.transport.multiLoopsBypassed == true, forKey: Self.multiLoopBypassDefaultsKey)
             }
             applyLoopMixer()
+            // At a scheduled REC handoff the available audio lead is measured
+            // in buffers. Enqueue sound before revealing and redrawing the grid.
+            let scheduledRecording = command == .play && recordingStartDeadline != nil
+            if scheduledRecording { audioUpdate(snapshot, audioProjectRevision) }
             if disabledAuto { markChanged(refreshAudio: false, preservingMediaStorage: true) }
             focusPreparedRegion(previous: previous)
             if command == .editSeek || command == .queueBeatSeek || (command == .queueSection && !snapshot.transport.playing) {
@@ -2384,7 +2388,7 @@ public struct ShowTimelinePresentationState: Equatable {
             }
             rememberCursor()
             if isPlaying { startClock() } else { timer?.invalidate(); timer = nil; finishAutomationRecording(); onStop() }
-            audioUpdate(snapshot, audioProjectRevision)
+            if !scheduledRecording { audioUpdate(snapshot, audioProjectRevision) }
             if !snapshot.transport.playing || snapshot.transport.songId != transportFadeout.run?.song && transportFadeout.active { cancelTransportFadeout() }
         } catch { reportControlError(error) }
     }

@@ -501,7 +501,10 @@ enum AudioDestinationSpace {
         return (try? FileManager.default.attributesOfFileSystem(forPath: directory.path)[.systemFreeSize] as? NSNumber)?.int64Value
     }
     @MainActor static func confirm(at destination: URL) -> Bool {
-        guard let available = availableBytes(at: destination), needsWarning(availableBytes: available) else { return true }
+        confirm(at: destination, availableBytes: availableBytes(at: destination))
+    }
+    @MainActor static func confirm(at destination: URL, availableBytes: Int64?) -> Bool {
+        guard let available = availableBytes, needsWarning(availableBytes: available) else { return true }
         #if os(macOS)
         let alert = NSAlert()
         alert.alertStyle = .warning

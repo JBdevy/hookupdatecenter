@@ -896,8 +896,7 @@ private final class CaptureWriter: @unchecked Sendable {
         }
         #endif
         let audioTracks = tracks.filter { $0.recordingMode != .midi }
-        if audioTracks.contains(where: { $0.recordsOutput || hasRecordingInput($0) }),
-           !AudioDestinationSpace.confirm(at: directory.appendingPathComponent("Stems", isDirectory: true)) { return }
+        let checksDestination = audioTracks.contains { $0.recordsOutput || hasRecordingInput($0) }
         let transport = show.snapshot.transport
         let countMeter = !transport.playing && !transport.subPlay.playing &&
             (transport.editPosition ?? transport.position) <= 0.000001 ? show.current?.tempoSection(at: 0) : nil
@@ -912,48 +911,65 @@ private final class CaptureWriter: @unchecked Sendable {
         }
         capturePass = 0; audioPassIDs.removeAll()
         busy = true; self.show = show; error = ""; previewSession = UUID()
-        (projectAudio ?? StemAudioPlayback.shared).setRecordingItemTracks(Set(tracks.map(\.id)))
         Task {
             do {
+                if checksDestination {
+                    let destination = directory.appendingPathComponent("Stems", isDirectory: true)
+                    let available = await Task.detached(priority: .userInitiated) {
+                        AudioDestinationSpace.availableBytes(at: destination)
+                    }.value
+                    guard self.project == show.snapshot.project.id, show.canControl(),
+                          AudioDestinationSpace.confirm(at: destination, availableBytes: available) else {
+                        busy = false
+                        return
+                    }
+                }
+                let audio = projectAudio ?? StemAudioPlayback.shared
+                audio.setRecordingItemTracks(Set(tracks.map(\.id)))
                 if !audioTracks.isEmpty { try await startAudioCapture(tracks: audioTracks) }
                 guard self.project == show.snapshot.project.id, show.canControl() else { abortCapturePreparation(); busy = false; return }
                 if !show.isPlaying { try await show.prepareRecordingPlayback() }
                 guard self.project == show.snapshot.project.id, show.canControl() else {
                     abortCapturePreparation(); busy = false; return
                 }
+                let startTransport = show.snapshot.transport
+                startPosition = startTransport.playing ? startTransport.position : startTransport.editPosition ?? startTransport.position
+                recordingSong = startTransport.songId
+                // Allocate names, recording lanes and previews before the first
+                // count-in click. The launch path only arms the prepared takes.
+                updateMIDITargets(tracks.filter { $0.recordingMode == .midi }, position: startPosition)
+                updateSilentTakes(audioTracks.filter { !$0.recordsOutput && !hasRecordingInput($0) }, at: startPosition)
                 var recordingHost: UInt64 = 0
                 if let countMeter, let countSong = show.current, !show.isPlaying, show.snapshot.transport.songId == songID,
-                   (show.snapshot.transport.editPosition ?? show.snapshot.transport.position) <= 0.000001 {
+                   startPosition <= 0.000001 {
                     guard let host = try await countIn(countMeter, song: countSong), self.project == show.snapshot.project.id,
-                          show.canControl() else { abortCapturePreparation(); busy = false; return }
+                          show.canControl(), show.snapshot.transport.songId == recordingSong,
+                          (show.snapshot.transport.editPosition ?? show.snapshot.transport.position) == startPosition,
+                          !show.isPlaying else { abortCapturePreparation(); busy = false; return }
                     recordingHost = host
                 }
-                startPosition = show.snapshot.transport.playing ? show.snapshot.transport.position : show.snapshot.transport.editPosition ?? show.snapshot.transport.position
                 let now = mach_absolute_time()
                 let delay = recordingHost > now ? AVAudioTime.seconds(forHostTime: recordingHost - now) : 0
                 midiStartTime = ProcessInfo.processInfo.systemUptime + delay
-                recordingSong = show.snapshot.transport.songId
                 lastPosition = startPosition; lastTime = midiStartTime
-                updateMIDITargets(tracks.filter { $0.recordingMode == .midi }, position: startPosition)
-                updateSilentTakes(audioTracks.filter { !$0.recordsOutput && !hasRecordingInput($0) }, at: startPosition)
                 writer?.start(atHostTime: recordingHost)
                 for output in outputWriters.values {
                     output.setInitialPosition(startPosition)
                     output.start(atHostTime: recordingHost)
                 }
-                recording = true; busy = false; reconcileArming()
+                recording = true
                 if !show.snapshot.transport.playing {
                     if recordingHost != 0 {
-                        let audio = projectAudio ?? StemAudioPlayback.shared
                         audio.recordingLaunchHost = recordingHost
                         show.startRecordingPlayback(at: midiStartTime)
                         audio.recordingLaunchHost = nil
                     } else { show.send(.play) }
                 }
+                busy = false
+                reconcileArming()
             } catch {
                 abortCapturePreparation()
-                busy = false; activeTargets = [:]; midiTakes = [:]
-                LiveRecordingPreview.shared.takes = [:]; RecordingLaneLayout.shared.clear()
+                busy = false
                 self.error = error.localizedDescription
             }
         }
@@ -969,6 +985,11 @@ private final class CaptureWriter: @unchecked Sendable {
         if let writer { writer.ring.endCapture(); writer.finish(start: startPosition) { _, _ in } }
         writer = nil
         audio.setRecordingItemTracks([])
+        activeTargets.removeAll()
+        midiTakes.removeAll()
+        silentTakes.removeAll()
+        LiveRecordingPreview.shared.takes = [:]
+        RecordingLaneLayout.shared.clear()
         previewSession = UUID()
     }
     private func startAudioCapture(tracks: [Track]) async throws {
