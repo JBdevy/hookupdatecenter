@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <stdexcept>
@@ -191,7 +192,9 @@ class TransportButtons final {
         const auto bounds=D2D1::RoundedRect(D2D1::RectF(.5f,.5f,width-.5f,height-.5f),6,6);
         t->FillRoundedRectangle(bounds,brush.Get());
         auto fg=colour(s.foreground);if(!s.enabled&&!s.accent&&s.icon!=L"pause")fg.a*=.35f;brush->SetColor(fg);
-        const bool text=!s.text.empty();float iconSize=s.icon.empty()?0.f:12.f,textWidth=0;
+        const bool text=!s.text.empty();
+        const float iconSize = s.icon.empty() ? 0.f : (s.icon == L"metronome" ? 17.f : 12.f);
+        float textWidth=0;
         const float gap=iconSize>0 && text?3.f:0.f;
         Ptr<IDWriteTextLayout> layout;
         if(text) {
@@ -282,24 +285,34 @@ class TransportButtons final {
             line(8,0.5f,10,2.5f);line(8,4.5f,10,2.5f);line(4,7.5f,2,9.5f);line(4,11.5f,2,9.5f);
         }
         else if(s.icon==L"metronome") {
-            Ptr<ID2D1PathGeometry> path; factory->CreatePathGeometry(&path);
+            // Same outline and pendulum as the shared 24-unit glyph, in the
+            // native painter's 12-unit coordinate space.
+            Ptr<ID2D1PathGeometry> outline;
+            factory->CreatePathGeometry(&outline);
             Ptr<ID2D1GeometrySink> sink;
-            if(path && SUCCEEDED(path->Open(&sink))) {
-                sink->BeginFigure(D2D1::Point2F(3.8f, 4.1f), D2D1_FIGURE_BEGIN_HOLLOW);
-                sink->AddLine(D2D1::Point2F(5.3f, 1.55f));
-                sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(D2D1::Point2F(6.f, .35f), D2D1::Point2F(6.7f, 1.55f)));
-                sink->AddLine(D2D1::Point2F(10.9f, 9.25f));
-                sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(D2D1::Point2F(11.75f, 10.95f), D2D1::Point2F(10.1f, 10.95f)));
-                sink->AddLine(D2D1::Point2F(1.9f, 10.95f));
-                sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(D2D1::Point2F(.25f, 10.95f), D2D1::Point2F(1.1f, 9.25f)));
-                sink->AddLine(D2D1::Point2F(2.55f, 6.65f));
+            if(outline && SUCCEEDED(outline->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(2.f,10.5f),D2D1_FIGURE_BEGIN_HOLLOW);
+                const D2D1_POINT_2F body[]{{4.25f,1.75f},{7.25f,1.75f},{9.5f,10.5f}};
+                sink->AddLines(body,static_cast<UINT32>(std::size(body)));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->BeginFigure(D2D1::Point2F(4.f,8.75f),D2D1_FIGURE_BEGIN_HOLLOW);
+                const D2D1_POINT_2F arm[]{{6.f,8.75f},{10.25f,3.75f}};
+                sink->AddLines(arm,static_cast<UINT32>(std::size(arm)));
                 sink->EndFigure(D2D1_FIGURE_END_OPEN);
                 sink->Close();
-                t->DrawGeometry(path.Get(), brush.Get(), stroke, iconStroke.Get());
+                t->DrawGeometry(outline.Get(),brush.Get(),.85f,iconStroke.Get());
             }
-            line(1.35f, 4.05f, 6.05f, 8.55f);
-            line(1.65f, 8.55f, 10.35f, 8.55f);
-            line(6.f, 4.15f, 6.f, 6.3f);
+            Ptr<ID2D1PathGeometry> weight;
+            factory->CreatePathGeometry(&weight);
+            sink.Reset();
+            if(weight && SUCCEEDED(weight->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(9.f,3.5f),D2D1_FIGURE_BEGIN_FILLED);
+                const D2D1_POINT_2F diamond[]{{10.f,2.5f},{11.f,3.5f},{10.f,4.5f}};
+                sink->AddLines(diamond,static_cast<UINT32>(std::size(diamond)));
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                t->FillGeometry(weight.Get(),brush.Get());
+            }
         }
         else if(s.icon==L"teleprompter") {
             t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(1,1,11,10),1,1),brush.Get(),stroke,iconStroke.Get());

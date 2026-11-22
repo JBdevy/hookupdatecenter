@@ -27,7 +27,7 @@
                    "Native title lags resize to \(height): expected \(y), actual \(titleFrame), host \(row.controls.frame)")
             expect(titleFrame.minY >= 0 && titleFrame.maxY <= height + 1,
                    "Controls crossed the track boundary during resize")
-            expect(row.meter.presentation == .peak, "The Track Mixer has no compact meter")
+            expect(row.meter.presentation == .peakLabel, "The expanded track must retain its peak readout below the fader")
         }
     }
     print("MIXER_HEIGHT_AUTOMATIC_PRESENTATION_47_ROWS_NO_MANUAL_REDRAW_OK")
