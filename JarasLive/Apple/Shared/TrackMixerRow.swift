@@ -1706,6 +1706,16 @@ extension View {
 }
 #endif
 
+struct MainChannelModeIcon: View {
+    let mono: Bool
+    var body: some View {
+        ZStack {
+            Circle().stroke(lineWidth: 1.35).frame(width: 11, height: 11).offset(x: mono ? 0 : -3.5)
+            if !mono { Circle().stroke(lineWidth: 1.35).frame(width: 11, height: 11).offset(x: 3.5) }
+        }.frame(width: 22, height: 20)
+    }
+}
+
 struct MasterStrip: View {
     @Environment(\.openFX) private var openFX
     let show: ShowController
@@ -1729,20 +1739,11 @@ struct MasterStrip: View {
                         show.send(.masterMono)
                         #endif
                     } label: {
-                        ZStack {
-                            Text("Stereo").lineLimit(1).fixedSize(horizontal: true, vertical: false)
-                                .opacity(show.snapshot.project.masterMono == true ? 0 : 1)
-                            if show.snapshot.project.masterMono == true {
-                                ZStack {
-                                    Circle().stroke(lineWidth: 1.3).frame(width: 11, height: 11).offset(x: -3.5)
-                                    Circle().stroke(lineWidth: 1.3).frame(width: 11, height: 11).offset(x: 3.5)
-                                }.accessibilityHidden(true)
-                            }
-                        }.frame(minWidth: 40, minHeight: 14)
+                        MainChannelModeIcon(mono: show.snapshot.project.masterMono == true)
                     }
                         .fixedSize(horizontal: true, vertical: false)
                         #if os(macOS)
-                        .buttonStyle(CompactTrackButtonStyle(width: 49))
+                        .buttonStyle(CompactTrackButtonStyle(width: 28))
                         #endif
                         .foregroundStyle(show.snapshot.project.masterMono == true ? JarasTheme.green : JarasTheme.text)
                         .jarasHelp(show.snapshot.project.masterMono == true ? "Mono — switch to Stereo" : "Stereo — switch to Mono").accessibilityLabel("Main Stereo/Mono")
@@ -1753,29 +1754,10 @@ struct MasterStrip: View {
                         }
                         .onChange(of: show.snapshot.project.id) { _ in confirmingMainMono = false }
                         #endif
-                    #if os(macOS)
-                    Button("Patch") { patchPresented = true }
-                        .buttonStyle(CompactTrackButtonStyle(width: 40))
-                        .fixedSize(horizontal: true, vertical: false)
-                        .accessibilityLabel("Main Patch")
-                    #endif
-                    TrackFXButton(show: show, track: nil, settings: show.snapshot.project.masterFX ?? NativeFXSettings()).jarasHelp("Track")
-                        #if os(macOS)
-                        .buttonStyle(CompactTrackButtonStyle(width: 26))
-                        .fixedSize(horizontal: true, vertical: false)
-                        #endif
-                    TrackPanKnob(show: show, track: nil, pan: show.snapshot.project.masterPan ?? 0).frame(width: 22, height: 24)
                     Button("M") { show.send(.mute) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "mute")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterMute == true ? .red : nil)).jarasHelp("Mute")
-                    Button("S") { show.send(.solo) }.frame(width: 26, height: 24).modifier(MappingRightClick(track: nil, command: "solo")).buttonStyle(CompactTrackButtonStyle(activeColor: show.snapshot.project.masterSolo == true ? JarasTheme.yellow : nil)).jarasHelp("Solo")
                 }.font(.jarasSystem(size: 10, weight: .semibold)).buttonStyle(.bordered).controlSize(.small).frame(height: 24)
-                    Text("Main").font(.jarasSystem(size: 11, weight: .semibold))
-                        .foregroundStyle(MixerTrackStyle.surfaceText)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                        .overlay(alignment: .trailing) {
-                            TrackPeakReadout(peak: StemAudioPlayback.shared.masterMeter.peakHold, compact: true, foreground: MixerTrackStyle.surfaceText)
-                                .padding(.trailing, 4)
-                        }
-                TrackVolumeFader(show: show, track: nil, volume: show.snapshot.project.masterVolume ?? 1, phaseInverted: show.snapshot.project.masterPhaseInverted == true, compact: true)
+                TrackVolumeFader(show: show, track: nil, volume: show.snapshot.project.masterVolume ?? 1,
+                    phaseInverted: show.snapshot.project.masterPhaseInverted == true, compact: true, showsValue: false)
                     .frame(height: 20)
             }.padding(.vertical, 4)
         }.padding(.horizontal, 6).frame(maxWidth: .infinity).frame(height: 70)
@@ -2061,15 +2043,16 @@ private struct TrackVolumeFader: View {
     let phaseInverted: Bool
     var compact = false
     var showsPhase = true
+    var showsValue = true
     // The Master can keep the same gain/pan across documents. Store its
     // project identity as a view input so SwiftUI rebinds the native callbacks
     // even when the ShowController reference and those scalar values match.
     private let controlIdentity: TrackControlIdentity
-    init(show: ShowController, track: UUID?, volume: Double, phaseInverted: Bool, compact: Bool = false, showsPhase: Bool = true) {
+    init(show: ShowController, track: UUID?, volume: Double, phaseInverted: Bool, compact: Bool = false, showsPhase: Bool = true, showsValue: Bool = true) {
         self.show = show; self.track = track; self.volume = volume
         _fadeout = ObservedObject(wrappedValue: show.transportFadeout)
         _loopFaders = ObservedObject(wrappedValue: show.multiLoopFaders)
-        self.phaseInverted = phaseInverted; self.compact = compact; self.showsPhase = showsPhase
+        self.phaseInverted = phaseInverted; self.compact = compact; self.showsPhase = showsPhase; self.showsValue = showsValue
         controlIdentity = TrackControlIdentity(project: show.snapshot.project.id, track: track)
     }
     private var meter: TrackMeterLevel {
@@ -2088,7 +2071,7 @@ private struct TrackVolumeFader: View {
     }
     var body: some View {
         return HStack(spacing: compact ? 3 : 6) {
-            if track == nil { gainReadout }
+            if track == nil && showsValue { gainReadout }
             volumeControl.trackControlSelectionExclusion()
                 .frame(height: compact ? 20 : 27)
                 .modifier(MappingRightClick(track: track, command: "volume", hitHeight: 16))
@@ -2096,7 +2079,7 @@ private struct TrackVolumeFader: View {
                 .jarasHelp("Double-click to reset to 0 dB")
                 .accessibilityLabel(track == nil ? "Main volume" : "Track volume")
                 .accessibilityValue(displayedDB <= -60 ? "−∞ dB" : String(format: "%.1f dB", displayedDB))
-            if track != nil { gainReadout }
+            if track != nil && showsValue { gainReadout }
             if let track, showsPhase { PhaseInvertButton(show: show, track: track, inverted: phaseInverted).trackControlSelectionExclusion() }
         }.frame(height: compact ? 20 : 27).padding(.horizontal, 4)
             .onAppear { synchronize() }
@@ -2392,6 +2375,7 @@ private final class FooterMixerPanLabel: NSView {
 }
 private final class DirectVolumeSliderView: NSView {
     private let screenDrawing = NativeScreenDrawing()
+    private var mainFaderTracking: NSTrackingArea?
     private weak var meter: TrackMeterLevel?
     private var meterSubscription: AnyCancellable?
     private var reductionSubscription: AnyCancellable?
@@ -2727,6 +2711,24 @@ private final class DirectVolumeSliderView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { VolumeDoubleClickRouter.shared.add(self) }
+        else { CompactTrackValueTooltip.shared.hide(for: self) }
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let mainFaderTracking { removeTrackingArea(mainFaderTracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        mainFaderTracking = area
+    }
+    override func mouseEntered(with event: NSEvent) { showMainFaderValue(event) }
+    override func mouseMoved(with event: NSEvent) { showMainFaderValue(event) }
+    override func mouseExited(with event: NSEvent) {
+        if !trackingPointer { CompactTrackValueTooltip.shared.hide(for: self) }
+    }
+    private func showMainFaderValue(_ event: NSEvent) {
+        guard boundTrack == nil, !vertical, !mini, !rotary else { return }
+        let value = doubleValue <= -60 ? "−∞ dB" : String(format: "%+.1f dB", doubleValue)
+        CompactTrackValueTooltip.shared.show(value, owner: self, point: event.locationInWindow)
     }
     func resetToUnity() {
         beginPointerEditing()
@@ -2744,12 +2746,14 @@ private final class DirectVolumeSliderView: NSView {
             rotaryOrigin = convert(event.locationInWindow, from: nil); rotaryValue = doubleValue
             move(to: event)
         }
+        showMainFaderValue(event)
     }
     override func mouseDragged(with event: NSEvent) {
-        if trackingPointer { move(to: event) }
+        if trackingPointer { move(to: event); showMainFaderValue(event) }
     }
     override func mouseUp(with event: NSEvent) {
         finishPointerEditing()
+        if !bounds.contains(convert(event.locationInWindow, from: nil)) { CompactTrackValueTooltip.shared.hide(for: self) }
     }
     private func publishPointerValue() {
         pointerChanged?(doubleValue)

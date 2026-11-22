@@ -207,6 +207,16 @@ struct TimelineBandsGlyph: Shape {
     }
 }
 
+private struct MinimumTimelineBodyWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 260
+}
+extension EnvironmentValues {
+    var minimumTimelineBodyWidth: CGFloat {
+        get { self[MinimumTimelineBodyWidthKey.self] }
+        set { self[MinimumTimelineBodyWidthKey.self] = newValue }
+    }
+}
+
 struct TimelineGridView: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.show === rhs.show && lhs.documents === rhs.documents && lhs.remotePresentation == rhs.remotePresentation
@@ -297,6 +307,7 @@ private struct TimelineLiveMixerRow<Content: View>: View {
 }
 
 private struct TimelineGridContent: View, Equatable {
+    @Environment(\.minimumTimelineBodyWidth) private var minimumTimelineBodyWidth
     let show: ShowController
     let documents: ProjectDocuments
     let presentation: ShowTimelinePresentationState
@@ -491,7 +502,7 @@ private struct TimelineGridContent: View, Equatable {
                     let headerBands = TimelineHeaderBands(regionRows: regionLanes.count)
                     #endif
                     let rulerHeight = headerBands.height
-                    let maximumLabelWidth = max(161, min(486.5, gridViewportWidth - 260))
+                    let maximumLabelWidth = max(161, min(486.5, gridViewportWidth - minimumTimelineBodyWidth))
                     let groupDepths = song.trackGroupDepths
                     let groupColors = Dictionary(uniqueKeysWithValues: song.tracks.map {
                         ($0.id, $0.color ?? JarasTheme.roleHex($0.role))
@@ -1652,6 +1663,30 @@ private struct TimelineGridContent: View, Equatable {
         }
         input.marqueeBegan = { show.pauseTimelineFollow(resumingAfter: 5) }
         input.itemMoveBegan = { show.pauseTimelineFollow(resumingAfter: 5) }
+        input.proTools = acceptsItemEdits && !remotePresentation
+        input.applyProTool = { tool, id, x in
+            guard let source = sourceItem(id) else { return }
+            switch tool {
+            case .select: break
+            case .cut:
+                guard !show.timelineItemsLocked else { return }
+                let scale = projection.pixelsPerSecond
+                let position = itemPosition(x / scale, song: originalSong, pixelsPerSecond: scale, excludingItems: [id])
+                show.splitItems([id], at: position)
+            case .mute:
+                guard source.track.kind == .standard else { return }
+                show.send(.clipMute, target: id)
+            case .solo: show.toggleItemSolo(id)
+            }
+        }
+        input.setLoopArea = { start, end in
+            guard !TrackRecording.shared.recording, !TrackRecording.shared.countingIn else { return }
+            let scale = projection.pixelsPerSecond
+            let from = itemPosition(start / scale, song: originalSong, pixelsPerSecond: scale)
+            let to = itemPosition(end / scale, song: originalSong, pixelsPerSecond: scale)
+            TimelineAreaSelection.shared.update(song: originalSong.id, from: from, to: to)
+            show.updateActiveLoopArea()
+        }
         input.separateAudio = { id in
             showingSeparation = true; separation.start(item: id, show: show, documents: documents)
         }

@@ -188,17 +188,36 @@ enum AppStartupPresentation {
                 return area.start...area.end
             }
             show.audioPresentationPosition = { [weak audio] head, time in audio?.presentationPosition(head: head, sampledAt: time) }
-            show.pendingAudioPreparation = { [weak self, weak audio] snapshot, revision in
-                #if os(iOS)
-                guard self?.localPlaybackEnabled == true else { return nil }
-                #endif
-                return try audio?.pendingPlaybackPreparation(snapshot, revision: revision)
+            var itemSoloMix: (project: UUID, song: UUID, item: UUID, revision: UInt64, value: Project)?
+            func projectedAudio(_ snapshot: ShowSnapshot, _ solo: UUID?, _ revision: UInt64) -> ShowSnapshot {
+                guard let solo, let songID = snapshot.transport.songId else { itemSoloMix = nil; return snapshot }
+                var output = snapshot
+                if let mix = itemSoloMix, mix.project == snapshot.project.id, mix.song == songID, mix.item == solo, mix.revision == revision {
+                    output.project = mix.value
+                    return output
+                }
+                guard let song = output.project.songs.firstIndex(where: { $0.id == songID }),
+                      output.project.songs[song].tracks.contains(where: { $0.clips.contains { $0.id == solo } }) else { return output }
+                for track in output.project.songs[song].tracks.indices {
+                    for item in output.project.songs[song].tracks[track].clips.indices
+                    where output.project.songs[song].tracks[track].clips[item].id != solo {
+                        output.project.songs[song].tracks[track].clips[item].muted = true
+                    }
+                }
+                itemSoloMix = (snapshot.project.id, songID, solo, revision, output.project)
+                return output
             }
-            show.pendingSubplayPreparation = { [weak self, weak audio] snapshot, revision in
+            show.pendingAudioPreparation = { [weak self, weak audio, weak show] snapshot, revision in
                 #if os(iOS)
                 guard self?.localPlaybackEnabled == true else { return nil }
                 #endif
-                return audio?.pendingSubplayPreparation(snapshot, revision: revision)
+                return try audio?.pendingPlaybackPreparation(projectedAudio(snapshot, show?.soloedItem, revision), revision: revision)
+            }
+            show.pendingSubplayPreparation = { [weak self, weak audio, weak show] snapshot, revision in
+                #if os(iOS)
+                guard self?.localPlaybackEnabled == true else { return nil }
+                #endif
+                return audio?.pendingSubplayPreparation(projectedAudio(snapshot, show?.soloedItem, revision), revision: revision)
             }
             var repeatWasEnabled = show.snapshot.transport.loop.enabled
             show.audioUpdate = { [weak self, weak show] snapshot, revision in
@@ -216,7 +235,8 @@ enum AppStartupPresentation {
                 if foreground && repeatWasEnabled && !repeatEnabled { TimelineAreaSelection.shared.clear() }
                 repeatWasEnabled = repeatEnabled
                 do {
-                    try audio.update(snapshot, revision: revision, sampledAt: show?.timelinePlaybackSampleTime ?? ProcessInfo.processInfo.systemUptime)
+                    try audio.update(projectedAudio(snapshot, show?.soloedItem, revision), revision: revision,
+                        sampledAt: show?.timelinePlaybackSampleTime ?? ProcessInfo.processInfo.systemUptime)
                     if foreground { TrackRecording.shared.observe(snapshot); VideoPlayback.shared.update(snapshot, revision: show?.projectRevision ?? revision) }
                     if foreground, repeatEnabled, let start = snapshot.transport.loop.start, let end = snapshot.transport.loop.end, let song = snapshot.transport.songId {
                         TimelineAreaSelection.shared.update(song: song, from: start, to: end)
@@ -276,7 +296,10 @@ enum AppStartupPresentation {
                 show.send(.mute, target: id)
             }
             show.audioMasterSolo = { audio.previewMasterSolo($0) }
-            show.audioClipMute = { audio.previewClipMute($0, muted: $1) }
+            show.audioClipMute = { [weak show] id, muted in
+                itemSoloMix = nil
+                audio.previewClipMute(id, muted: muted || (show?.soloedItem.map { $0 != id } ?? false))
+            }
             #if os(macOS)
             show.prepareForSave = { [weak show] in if let show { try ExternalPluginState.captureAllForSaving(show: show) } }
             show.prepareForFXChange = { [weak show] track, clip, effects in

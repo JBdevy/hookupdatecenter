@@ -1202,6 +1202,20 @@ public struct ShowTimelinePresentationState: Equatable {
     public var audioMasterMono: (Bool) -> Void = { _ in }
     public var audioMasterSolo: (Bool) -> Void = { _ in }
     public var audioClipMute: (UUID, Bool) -> Void = { _, _ in }
+    public private(set) var soloedItem: UUID?
+    public func toggleItemSolo(_ id: UUID) {
+        guard canControl(), current?.tracks.contains(where: { track in
+            track.clips.contains { $0.id == id && ($0.midi != nil || $0.audioFile != nil || track.audioFile != nil) }
+        }) == true else { return }
+        setItemSolo(soloedItem == id ? nil : id)
+    }
+    public func clearItemSolo() { setItemSolo(nil) }
+    private func setItemSolo(_ id: UUID?) {
+        guard soloedItem != id else { return }
+        soloedItem = id
+        audioProjectRevision &+= 1
+        audioUpdate(snapshot, audioProjectRevision)
+    }
     public var prepareForSave: () throws -> Void = {}
     /// Snapshot live plugin state before an undoable chain mutation.
     public var prepareForFXChange: (UUID?, UUID?, [String]) throws -> Void = { _, _, _ in }

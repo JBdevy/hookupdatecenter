@@ -325,6 +325,7 @@ void Session::prepareLiveGraph() {
                 }
                 audio.adoptPreparedSong(*prepared, true);
                 if (song()) audio.setMixer(project(), *song());
+                if (!itemSolo.empty()) audio.setItemSolo(song(),itemSolo);
                 updateRecordArms();
                 publishTransport(true, true);
             } catch (const std::exception &e) {
@@ -1012,6 +1013,17 @@ void Session::updateTransportFadeout() {
 std::optional<std::pair<double,double>> Session::selectedTimeRange() const {
     if (!timeSelection || timeSelection->project != project().id || !song() || timeSelection->song != song()->id) return {};
     return std::pair<double,double>{timeSelection->start,timeSelection->end};
+}
+void Session::toggleItemSolo(const ID &id) {
+    if (jaras::projectSync::readOnly() || !song() || busy || audio.isRecording()) return;
+    if (itemSolo==id) { clearItemSolo(); return; }
+    audio.setItemSolo(song(),id);
+    itemSolo=id;
+}
+void Session::clearItemSolo() {
+    if (itemSolo.empty()) return;
+    audio.setItemSolo(song(),{});
+    itemSolo.clear();
 }
 void Session::clearTimeRange() {
     if (jaras::projectSync::readOnly()) return; timeSelection.reset(); }

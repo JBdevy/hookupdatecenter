@@ -26,6 +26,10 @@ class GainFader final : public ParameterSlider {
     const std::array<float, 2>& meterLevels() const { return levels; }
 
     GainFader() { setRange(0, std::pow(10., 12. / 20.), 0); }
+    String getTextFromValue(double gain) override {
+        if (getComponentID() != "masterVolume") return ParameterSlider::getTextFromValue(gain);
+        return gain <= 0 ? String::fromUTF8("−∞ dB") : (gain >= 1 ? "+" : "") + String(Decibels::gainToDecibels(gain),1) + " dB";
+    }
     double proportionOfLengthToValue(double proportion) override {
         const auto db = getComponentID() == "trackVolume" && isHorizontal()
             ? meterDisplay::horizontalTrackDB(proportion, getLookAndFeel().getSliderLayout(*this).sliderBounds.getWidth())

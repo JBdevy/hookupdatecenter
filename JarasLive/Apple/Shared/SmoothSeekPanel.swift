@@ -630,14 +630,17 @@ struct SectionListDock<Primary: View, Sections: View>: View {
     let visible: Bool
     let leading: Bool
     let minimumPrimaryWidth: CGFloat
+    let enforcesMinimumPrimaryWidth: Bool
     @AppStorage private var savedFraction: Double
     @State private var liveWidth: CGFloat?
     @State private var dragStart: CGFloat?
     @ViewBuilder let primary: () -> Primary
     @ViewBuilder let sections: () -> Sections
     init(visible: Bool, storageKey: String, minimumPrimaryWidth: CGFloat = 140, defaultFraction: Double = 0.45, leading: Bool = false,
+         enforcesMinimumPrimaryWidth: Bool = false,
          @ViewBuilder primary: @escaping () -> Primary, @ViewBuilder sections: @escaping () -> Sections) {
         self.visible = visible; self.leading = leading; self.minimumPrimaryWidth = minimumPrimaryWidth
+        self.enforcesMinimumPrimaryWidth = enforcesMinimumPrimaryWidth
         _savedFraction = AppStorage(wrappedValue: defaultFraction, storageKey)
         self.primary = primary; self.sections = sections
     }
@@ -646,8 +649,7 @@ struct SectionListDock<Primary: View, Sections: View>: View {
             let total = max(0, geometry.size.width)
             let handle: CGFloat = 12
             let available = total
-            let width = SmoothSeekPanelLayout.sidebarWidth(available: available,
-                requested: liveWidth ?? available * (savedFraction.isFinite ? savedFraction : 0.45), minimumPrimary: minimumPrimaryWidth)
+            let width = boundedWidth(liveWidth ?? available * (savedFraction.isFinite ? savedFraction : 0.45), available: available)
             HStack(spacing: 0) {
                 if visible && leading {
                     sections().frame(width: width).clipped()
@@ -672,21 +674,24 @@ struct SectionListDock<Primary: View, Sections: View>: View {
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { value in
                     if dragStart == nil { dragStart = width }
-                    liveWidth = SmoothSeekPanelLayout.sidebarWidth(available: available,
-                        requested: (dragStart ?? width) + value.translation.width * (leading ? 1 : -1), minimumPrimary: minimumPrimaryWidth)
+                    liveWidth = boundedWidth((dragStart ?? width) + value.translation.width * (leading ? 1 : -1), available: available)
                 }.onEnded { _ in
                     savedFraction = (liveWidth ?? width) / max(1, available)
                     liveWidth = nil; dragStart = nil
                 })
             .accessibilityLabel("Resize sections")
             .accessibilityAdjustableAction { direction in
-                savedFraction = SmoothSeekPanelLayout.sidebarWidth(available: available,
-                    requested: width + (direction == .increment ? 24 : -24), minimumPrimary: minimumPrimaryWidth) / max(1, available)
+                savedFraction = boundedWidth(width + (direction == .increment ? 24 : -24), available: available) / max(1, available)
             }
             #if os(macOS)
             .onHover { inside in (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
             .onDisappear { NSCursor.arrow.set() }
             #endif
+    }
+    private func boundedWidth(_ requested: CGFloat, available: CGFloat) -> CGFloat {
+        let width = SmoothSeekPanelLayout.sidebarWidth(available: available, requested: requested, minimumPrimary: minimumPrimaryWidth)
+        guard enforcesMinimumPrimaryWidth else { return width }
+        return min(width, max(min(104, available), available - minimumPrimaryWidth))
     }
 
 }
