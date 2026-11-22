@@ -8,14 +8,20 @@ final class TimelineSnapTests: XCTestCase {
         var settings = ProjectTimeSettings(); settings.divisions = 8; song.timeSettings = settings
         let marker = TimelineMarker(id: UUID(), name: "Cue", position: 70, color: 0xffffff)
         song.markers = [marker]
-        for (scale, target) in [(1.0, 8.0), (2, 12), (4, 10), (8, 10), (32, 10.5), (64, 10.75)] {
+        let sections = song.tempoSections(until: song.timelineScrollEnd)
+        let labels = TimelineTimeRuler.MusicalLabels(sections: sections)
+        for (scale, target) in [(1.0, 8.0), (2, 12), (4, 10), (8, 11), (32, 10.75), (64, 10.75)] {
             XCTAssertEqual(TimelineTempo.snap(10.74, song: song, pixelsPerSecond: scale,
                 maximumDistancePixels: 8), target, accuracy: 1e-9)
             XCTAssertEqual(song.markerDragPosition(marker, to: 10.74, pixelsPerSecond: scale, free: false), target, accuracy: 1e-9)
             XCTAssertEqual(song.markerDragPosition(marker, to: 10.74, pixelsPerSecond: scale, free: true), 10.74)
-            let lines = TimelineTimeRuler.ticks(in: song.tempoSections(until: 1000), from: 0, to: 20,
-                pixelsPerSecond: scale, divisions: 8)
+            let lines = TimelineTimeRuler.ticks(in: sections, from: 0, to: 20,
+                pixelsPerSecond: scale, divisions: 8, musical: labels)
             XCTAssertTrue(lines.contains { abs($0.time - target) < 1e-9 }, "The snap target must be drawn")
+            for line in lines where !line.drawsInGrid {
+                XCTAssertEqual(TimelineTempo.snap(line.time + 0.2 / scale, song: song, pixelsPerSecond: scale,
+                    cursor: line.time + 2 / scale, maximumDistancePixels: 8), line.time, accuracy: 1e-9)
+            }
         }
     }
     func testDistantGridDoesNotSnapToHiddenHalfStrideLines() {
@@ -53,9 +59,11 @@ final class TimelineSnapTests: XCTestCase {
         var settings = ProjectTimeSettings(); settings.divisions = 8; song.timeSettings = settings
         song.markers = [TimelineMarker(id: UUID(), name: "Tempo", position: 10.13, color: 0xffffff,
             tempoBPM: 150, tempoBeats: 3, tempoUnit: 8)]
+        let sections = song.tempoSections(until: song.timelineScrollEnd)
+        let labels = TimelineTimeRuler.MusicalLabels(sections: sections)
         for scale in [0.05, 0.3, 1, 10, 100, 1000] {
-            let ticks = TimelineTimeRuler.ticks(in: song.tempoSections(until: 20000), from: 0, to: 2000,
-                pixelsPerSecond: scale, divisions: 8)
+            let ticks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 2000,
+                pixelsPerSecond: scale, divisions: 8, musical: labels)
             for position in [3.29, 10.76, 300.78] {
                 let target = TimelineTempo.snap(position, song: song, pixelsPerSecond: scale)
                 let explicitAnchor = target == 0 || abs(target - 10.13) < 1e-8

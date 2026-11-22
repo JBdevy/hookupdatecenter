@@ -2098,7 +2098,7 @@ private struct TrackMixFeedbackPanel: View {
                     case .setlist: return AnyView(setlist)
                     case .grid:
                         return AnyView(RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled,
-                                    showRegionLanes: showNativeRegionLanes, showTempoLane: showNativeTempoLane, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
+                                    touchItemEditing: editingTracks, showRegionLanes: showNativeRegionLanes, showTempoLane: showNativeTempoLane, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
                             if command == "bpm" { detectRegionBPM?(id) }
                             else if command == "loops" { openRegionLoops?(id) }
                             else if command == "unify" { unifyName = ""; unifyingRegion = id }
@@ -2720,7 +2720,7 @@ private struct TrackMixFeedbackPanel: View {
                                     if panelWidths != widths { livePanelWidths = widths }
                                 }, ended: finishPanelResize)
                                 RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled,
-                                    showRegionLanes: showNativeRegionLanes, showTempoLane: showNativeTempoLane, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
+                                    touchItemEditing: editingTracks, showRegionLanes: showNativeRegionLanes, showTempoLane: showNativeTempoLane, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
                                     if command == "bpm" { detectRegionBPM?(id) }
                                     else if command == "loops" { openRegionLoops?(id) }
                                     else if command == "unify" { unifyName = ""; unifyingRegion = id }
@@ -4857,6 +4857,7 @@ private struct RemoteNativeTimeline: View {
     var localShow: ShowController? = nil
     var timelineFocus: IpadTimelineFocus? = nil
     var editorEnabled = true
+    var touchItemEditing = false
     var showRegionLanes = true
     var showTempoLane = true
     @Binding var regionDrag: IpadRegionMovePreview?
@@ -4866,6 +4867,7 @@ private struct RemoteNativeTimeline: View {
     var openSelectedItemMenu: ((UUID, Set<UUID>) -> Void)? = nil
     var openItemFX: ((UUID) -> Void)? = nil
     @State private var contentCache = IpadTimelineContentCache()
+    @State private var snapTiming = TimelineScrollEndCache()
     @State private var viewport = IpadTimelineViewport()
     @State private var retainedWindow: IpadTimelineRenderWindow?
     @State private var playbackControl = IpadTimelinePlaybackControl()
@@ -4913,6 +4915,10 @@ private struct RemoteNativeTimeline: View {
             markerPosition: markerPreview?.position, move: scrolling.itemMove, mix: scrolling.itemMix)) { makePresentationSong() }
     }
     private var presentationSong: Song? { nativeContent?.song }
+    private var snapRulerSections: [TimelineTempoSection]? {
+        guard local, let show = localShow, let song = show.current else { return nil }
+        return snapTiming.sections(for: song, project: show.snapshot.project.id, revision: show.projectRevision)
+    }
     private func makePresentationSong() -> Song? {
         guard let song = localShow?.current else { return nil }
         var preview = regionDrag.map { song.previewMovingRegion($0.id, to: $0.start) } ?? song
@@ -5132,7 +5138,11 @@ private struct RemoteNativeTimeline: View {
                     .background {
                         if local {
                             IpadTimelinePointerProbe(enabled: editorEnabled && localShow?.canControl() == true,
-                                reset: scrolling.pointerReset, accepts: { point in
+                                acceptsTouch: touchItemEditing && localShow?.timelineItemsLocked == false ? { point in
+                                    guard !scrolling.itemSelection.items.isEmpty,
+                                          let item = pointerItems(width: width).first(where: { $0.rect.contains(point) }) else { return false }
+                                    return scrolling.itemSelection.items.contains(item.id)
+                                } : nil, reset: scrolling.pointerReset, accepts: { point in
                                     return true
                                 }, wantsAutoScroll: { point in
                                     guard pointerDragged else { return false }
@@ -5155,7 +5165,7 @@ private struct RemoteNativeTimeline: View {
                         if local, let song {
                             seek(TimelineTempo.snap(time, song: song, pixelsPerSecond: width / span,
                                 enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift),
-                                includeItemEdges: true))
+                                includeItemEdges: true, rulerSections: snapRulerSections))
                         } else { seek(time) }
                     }))
                     #endif
@@ -5286,12 +5296,14 @@ private struct RemoteNativeTimeline: View {
     private func handlePointer(_ event: IpadTimelinePointerEvent, width: CGFloat) {
         guard local, let show = localShow, let song = show.current else { return }
         scrolling.modifiers = event.modifiers
-        let hits = pointerItems(width: width)
         let time = max(0, start + Double(event.position.x / max(1, width)) * span)
         if event.phase == .began {
             show.selectProgramChange(nil)
             pauseFollowing(); scrolling.selectionScope = .grid
-            let item = hits.first { $0.rect.contains(event.position) }?.id
+            let item = pointerItems(width: width).first { $0.rect.contains(event.position) }?.id
+            if event.direct {
+                guard touchItemEditing, let item, scrolling.itemSelection.items.contains(item) else { return }
+            }
             pointerStart = (show.snapshot.project.id, song, item, time, event.position, scrolling.itemSelection)
             pointerDragged = false
             drawingMIDI = item == nil && !event.secondary && !event.modifiers.intersection([.command, .control]).isEmpty
@@ -5310,7 +5322,7 @@ private struct RemoteNativeTimeline: View {
             let rectangle = CGRect(x: min(firstX, event.position.x), y: min(initial.point.y, event.position.y),
                 width: abs(firstX - event.position.x), height: abs(initial.point.y - event.position.y))
             selectionRectangle = rectangle
-            var ids = Set(hits.filter { $0.rect.intersects(rectangle) }.map(\.id))
+            var ids = Set(pointerItems(width: width).filter { $0.rect.intersects(rectangle) }.map(\.id))
             if !event.modifiers.intersection([.command, .control, .shift]).isEmpty { ids.formUnion(initial.selection.items) }
             if scrolling.itemSelection.items != ids { scrolling.itemSelection.replace(ids) }
         } else if pointerDragged, drawingMIDI, !show.timelineItemsLocked {
@@ -5327,11 +5339,11 @@ private struct RemoteNativeTimeline: View {
                 cursor: transport.editPosition ?? transport.position,
                 enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift),
                 otherCursors: [transport.position] + (transport.subPlay.playing ? [transport.subPlay.position] : []),
-                includeItemEdges: true, excludingItems: ids)
-            if initial.song.movingItems(ids, anchor: anchor, start: snapped, track: target) != nil {
-                let move = IpadNativeItemMove(items: ids, anchor: anchor, start: snapped, track: target)
-                if scrolling.itemMove != move { scrolling.itemMove = move }
-            } else { scrolling.itemMove = nil }
+                includeItemEdges: true, excludingItems: ids, maximumDistancePixels: 8, rulerSections: snapRulerSections)
+            let move = IpadNativeItemMove(items: ids, anchor: anchor, start: snapped, track: target)
+            if scrolling.itemMove != move {
+                scrolling.itemMove = initial.song.movingItems(ids, anchor: anchor, start: snapped, track: target) != nil ? move : nil
+            }
         } else if pointerDragged { scrolling.itemMove = nil }
         if event.phase == .ended {
             if event.secondary {
@@ -5348,20 +5360,20 @@ private struct RemoteNativeTimeline: View {
                 if drawingMIDI, pointerDragged, !show.timelineItemsLocked, let track = pointerTrack(at: initial.point.y) {
                     let enabled = TimelineSnapPreference.enabled && !event.modifiers.contains(.shift)
                     let from = TimelineTempo.snap(min(initial.time, time), song: song, pixelsPerSecond: width / span,
-                        enabled: enabled, includeItemEdges: true)
+                        enabled: enabled, includeItemEdges: true, rulerSections: snapRulerSections)
                     let to = TimelineTempo.snap(max(initial.time, time), song: song, pixelsPerSecond: width / span,
-                        enabled: enabled, includeItemEdges: true)
+                        enabled: enabled, includeItemEdges: true, rulerSections: snapRulerSections)
                     if to > from, let created = show.addMIDIItem(track: track, start: from, duration: to - from) {
                         scrolling.itemSelection.replace([created])
                     }
                 }
-                if !pointerDragged {
+                if !pointerDragged && !event.direct {
                     if let track = pointerTrack(at: initial.point.y) {
                         show.setMixerTrackSelection([track], anchor: track)
                     }
                     let snapped = TimelineTempo.snap(time, song: song, pixelsPerSecond: width / span,
                         enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift),
-                        includeItemEdges: true)
+                        includeItemEdges: true, rulerSections: snapRulerSections)
                     seek(snapped)
                 }
             }
@@ -5464,7 +5476,7 @@ private struct RemoteNativeTimeline: View {
                     }
                     rulerPointer(.init(phase: cancelled ? .cancelled : ended ? .ended : .moved,
                         position: point, origin: first, secondary: true, modifiers: []), width: width)
-                }, tap: { x in if local { pauseFollowing() }; (rulerSeek ?? seek)(max(0, start + min(1, max(0, x / width)) * span)) }))
+                }, tap: { seekOnRuler($0, width: width, modifiers: scrolling.modifiers) }))
             .background {
                 if local {
                     IpadTimelinePointerProbe(enabled: editorEnabled, capturesPointer: true,
@@ -5488,11 +5500,20 @@ private struct RemoteNativeTimeline: View {
         }
         guard let fixed = selectionResizeFixedEdge else { return false }
         let time = TimelineTempo.snap(max(0, start + Double(x / max(1, width)) * span), song: song,
-            pixelsPerSecond: width / span, enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift), includeItemEdges: true)
+            pixelsPerSecond: width / span, enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift),
+            includeItemEdges: true, rulerSections: snapRulerSections)
         timeSelection.update(song: song.id, from: fixed, to: time)
         show.updateActiveLoopArea()
         if ended { selectionResizeFixedEdge = nil }
         return true
+    }
+    private func seekOnRuler(_ x: CGFloat, width: Double, modifiers: HardwareKeyboardModifiers) {
+        let time = max(0, start + min(1, max(0, x / max(1, width))) * span)
+        guard local, let song = localShow?.current else { seek(time); return }
+        pauseFollowing()
+        (rulerSeek ?? seek)(TimelineTempo.snap(time, song: song, pixelsPerSecond: width / span,
+            enabled: TimelineSnapPreference.enabled && !modifiers.contains(.shift), includeItemEdges: true,
+            rulerSections: snapRulerSections))
     }
     private func rulerPointer(_ event: IpadTimelinePointerEvent, width: CGFloat) {
         guard local, editorEnabled, let show = localShow, let song = show.current else { return }
@@ -5502,7 +5523,8 @@ private struct RemoteNativeTimeline: View {
             rulerPointerViewport = IpadTimelineViewport(start: start, span: span)
             if event.secondary {
                 rulerSelectionAnchor = TimelineTempo.snap(max(0, start + Double(event.origin.x / max(1, width)) * span), song: song,
-                    pixelsPerSecond: width / span, enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift), includeItemEdges: true)
+                    pixelsPerSecond: width / span, enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift),
+                    includeItemEdges: true, rulerSections: snapRulerSections)
                 rulerSelectionEnd = nil
             }
         case .moved, .ended:
@@ -5511,7 +5533,8 @@ private struct RemoteNativeTimeline: View {
                 func time(_ x: CGFloat) -> Double {
                     TimelineTempo.snap(max(0, start + Double(x / max(1, width)) * span), song: song,
                         pixelsPerSecond: width / span,
-                        enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift), includeItemEdges: true)
+                        enabled: TimelineSnapPreference.enabled && !event.modifiers.contains(.shift),
+                        includeItemEdges: true, rulerSections: snapRulerSections)
                 }
                 if event.distance >= 3 || rulerSelectionEnd != nil {
                     let end = time(event.position.x)
@@ -5527,7 +5550,7 @@ private struct RemoteNativeTimeline: View {
                 moved.pan(pixels: Double(event.position.x - event.origin.x), width: visibleWidth(width))
                 viewport = moved
             } else if event.phase == .ended {
-                (rulerSeek ?? seek)(max(0, start + Double(event.position.x / max(1, width)) * span))
+                seekOnRuler(event.position.x, width: width, modifiers: event.modifiers)
             }
             if event.phase == .ended { rulerPointerViewport = nil; rulerSelectionAnchor = nil; rulerSelectionEnd = nil }
         case .cancelled: rulerPointerViewport = nil; rulerSelectionAnchor = nil; rulerSelectionEnd = nil; selectionResizeFixedEdge = nil
@@ -5570,7 +5593,7 @@ private struct RemoteNativeTimeline: View {
         return TimelineTempo.snap(original + translation / max(1, width) * span, song: song,
             pixelsPerSecond: width / span, cursor: localShow?.snapshot.transport.editPosition ?? position,
             enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift),
-            excludingRegion: id, includeItemEdges: true)
+            excludingRegion: id, includeItemEdges: true, rulerSections: snapRulerSections)
     }
     @ViewBuilder private func nativeRegionMenu(_ part: Part, song: Song) -> some View {
 
@@ -5697,7 +5720,7 @@ private struct RemoteNativeTimeline: View {
               song.canDragMarker(marker), pixelsPerSecond > 0 else { return nil }
         marker.position = song.markerDragPosition(marker, to: marker.position + translation / pixelsPerSecond,
             pixelsPerSecond: pixelsPerSecond, free: !TimelineSnapPreference.enabled || scrolling.modifiers.contains(.shift),
-            cursor: show.snapshot.transport.editPosition ?? show.snapshot.transport.position)
+            cursor: show.snapshot.transport.editPosition ?? show.snapshot.transport.position, rulerSections: snapRulerSections)
         return marker
     }
     private func createMarker(tempo: Bool = false) {
@@ -5799,7 +5822,8 @@ private struct RemoteNativeTimeline: View {
             nativeRevision: localShow?.projectRevision ?? 0, mixPreview: scrolling.itemMix, selectedItem: scrolling.selectedItem,
             selectedItems: scrolling.itemSelection.items, movementLocked: localShow?.timelineItemsLocked ?? false,
             itemMixLocked: localShow?.timelineItemMixLocked ?? false,
-            resizeEnabled: editorEnabled && localShow?.canControl() == true, interactionID: scrolling.pointerReset,
+            resizeEnabled: editorEnabled && localShow?.canControl() == true, touchItemEditing: touchItemEditing,
+            snapRulerSections: { snapRulerSections }, interactionID: scrolling.pointerReset,
             cursorPosition: { [weak show = localShow] in
                 guard let transport = show?.snapshot.transport else { return nil }
                 return transport.editPosition ?? transport.position
@@ -5923,6 +5947,8 @@ private struct RemoteTimelineTrackRow: View, Equatable {
     var movementLocked = false
     var itemMixLocked = false
     var resizeEnabled = false
+    var touchItemEditing = false
+    var snapRulerSections: () -> [TimelineTempoSection]? = { nil }
     let interactionID: UUID
     var cursorPosition: () -> Double? = { nil }
     var selectTrack: (() -> Void)? = nil
@@ -5947,7 +5973,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
             lhs.track.laneCount == rhs.track.laneCount && lhs.track.heightScale == rhs.track.heightScale && lhs.track.emphasized == rhs.track.emphasized &&
             lhs.preparedTrack === rhs.preparedTrack && lhs.width == rhs.width && lhs.displayScale == rhs.displayScale && lhs.heightScale == rhs.heightScale &&
             lhs.selectedItem == rhs.selectedItem && lhs.selectedItems == rhs.selectedItems && lhs.itemMixLocked == rhs.itemMixLocked && lhs.movementLocked == rhs.movementLocked && lhs.resizeEnabled == rhs.resizeEnabled && lhs.interactionID == rhs.interactionID && lhs.start == rhs.start && lhs.end == rhs.end && lhs.span == rhs.span && lhs.nativeRevision == rhs.nativeRevision && lhs.mixPreview == rhs.mixPreview && lhs.nativeDirectory == rhs.nativeDirectory && lhs.hasRegion == rhs.hasRegion && lhs.local == rhs.local && lhs.headersHidden == rhs.headersHidden &&
-            lhs.invertWaveformColors == rhs.invertWaveformColors
+            lhs.invertWaveformColors == rhs.invertWaveformColors && lhs.touchItemEditing == rhs.touchItemEditing
     }
     private func nativeClip(_ id: UUID) -> AudioClip? {
         if let shared = sharedResizePreview {
@@ -5999,7 +6025,8 @@ private struct RemoteTimelineTrackRow: View, Equatable {
             let a = left ? neighbour : original, b = left ? original : neighbour
             let target = TimelineTempo.snap(max(0, b.startTime + translation * preview.secondsPerPoint), song: nativeSong,
                 pixelsPerSecond: 1 / preview.secondsPerPoint, cursor: cursorPosition(),
-                enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift), includeItemEdges: true, excludingItems: [a.id,b.id])
+                enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift), includeItemEdges: true,
+                excludingItems: [a.id,b.id], rulerSections: snapRulerSections())
             if let chain = TeleprompterBoundaryEdit(track: nativeTrack, selected: selectedItems, left: a.id, right: b.id, position: target) {
                 sharedResizePreview = chain.clips
             } else if selectedItems.count == 2 {
@@ -6022,7 +6049,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
         let target = TimelineTempo.snap(max(0, edge + translation * preview.secondsPerPoint), song: nativeSong,
                                        pixelsPerSecond: 1 / preview.secondsPerPoint, cursor: cursorPosition(),
                                        enabled: TimelineSnapPreference.enabled && !scrolling.modifiers.contains(.shift),
-                                       includeItemEdges: true, excludingItems: [id])
+                                       includeItemEdges: true, excludingItems: [id], rulerSections: snapRulerSections())
         let lower = left ? min(target, original.startTime + original.duration - 0.01) : original.startTime
         let upper = left ? original.startTime + original.duration : max(original.startTime + 0.01, target)
         let unchanged = lower == original.startTime && upper == original.startTime + original.duration
@@ -6148,7 +6175,7 @@ private struct RemoteTimelineTrackRow: View, Equatable {
                     let edge = left ? clip.start : clip.start + clip.duration
                     let handle = IpadItemResizeHandleLayout(edge: (edge - start) / span * width, viewportWidth: width)
                     if (edge >= start && edge <= end) || resizing?.original.id == clip.id {
-                        IpadItemResizeHandle(left: left, interactionID: interactionID, gripX: handle.gripX, showsGrip: handle.showsGrip, changed: { delta, finished, cancelled in
+                        IpadItemResizeHandle(left: left, interactionID: interactionID, gripX: handle.gripX, showsGrip: handle.showsGrip, touchEnabled: touchItemEditing, changed: { delta, finished, cancelled in
                             resize(clip.id, left: left, translation: delta, finished: finished, cancelled: cancelled)
                         }).id(clip.id).frame(width: handle.width, height: max(0, laneHeight - GridSelectionItem.headerHeight - 2))
                             .offset(x: handle.origin,

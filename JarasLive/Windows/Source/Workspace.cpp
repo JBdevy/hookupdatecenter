@@ -2442,6 +2442,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     float xAt(double t) const {
         return (float)(t * w.pixelsPerSecond - horizontal.getCurrentRangeStart());
     }
+    const std::vector<timelineGrid::Section>& snapTiming(const jaras::Song& song) { return canvas.snapTiming(song); }
     void zoomAt(double scale, float anchor) {
         stopGesture();
         applyZoom(scale, anchor);
@@ -2882,6 +2883,12 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         }
         TimelineGridCache<timelineGrid::Tick> gridTicks;
         TimelineGridCache<timelineGrid::Section> rulerSections;
+        const std::vector<timelineGrid::Section>& snapTiming(const jaras::Song& song) {
+            const double end = t.scrollEndTime > 0 ? t.scrollEndTime : timelineGrid::scrollEnd(&song);
+            return rulerSections.get(t.w.session.project().id, song.id, t.w.session.revision, 0, end, 1, [&] {
+                return timelineGrid::rulerSections(song, end);
+            });
+        }
         struct RegionDrawing { String identifier, name; float identifierWidth=0; };
         TimelineRegionDrawingCache<RegionDrawing> regionDrawings;
         void invalidateGrid() { gridTicks.invalidate(); rulerSections.invalidate(); regionDrawings.invalidate(); }
@@ -3105,11 +3112,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             const auto& projectID = t.w.session.project().id;
             const auto revision = t.w.session.revision;
             const auto scale = t.w.pixelsPerSecond;
-            const double rulerEnd = std::max(1., t.scrollEndTime);
             const auto &grid = gridTicks.get(projectID, song->id, revision, viewStart, viewEnd, scale, [&] {
-                const auto& timing = rulerSections.get(projectID, song->id, revision, 0, rulerEnd, 1, [&] {
-                    return timelineGrid::rulerSections(*song, rulerEnd);
-                });
+                const auto& timing = snapTiming(*song);
                 const auto divisions = song->timeSettings ? song->timeSettings->divisions : 4;
                 // Include a preceding label and the antialiased edge of a line.
                 const auto labelGutter = timelineGrid::MeasureLabels(timing).spacing;
@@ -4269,23 +4273,24 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         ID hoverRegion;
         int hoverRegionEdge=0;
         std::optional<RegionMarkerRepulsion> regionRepulsion;
-        double markerEditPosition(const MouseEvent &e) const {
+        double markerEditPosition(const MouseEvent &e) {
             const double at=std::max(0.,originalStart+(e.position.x-startPosition.x)/t.w.pixelsPerSecond);
             const auto *song=t.w.session.song();
-            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),false,nullptr,nullptr,&dragMarker):at;
+            return song?timelineGrid::snap(at,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),
+                false,nullptr,nullptr,&dragMarker,nullptr,{},&snapTiming(*song)):at;
         }
-        std::pair<double,double> regionEditBounds(const MouseEvent &e) const {
+        std::pair<double,double> regionEditBounds(const MouseEvent &e) {
             const double delta=(e.position.x-startPosition.x)/t.w.pixelsPerSecond;
             if(!regionEdge) {
                 double start=std::max(0.,originalStart+delta);
                 if(const auto *song=t.w.session.song())start=timelineGrid::snap(start,*song,t.w.pixelsPerSecond,
-                    t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),true,nullptr,&dragRegion);
+                    t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),true,nullptr,&dragRegion,nullptr,nullptr,{},&snapTiming(*song));
                 if(regionRepulsion)start=regionRepulsion->resolve(start);
                 return {start,start+clipLength};
             }
             double boundary=(regionEdge<0?originalStart:originalStart+clipLength)+delta;
             if(const auto *song=t.w.session.song())boundary=timelineGrid::snap(boundary,*song,t.w.pixelsPerSecond,
-                t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),true,nullptr,&dragRegion);
+                t.w.freeTimelinePosition(e.mods),&t.w.session.transport(),true,nullptr,&dragRegion,nullptr,nullptr,{},&snapTiming(*song));
             return {regionEdge<0?std::max(0.,std::min(originalStart+clipLength-.01,boundary)):originalStart,
                     regionEdge>0?std::max(originalStart+.01,boundary):originalStart+clipLength};
         }
@@ -4304,7 +4309,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             const auto *song=t.w.session.song();if(!song)return;
             timeRangeDragged=true;
             refreshItemSnapEdges(*song);
-            auto snap=[&](double value){return timelineGrid::snapSelection(value,*song,t.w.pixelsPerSecond,t.w.session.transport(),t.w.freeTimelinePosition(e.mods),nullptr,&itemSnapEdges);};
+            const auto& timing = snapTiming(*song);
+            auto snap=[&](double value){return timelineGrid::snapSelection(value,*song,t.w.pixelsPerSecond,
+                t.w.session.transport(),t.w.freeTimelinePosition(e.mods),nullptr,&itemSnapEdges,&timing);};
             double from=snap(startTime),to=snap(t.timeAt(e.position.x));
             if(timeRangeBefore && timeRangeResize) {
                 if(timeRangeResize<0){from=std::min(to,timeRangeBefore->second-.001);to=timeRangeBefore->second;}
@@ -4647,9 +4654,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
         int resizeEdge = 0, previewRow = 0;
         bool clipMoveBlocked = false;
         double previewStart = 0, previewEnd = 0;
-        double pointerPosition(double time, ModifierKeys modifiers) const {
+        double pointerPosition(double time, ModifierKeys modifiers) {
             const auto *song=t.w.session.song();
-            return song ? timelineGrid::snapCursor(time,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(modifiers)) : time;
+            return song ? timelineGrid::snapCursor(time,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(modifiers),&snapTiming(*song)) : time;
         }
         void updateDrag(const MouseEvent &e) { updateDrag(e.position,e.mods); }
         void repaintItemEdgeGuides() {
@@ -4690,7 +4697,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             if (const auto *song = t.w.session.song()) {
                 refreshItemSnapEdges(*song);
                 edge = timelineGrid::snapSelection(edge,*song,t.w.pixelsPerSecond,
-                                                   t.w.session.transport(),t.w.freeTimelinePosition(modifiers), &excluded, &itemSnapEdges);
+                                                   t.w.session.transport(),t.w.freeTimelinePosition(modifiers), &excluded, &itemSnapEdges,
+                                                   &snapTiming(*song));
             }
             previewStart =
                 resizeEdge > 0
@@ -4937,7 +4945,9 @@ void Workspace::paintOverChildren(Graphics &g) {
     if(externalDropPoint&&session.song()&&!externalDropFiles.empty()) {
         const auto local=timeline->getLocalPoint(this,*externalDropPoint);
         if(timeline->getLocalBounds().contains(local)&&local.y>=timeline->headerHeight()){
-            const auto at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),*session.song(),pixelsPerSecond,session.transport(),freeTimelinePosition(ModifierKeys::getCurrentModifiers()));
+            const auto &song = *session.song();
+            const auto at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),song,pixelsPerSecond,session.transport(),
+                freeTimelinePosition(ModifierKeys::getCurrentModifiers()),nullptr,nullptr,&timeline->snapTiming(song));
             const float x=timeline->getX()+timeline->xAt(at);
             const int row=rowAt(local.y-timeline->headerHeight()+verticalOffset);
             const int end=rowTop((int)session.song()->tracks.size());
@@ -7853,7 +7863,9 @@ void Workspace::filesDropped(const StringArray &files,int x,int y) {
     if(!timeline->getLocalBounds().contains(local)||local.y<timeline->headerHeight()){fileDropStatus="outside grid";return;}
     const int row=rowAt(local.y-timeline->headerHeight()+tracksViewport.getViewPositionY());
     const ID target=row>=0&&row<(int)session.song()->tracks.size()?session.song()->tracks[(size_t)row].id:ID{};
-    const double at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),*session.song(),pixelsPerSecond,session.transport(),freeTimelinePosition(ModifierKeys::getCurrentModifiers()));
+    const auto& dropSong = *session.song();
+    const double at=timelineGrid::snapSelection(timeline->timeAt((float)local.x),dropSong,pixelsPerSecond,session.transport(),
+        freeTimelinePosition(ModifierKeys::getCurrentModifiers()),nullptr,nullptr,&timeline->snapTiming(dropSong));
     if (std::any_of(files.begin(), files.end(), [](const auto &path) { return File(path).hasFileExtension("jllyrics"); })) {
         if (!std::all_of(files.begin(), files.end(), [](const auto &path) { return File(path).hasFileExtension("jllyrics"); })) {
             showError("Drop lyrics separately from audio and video.");

@@ -1144,6 +1144,7 @@ struct IpadItemResizeHandle: UIViewRepresentable {
     let interactionID: UUID
     var gripX: CGFloat? = nil
     var showsGrip = true
+    var touchEnabled = true
     let changed: (Double, Bool, Bool) -> Void
     @Environment(\.isEnabled) private var enabled
     func makeUIView(context: Context) -> IpadItemResizeControl { IpadItemResizeControl() }
@@ -1152,6 +1153,7 @@ struct IpadItemResizeHandle: UIViewRepresentable {
         view.interactionID = interactionID
         view.gripX = gripX
         view.showsGrip = showsGrip
+        view.touchEnabled = touchEnabled
         view.changed = changed
         view.isEnabled = enabled
         view.accessibilityLabel = JarasLocalization.string(left ? "Item start" : "Item end")
@@ -1160,6 +1162,11 @@ struct IpadItemResizeHandle: UIViewRepresentable {
 }
 final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
     var changed: ((Double, Bool, Bool) -> Void)?
+    var touchEnabled = true {
+        didSet {
+            if oldValue != touchEnabled { cancelResize(); updateTouchTypes() }
+        }
+    }
     var gripX: CGFloat? { didSet { if oldValue != gripX { setNeedsLayout() } } }
     var showsGrip = true { didSet { grip.isHidden = !showsGrip } }
     var interactionID: UUID? {
@@ -1180,9 +1187,14 @@ final class IpadItemResizeControl: UIControl, UIGestureRecognizerDelegate {
         grip.backgroundColor = UIColor.white.cgColor
         grip.cornerRadius = 2; layer.addSublayer(grip)
         drag.delegate = self
+        updateTouchTypes()
         addGestureRecognizer(drag)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    private func updateTouchTypes() {
+        let types: [UITouch.TouchType] = touchEnabled ? [.direct, .indirectPointer] : [.indirectPointer]
+        drag.allowedTouchTypes = types.map { NSNumber(value: $0.rawValue) }
+    }
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard IpadHardwareKeyboardFocus.permitsInput(in: self, enabled: isEnabled) else { return false }
         guard gestureRecognizer === drag else { return true }

@@ -91,9 +91,10 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         expect(Bundle.main.object(forInfoDictionaryKey: "UIApplicationSupportsIndirectInputEvents") as? Bool == true,
                "Bundle must opt into real indirect pointer events on iPadOS 16")
         let attached = recognizers()
-        expect(attached.count == 2, "Pointer and wheel must attach once to the UIWindow")
+        expect(attached.count == 3, "Pointer, wheel and touch drag must attach once to the UIWindow")
         guard let pointer = attached.first(where: { $0 is IpadGridPointerRecognizer }) as? IpadGridPointerRecognizer,
-              let scroll = attached.first(where: { $0 is UIPanGestureRecognizer }) as? UIPanGestureRecognizer else {
+              let scroll = attached.first(where: { $0 is UIPanGestureRecognizer && $0.allowedTouchTypes.isEmpty }) as? UIPanGestureRecognizer,
+              let touchDrag = attached.first(where: { $0 is UIPanGestureRecognizer && !$0.allowedTouchTypes.isEmpty }) as? UIPanGestureRecognizer else {
             write("FAIL: missing attached recognizers"); return
         }
         expect(pointer.allowedTouchTypes == [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)], "Pointer consumes direct touch")
@@ -106,6 +107,17 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         expect(pointer.isEnabled && scroll.isEnabled, "Grid pointer capture must restore without resetting the project")
         let point = surface.convert(CGPoint(x: 200, y: 150), to: window)
         let touch = PointerTouch(target: surface, point: point)
+        let fingerOnItem = PointerTouch(target: surface, point: point, kind: .direct)
+        expect(!touchDrag.isEnabled && !capture.gestureRecognizer(touchDrag, shouldReceive: fingerOnItem),
+               "Touch drag accepts input with Track Mixer Edit off")
+        capture.acceptsTouch = { CGRect(x: 160, y: 100, width: 100, height: 100).contains($0) }
+        capture.setEnabled(true, reset: rulerReset)
+        expect(touchDrag.isEnabled && touchDrag.maximumNumberOfTouches == 1, "Edit must enable one-finger item dragging")
+        expect(capture.gestureRecognizer(touchDrag, shouldReceive: fingerOnItem), "Touch on the selected item was rejected")
+        let elsewhere = surface.convert(CGPoint(x: 380, y: 350), to: window)
+        expect(!capture.gestureRecognizer(touchDrag, shouldReceive: PointerTouch(target: surface, point: elsewhere, kind: .direct)),
+               "Touch drag claimed empty grid space")
+        expect(!capture.gestureRecognizer(touchDrag, shouldReceive: touch), "Touch drag claimed a mouse click")
         expect(capture.gestureRecognizer(pointer, shouldReceive: touch), "Valid pointer rejected")
         expect(!capture.gestureRecognizer(pointer, shouldReceive: PointerTouch(target: surface, point: point, kind: .direct)), "Finger incorrectly enters pointer path")
         expect(!capture.gestureRecognizer(pointer, shouldReceive: PointerTouch(target: surface, point: point, kind: .pencil)), "Pencil incorrectly enters pointer path")
@@ -114,6 +126,8 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         let control = UIButton(frame: CGRect(x: 100, y: 100, width: 100, height: 40))
         let label = UILabel(frame: control.bounds); control.addSubview(label); surface.addSubview(control)
         expect(!capture.gestureRecognizer(pointer, shouldReceive: PointerTouch(target: label, point: point)), "Nested UIControl child captured")
+        expect(!capture.gestureRecognizer(touchDrag, shouldReceive: PointerTouch(target: label, point: point, kind: .direct)),
+               "Item move intercepted a separate resize or header control")
         let editor = UITextView(frame: CGRect(x: 100, y: 150, width: 100, height: 40)); surface.addSubview(editor)
         expect(!capture.gestureRecognizer(pointer, shouldReceive: PointerTouch(target: editor, point: point)), "UITextView captured")
         let protectedWheel = WheelRecognizer(); protectedWheel.samplePoint = CGPoint(x: 120, y: 120)
@@ -126,6 +140,20 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
 
         var events: [IpadTimelinePointerEvent] = []
         capture.event = { events.append($0) }
+        expect(capture.gestureRecognizer(touchDrag, shouldReceive: fingerOnItem), "Selected-item touch failed before drag")
+        let drag = WheelRecognizer()
+        drag.samplePoint = CGPoint(x: 235, y: 168); drag.sampleState = .began
+        capture.perform(NSSelectorFromString("touchChanged:"), with: drag)
+        expect(events.count == 2 && events.first?.phase == .began && events.first?.position == CGPoint(x: 200, y: 150)
+            && events.last?.phase == .moved && events.last?.position == drag.samplePoint && events.last?.direct == true,
+               "Finger drag lost the press origin or first translation")
+        drag.sampleState = .ended
+        capture.perform(NSSelectorFromString("touchChanged:"), with: drag)
+        expect(events.last?.phase == .ended && events.last?.direct == true, "Finger drag did not end on the normal movement path")
+        events.removeAll()
+        capture.acceptsTouch = nil
+        capture.setEnabled(true, reset: rulerReset)
+        expect(!touchDrag.isEnabled, "Disabling Track Mixer Edit left touch dragging enabled")
         // UIKit's internal touch bookkeeping is unavailable for synthetic public
         // UITouch instances. Test the real delegate separately above, then deliver
         // recognizer transitions directly without a fake zero-location delegate veto.
@@ -203,7 +231,7 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         let workspace = UIViewController(); workspace.modalPresentationStyle = .fullScreen
         await withCheckedContinuation { continuation in root.present(workspace, animated: false) { continuation.resume() } }
         surface.removeFromSuperview(); workspace.view.addSubview(surface); await wait()
-        expect(recognizers().count == 2, "Reattaching duplicated window recognizers")
+        expect(recognizers().count == 3, "Reattaching duplicated window recognizers")
         expect(capture.gestureRecognizer(pointer, shouldReceive: touch), "Presented fullscreen workspace was incorrectly blocked")
         capture.setEnabled(false, reset: UUID())
         expect(!pointer.isEnabled && !scroll.isEnabled, "Disabling did not disable recognizers")
@@ -238,7 +266,7 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         gridContent.addSubview(gridCapture)
         await wait()
         let owned = (window!.gestureRecognizers ?? []).filter { $0.delegate === gridCapture }
-        let gridWheel = owned.first { $0 is UIPanGestureRecognizer }!
+        let gridWheel = owned.first { $0 is UIPanGestureRecognizer && $0.allowedTouchTypes.isEmpty }!
         let gridPointer = owned.first { $0 is IpadGridPointerRecognizer }!
         expect(grid.panGestureRecognizer.allowedScrollTypesMask.isEmpty, "Grid UIScrollView still competes for mouse/trackpad wheel")
         expect(mixer.panGestureRecognizer.allowedScrollTypesMask == [.continuous, .discrete], "Grid wheel policy disabled TrackMixer scrolling")

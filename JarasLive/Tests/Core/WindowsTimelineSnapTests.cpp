@@ -59,22 +59,31 @@ int main() {
     check(snapSelection(163,song,1,transport,false,&multi,&index),163,"entire moving selection excluded");
     song.tracks.clear(); song.timeSettings->divisions = 4;
     song.timeSettings->divisions = 8;
-    for(const auto [scale,target]:{std::pair{1.,8.}, {2.,12.}, {4.,10.}, {8.,10.}, {32.,10.5}, {64.,10.75}}) {
+    const auto timing = rulerSections(song, scrollEnd(&song));
+    for(const auto [scale,target]:{std::pair{1.,8.}, {2.,12.}, {4.,10.}, {8.,11.}, {32.,10.75}, {64.,10.75}}) {
         check(snapSelection(10.74,song,scale,transport,false),target,"item snaps to visible bars then beats and subdivisions");
         check(snap(10.74,song,scale,false),target,"marker snaps to visible bars then beats and subdivisions");
+        for (const auto& tick : rulerTicks(timing,8,0,20,scale,true)) if (!tick.drawsInGrid) {
+            const auto click = tick.time + .2 / scale;
+            transport.editPosition = transport.position = tick.time + 2 / scale;
+            check(snapSelection(click,song,scale,transport,false,nullptr,nullptr,&timing),tick.time,"ruler-only tick accepts item snapping");
+        }
+        transport.editPosition = transport.position = 100;
     }
     check(visibleGridStep(2,4,4,8,20),1,"intermediate beat groups fill the zoom gap");
     song.beatsPerBar=7; song.beatUnit=8;
-    check(snap(2.12,song,40,false),2.25,"odd meter subdivisions restart at each visible bar");
+    check(snap(2.12,song,40,false),2,"odd meter subdivisions restart at each visible bar");
     song.beatsPerBar=4; song.beatUnit=4;
     song.timeSettings->divisions = 4;
     check(snapSelection(1.12,song,60,transport,false),1,"nearby grid attracts");
     check(snapSelection(1.24,song,60,transport,false),1,"enabled grid quantizes even beyond the edge capture radius");
     check(snapCursor(1.24,song,60,false),1,"cursor click keeps division quantization");
+    song.timeSettings->divisions = 0;
     for (double scale : {.05,.3,1.,100.}) {
         transport.editPosition = transport.position = 1000;
         check(snapSelection(1000+7/scale,song,scale,transport,false),1000,"nearby edit cursor remains magnetic");
     }
+    song.timeSettings->divisions = 4;
     jaras::Part region; region.id = "region"; region.startTime = 3.13; region.endTime = 7.17;
     song.parts = {region};
     jaras::TimelineMarker marker; marker.id = "marker"; marker.position = 9.23;
