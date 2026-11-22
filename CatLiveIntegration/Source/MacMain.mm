@@ -11,7 +11,7 @@
 - (void)applicationDidFinishLaunching:(NSNotification*)note {
     bridge=std::make_unique<integration::Bridge>();
     window=[[NSWindow alloc]initWithContentRect:NSMakeRect(0,0,540,310) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
-    window.title=@"CatLive Integration";window.delegate=self;window.backgroundColor=[NSColor colorWithWhite:0.10 alpha:1];window.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+    window.title=[NSString stringWithUTF8String:"CatLive Integration " CATLIVE_INTEGRATION_VERSION];window.delegate=self;window.backgroundColor=[NSColor colorWithWhite:0.10 alpha:1];window.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     auto title=[NSTextField labelWithString:@"CatLive Integration"];title.font=[NSFont systemFontOfSize:26 weight:NSFontWeightSemibold];title.alignment=NSTextAlignmentCenter;title.frame=NSMakeRect(20,236,500,38);[window.contentView addSubview:title];
     auto label=[NSTextField labelWithString:@"Adaptador Ethernet (RJ45)"];label.font=[NSFont systemFontOfSize:13];label.textColor=NSColor.secondaryLabelColor;label.frame=NSMakeRect(65,190,410,22);[window.contentView addSubview:label];
     selector=[[NSPopUpButton alloc]initWithFrame:NSMakeRect(60,151,420,34) pullsDown:NO];[window.contentView addSubview:selector];

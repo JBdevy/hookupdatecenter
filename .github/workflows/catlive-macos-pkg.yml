@@ -534,7 +534,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.reuse_build_run }}
-          pattern: CatLive-Integration-1.29-*-Installer
+          pattern: CatLive-Integration-2.00-*-Installer
           path: dist
           merge-multiple: true
       - name: Verify and publish the tested installers
@@ -543,8 +543,8 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && sha256sum --check "Catlive-$VERSION.pkg.sha256" && sha256sum --check "Catlive-$VERSION.exe.sha256")
-          test -s dist/CatLive-Integration-1.29-Mac.pkg
-          test -s dist/CatLive-Integration-1.29-Windows.exe
+          test -s dist/CatLive-Integration-2.00-Mac.pkg
+          test -s dist/CatLive-Integration-2.00-Windows.exe
           cat > release-notes.txt <<EOF
           CatLive $VERSION para macOS universal e Windows 10/11 x64.
 
@@ -557,14 +557,14 @@ jobs:
           EOF
           gh release create "catlive-v$VERSION" \
             "dist/Catlive-$VERSION.pkg" "dist/Catlive-$VERSION.exe" \
-            dist/CatLive-Integration-1.29-Mac.pkg dist/CatLive-Integration-1.29-Windows.exe \
+            dist/CatLive-Integration-2.00-Mac.pkg dist/CatLive-Integration-2.00-Windows.exe \
             --draft --target "$SOURCE_SHA" --title "CatLive $VERSION - macOS and Windows" --notes-file release-notes.txt
           gh release view "catlive-v$VERSION" --json assets --jq .assets > release-assets.json
           python3 - <<'PY'
           import hashlib, json, os, pathlib
           assets = json.loads(pathlib.Path('release-assets.json').read_text())
           names = [f'Catlive-{os.environ["VERSION"]}.pkg', f'Catlive-{os.environ["VERSION"]}.exe',
-                   'CatLive-Integration-1.29-Mac.pkg', 'CatLive-Integration-1.29-Windows.exe']
+                   'CatLive-Integration-2.00-Mac.pkg', 'CatLive-Integration-2.00-Windows.exe']
           assert len(assets) == 4
           for name in names:
               path = pathlib.Path('dist', name)
@@ -608,7 +608,7 @@ jobs:
           path: dist
       - uses: actions/download-artifact@v4
         with:
-          pattern: CatLive-Integration-1.29-*-Installer
+          pattern: CatLive-Integration-2.00-*-Installer
           path: dist
           merge-multiple: true
       - name: Verify release installers and checksums
@@ -621,8 +621,8 @@ jobs:
           test -s "Catlive-$VERSION.exe"
           sha256sum --check "Catlive-$VERSION.pkg.sha256"
           sha256sum --check "Catlive-$VERSION.exe.sha256"
-          test -s CatLive-Integration-1.29-Mac.pkg
-          test -s CatLive-Integration-1.29-Windows.exe
+          test -s CatLive-Integration-2.00-Mac.pkg
+          test -s CatLive-Integration-2.00-Windows.exe
       - name: Publish both desktop installers together
         uses: softprops/action-gh-release@v2
         with:
@@ -635,7 +635,7 @@ jobs:
           fail_on_unmatched_files: true
           body: |
             CatLive ${{ inputs.version }} para macOS universal e Windows 10/11 x64.
-            CatLive Integration possui instaladores separados, gratuitos e sem login/licença: CatLive-Integration-1.29-Mac.pkg e CatLive-Integration-1.29-Windows.exe.
+            CatLive Integration possui instaladores separados, gratuitos e sem login/licença: CatLive-Integration-2.00-Mac.pkg e CatLive-Integration-2.00-Windows.exe.
             Projeto .jl compartilhado entre as plataformas, com preservação do mapa grandMA2 ao salvar no Mac.
             Publicação condicionada aos testes nativos e à troca de documentos Windows → Mac → Windows e Mac → Windows.
             Instalador macOS assinado e notarizado. Instalador Windows sem assinatura Authenticode nesta configuração.
@@ -658,7 +658,7 @@ jobs:
             const { owner, repo } = context.repo;
             const tag = `catlive-v${version}`;
             const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`, `CatLive-Integration-1.29-Mac.pkg`, `CatLive-Integration-1.29-Windows.exe`]);
+            const installers = new Set([`Catlive-${version}.pkg`, `Catlive-${version}.exe`, `CatLive-Integration-2.00-Mac.pkg`, `CatLive-Integration-2.00-Windows.exe`]);
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id: release.id });
             for (const name of installers) {
               const matches = assets.filter(asset => asset.name === name);

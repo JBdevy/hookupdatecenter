@@ -40,6 +40,8 @@ security find-identity -v "$KEYCHAIN" | grep -q 'Developer ID Installer:'
 echo "CATLIVE_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 echo "CATLIVE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 APP="$BUILD_DIRECTORY/CatLive Integration.app"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]{2}$ ]]
 APP_ID="$(security find-identity -v -p codesigning "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)"
 INSTALLER_ID="$(security find-identity -v "$KEYCHAIN" | sed -n 's/.*"\(Developer ID Installer:.*\)"/\1/p' | head -1)"
 python3 scripts/codesign-with-retry.py --force --sign "$APP_ID" --options runtime --timestamp "$APP"
@@ -52,8 +54,8 @@ with open(sys.argv[1],'wb') as out:
 PYCOMPONENT
 mkdir -p "$BUILD_DIRECTORY/pkg-root/Applications"
 ditto "$APP" "$BUILD_DIRECTORY/pkg-root/Applications/CatLive Integration.app"
-pkgbuild --root "$BUILD_DIRECTORY/pkg-root" --component-plist "$BUILD_DIRECTORY/component.plist" --identifier com.hookdeveloper.catlive.integration.pkg --version 1.29 --install-location / "$BUILD_DIRECTORY/unsigned.pkg"
-PKG="$BUILD_DIRECTORY/installer/CatLive-Integration-1.29-Mac.pkg"
+pkgbuild --root "$BUILD_DIRECTORY/pkg-root" --component-plist "$BUILD_DIRECTORY/component.plist" --identifier com.hookdeveloper.catlive.integration.pkg --version "$VERSION" --install-location / "$BUILD_DIRECTORY/unsigned.pkg"
+PKG="$BUILD_DIRECTORY/installer/CatLive-Integration-$VERSION-Mac.pkg"
 python3 JarasLive/scripts/sign-catlive-pkg.py "$BUILD_DIRECTORY/unsigned.pkg" "$PKG" "$INSTALLER_ID" "$KEYCHAIN"
 python3 JarasLive/scripts/notarize-catlive-pkg.py "$PKG" --result "$BUILD_DIRECTORY/notary-result.json"
 xcrun stapler staple "$PKG"

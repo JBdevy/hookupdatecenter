@@ -23,6 +23,7 @@ int main(int argc,char** argv){try{
     httplib::Client client("127.0.0.1",port);client.set_read_timeout(2,0);
     auto post=[&](const char* path,const JSON& body,const std::string& token=""){return client.Post(path,{{"X-CatLive-Token",token}},body.dump(),"application/json");};
     auto info=client.Get("/v1/info");require(info&&JSON::parse(info->body)["protocol"]==1,"Receiver identity");
+    require(JSON::parse(info->body)["version"] == CATLIVE_INTEGRATION_VERSION, "Receiver advertises the packaged version");
     auto connected=post("/v1/connect",{{"protocol",1},{"name","Show test"},{"resolume",false},{"mtc",false}});
     require(connected&&connected->status==200,"First client connects");auto token=JSON::parse(connected->body)["token"].get<std::string>();require(token.size()==64,"Random session token");
     auto other=post("/v1/connect",{{"protocol",1},{"name","Other"}});require(other&&other->status==409,"Only one sender owns this receiver");
