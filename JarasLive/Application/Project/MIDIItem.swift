@@ -20,9 +20,14 @@ public struct LibraryMIDIChord: Decodable, Sendable {
 
 /// Quarter-note units in the item's source; trimming keeps this source intact.
 public struct MIDINote: Codable, Equatable, Identifiable, Sendable {
-    private static let pitchNames = (0..<128).map { pitch in
-        ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][pitch % 12] + String(pitch / 12 - 1)
-    }
+    private static let pitchNames: [String] = {
+        let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        return (0..<128).map { pitch in
+            let name = names[pitch % names.count]
+            let octave = pitch / names.count - 1
+            return name + String(octave)
+        }
+    }()
     static func label(pitch: Int, velocity: Int) -> String {
         pitchNames[min(127,max(0,pitch))] + " - " + String(velocity)
     }
