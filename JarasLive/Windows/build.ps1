@@ -1,6 +1,6 @@
 ﻿param(
     [ValidateSet('Debug','Release')][string]$Configuration='Release',
-    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='1.37',
+    [ValidatePattern('^[0-9]+\.[0-9]{2}$')][string]$Version='2.00',
     [string]$BuildDirectory=(Join-Path $env:LOCALAPPDATA 'CatLiveBuild/windows'),
     [string]$OfflineDependencies,
     [string]$OfflineStemRuntime,
