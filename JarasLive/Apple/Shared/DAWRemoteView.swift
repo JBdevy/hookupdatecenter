@@ -8019,8 +8019,8 @@ private struct RemoteNativeMixerRow: View, Equatable {
                     Text(verbatim: String(format: "%02d  %@", number, track.name))
                         .font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1)
                         .foregroundStyle(remoteColor(nameColor)).frame(maxWidth: .infinity, alignment: .leading)
-                    teleprompterControls(width: min(200, max(0, geometry.size.width - stripeWidth - 75)))
-                        .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
+                    teleprompterControls
+                        .frame(width: min(200, max(0, geometry.size.width - hierarchyWidth - stripeWidth - 75)))
                 }.frame(maxHeight: .infinity)
             } else if heightCompact, let localShow, let nativeTrack {
                 condensedRow(show: localShow, nativeTrack: nativeTrack, nameColor: nameColor)
@@ -8031,9 +8031,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
                     if !compactControls {
                     HStack(spacing: 3) {
                         if teleprompter {
-                            Spacer(minLength: 0)
-                            teleprompterControls(width: geometry.size.width - hierarchyWidth - stripeWidth - (editing ? 40 : 10))
-                                .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
+                            teleprompterControls
                         } else {
                         if titleBesideControls {
                             Text(String(format: "%02d  %@", number, track.name)).font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1)
@@ -8226,10 +8224,9 @@ private struct RemoteNativeMixerRow: View, Equatable {
         }
     }
 
-    private func teleprompterControls(width: CGFloat) -> some View {
-        TeleprompterTrackButtons(availableWidth: max(0, width), openPatch: openPatch,
-            addText: addText, addLyrics: addLyrics)
-            .frame(width: max(0, width), alignment: .trailing)
+    private var teleprompterControls: some View {
+        TeleprompterTrackButtons(openPatch: openPatch, addText: addText, addLyrics: addLyrics)
+            .anchorPreference(key: IpadTrackControlsBoundsKey.self, value: .bounds) { [$0] }
     }
 }
 
