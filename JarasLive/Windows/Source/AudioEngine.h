@@ -143,7 +143,6 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     bool refreshItemPresence(const jaras::Song &);
     bool cacheSplitItems(const jaras::Song &, const std::map<ID, ID> &);
     void setItemControls(const jaras::AudioClip &);
-    void setItemSolo(const jaras::Song *, const ID &);
     void setMixer(const jaras::Project &, const jaras::Song &);
     void setLoopMixer(const std::optional<jaras::MultiLoopPlayback> &);
     double loopDisplayVolume(const ID &, double) const;
@@ -682,7 +681,6 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     void applyUpdates(size_t budget = std::numeric_limits<size_t>::max(),
                       TrackCapture* capture = nullptr, bool fromCallback = false);
     void mixVoice(Voice &, int head, double at, float *const *, int channels, int dest, int count);
-    ID renderedItemSolo;
     void audioDeviceIOCallbackWithContext(const float *const *, int, float *const *, int, int,
                                           const AudioIODeviceCallbackContext &) override;
     void audioDeviceAboutToStart(AudioIODevice *) override;

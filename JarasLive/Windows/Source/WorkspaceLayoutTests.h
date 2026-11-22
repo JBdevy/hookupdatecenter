@@ -242,8 +242,9 @@ struct WorkspaceLayoutTests {
             host.setSize(width,850); w.workspaceFullscreen=false;
             w.setBounds(0,tabInset,tabs.getWidth(),tabs.getHeight()-tabInset); w.resized();
             require(w.controls["masterMono"]->isVisible() && w.controls["masterMute"]->isVisible() &&
-                    !w.controls["masterPatch"]->isVisible() && !w.controls["masterFX"]->isVisible() &&
-                    !w.controls["masterSolo"]->isVisible(), "Main must show only mute, the channel mode and the fader");
+                    w.controls["masterPatch"]->isVisible() && w.controls["masterFX"]->isVisible() &&
+                    w.controls["masterSolo"]->isVisible() && w.masterPan.isVisible(),
+                    "Main must show channel mode, Patch, FX, Pan, Mute and Solo");
             require(w.masterVolume.getRight() <= w.transportDisplayBounds.getX(),
                     "The Main must stay at the left of the top transport");
             if (width >= 1440) {
@@ -471,7 +472,8 @@ struct WorkspaceLayoutTests {
         w.controls.at("proMode")->onClick();
         const auto &mode = *w.controls.at("proMode");
         require(mode.getRight() < w.controls.at("save")->getX() && mode.getButtonText()=="Simple Mode" &&
-                !w.songDisplay.isVisible() && w.tempoDisplayBounds.getHeight()==35 &&
+                w.songDisplay.isVisible() && w.songDisplay.getBottom() <= w.tempoDisplayBounds.getY() &&
+                w.tempoDisplayBounds.getHeight()==35 &&
                 w.tempoDisplayBounds.getHeight()==w.tuner->getHeight() &&
                 !w.tempoDisplayBounds.intersects(w.proPlaybackBounds),
                 "Pro and Simple Mode must use the same BPM and Tuner height");
@@ -479,6 +481,22 @@ struct WorkspaceLayoutTests {
                 w.controls.at("editMode")->isVisible() && w.controls.at("track-envelopes")->isVisible() &&
                 w.controls.at("proTool")->isVisible() && w.controls.count("proStop")==0,
                 "Pro Mode lost timeline tools or added a separate Stop button");
+        require(w.controls.at("editMode")->getRight() < w.controls.at("track-envelopes")->getX() &&
+                w.controls.at("track-envelopes")->getRight() < w.tempoDisplayBounds.getX(),
+                "Edit and Envelopes must be immediately to the left of BPM");
+        require(w.tuner->getRight() < w.timelineSnap.getX() &&
+                w.timelineSnap.getRight() < w.timelineTimebase.getX() &&
+                w.timelineTimebase.getBottom() == w.tuner->getBottom() &&
+                w.controls.at("zoomFit")->getBottom() <= w.tuner->getY(),
+                "Snap and Timebase must stay to the right of Tuner with zoom in the upper row");
+        for (const auto *id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"})
+            require(w.controls.at(id)->isVisible(), "The Main strip must keep all its controls in Pro Mode");
+        w.controls.at("proClock")->onClick();
+        auto &clockWindow = *w.floatingWindows.at("Clock Position");
+        require(clockWindow.isVisible() && clockWindow.isResizable() && w.clockPositionLabel, "Clock Position must be resizable");
+        const auto fontHeight = w.clockPositionLabel->getFont().getHeight();
+        clockWindow.setSize(clockWindow.getWidth() + 150, clockWindow.getHeight() + 50);
+        require(w.clockPositionLabel->getFont().getHeight() > fontHeight, "The clock digits must grow with the window");
         for (const auto *id : {"projectStart","previousTimelinePoint","nextTimelinePoint","projectEnd",
                                "proPlay","proPause","proSubplay","proFadeout","proRecord","proRepeat"}) {
             const auto &button = *w.controls.at(id);
@@ -495,8 +513,9 @@ struct WorkspaceLayoutTests {
         require(w.proDock == Workspace::ProDock::samplers && proDock->isVisible(),
                 "Pro Samplers must switch the dock to sample categories");
         w.controls.at("proMode")->onClick();
-        require(!proDock->isVisible() && w.songDisplay.isVisible() && w.controls.at("play")->isVisible(),
-                "Returning to the standard transport must restore its controls and close the Pro dock");
+        require(!proDock->isVisible() && w.songDisplay.isVisible() && w.controls.at("play")->isVisible() &&
+                !w.floatingWindows.count("Clock Position"),
+                "Returning to the standard transport must restore its controls and close the Pro panels");
     }
     static void transportRegionDisplay(const File &directory) {
         using floatingControlTests::require;

@@ -93,9 +93,6 @@ class Session final : private Timer {
 
     std::optional<std::pair<double,double>> selectedTimeRange() const;
     void selectTimeRange(double from, double to);
-    ID itemSolo;
-    void toggleItemSolo(const ID &);
-    void clearItemSolo();
     void clearTimeRange();
     void configureSetlist(jaras::RegionSetlist);
     void editTimeline(const std::function<void(jaras::Project &)> &, bool allowTimingEdit = false);

@@ -1676,7 +1676,7 @@ private struct TimelineGridContent: View, Equatable {
             case .mute:
                 guard source.track.kind == .standard else { return }
                 show.send(.clipMute, target: id)
-            case .solo: show.toggleItemSolo(id)
+            case .solo: show.send(.solo, target: source.track.id)
             }
         }
         input.setLoopArea = { start, end in

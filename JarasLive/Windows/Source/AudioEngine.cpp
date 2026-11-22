@@ -2006,29 +2006,6 @@ void AudioEngine::setItemControls(const jaras::AudioClip &clip) {
         u.mute=clip.muted; u.fxBypassed=clip.fxBypassed.value_or(false); enqueue(u);
     }
 }
-void AudioEngine::setItemSolo(const jaras::Song *song, const ID &id) {
-    std::vector<std::pair<size_t,SharedMIDIUpdate>> changes;
-    if (song) {
-        for (size_t i=0;i<buses.size();++i) {
-            const auto track = std::find_if(song->tracks.begin(),song->tracks.end(),
-                [&](const auto &entry) { return entry.id==buses[i]->id; });
-            if (track==song->tracks.end() || std::none_of(track->clips.begin(),track->clips.end(),
-                [](const auto &clip) { return clip.midi.has_value(); })) continue;
-            if (id.empty()) changes.emplace_back(i,SharedMIDIUpdate(playbackNotes(*track,song,true,true)));
-            else {
-                auto audible=*track;
-                audible.clips.erase(std::remove_if(audible.clips.begin(),audible.clips.end(),
-                    [&](const auto &clip) { return clip.id!=id; }),audible.clips.end());
-                changes.emplace_back(i,SharedMIDIUpdate(playbackNotes(audible,song,true,true)));
-            }
-        }
-    }
-    auto next=id;
-    commitPreparedEdit([&]() noexcept {
-        renderedItemSolo.swap(next);
-        for (auto &[bus,notes] : changes) replaceSharedMIDI(bus,notes);
-    });
-}
 bool AudioEngine::refreshTrackRouting(const jaras::Song &song) {
     if(song.tracks.size()!=buses.size())return false;
     jaras::validateRouting(song);
@@ -2330,8 +2307,7 @@ void AudioEngine::mixMIDIVoice(Voice &v, int head, double at, float *const *out,
     const double sr=rate.load(std::memory_order_relaxed);
     const unsigned ownDelay=v.ownsMIDI()?v.fx[head].latencyFrames():0;
     const unsigned busDelay=latencyPlan?latencyPlan->buses[v.bus].own:ownDelay;
-    running=running&&v.ownsMIDI()&&!v.itemMuted&&(renderedItemSolo.empty()||v.clipID==renderedItemSolo)
-        &&trackScope(current,head,v.bus).allows(v.playbackStart,v.regionOwnerIndex);
+    running=running&&v.ownsMIDI()&&!v.itemMuted&&trackScope(current,head,v.bus).allows(v.playbackStart,v.regionOwnerIndex);
     const bool intersects=at+count/sr>v.start&&at<v.start+v.duration+busDelay/sr;
     if (!running || !intersects) {
         if (v.midiExpected[head] == -1) return;
@@ -2380,7 +2356,7 @@ void AudioEngine::mixMIDIVoice(Voice &v, int head, double at, float *const *out,
 void AudioEngine::mixVoice(Voice &v, int head, double at, float *const *out, int channels, int dest,
                            int count) {
     if (v.midiItem) {mixMIDIVoice(v,head,at,out,channels,dest,count,true);return;}
-    if (v.itemMuted || (!renderedItemSolo.empty() && v.clipID!=renderedItemSolo)) return;
+    if (v.itemMuted) return;
     const double sr = rate.load(std::memory_order_relaxed);
     auto &reader = *v.source->readers[readerHeads[size_t(head)].load()];
     const unsigned busDelay=latencyPlan&&!v.frozen?latencyPlan->buses[v.bus].own:0;
@@ -2649,7 +2625,6 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
                 for(auto &voice:voices) {
                     voice->parallelReady=false;
                     if(!voice->parallelEligible || !voice->clipAudio || voice->itemMuted ||
-                       (!renderedItemSolo.empty() && voice->clipID!=renderedItemSolo) ||
                        buses[voice->bus]->recordingItemsSuppressed || !sourceAudible(voice->bus) ||
                        !trackScope(current,head,voice->bus).allows(voice->playbackStart,voice->regionOwnerIndex))continue;
                     const int begin=(int)jlimit(0.,double(count),std::ceil((voice->start-cursor)*sr-1e-7));

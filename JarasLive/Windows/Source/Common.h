@@ -28,6 +28,9 @@ class ParameterSlider : public Slider {
     String getTooltip() override {
         return (bool)getProperties()["panValueTooltip"] ? mixerPanText(getValue()) : Slider::getTooltip();
     }
+    String getTextFromValue(double value) override {
+        return (bool)getProperties()["panValueTooltip"] ? mixerPanText(value) : Slider::getTextFromValue(value);
+    }
     void mouseDown(const MouseEvent &event) override {
         const bool onReadout = getComponentID() == "trackVolume" ? event.x >= getWidth() - 42 : event.x < 42;
         backgroundGesture=backgroundDown && getSliderStyle()!=Slider::RotaryVerticalDrag && onReadout;

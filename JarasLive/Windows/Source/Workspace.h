@@ -228,7 +228,7 @@ class Workspace final : public Component,
     std::vector<timelineGrid::Section> proTimingSections;
     std::optional<timelineGrid::MeasureLabels> proMeasureLabels;
     std::array<int64_t,9> proPosition{};
-    SafePointer<Label> clickPositionLabel;
+    SafePointer<Label> clockPositionLabel;
     void updateProPosition(double);
     void toggleProDock(ProDock);
     DragDivider libraryDivider;
