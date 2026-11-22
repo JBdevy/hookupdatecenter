@@ -6,7 +6,7 @@ on:
         description: Desktop package to build
         default: both
         type: choice
-        options: [both, macos, windows, intel-audio]
+        options: [both, macos, windows, intel-audio, integration]
       version:
         description: Public version
         required: true
@@ -17,6 +17,11 @@ concurrency:
   group: catlive-desktop-test-packages-${{ inputs.platform }}
   cancel-in-progress: false
 jobs:
+  integration:
+    if: inputs.platform == 'integration'
+    uses: ./.github/workflows/catlive-integration.yml
+    secrets: inherit
+
   windows:
     if: inputs.platform == 'both' || inputs.platform == 'windows'
     runs-on: windows-2022

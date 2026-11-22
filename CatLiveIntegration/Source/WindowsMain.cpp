@@ -115,7 +115,8 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show) {
     dpi=GetDpiForSystem(); RECT rect{0,0,px(540),px(320)};
     DWORD style=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX;
     AdjustWindowRectExForDpi(&rect,style,FALSE,0,dpi);
-    auto window=CreateWindowExW(0,cls.lpszClassName,L"CatLive Integration",style,CW_USEDEFAULT,CW_USEDEFAULT,rect.right-rect.left,rect.bottom-rect.top,nullptr,nullptr,instance,nullptr);
+    const auto windowTitle = wide("CatLive Integration " CATLIVE_INTEGRATION_VERSION);
+    auto window=CreateWindowExW(0,cls.lpszClassName,windowTitle.c_str(),style,CW_USEDEFAULT,CW_USEDEFAULT,rect.right-rect.left,rect.bottom-rect.top,nullptr,nullptr,instance,nullptr);
     if(!window)return 1;
     ShowWindow(window,show);MSG message;
     while(GetMessageW(&message,nullptr,0,0)>0)if(!IsDialogMessageW(window,&message)){TranslateMessage(&message);DispatchMessageW(&message);}

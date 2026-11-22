@@ -1,17 +1,20 @@
 #ifndef BuildDir
 #error BuildDir is required
 #endif
+#ifndef IntegrationVersion
+#error IntegrationVersion is required
+#endif
 [Setup]
 AppId={{AD4C4654-AEDD-40BD-B04E-244F87B13A57}
 AppName=CatLive Integration
-AppVersion=1.29
+AppVersion={#IntegrationVersion}
 AppPublisher=Hook Developer
 DefaultDirName={localappdata}\Programs\CatLive Integration
 DefaultGroupName=CatLive Integration
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir={#BuildDir}\installer
-OutputBaseFilename=CatLive-Integration-1.29-Windows
+OutputBaseFilename=CatLive-Integration-{#IntegrationVersion}-Windows
 SetupIconFile=..\..\JarasLive\Installer\Assets\CatLive.ico
 UninstallDisplayIcon={app}\CatLiveIntegration.exe
 ArchitecturesAllowed=x64compatible
