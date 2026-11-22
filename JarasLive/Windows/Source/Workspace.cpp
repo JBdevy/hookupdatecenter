@@ -7148,11 +7148,16 @@ void Workspace::resized() {
         controls["metronome"]->setTopLeftPosition(panelX+42,modeY);
         tempoControl->setBounds(panelX+metroStripWidth,panelY,panelWidth-metroStripWidth,panelHeight);
         tuner->setBounds(tempoDisplayBounds.getRight()+tempoGap,panelY,tunerWidth,panelHeight);
-        const int snapX = tuner->getRight() + 8;
+        const int firstActionX = multipleProjects ? tabsX : controls["proTool"]->getX();
+        const int snapX = compactProTransport ? tuner->getRight() + 8
+            : (tuner->getRight() + firstActionX - switchesWidth) / 2;
         timelineSnap.setBounds(snapX,controlBottom-24,switchWidth,24);
         timelineTimebase.setBounds(snapX+switchWidth+switchGap,controlBottom-24,switchWidth,24);
-        controls["editMode"]->setBounds(panelX-proEditSpan,actionY,proToolWidth,actionHeight);
-        controls["track-envelopes"]->setBounds(panelX-proToolWidth-proControlGap,actionY,proToolWidth,actionHeight);
+        const int editWidth = proEditSpan - proControlGap;
+        const int proEditX = compactProTransport ? panelX - proEditSpan
+            : (proPlaybackBounds.getRight() + panelX - editWidth) / 2;
+        controls["editMode"]->setBounds(proEditX,actionY,proToolWidth,actionHeight);
+        controls["track-envelopes"]->setBounds(proEditX+proToolWidth+proControlGap,actionY,proToolWidth,actionHeight);
         const int nameTop = compactProTransport ? settingsY + 26 : status.getY();
         songDisplay.setBounds(panelX, nameTop, tuner->getRight() - panelX, panelY - nameTop);
         const int positionY = settingsY;
