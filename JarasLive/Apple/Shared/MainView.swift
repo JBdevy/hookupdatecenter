@@ -95,8 +95,6 @@ struct MainView: View {
     @AppStorage("jaras.layout.focus.open", store: WorkspaceLayoutPreferences.storage) private var focusOpen = false
     @State private var midiPreviewOpen = false
     @StateObject private var midiPreviewWindow = RecordingPianoWindow()
-    @AppStorage("jaras.midiPreview.height", store: WorkspaceLayoutPreferences.storage) private var midiPreviewHeight = 273.0
-    @State private var midiPreviewDragHeight: CGFloat?
     @StateObject private var detachedMixer = DetachedMixerWindow()
     @StateObject private var detachedParts = DetachedPartsWindow()
     @StateObject private var detachedSetlist = DetachedSetlistWindow()
@@ -336,18 +334,6 @@ struct MainView: View {
         guard documents.ready, !documents.busy, !TrackRecording.shared.recording, !TrackRecording.shared.busy else { return }
         showingProjectShare = true
     }
-    private func dockHeights(availableHeight: CGFloat) -> (workspace: CGFloat, mixer: CGFloat, preview: CGFloat, previewLimit: CGFloat) {
-        let pads: CGFloat = vinhetasOpen && !vinhetasWindow.detached ? 240 : 0
-        let keyboard: CGFloat = keyboardOpen ? 108 : 0
-        let parts: CGFloat = partsLeftOpen && partsLeftHorizontal && !detachedParts.isDetached
-            ? 192 * min(1.5, max(1, partsHeightScale)) : 0
-        let spare = max(0, availableHeight - pads - keyboard - parts - 128)
-        let mixerReserve = footerMixerOpen ? min(160, spare / 2) : 0
-        let previewLimit = min(723.55859375, spare - mixerReserve)
-        let preview = midiPreviewOpen && !midiPreviewWindow.detached ? min(previewLimit, max(273, midiPreviewDragHeight ?? midiPreviewHeight)) : 0
-        return (max(0, availableHeight - pads - keyboard - preview), spare - preview, preview, previewLimit)
-    }
-
     @ViewBuilder private func timelineDocks(mixerLimit: CGFloat) -> some View {
         if desktopExtras {
             FooterMixerPanel(show: show, active: footerMixerOpen,
@@ -361,20 +347,8 @@ struct MainView: View {
 
         }
     }
-    @ViewBuilder private func performanceDocks(previewHeight: CGFloat, previewLimit: CGFloat) -> some View {
+    @ViewBuilder private func performanceDocks() -> some View {
         if desktopExtras {
-            if midiPreviewOpen && !midiPreviewWindow.detached {
-                VStack(spacing: 0) {
-                    FooterMixerResizeInput(height: previewHeight, minimum: min(273, previewLimit), maximum: previewLimit,
-                        changed: { midiPreviewDragHeight = $0 }, ended: {
-                            midiPreviewHeight = $0; midiPreviewDragHeight = nil
-                        }, cancelled: { midiPreviewDragHeight = nil })
-                        .frame(height: min(10, previewHeight))
-                    GeometryReader { _ in RecordingPianoPreview(show: show) }
-                }
-                .frame(height: previewHeight, alignment: .top)
-                .clipped()
-            }
             if keyboardOpen { FooterPianoKeyboard().frame(height: 108) }
             FooterNativeHeightHost(storedHeight: 240, minimum: 240, maximum: 240,
                 active: vinhetasOpen && !vinhetasWindow.detached,
@@ -408,28 +382,35 @@ struct MainView: View {
                                 setlistWidth = finalWidth
                             }) {
                             GeometryReader { editing in
-                                let dock = dockHeights(availableHeight: editing.size.height)
-                                VStack(spacing: 0) {
-                                HStack(alignment: .top, spacing: 0) {
-                                    if desktopExtras && libraryOpen {
-                                        let available = max(100, editing.size.width - (focusOpen ? FooterHorizontalMixer.focusWidth : 0) - 220)
-                                        DesktopLibraryPane(theme: interfaceTheme, show: show, available: available)
-                                    }
-                                    if desktopExtras && focusOpen {
-                                        FooterHorizontalMixer(show: show, focused: true)
-                                            .frame(width: FooterHorizontalMixer.focusWidth)
-                                    }
-                                    VStack(spacing: 0) {
-                                        SectionListDock(visible: partsLeftOpen && !partsLeftHorizontal, storageKey: "catlive.parts.left.width",
-                                                        minimumPrimaryWidth: 260 + max(0, CGFloat(mixerWidth)), defaultFraction: 0.24, leading: true) {
-                                            TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
-                                                             toggleMixer: toggleMixer).equatable()
-                                                .foregroundStyle(JarasTheme.text)
-                                        } sections: { SmoothSeekPanel(show: show, placement: .left) }
-                                        timelineDocks(mixerLimit: dock.mixer)
-                                    }
-                                }.frame(height: dock.workspace, alignment: .top).clipped()
-                                performanceDocks(previewHeight: dock.preview, previewLimit: dock.previewLimit)
+                                DesktopWorkspaceDocks(show: show, availableHeight: editing.size.height,
+                                    padsHeight: desktopExtras && vinhetasOpen && !vinhetasWindow.detached ? 240 : 0,
+                                    keyboardHeight: desktopExtras && keyboardOpen ? 108 : 0,
+                                    partsHeight: partsLeftOpen && partsLeftHorizontal && !detachedParts.isDetached
+                                        ? 192 * min(1.5, max(1, partsHeightScale)) : 0,
+                                    mixerOpen: footerMixerOpen,
+                                    previewOpen: desktopExtras && midiPreviewOpen && !midiPreviewWindow.detached
+                                ) { workspaceHeight, mixerHeight in
+                                    HStack(alignment: .top, spacing: 0) {
+                                        if desktopExtras && libraryOpen {
+                                            let available = max(100, editing.size.width - (focusOpen ? FooterHorizontalMixer.focusWidth : 0) - 220)
+                                            DesktopLibraryPane(theme: interfaceTheme, show: show, available: available)
+                                        }
+                                        if desktopExtras && focusOpen {
+                                            FooterHorizontalMixer(show: show, focused: true)
+                                                .frame(width: FooterHorizontalMixer.focusWidth)
+                                        }
+                                        VStack(spacing: 0) {
+                                            SectionListDock(visible: partsLeftOpen && !partsLeftHorizontal, storageKey: "catlive.parts.left.width",
+                                                            minimumPrimaryWidth: 260 + max(0, CGFloat(mixerWidth)), defaultFraction: 0.24, leading: true) {
+                                                TimelineGridView(show: show, documents: documents, remotePresentation: remotePresentation,
+                                                                 toggleMixer: toggleMixer).equatable()
+                                                    .foregroundStyle(JarasTheme.text)
+                                            } sections: { SmoothSeekPanel(show: show, placement: .left) }
+                                            timelineDocks(mixerLimit: mixerHeight)
+                                        }
+                                    }.frame(height: workspaceHeight, alignment: .top).clipped()
+                                } lowerDocks: {
+                                    performanceDocks()
                                 }
                             }
                         } trailing: {
@@ -1509,6 +1490,49 @@ private struct DesktopFileMenuIndicator: ViewModifier {
 #endif
 
 #if os(macOS)
+/// Keep the live height inside the retained workspace root so a drag moves
+/// the grid boundary without replacing the AppKit split view's hosted content.
+private struct DesktopWorkspaceDocks<Upper: View, Lower: View>: View {
+    let show: ShowController
+    let availableHeight: CGFloat
+    let padsHeight: CGFloat
+    let keyboardHeight: CGFloat
+    let partsHeight: CGFloat
+    let mixerOpen: Bool
+    let previewOpen: Bool
+    @ViewBuilder let upper: (CGFloat, CGFloat) -> Upper
+    @ViewBuilder let lowerDocks: () -> Lower
+    @AppStorage("jaras.midiPreview.height", store: WorkspaceLayoutPreferences.storage) private var savedHeight = 273.0
+    @State private var liveHeight: CGFloat?
+
+    var body: some View {
+        let otherDocks = padsHeight + keyboardHeight
+        let spare = max(0, availableHeight - otherDocks - partsHeight - 128)
+        let mixerReserve = mixerOpen ? min(160, spare / 2) : 0
+        let maximum = min(723.55859375, spare - mixerReserve)
+        let minimum = min(273, maximum)
+        let previewHeight = previewOpen ? min(maximum, max(minimum, liveHeight ?? savedHeight)) : 0
+        VStack(spacing: 0) {
+            upper(max(0, availableHeight - otherDocks - previewHeight), spare - previewHeight)
+            if previewHeight > 0 {
+                let gripHeight = min(10, previewHeight)
+                VStack(spacing: 0) {
+                    FooterMixerResizeInput(height: previewHeight, minimum: minimum, maximum: maximum,
+                        changed: { liveHeight = $0 },
+                        ended: { height in savedHeight = height; liveHeight = nil },
+                        cancelled: { liveHeight = nil })
+                        .frame(height: gripHeight)
+                        .accessibilityLabel("Resize MIDI Preview")
+                    RecordingPianoPreview(show: show)
+                        .frame(height: previewHeight - gripHeight)
+                        .clipped()
+                }.frame(height: previewHeight, alignment: .top).clipped()
+            }
+            lowerDocks()
+        }
+    }
+}
+
 enum FooterHeightRole { case display, mixer, auxiliary }
 
 /// Shares only native geometry. No publications, project edits or preferences

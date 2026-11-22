@@ -538,8 +538,7 @@ private struct DesktopTimelineToolbarView: View {
                         value: Binding(get: { log(max(controls.limits.zoom.lowerBound, controls.zoom)) },
                                        set: { controls.changeZoom?(exp($0)) }),
                         range: log(controls.limits.zoom.lowerBound)...log(controls.limits.zoom.upperBound),
-                        active: controls.zoomMemory != nil, toggle: controls.toggleMinimumZoom),
-            drawn: true)
+                        active: controls.zoomMemory != nil, toggle: controls.toggleMinimumZoom))
     }
 
     private func applyTimebase() {
@@ -577,25 +576,24 @@ struct DesktopZoomControls: View {
     }
     let height: Axis
     let time: Axis
-    var drawn = false
 
     var body: some View {
         HStack(spacing: 5) {
             HStack(spacing: 0) {
                 ZoomButton(symbol: "fitTracks", label: height.toggleLabel, id: height.id + "-memory",
-                           active: height.active, drawn: drawn, action: height.toggle)
+                           active: height.active, action: height.toggle)
                 Rectangle().fill(Color(hex: 0x393939)).frame(width: 1)
                 ZoomButton(symbol: "fitTime", label: time.toggleLabel, id: time.id + "-memory",
-                           active: time.active, drawn: drawn, action: time.toggle)
+                           active: time.active, action: time.toggle)
             }.frame(height: 24)
                 .background(Color(hex: 0x4c4c4c), in: RoundedRectangle(cornerRadius: 4))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
             HStack(spacing: 0) {
                 ZoomSlider(symbol: "trackHeightAxis", label: height.label, id: height.id + "-slider",
-                           value: height.value, range: height.range, drawn: drawn)
+                           value: height.value, range: height.range)
                 Rectangle().fill(Color(hex: 0x242424)).frame(width: 1)
                 ZoomSlider(symbol: "timelineZoomAxis", label: time.label, id: time.id + "-slider",
-                           value: time.value, range: time.range, drawn: drawn)
+                           value: time.value, range: time.range)
             }.frame(height: 24)
                 .background(Color(hex: 0x343434), in: RoundedRectangle(cornerRadius: 4))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -607,17 +605,11 @@ struct DesktopZoomControls: View {
         let label: LocalizedStringKey
         let id: String
         let active: Bool
-        let drawn: Bool
         let action: () -> Void
         var body: some View {
             Button(action: action) {
-                Group {
-                    if drawn {
-                        TransportControlIcon(name: symbol, size: 15, color: active ? JarasTheme.green : Color(hex: 0xd5d5d5))
-                    } else {
-                        ControlIcon(name: symbol, active: active, size: 15)
-                    }
-                }.frame(width: 24, height: 24).contentShape(Rectangle())
+                TransportControlIcon(name: symbol, size: 15, color: active ? JarasTheme.green : Color(hex: 0xd5d5d5))
+                    .frame(width: 24, height: 24).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel(label).accessibilityIdentifier(id)
                 .accessibilityAddTraits(active ? .isSelected : [])
         }
@@ -629,7 +621,6 @@ struct DesktopZoomControls: View {
         let id: String
         @Binding var value: Double
         let range: ClosedRange<Double>
-        let drawn: Bool
 
         private var span: Double { range.upperBound - range.lowerBound }
         private var fraction: Double { span > 0 ? min(1, max(0, (value - range.lowerBound) / span)) : 0 }
@@ -647,11 +638,7 @@ struct DesktopZoomControls: View {
 
         private var slider: some View {
             HStack(spacing: 2) {
-                if drawn {
-                    TransportControlIcon(name: symbol, size: 13, color: Color(hex: 0xc5c5c5))
-                } else {
-                    ControlIcon(name: symbol, size: 13)
-                }
+                TransportControlIcon(name: symbol, size: 13, color: Color(hex: 0xc5c5c5))
                 GeometryReader { geometry in
                     let travel = max(1, geometry.size.width - 10)
                     ZStack(alignment: .leading) {

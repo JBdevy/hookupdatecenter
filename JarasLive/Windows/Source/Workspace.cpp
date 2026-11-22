@@ -314,7 +314,8 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     const auto opacity = b.isEnabled() || icon == "pause" || b.getProperties().contains("transportColour") ? 1.0f : .35f;
     auto ink = greenAction ? Colours::black : b.findColour(b.getToggleState() ? TextButton::textColourOnId : TextButton::textColourOffId);
     const auto toolbarSignal = (int)b.getProperties()["toolbarSignal"];
-    if ((bool)b.getProperties()["zoomSegment"])
+    const bool zoomSegment = (bool)b.getProperties()["zoomSegment"];
+    if (zoomSegment)
         ink = b.getToggleState() ? theme::green : Colour(0xffd5d5d5);
     if (toolbar) ink = toolbarSignal == 1 ? theme::green : theme::toolbarInactive;
     const auto foreground = ink.withMultipliedAlpha(opacity);
@@ -376,7 +377,7 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     if (icon.isNotEmpty()) {
         const auto bounds = b.getLocalBounds().toFloat().withSizeKeepingCentre(iconSize, iconSize);
         const auto artwork = icon == "visibility" ? String("eye") : icon;
-        if (!transportDrawing && drawControlIcon(g, artwork, b.getToggleState() || b.isDown(), bounds, opacity)) return;
+        if (!transportDrawing && !zoomSegment && drawControlIcon(g, artwork, b.getToggleState() || b.isDown(), bounds, opacity)) return;
         if (drawDesktopToolbarSymbol(g, icon, bounds) || drawInterfaceIcon(g, icon, bounds)) return;
     }
     // Keep compact labels such as Patch at their natural width. Use the spare
@@ -5643,8 +5644,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     controls["pause"]->setColour(TextButton::buttonOnColourId, theme::yellow);
     controls["pause"]->setColour(TextButton::textColourOnId, Colours::black);
     for (const auto *id : {"play", "pause", "stopall", "loop", "record", "metronome", "fadeout",
-                           "editMode", "track-envelopes", "projectStart", "projectEnd", "previousTimelinePoint",
-                           "nextTimelinePoint", "trackHeightFit", "zoomFit"})
+                           "editMode", "track-envelopes", "projectStart", "projectEnd", "previousTimelinePoint", "nextTimelinePoint"})
         controls.at(id)->getProperties().set("transportDrawing", true);
     for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"}) {
         auto &control = *controls[id];

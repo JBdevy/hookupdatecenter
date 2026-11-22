@@ -2828,8 +2828,10 @@ private struct TrackMixFeedbackPanel: View {
                     if previewHeight > 0, let localShow {
                         HStack(spacing: 0) {
                             VStack(spacing: 0) {
-                                Capsule().fill(JarasTheme.secondary).frame(width: 48, height: 3)
-                                    .frame(maxWidth: .infinity).frame(height: 14).contentShape(Rectangle())
+                                let gripHeight = min(14, previewHeight)
+                                Color.clear.frame(height: gripHeight)
+                                    .overlay { Capsule().fill(JarasTheme.secondary).frame(width: 48, height: 3) }
+                                    .contentShape(Rectangle())
                                     .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .global)
                                         .updating($nativeMIDIPreviewResize) { drag, value, _ in value = drag.translation.height }
                                         .onEnded { drag in
@@ -2840,7 +2842,9 @@ private struct TrackMixFeedbackPanel: View {
                                         nativeMIDIPreviewHeight = min(previewMaximum, max(previewMinimum, previewInitial + (direction == .increment ? 24 : -24)))
                                     }
                                 RecordingPianoPreview(show: localShow)
-                            }.frame(height: previewHeight)
+                                    .frame(height: previewHeight - gripHeight)
+                                    .clipped()
+                            }.frame(height: previewHeight, alignment: .top).clipped()
                             Color.clear.frame(width: normalSetlist + parts.total)
                         }
                     }
