@@ -78,6 +78,7 @@ int main() {
     check(snapSelection(1.12,song,60,transport,false),1,"nearby grid attracts");
     check(snapSelection(1.24,song,60,transport,false),1,"enabled grid quantizes even beyond the edge capture radius");
     check(snapCursor(1.24,song,60,false),1,"cursor click keeps division quantization");
+    check(snapCursor(2.28,song,1000,false),2.5,"close zoom can reach lines farther than 24 points");
     song.timeSettings->divisions = 0;
     for (double scale : {.05,.3,1.,100.}) {
         transport.editPosition = transport.position = 1000;

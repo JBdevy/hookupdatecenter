@@ -31,6 +31,11 @@ final class TimelineSnapTests: XCTestCase {
         XCTAssertEqual(TimelineTempo.snap(12.1, song: song, pixelsPerSecond: 1), 16)
         XCTAssertEqual(TimelineTempo.snap(12.1, song: song, pixelsPerSecond: 2), 12)
     }
+    func testCloseZoomFindsRulerTicksEvenWhenTheyAreFartherThan24Points() {
+        var song = Project.empty(name: "Close grid").songs[0]
+        song.bpm = 120; song.parts = []; song.markers = []; song.tracks = []
+        XCTAssertEqual(TimelineTempo.snap(2.28, song: song, pixelsPerSecond: 1000), 2.5, accuracy: 1e-9)
+    }
     func testFreeCursorPositionIgnoresGridAndEveryMagneticAnchor() {
         for scale in [0.16, 1, 100, 10_000] {
             for position in [30.18, 39.29, 42.13, 123.456789] {

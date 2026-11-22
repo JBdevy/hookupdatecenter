@@ -1025,12 +1025,23 @@ public enum TimelineTimeRuler {
     static func nearestTick(to position: Double, pixelsPerSecond: Double, divisions: Int,
                             sections: [TimelineTempoSection]) -> Double? {
         // Bar stride is rounded up to a power of two from six points.
-        // Two maximum strides leave room for bucket culling at tempo boundaries.
-        let radius = 24 / pixelsPerSecond
+        // At close zoom one musical subdivision can cover many more points.
+        let index = firstSection(endingAfter: position, in: sections)
+        guard let section = index < sections.count ? sections[index] : sections.last else { return nil }
+        let subdivision = 60 / section.bpm * 4 / Double(max(section.unit, divisions))
+        let radius = max(24 / pixelsPerSecond, subdivision)
         return ticks(in: sections, from: position - radius, to: position + radius,
                      pixelsPerSecond: pixelsPerSecond, divisions: divisions, labels: false,
                      musical: MusicalLabels(sections: sections))
             .lazy.map(\.time).min { abs($0 - position) < abs($1 - position) }
+    }
+    private static func firstSection(endingAfter time: Double, in sections: [TimelineTempoSection]) -> Int {
+        var low = 0, high = sections.count
+        while low < high {
+            let middle = (low + high) / 2
+            if sections[middle].end <= time { low = middle + 1 } else { high = middle }
+        }
+        return low
     }
     public static func ticks(in sections: [TimelineTempoSection], from start: Double, to end: Double,
                              pixelsPerSecond scale: Double, divisions: Int = 4, labels: Bool = true,
@@ -1050,20 +1061,12 @@ public enum TimelineTimeRuler {
         var result: [Tick] = []
         var lastColumn: Double?
         var lastColumnRank = 0
-        func firstSection(endingAfter time: Double) -> Int {
-            var low = 0, high = sections.count
-            while low < high {
-                let middle = (low + high) / 2
-                if sections[middle].end <= time { low = middle + 1 } else { high = middle }
-            }
-            return low
-        }
         // Every reference has fixed higher-priority neighbours. Its visibility
         // depends only on their distance and zoom, never on which other labels
         // happened to be drawn first. This preserves references across tempo
         // boundaries as well as within a bar (8 -> 4 -> 2 -> 1 subdivisions).
         func hierarchyStep(_ index: Int) -> Int { index & (~index + 1) }
-        var sectionIndex = firstSection(endingAfter: densityStart)
+        var sectionIndex = firstSection(endingAfter: densityStart, in: sections)
         while sectionIndex < sections.count {
             let indexOfSection = sectionIndex
             let section = sections[sectionIndex]

@@ -202,7 +202,12 @@ inline std::vector<RulerTick> rulerTicks(const std::vector<Section>& parts, int 
 }
 inline std::optional<double> nearestRulerTick(double position, double scale, int divisions,
                                               const std::vector<Section>& timing) {
-    const double radius = 24. / scale;
+    if (timing.empty()) return std::nullopt;
+    const auto section = std::upper_bound(timing.begin(), timing.end(), position,
+        [](double time, const Section& candidate) { return time < candidate.end; });
+    const auto& active = section == timing.end() ? timing.back() : *section;
+    const double subdivision = 60. / active.bpm * 4 / std::max(active.unit, divisions);
+    const double radius = std::max(24. / scale, subdivision);
     auto marks = rulerTicks(timing, divisions, position - radius, position + radius, scale, true, false);
     const auto nearest = std::min_element(marks.begin(), marks.end(), [&](const auto& lhs, const auto& rhs) {
         return std::abs(lhs.time - position) < std::abs(rhs.time - position);
