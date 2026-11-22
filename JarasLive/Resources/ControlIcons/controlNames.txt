@@ -72,3 +72,6 @@ chevron.down
 send
 pin
 refresh
+preview
+trackMixer
+hozMixer

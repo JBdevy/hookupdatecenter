@@ -15,6 +15,9 @@ if sys.argv[2] == 'legacy':
 fonts = Path('Apple/Shared/Theme.swift').read_text()
 start = fonts.index('enum CatLiveTypeface {')
 fonts = fonts[start:fonts.index('\n/// Keep custom AppKit drawing', start)] + '\n#endif\n'
+start = fonts.index('    static func font(_ style:')
+end = fonts.index('\n}', start)
+fonts = fonts[:start] + fonts[end:]
 Path(sys.argv[1]).with_name('Fonts.swift').write_text('import SwiftUI\nimport CoreText\n' + fonts)
 parts = ['import AppKit\nimport SwiftUI\n']
 for begin in ['private struct TimelineNativeGridBand {', 'private struct TimelineNativeRuler:']:

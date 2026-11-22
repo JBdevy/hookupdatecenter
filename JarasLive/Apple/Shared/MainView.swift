@@ -853,13 +853,13 @@ struct MainView: View {
             .accessibilityIdentifier("workspace-focus").help(Text(verbatim: "Track - I"))
         }
         Button(action: toggleMixer) {
-            toolbarLabel("Track Mixer", "slider.horizontal.3", active: mixerWidth > 0)
+            toolbarLabel("Track Mixer", "trackMixer", active: mixerWidth > 0)
         }
         .accessibilityLabel(mixerWidth <= 0 ? "Expandir Track-Mixer" : "Recolher Track-Mixer").help(Text("Track Mixer"))
 
         if desktopExtras {
             Button(action: toggleBarMixer) {
-                toolbarLabel("Hoz Mixer", "slider.vertical.3", active: footerMixerOpen || detachedMixer.isVisible)
+                toolbarLabel("Hoz Mixer", "hozMixer", active: footerMixerOpen || detachedMixer.isVisible)
             }
             .accessibilityLabel("Hoz-Mixer").help(Text("Hoz Mixer"))
 

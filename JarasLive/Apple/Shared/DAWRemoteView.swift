@@ -2129,7 +2129,7 @@ private struct TrackMixFeedbackPanel: View {
                     Button("Exit Remote", action: exitRemote)
                 } label: { Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle()) }
                     .accessibilityLabel("Menu")
-                phonePanelButton(.mixer, title: "Track Mixer", icon: "slider.horizontal.3")
+                phonePanelButton(.mixer, title: "Track Mixer", icon: "trackMixer")
                 phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet.indent")
                 phonePanelButton(.grid, title: "Grid", icon: "square.grid.3x3")
                 phonePanelButton(.sections, title: "Parts")
@@ -2524,7 +2524,7 @@ private struct TrackMixFeedbackPanel: View {
                     Button { withAnimation(nil) {
                         toggleMainTrackMixer()
                     } } label: {
-                        ControlIcon(name: "slider.horizontal.3", active: prompterPanel == nil && !mixerCollapsed)
+                        ControlIcon(name: "trackMixer", active: prompterPanel == nil && !mixerCollapsed)
                             .font(.jarasSystem(size: 15, weight: .semibold))
                             .foregroundStyle(JarasTheme.toolbarTint(active: prompterPanel == nil && !mixerCollapsed))
                             .frame(width: railButton, height: 32).contentShape(Rectangle())
@@ -2533,7 +2533,7 @@ private struct TrackMixFeedbackPanel: View {
                         .accessibilityValue(prompterPanel != nil || mixerCollapsed ? "Hidden" : "Shown")
                     if let toggleHozMixer {
                         Button(action: toggleHozMixer) {
-                            ControlIcon(name: "slider.vertical.3", active: hozMixerOpen)
+                            ControlIcon(name: "hozMixer", active: hozMixerOpen)
                                 .frame(width: railButton, height: 32).contentShape(Rectangle())
                         }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
                             .foregroundStyle(JarasTheme.toolbarTint(active: hozMixerOpen))
@@ -9518,11 +9518,11 @@ private struct IpadPreviewButton: View {
     var body: some View {
         Button(action: toggle) {
             Group {
-                if horizontal { ControlIcon(name: "eye", active: active) }
+                if horizontal { ControlIcon(name: "preview", active: active) }
                 else { Text(verbatim: "P\nR\nE\nV\nI\nE\nW") }
             }
                 .font(.jarasSystem(size: 10, weight: .heavy)).multilineTextAlignment(.center)
-                .foregroundStyle(JarasTheme.toolbarTint(active: active)).frame(width: width, height: horizontal ? 28 : 108)
+                .foregroundStyle(active ? JarasTheme.green : JarasTheme.liveOffRed).frame(width: width, height: horizontal ? 28 : 108)
                 .modifier(RemoteControlSurface(radius: 5))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel("Preview")

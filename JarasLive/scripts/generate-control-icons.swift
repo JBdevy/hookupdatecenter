@@ -46,13 +46,13 @@ struct Material {
 
 let materials: [UInt32: [String]] = [
     0x6cafff: ["doc.text", "line.3.horizontal", "sidebar.left", "fitTime", "timelineZoomAxis", "midiPreview", "tabs.mappings", "refresh"],
-    0x39dbce: ["slider.horizontal.3", "dot.radiowaves.left.and.right", "library.instruments", "itemTimebase", "projection", "eye", "tabs.waveform"],
-    0x997cff: ["pause", "slider.vertical.3", "square.grid.3x3", "video", "automationLanes", "teleprompter2", "library.plugins", "tabs.plugins", "tabs.account"],
+    0x39dbce: ["slider.horizontal.3", "library.instruments", "itemTimebase", "projection", "eye", "tabs.waveform"],
+    0x997cff: ["pause", "trackMixer", "hozMixer", "slider.vertical.3", "square.grid.3x3", "video", "automationLanes", "teleprompter2", "library.plugins", "tabs.plugins", "tabs.account"],
     0xffad61: ["stopwatch", "magnet", "note.text", "fadeout", "metronome", "tabs.metronome", "search"],
     0x52df94: ["play", "addTrack", "tabs.transport", "text.bubble", "rectangle", "tabs.actions", "save", "check", "send"],
     0xf773a8: ["square.grid.3x2.fill", "flag", "library.samplers", "editCursor", "teleprompter1", "arrow.up.and.down.text.horizontal"],
     0xf1cc5c: ["folder.fill", "books.vertical", "library.presets", "star.fill", "loop", "lock", "pin"],
-    0xff5a6e: ["record", "tabs.record", "stopall"],
+    0xff5a6e: ["record", "tabs.record", "stopall", "preview", "dot.radiowaves.left.and.right"],
     0x93afd9: ["gearshape", "fitTracks", "trackHeightAxis", "list.bullet.indent", "square.grid.2x2", "unlock", "chevron.left", "chevron.right", "chevron.down"],
     0xa5befa: ["pianokeys", "speaker.wave.2", "timelineLanes", "info.circle", "projectStart", "previousTimelinePoint", "nextTimelinePoint", "projectEnd"],
 ]
@@ -60,10 +60,12 @@ let iconColors = Dictionary(uniqueKeysWithValues: materials.flatMap { color, nam
 let indicators: Set<String> = [
     "books.vertical", "sidebar.left", "slider.horizontal.3", "slider.vertical.3", "square.grid.3x3",
     "list.bullet.indent", "text.bubble", "stopwatch", "pianokeys", "square.grid.3x2.fill", "video",
-    "dot.radiowaves.left.and.right", "gearshape", "fitTracks", "fitTime", "info.circle",
+    "gearshape", "fitTracks", "fitTime", "info.circle",
     "projection", "teleprompter1", "teleprompter2", "eye", "midiPreview", "timelineLanes",
     "magnet", "itemTimebase"
 ]
+
+let toolbarStatusIcons: Set<String> = ["preview", "dot.radiowaves.left.and.right", "trackMixer", "hozMixer"]
 
 func stroke(_ path: CGPath, width: CGFloat) -> CGPath {
     path.copy(strokingWithWidth: width, lineCap: .round, lineJoin: .round, miterLimit: 2)
@@ -112,7 +114,7 @@ func paintMaterial(_ context: CGContext, _ shape: CGPath, _ material: Material, 
 func renderSymbol(_ context: CGContext, name: String, outline: CGPath, filled: CGPath, active: Bool) {
     let darkInk = name == "fadeout" ||
         (active && ["pause", "editCursor", "automationLanes", "lock", "loop", "record", "stopall", "metronome", "save"].contains(name))
-    var color = iconColors[name, default: 0x90adcf]
+    var color = active && toolbarStatusIcons.contains(name) ? 0x54ed87 : iconColors[name, default: 0x90adcf]
     if darkInk {
         switch name {
         case "record": color = 0x681827
