@@ -1202,20 +1202,6 @@ public struct ShowTimelinePresentationState: Equatable {
     public var audioMasterMono: (Bool) -> Void = { _ in }
     public var audioMasterSolo: (Bool) -> Void = { _ in }
     public var audioClipMute: (UUID, Bool) -> Void = { _, _ in }
-    public private(set) var soloedItem: UUID?
-    public func toggleItemSolo(_ id: UUID) {
-        guard canControl(), current?.tracks.contains(where: { track in
-            track.clips.contains { $0.id == id && ($0.midi != nil || $0.audioFile != nil || track.audioFile != nil) }
-        }) == true else { return }
-        setItemSolo(soloedItem == id ? nil : id)
-    }
-    public func clearItemSolo() { setItemSolo(nil) }
-    private func setItemSolo(_ id: UUID?) {
-        guard soloedItem != id else { return }
-        soloedItem = id
-        audioProjectRevision &+= 1
-        audioUpdate(snapshot, audioProjectRevision)
-    }
     public var prepareForSave: () throws -> Void = {}
     /// Snapshot live plugin state before an undoable chain mutation.
     public var prepareForFXChange: (UUID?, UUID?, [String]) throws -> Void = { _, _, _ in }
@@ -3560,6 +3546,12 @@ public struct ShowTimelinePresentationState: Equatable {
             markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
         } catch { message = error.localizedDescription }
     }
+    public func hiddenTrackMixerComponents(_ ids: Set<UUID>) -> Int {
+        (current?.tracks ?? []).reduce(0) { mask, track in
+            track.supportsMixerComponents && ids.contains(track.id) ? mask | track.mixerComponentMask : mask
+        }
+    }
+
     public func toggleTrackMixerComponents(_ ids: Set<UUID>, mask: Int) {
         guard canControl(), !finishing, let songID = current?.id, !ids.isEmpty, mask > 0,
               let song = snapshot.project.songs.firstIndex(where: { $0.id == songID }) else { return }
@@ -3569,7 +3561,7 @@ public struct ShowTimelinePresentationState: Equatable {
             return ids.contains(t.id) && t.supportsMixerComponents
         }
         guard !rows.isEmpty else { return }
-        let restore = rows.allSatisfy { (next.songs[song].tracks[$0].hiddenMixerComponents ?? 0) & mask == mask }
+        let restore = hiddenTrackMixerComponents(ids) & mask != 0
         for row in rows {
             let current = next.songs[song].tracks[row].hiddenMixerComponents ?? 0
             let hidden = restore ? current & ~mask : current | mask

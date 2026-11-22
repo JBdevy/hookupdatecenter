@@ -389,6 +389,7 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
     let title: String
     var scrolls = true
     var size: CGSize? = nil
+    var minimumSize: CGSize? = nil
     var canClose: () -> Bool = { true }
     var activates = true
     @ViewBuilder let content: () -> Content
@@ -423,8 +424,12 @@ private struct WorkspaceEditorPresenter<Content: View>: NSViewRepresentable {
             if #available(macOS 13.3, *) { host.safeAreaRegions = [] }
             panel.contentView = host
             let available = panel.screen?.visibleFrame.size ?? NSScreen.main?.visibleFrame.size ?? initialSize
-            panel.styleMask.remove(.resizable)
-            panel.contentMinSize = .zero
+            if let minimumSize {
+                panel.contentMinSize = minimumSize
+            } else {
+                panel.styleMask.remove(.resizable)
+                panel.contentMinSize = .zero
+            }
             panel.setContentSize(NSSize(width: min(initialSize.width, available.width), height: min(initialSize.height, max(240, available.height - 32))))
             InterfaceScaling.shared.register(panel)
             coordinator.panel = panel
@@ -489,10 +494,11 @@ extension EnvironmentValues {
 
 extension View {
     @ViewBuilder func workspaceEditor<Content: View>(_ title: String, isPresented: Binding<Bool>, scrolls: Bool = true,
-        size: CGSize? = nil, activates: Bool = true, @ViewBuilder content: @escaping () -> Content) -> some View {
+        size: CGSize? = nil, minimumSize: CGSize? = nil, activates: Bool = true,
+        @ViewBuilder content: @escaping () -> Content) -> some View {
         #if os(macOS)
         background(WorkspaceEditorPresenter(presented: isPresented, title: title, scrolls: scrolls, size: size,
-            activates: activates, content: content).frame(width: 0, height: 0))
+            minimumSize: minimumSize, activates: activates, content: content).frame(width: 0, height: 0))
         #else
         sheet(isPresented: isPresented, content: content)
         #endif

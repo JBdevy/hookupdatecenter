@@ -38,15 +38,6 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         g.fillEllipse(bounds.withSizeKeepingCentre(5.f, 5.f));
         return true;
     }
-    if (name == "mainMono" || name == "mainStereo") {
-        const auto cx = bounds.getCentreX(), cy = bounds.getCentreY();
-        if (name == "mainMono") g.drawEllipse(cx - 5.5f, cy - 5.5f, 11, 11, 1.3f);
-        else {
-            g.drawEllipse(cx - 9, cy - 5.5f, 11, 11, 1.3f);
-            g.drawEllipse(cx - 2, cy - 5.5f, 11, 11, 1.3f);
-        }
-        return true;
-    }
     if (name == "toolSelect" || name == "toolCut" || name == "toolMute" || name == "toolSolo") {
         const auto b=bounds.withSizeKeepingCentre(15.f,15.f);
         const auto at=[&](float x,float y){return Point<float>(b.getX()+x,b.getY()+y);};

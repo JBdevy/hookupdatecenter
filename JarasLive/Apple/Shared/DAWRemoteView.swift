@@ -1278,7 +1278,7 @@ private struct TrackMixFeedbackPanel: View {
     @AppStorage("jaras.ipad.library.open") private var nativeLibraryOpen = false
     @AppStorage("jaras.ipad.transport.proMode") private var nativeProMode = false
     @State private var nativeProDock: Bool?
-    @State private var nativeClickPositionOpen = false
+    @State private var nativeClockPositionOpen = false
     @AppStorage("jaras.timeline.proTool") private var nativeProTool = ProGridTool.select
     @AppStorage("jaras.ipad.library.width") private var nativeLibraryWidth = 300.0
     @State private var liveLibraryWidth: Double?
@@ -2866,19 +2866,8 @@ private struct TrackMixFeedbackPanel: View {
             }
         }.background(JarasTheme.line)
             .overlay(alignment: .top) {
-                if local && nativeProMode && nativeClickPositionOpen, let localShow {
-                    VStack(spacing: 4) {
-                        HStack {
-                            Text(verbatim: "Click Position").font(.jarasSystem(size: 14, weight: .semibold))
-                            Spacer()
-                            Button { nativeClickPositionOpen = false } label: { Image(systemName: "xmark") }
-                                .accessibilityLabel("Close")
-                        }
-                        ProTimelinePosition(show: localShow, clockOnly: true)
-                    }.padding(12).frame(width: 440)
-                        .background { RemoteSurface.panel.clipShape(RoundedRectangle(cornerRadius: 10)) }
-                        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(JarasTheme.line).allowsHitTesting(false) }
-                        .shadow(radius: 14).padding(.top, 45)
+                if local && nativeProMode && nativeClockPositionOpen, let localShow {
+                    NativeClockPosition(show: localShow) { nativeClockPositionOpen = false }
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -3043,16 +3032,13 @@ private struct TrackMixFeedbackPanel: View {
         VStack(spacing: 1) {
             HStack(spacing: local ? 3 : 4) {
                 Button { confirmingMainMono = true } label: {
-                    Group {
-                        if local { MainChannelModeIcon(mono: state.masterMono) }
-                        else { ZStack {
+                    ZStack {
                         Text("Stereo").lineLimit(1).opacity(state.masterMono ? 0 : 1)
                         if state.masterMono {
                             Circle().stroke(lineWidth: 1.3).frame(width: 11, height: 11).offset(x: -3.5)
                             Circle().stroke(lineWidth: 1.3).frame(width: 11, height: 11).offset(x: 3.5)
                         }
-                        } }
-                    }.font(.jarasSystem(size: 10, weight: .semibold)).frame(width: local ? 28 : 58, height: 28)
+                    }.font(.jarasSystem(size: 10, weight: .semibold)).frame(width: local ? 48 : 58, height: 28)
                         .foregroundStyle(state.masterMono ? JarasTheme.green : JarasTheme.text)
                         .modifier(RemoteControlSurface(radius: 3))
                 }.buttonStyle(RemoteFullAreaButtonStyle()).accessibilityLabel("Main Stereo/Mono")
@@ -3063,28 +3049,33 @@ private struct TrackMixFeedbackPanel: View {
                         action(.masterMono)
                     }
                     .onChange(of: state.project) { _ in confirmingMainMono = false }
-                if !local {
+                if local, let openPatch {
+                    Button("Patch") { openPatch(nil) }
+                        .buttonStyle(RemoteNativeTrackButtonStyle(width: 37, touchPadding: 0, height: 28, usesTrackFace: true))
+                        .accessibilityLabel("Main Patch")
+                } else if !local {
                     Button("Patch") { showRemotePatch(nil) }
                         .buttonStyle(RemoteNativeTrackButtonStyle(width: 44, touchPadding: 0, height: 28))
                         .accessibilityLabel("Main Patch")
                 }
-                if !local {
+                if local {
+                    Button("FX") { openNativeFX(nil, "Chain") }.buttonStyle(RemoteNativeTrackButtonStyle(width: 28, touchPadding: 0, height: 28))
+                }
+                Group {
                     IpadMixerKnob(value: state.masterPan ?? 0, pan: true, usesMixerPanFace: local) { action(.pan, value: $0) }
                         .frame(width: 28, height: 28).accessibilityLabel("Main pan")
                         .disabled(!local && state.masterPan == nil)
                 }
                 Button { action(.mute) } label: { Text(verbatim: "M") }
                     .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: state.masterMute ? .red : nil, width: 28, touchPadding: 0, height: 28))
-                if !local {
-                    Button { action(.solo) } label: { Text(verbatim: "S") }
-                        .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: state.masterSolo ? JarasTheme.yellow : nil, width: 28, touchPadding: 0, height: 28))
-                }
+                Button { action(.solo) } label: { Text(verbatim: "S") }
+                    .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: state.masterSolo ? JarasTheme.yellow : nil, width: 28, touchPadding: 0, height: 28))
             }.frame(maxWidth: .infinity, alignment: local ? .leading : .trailing).frame(height: 28)
-            if !local { HStack {
+            HStack {
                 Text(verbatim: "Main").font(.jarasSystem(size: 11, weight: .semibold))
                     .foregroundStyle(MixerTrackStyle.surfaceText).frame(maxWidth: .infinity)
                 RemotePeakReadout(decibels: state.masterPeakDB, name: "Main", project: state.project, song: state.song, target: nil, nameColor: MixerTrackStyle.surfaceTextHex, reset: { action(.resetMeterPeak) }).equatable()
-            }.frame(height: 14) }
+            }.frame(height: 14)
             HStack(spacing: 3) {
                 if !local {
                     Text(remoteDecibelText(state.masterVolume)).font(.jarasSystem(size: 10, weight: .semibold, design: .monospaced)).frame(width: 36, alignment: .leading)
@@ -3179,8 +3170,7 @@ private struct TrackMixFeedbackPanel: View {
                 Button {
                     nativeProMode.toggle()
                     if !nativeProMode {
-                        localShow?.clearItemSolo()
-                        nativeProDock = nil; nativeClickPositionOpen = false
+                        nativeProDock = nil; nativeClockPositionOpen = false
                     }
                 } label: { Text(verbatim: nativeProMode ? "Simple Mode" : "Pro Mode") }
                 .buttonStyle(TransportButtonStyle(color: nativeProMode ? JarasTheme.green : Color(hex: 0x454545),
@@ -3222,19 +3212,19 @@ private struct TrackMixFeedbackPanel: View {
                 RoundedRectangle(cornerRadius: 7).strokeBorder(JarasInterfaceTheme.lightDark.transportBorder)
                     .allowsHitTesting(false)
             }
-        }.padding(6).frame(height: local && nativeProMode ? 90 : 82, alignment: .top).background(RemoteSurface.panel)
+        }.padding(6).frame(height: local && nativeProMode ? 112 : 82, alignment: .top).background(RemoteSurface.panel)
     }
     private func nativeProTransport(show: ShowController) -> some View {
         let playback = ProTransportButtons(show: show, configureFadeout: { fadeoutSettingsOpen = true })
         let details = HStack(spacing: 8) {
+            TimelineEditButton(show: show, key: TimelineEditPreferences.native, width: 28, height: TransportControlMetrics.proHeight)
+            TransportEnvelopeButton(show: show, width: 28, height: TransportControlMetrics.proHeight)
             TempoControl(show: show)
             RegionTunerControl(show: show)
         }.fixedSize()
         let tools = HStack(spacing: 4) {
-            TimelineEditButton(show: show, key: TimelineEditPreferences.native, width: 28, height: TransportControlMetrics.proHeight)
-            TransportEnvelopeButton(show: show, width: 28, height: TransportControlMetrics.proHeight)
             ProGridToolPicker(selection: $nativeProTool)
-            nativeProButton("Clock", icon: "timer", active: nativeClickPositionOpen) { nativeClickPositionOpen.toggle() }
+            nativeProButton("Clock", icon: "timer", active: nativeClockPositionOpen) { nativeClockPositionOpen.toggle() }
             nativeProButton("Notes", icon: "note.text", active: nativeProDock == true) {
                 nativeProDock = nativeProDock == true ? nil : true
             }
@@ -3242,7 +3232,15 @@ private struct TrackMixFeedbackPanel: View {
                 nativeProDock = nativeProDock == false ? nil : false
             }
         }.fixedSize()
+        let selected = state.focusedRegion.map(show.playlistRegionSourceID)
+        let name = state.nativeTransportSongName(selectedRegionID: selected)
         let compact = VStack(spacing: 0) {
+            Text(verbatim: name)
+                .font(.jarasSystem(size: 15, weight: .semibold))
+                .foregroundStyle(state.playing ? JarasTheme.green : JarasTheme.text)
+                .lineLimit(1).minimumScaleFactor(0.7)
+                .frame(maxWidth: .infinity).frame(height: 22)
+                .accessibilityLabel("Current song").accessibilityValue(name)
             HStack(spacing: 7) {
                 ProTimelinePosition(show: show)
                 Spacer(minLength: 0)
@@ -3258,7 +3256,7 @@ private struct TrackMixFeedbackPanel: View {
         return ViewThatFits(in: .horizontal) {
             compact
             ScrollView(.horizontal, showsIndicators: false) { compact.fixedSize(horizontal: true, vertical: false) }
-        }.frame(height: 72)
+        }.frame(height: 94)
     }
     private func nativeProButton(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) { TransportControlIcon(name: icon, size: 15) }
@@ -3615,6 +3613,41 @@ private struct TrackMixFeedbackPanel: View {
             }
     }
     private var trackMixer: some View {
+        VStack(spacing: local ? 0 : 1) {
+            trackMixerHeader
+            trackMixerViewport
+        }
+    }
+
+    @ViewBuilder private var trackMixerHeader: some View {
+        // Match the grid's region, marker, tempo and time lanes so both lists
+        // start at the same screen Y and have identical scroll limits.
+        if local {
+            if let localShow {
+                let bands = nativeHeaderBands
+                VStack(spacing: 0) {
+                    if bands.showRegions { nativeBandTitle("Regions - Markers", height: bands.regionHeight) }
+                    if bands.showTempo { nativeBandTitle("Tempo", height: bands.numberTop - bands.tempoTop) }
+                    HStack(spacing: 4) {
+                        Text(verbatim: "Track Mixer").font(.jarasSystem(size: 12, weight: .semibold))
+                            .foregroundStyle(JarasTheme.secondary).lineLimit(1).padding(.leading, 5)
+                        Spacer(minLength: 0)
+                        IpadTimelineToolbar(show: localShow, addTrack: { addTrack?() }, editing: Binding(
+                            get: { editingTracks }, set: { editingTracks = $0; if !$0 { trackReordering.cancel(); draggingSetlistEntries = [] } }),
+                            showRegions: $showNativeRegionLanes, showTempo: $showNativeTempoLane)
+                            .layoutPriority(1)
+                    }.frame(height: bands.rulerHeight)
+                }.background(RemoteSurface.panel)
+                    .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.timelineHeaderLine).frame(height: 1).allowsHitTesting(false) }
+            }
+        } else if UIDevice.current.userInterfaceIdiom == .pad && !phoneLayout {
+            RemoteSurface.panel.frame(height: RemoteNativeGridMetrics.rulerAreaHeight)
+        } else {
+            masterStrip.background(RemoteSurface.panel)
+        }
+    }
+
+    private var trackMixerViewport: some View {
         let rows = visibleTracks
         let minimum = RemoteNativeGridMetrics.minimumTrackHeight(local: local)
         let heights = rows.map { CGFloat(DAWRemoteItemLayout.rowHeight($0, scale: trackScrolling.heightScale, minimum: minimum)) }
@@ -3624,83 +3657,64 @@ private struct TrackMixFeedbackPanel: View {
         let ancestors = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, hierarchy.ancestors(of: $0.id)) })
         let folders = hierarchy.folders
         let groupColors = Dictionary(state.tracks.map { ($0.id, $0.color) }, uniquingKeysWith: { first, _ in first })
-        return VStack(spacing: local ? 0 : 1) {
-            // Match the grid's region, marker, tempo and time lanes so both lists
-            // start at the same screen Y and have identical scroll limits.
-            if local {
-                if let localShow {
-                    let bands = nativeHeaderBands
-                    VStack(spacing: 0) {
-                        if bands.showRegions { nativeBandTitle("Regions - Markers", height: bands.regionHeight) }
-                        if bands.showTempo { nativeBandTitle("Tempo", height: bands.numberTop - bands.tempoTop) }
-                        HStack(spacing: 4) {
-                            Text(verbatim: "Track Mixer").font(.jarasSystem(size: 12, weight: .semibold))
-                                .foregroundStyle(JarasTheme.secondary).lineLimit(1).padding(.leading, 5)
-                            Spacer(minLength: 0)
-                            IpadTimelineToolbar(show: localShow, addTrack: { addTrack?() }, editing: Binding(
-                                get: { editingTracks }, set: { editingTracks = $0; if !$0 { trackReordering.cancel(); draggingSetlistEntries = [] } }),
-                                showRegions: $showNativeRegionLanes, showTempo: $showNativeTempoLane)
-                                .layoutPriority(1)
-                        }.frame(height: bands.rulerHeight)
-                    }.background(RemoteSurface.panel)
-                        .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.timelineHeaderLine).frame(height: 1).allowsHitTesting(false) }
+        return GeometryReader { viewport in
+            ScrollView(.vertical) {
+                trackMixerRows(rows, heights: heights, sourceTracks: sourceTracks, ancestors: ancestors,
+                               folders: folders, groupColors: groupColors, width: viewport.size.width, rowsHeight: rowsHeight)
+                #if os(iOS)
+                .background(RemoteTrackScrollProbe(controller: trackScrolling, tracks: rows,
+                    selectedTrack: localShow?.selectedTrackForActions.flatMap { selectedTracks.contains($0) ? $0 : nil }
+                        ?? rows.first(where: { selectedTracks.contains($0.id) })?.id, usesNativeTrackHeight: local))
+                #endif
+                .frame(height: max(local ? viewport.size.height : 0, CGFloat(rowsHeight)), alignment: .top)
+                .overlay(alignment: .bottom) {
+                    if local {
+                        // The hit target starts after the final visible row;
+                        // taps on row backgrounds and controls keep selecting
+                        // or editing that row instead of clearing selection.
+                        Color.clear.frame(height: max(0, viewport.size.height - CGFloat(rowsHeight)))
+                            .contentShape(Rectangle())
+                            .gesture(
+                                TapGesture(count: 2).onEnded {
+                                    guard nativeInputEnabled, let show = localShow else { return }
+                                    clearTrackSelection()
+                                    if let id = show.addDefaultMixerTrack() { selectedTracks = [id] }
+                                }.exclusively(before: TapGesture().onEnded { clearTrackSelection() })
+                            )
+                            .accessibilityIdentifier("trackMixer.emptyArea")
+                    }
                 }
-            } else if UIDevice.current.userInterfaceIdiom == .pad && !phoneLayout {
-                RemoteSurface.panel.frame(height: RemoteNativeGridMetrics.rulerAreaHeight)
-            } else {
-                masterStrip.background(RemoteSurface.panel)
-            }
-            GeometryReader { viewport in
-                ScrollView(.vertical) {
-                    Group {
-                        if local {
-                            IpadRecycledTrackRows(ids: rows.map(\.id), heights: heights,
-                                retained: { trackReordering.retainedTrack }) { index in
-                                mixerRow(rows, index: index, height: heights[index],
-                                         sourceTracks: sourceTracks, ancestors: ancestors, folders: folders, groupColors: groupColors)
-                                    .overlay(alignment: .bottom) {
-                                        if editingTracks, let song = state.song, let source = sourceTracks[rows[index].id] {
-                                            nativeTrackHeightHandle(rows[index], savedScale: source.heightScale,
-                                                                    project: state.project, song: song)
-                                        }
-                                    }
-                            }.frame(width: viewport.size.width, height: rowsHeight)
-                        } else {
-                            LazyVStack(spacing: 1) {
-                                ForEach(Array(rows.enumerated()), id: \.element.id) { index, _ in
-                                    mixerRow(rows, index: index, height: heights[index],
-                                             sourceTracks: sourceTracks, ancestors: ancestors, folders: folders, groupColors: groupColors)
-                                }
-                            }
-                        }
-                    }
-                    #if os(iOS)
-                    .background(RemoteTrackScrollProbe(controller: trackScrolling, tracks: rows,
-                        selectedTrack: localShow?.selectedTrackForActions.flatMap { selectedTracks.contains($0) ? $0 : nil }
-                            ?? rows.first(where: { selectedTracks.contains($0.id) })?.id, usesNativeTrackHeight: local))
-                    #endif
-                    .frame(height: max(local ? viewport.size.height : 0, CGFloat(rowsHeight)), alignment: .top)
-                    .overlay(alignment: .bottom) {
-                        if local {
-                            // The hit target starts after the final visible row;
-                            // taps on row backgrounds and controls keep selecting
-                            // or editing that row instead of clearing selection.
-                            Color.clear.frame(height: max(0, viewport.size.height - CGFloat(rowsHeight)))
-                                .contentShape(Rectangle())
-                                .gesture(
-                                    TapGesture(count: 2).onEnded {
-                                        guard nativeInputEnabled, let show = localShow else { return }
-                                        clearTrackSelection()
-                                        if let id = show.addDefaultMixerTrack() { selectedTracks = [id] }
-                                    }.exclusively(before: TapGesture().onEnded { clearTrackSelection() })
-                                )
-                                .accessibilityIdentifier("trackMixer.emptyArea")
-                        }
-                    }
-                }.background(RemoteSurface.background)
-            }
+            }.background(RemoteSurface.background)
         }
     }
+
+    // Keep the recycled and scrolling row types out of the surrounding
+    // SwiftUI layout metadata. Resolving the combined type exceeded the
+    // main thread stack on iPadOS 16 during project opening.
+    private func trackMixerRows(_ rows: [DAWRemoteState.Track], heights: [CGFloat], sourceTracks: [UUID: Track],
+                                ancestors: [UUID: [UUID]], folders: Set<UUID>, groupColors: [UUID: UInt32],
+                                width: CGFloat, rowsHeight: CGFloat) -> AnyView {
+        if local {
+            return AnyView(IpadRecycledTrackRows(ids: rows.map(\.id), heights: heights,
+                retained: { trackReordering.retainedTrack }) { index in
+                mixerRow(rows, index: index, height: heights[index],
+                         sourceTracks: sourceTracks, ancestors: ancestors, folders: folders, groupColors: groupColors)
+                    .overlay(alignment: .bottom) {
+                        if editingTracks, let song = state.song, let source = sourceTracks[rows[index].id] {
+                            nativeTrackHeightHandle(rows[index], savedScale: source.heightScale,
+                                                    project: state.project, song: song)
+                        }
+                    }
+            }.frame(width: width, height: rowsHeight))
+        }
+        return AnyView(LazyVStack(spacing: 1) {
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, _ in
+                mixerRow(rows, index: index, height: heights[index],
+                         sourceTracks: sourceTracks, ancestors: ancestors, folders: folders, groupColors: groupColors)
+            }
+        })
+    }
+
     private func nativeTrackHeightHandle(_ row: DAWRemoteState.Track, savedScale: Double?,
                                          project: UUID, song: UUID) -> some View {
         var track = row
@@ -3740,19 +3754,19 @@ private struct TrackMixFeedbackPanel: View {
             }
     }
 
-    @ViewBuilder private func mixerRow(_ rows: [DAWRemoteState.Track], index number: Int, height: CGFloat,
-        sourceTracks: [UUID: Track], ancestors: [UUID: [UUID]], folders: Set<UUID>, groupColors: [UUID: UInt32]) -> some View {
+    private func mixerRow(_ rows: [DAWRemoteState.Track], index number: Int, height: CGFloat,
+        sourceTracks: [UUID: Track], ancestors: [UUID: [UUID]], folders: Set<UUID>, groupColors: [UUID: UInt32]) -> AnyView {
         let track = rows[number]
         let nextAncestors = number + 1 < rows.count ? ancestors[rows[number + 1].id] ?? [] : []
         let guides = (ancestors[track.id] ?? []).map { nextAncestors.contains($0) }
         if local, !editingTracks, let show = localShow, let source = sourceTracks[track.id], source.kind == .programChange {
-            ProgramChangeTrackRow(show: show, track: source, number: number + 1,
+            return AnyView(ProgramChangeTrackRow(show: show, track: source, number: number + 1,
                 selected: selectedTracks.contains(track.id), select: { toggleTrackSelection(track.id) },
                 deleteTrack: { requestNativeTrackDeletion([track.id]) })
                 .id(track.id)
-                .frame(height: height)
+                .frame(height: height))
         } else {
-            RemoteNativeMixerRow(track: track, project: state.project, song: state.song, number: number + 1,
+            return AnyView(RemoteNativeMixerRow(track: track, project: state.project, song: state.song, number: number + 1,
                 nativeTrackSnapshot: sourceTracks[track.id],
                 local: local, localShow: localShow, nativeContextMenu: local, nativePhaseInverted: sourceTracks[track.id]?.phaseInverted == true,
                 mixFeedback: trackMixFeedback,
@@ -3774,7 +3788,7 @@ private struct TrackMixFeedbackPanel: View {
                 .modifier(LibraryTrackEffectDrop(show: localShow, track: sourceTracks[track.id]?.kind == .standard ? track.id : nil))
                 .modifier(IpadTrackReorderModifier(show: localShow, track: track.id,
                     enabled: local && editingTracks, controller: trackReordering))
-                .modifier(nativeTrackMenu(track.id, track: sourceTracks[track.id], folder: folders.contains(track.id)))
+                .modifier(nativeTrackMenu(track.id, track: sourceTracks[track.id], folder: folders.contains(track.id))))
         }
     }
     private func openNativeFX(_ track: UUID?, _ effect: String) {
@@ -3830,10 +3844,10 @@ private struct TrackMixFeedbackPanel: View {
             duplicate: guarded(standard && track?.role.rawValue != "vinhetas" ? { localShow?.duplicateTracks(ids) } : nil),
             remove: guarded({ requestNativeTrackDeletion(ids) }), count: ids.count,
             createMIDI: guarded(standard && ids.count == 1 && track?.role.rawValue != "vinhetas" ? { _ = localShow?.addMIDIItem(track: id) } : nil),
-            componentMask: track?.supportsMixerComponents == true ? track?.mixerComponentMask : nil,
+            componentMask: track?.supportsMixerComponents == true ? localShow?.hiddenTrackMixerComponents(ids) : nil,
             toggleComponent: { component in
                 guard localShow?.snapshot.project.id == project, localShow?.current?.id == songID else { return }
-                localShow?.toggleTrackMixerComponents([id], mask: component.rawValue)
+                localShow?.toggleTrackMixerComponents(ids, mask: component.rawValue)
             })
     }
     private func linkSelectedTracks(_ ids: Set<UUID>) {
@@ -5515,7 +5529,10 @@ private struct RemoteNativeTimeline: View {
             let right = show.splitItems([id], at: snapped)
             if !right.isEmpty { scrolling.itemSelection.replace(right) }
         case .mute: show.send(.clipMute, target: id)
-        case .solo: show.toggleItemSolo(id)
+        case .solo:
+            if let track = song.tracks.first(where: { $0.clips.contains { $0.id == id } }) {
+                show.send(.solo, target: track.id)
+            }
         }
     }
     private func gridMarks(width: CGFloat) -> [TimelineTimeRuler.Tick] {
@@ -7563,6 +7580,7 @@ struct IpadMixerKnob: View {
     var trackID: UUID? = nil
     var pan = false
     var usesMixerPanFace = false
+    var showsPanTooltip = false
     var preview: ((Double) -> Void)? = nil
     let changed: (Double) -> Void
     @State private var origin: Double?
@@ -7594,7 +7612,7 @@ struct IpadMixerKnob: View {
                 cg.restoreGState()
             }
         }.frame(width: 20,height: 20).frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
-            .background(IpadItemMixTooltipAnchor(text: origin != nil || hovering ? label : nil))
+            .background(IpadItemMixTooltipAnchor(text: (!pan || showsPanTooltip) && (origin != nil || hovering) ? label : nil))
             .onHover { hovering = $0 }
             .onChange(of: trackID) { _ in origin = nil; live = nil; hovering = false }
             .overlay {
@@ -7778,12 +7796,16 @@ struct InlineMixerTrackName: View {
                         .frame(maxWidth: .infinity, alignment: compact ? .center : .leading)
                 }
             } else {
-                let title = number.map { String(format: "%02d  %@", $0, name) } ?? name
-                let label = Text(verbatim: title).lineLimit(compact ? 2 : 1)
+                let label = HStack(spacing: 4) {
+                    if let number {
+                        Text(verbatim: String(format: "%02d", number)).onTapGesture(perform: select)
+                    }
+                    Text(verbatim: name).lineLimit(compact ? 2 : 1)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2, perform: begin)
+                        .onTapGesture(perform: select)
+                }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: compact ? .center : .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2, perform: begin)
-                    .onTapGesture(perform: select)
                 if let reorder { label.onDrag(reorder) } else { label }
             }
         }.font(.jarasSystem(size: compact ? 10 : 11, weight: .semibold))
@@ -7988,7 +8010,8 @@ private struct RemoteNativeMixerRow: View, Equatable {
                             .buttonStyle(RemoteNativeTrackButtonStyle(activeColor: track.mute ? TrackMixerButtonAppearance.muted : nil,
                                 height: buttonHeight, usesTrackFace: true))
                         if hasPan {
-                            IpadMixerKnob(value: track.pan, trackID: track.id, pan: true, usesMixerPanFace: local, changed: adjustPan)
+                            IpadMixerKnob(value: track.pan, trackID: track.id, pan: true, usesMixerPanFace: local,
+                                          showsPanTooltip: true, changed: adjustPan)
                                 .frame(width: 22, height: buttonHeight).accessibilityLabel("Pan " + track.name)
                         }
                         if !local || visible(.mute) { mute }
@@ -8006,7 +8029,7 @@ private struct RemoteNativeMixerRow: View, Equatable {
                                         .overlay {
                                             if let icon = track.instrumentIcon, TrackIconCatalog.contains(icon) {
                                                 TrackIconDisplay(id: icon).foregroundStyle(.white)
-                                                    .frame(width: compactControls ? 24 : 40, height: compactControls ? 22 : 40)
+                                                    .frame(width: compactControls ? 24 : 32, height: compactControls ? 22 : 32)
                                                     .offset(y: compactControls ? 0 : -8)
                                             }
                                         }.allowsHitTesting(false).accessibilityHidden(true)

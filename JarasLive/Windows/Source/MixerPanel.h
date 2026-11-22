@@ -344,7 +344,6 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
             pan.setRange(-1, 1, .01);
             pan.setSliderStyle(Slider::RotaryHorizontalVerticalDrag);
             pan.getProperties().set("footerPan", true);
-            pan.getProperties().set("panValueTooltip", true);
             pan.setTextBoxStyle(Slider::NoTextBox, false, 0, 0);
             pan.setDoubleClickReturnValue(true, 0);
             pan.onDragStart = [this] { mixer.session.beginMixerGesture(jaras::CommandKind::pan,id); };
@@ -657,8 +656,13 @@ class MixerPanel final : public Component, public DragAndDropContainer, private 
         }
 
         void mouseDoubleClick(const MouseEvent &event) override {
-            if (event.mods.isLeftButtonDown() && !event.mods.isAnyModifierKeyDown() &&
-                layout().name.contains(event.getPosition())) beginRename();
+            const auto *item = track();
+            if (!item || !canRenameMixerTrack(*item) || !event.mods.isLeftButtonDown() ||
+                event.mods.isAnyModifierKeyDown()) return;
+            const auto space = layout().name;
+            const int width = roundToInt(std::ceil(GlyphArrangement::getStringWidth(theme::semiboldFont(10), text(item->name))));
+            if (space.withSizeKeepingCentre(std::min(width, space.getWidth()), space.getHeight())
+                    .contains(event.getPosition())) beginRename();
         }
         void confirmRename() { rename.confirm(); }
         void beginRename() {
