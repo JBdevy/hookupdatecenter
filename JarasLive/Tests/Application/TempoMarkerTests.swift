@@ -744,8 +744,9 @@ final class TempoMarkerTests: XCTestCase {
         XCTAssertEqual(TimelineTempo.snap(1.24, song: song, pixelsPerSecond: 60,
             enabled: false, maximumDistancePixels: 8), 1.24, accuracy: 0.000001)
         song.beatsPerBar = 7; song.beatUnit = 8; song.timeSettings?.divisions = 8
-        let ticks = TimelineTimeRuler.ticks(in: song.tempoSections(until: 20), from: 0, to: 10,
-            pixelsPerSecond: 40, divisions: 8, labels: false).map(\.time)
+        let sections = song.tempoSections(until: song.timelineScrollEnd)
+        let ticks = TimelineTimeRuler.ticks(in: sections, from: 0, to: 10, pixelsPerSecond: 40,
+            divisions: 8, labels: false, musical: .init(sections: sections)).map(\.time)
         for time in stride(from: 0.01, through: 9.9, by: 0.037) {
             let snapped = TimelineTempo.snap(time, song: song, pixelsPerSecond: 40, maximumDistancePixels: 8)
             XCTAssertTrue(ticks.contains { abs($0 - snapped) < 0.000001 }, "item must land on a drawn line")

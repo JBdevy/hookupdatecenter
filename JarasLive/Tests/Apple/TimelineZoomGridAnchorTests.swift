@@ -28,7 +28,7 @@ for density: CGFloat in [1, 2] {
                 ruler.update(TimelineNativeRuler(viewport: CGRect(x: tile, y: 0, width: 1200, height: 80),
                     displayScale: density, barTop: 48, numberLaneHeight: 16,
                     ticks: [.init(x: anchor, primary: true, text: "1.1"), .init(x: (anchorTime + 2) * scale, primary: true, text: "1.2")],
-                    rows: [], background: black, lineColor: white))
+                    rows: [], background: black, lineColor: white, gridColor: white, showsGrid: false))
                 let gridPath = (grid.layer!.sublayers![1] as! CAShapeLayer).path!
                 let rulerPath = (ruler.layer!.sublayers!.first { $0.name == "timelineTicks" } as! CAShapeLayer).path!
                 let g = vertices(gridPath).map { $0.x + tile - offset }

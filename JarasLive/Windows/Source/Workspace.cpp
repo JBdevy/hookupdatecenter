@@ -319,7 +319,8 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     if (toolbar) ink = toolbarSignal == 1 ? theme::green : theme::toolbarInactive;
     const auto foreground = ink.withMultipliedAlpha(opacity);
     g.setColour(foreground);
-    if (toolbar && icon.isNotEmpty() && drawControlIcon(g, icon, toolbarSignal == 1 || b.isDown(),
+    const bool artworkTracksStatus = (bool)b.getProperties()["statusArtwork"];
+    if (toolbar && icon.isNotEmpty() && drawControlIcon(g, icon, toolbarSignal == 1 || (b.isDown() && !artworkTracksStatus),
             b.getLocalBounds().toFloat().withSizeKeepingCentre(18.f, 18.f), opacity)) return;
     if (toolbar && icon.isNotEmpty() && drawDesktopToolbarSymbol(g, icon,
             b.getLocalBounds().toFloat().withSizeKeepingCentre(18.f, 18.f))) return;
@@ -5703,11 +5704,11 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     }
     for (const auto &[id, symbol] : std::initializer_list<std::pair<const char*,const char*>>{
             {"menu","line.3.horizontal"},{"library","books.vertical"},{"focus","sidebar.left"},
-            {"mixer","slider.horizontal.3"},{"railMixer","slider.vertical.3"},{"matrixPatch","square.grid.3x3"},
+            {"mixer","trackMixer"},{"railMixer","hozMixer"},{"matrixPatch","square.grid.3x3"},
             {"railParts","list.bullet.indent"},{"railNotice","text.bubble"},{"railClock","stopwatch"},
             {"railKeyboard","pianokeys"},{"railVinhetas","square.grid.3x2.fill"},{"midiPreview","midiPreview"},
             {"advanced","info.circle"},{"grandma2","stageLights"},{"resolume","projection"},
-            {"tp1","teleprompter1"},{"tp2","teleprompter2"},{"preview","eye"},{"video","video"},
+            {"tp1","teleprompter1"},{"tp2","teleprompter2"},{"preview","preview"},{"video","video"},
             {"remote","dot.radiowaves.left.and.right"},{"settings","gearshape"}}) {
         auto &control = *controls[id];
         control.getProperties().set("toolbarLabel", true);
@@ -5715,6 +5716,8 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         if (&control != controls["menu"])
             control.setTooltip(control.getButtonText().isNotEmpty() ? control.getButtonText() : control.getTitle());
     }
+    for (auto id : {"mixer", "railMixer", "preview", "remote"})
+        controls[id]->getProperties().set("statusArtwork", true);
     controls["menu"]->setTooltip({});
     addTrack.setButtonText("Add");
     addTrack.getProperties().set("iconSize", 14.f);
@@ -5778,11 +5781,12 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     addAndMakeVisible(timelineBands);
     timelineBands.setComponentID("timeline-lanes");
     timelineBands.getProperties().set("icon", "timelineLanes");
-    timelineBands.getProperties().set("iconSize", 22.f);
+    timelineBands.getProperties().set("iconSize", 18.f);
     timelineBands.setTooltip("Hide/View - Region/Markers");
     timelineBands.getProperties().set("cornerRadius", 4.f);
     timelineBands.getProperties().set("flat", true);
-    timelineBands.setColour(TextButton::buttonColourId, Colours::white.withAlpha(.12f));
+    timelineBands.setColour(TextButton::buttonColourId, theme::secondary.withAlpha(.12f));
+    timelineBands.setColour(TextButton::buttonOnColourId, theme::secondary.withAlpha(.12f));
     timelineBands.setTitle(localization::translate("Timeline lanes"));
     timelineBands.setWantsKeyboardFocus(false);
     timelineBands.onClick = [this] {
@@ -7585,6 +7589,8 @@ void Workspace::refreshInterfaceTheme() {
     const bool changed = theme::setInterfaceTheme(appearance.value(theme::interfaceThemeKey, theme::defaultInterfaceTheme).toString() == "lightDark");
     if (!changed && look.findColour(ResizableWindow::backgroundColourId) == theme::background) return;
     look.refreshThemeColours();
+    timelineBands.setColour(TextButton::buttonColourId, theme::secondary.withAlpha(.12f));
+    timelineBands.setColour(TextButton::buttonOnColourId, theme::secondary.withAlpha(.12f));
     const auto repaintWindow = [](DocumentWindow &window) {
         window.setBackgroundColour(theme::background);
         invalidateThemeImages(window);

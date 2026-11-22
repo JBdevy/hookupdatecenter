@@ -474,7 +474,7 @@ struct WorkspaceLayoutTests {
         for (const auto* symbol : {"line.3.horizontal","books.vertical","sidebar.left","slider.horizontal.3",
             "slider.vertical.3","square.grid.3x3","list.bullet.indent","text.bubble","stopwatch","pianokeys",
             "square.grid.3x2.fill","midiPreview","info.circle","stageLights","projection","teleprompter1",
-            "teleprompter2","eye","video","dot.radiowaves.left.and.right","gearshape","addTrack","unlock","lock",
+            "teleprompter2","eye","preview","trackMixer","hozMixer","video","dot.radiowaves.left.and.right","gearshape","addTrack","unlock","lock",
             "magnet","itemTimebase","timelineLanes","arrow.up.and.down.text.horizontal","editCursor","automationLanes",
             "folder.fill","library.instruments","library.plugins","library.samplers","library.presets","note.text","doc.text",
             "rectangle","flag","square.grid.2x2","star.fill","fitTracks","fitTime","trackHeightAxis","timelineZoomAxis",
@@ -493,6 +493,12 @@ struct WorkspaceLayoutTests {
             }
             if (visible <= 10 || different <= 10) throw std::runtime_error(std::string("Missing visible PNG states for ") + symbol);
         }
+        require(w.timelineBands.getProperties()["icon"].toString() == "timelineLanes"
+                && (float)w.timelineBands.getProperties()["iconSize"] == 18.f,
+                "Regions and tempo menu must use the shared 18-point icon");
+        require(w.timelineBands.findColour(TextButton::buttonColourId) == theme::secondary.withAlpha(.12f)
+                && w.timelineBands.findColour(TextButton::buttonOnColourId) == theme::secondary.withAlpha(.12f),
+                "Regions and tempo menu must keep the same matte gray background in both states");
         const auto minimum = host.getConstrainer()->getMinimumWidth();
         require(minimum > 900 && minimum < 1600,"Native window minimum must follow the toolbar width");
         for (const int width : {minimum, minimum + 12, 1600}) {

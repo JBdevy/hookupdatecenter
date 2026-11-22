@@ -626,7 +626,7 @@ struct TeleprompterPreviewButton: View {
     @State private var choosingPage = false
     var body: some View {
         Button { controller.togglePreview() } label: {
-            DesktopToolbarLabel(title: "Preview", systemImage: "eye", tone: controller.previewActive ? .live : .neutral)
+            DesktopToolbarLabel(title: "Preview", systemImage: "preview", tone: controller.previewActive ? .live : .neutral)
         }.buttonStyle(.plain)
             .overlay(TeleprompterRightClick(action: { choosingPage = true }))
             .help(Text("Preview"))
