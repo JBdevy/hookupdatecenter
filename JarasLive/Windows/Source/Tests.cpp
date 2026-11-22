@@ -564,7 +564,7 @@ int runTests(const File &directory) {
         expect(audio->startRecordingCountIn(120, 6, 8), "REC did not arm its six-beat count-in");
         for (int i = 0; i < 4; ++i) {
             render();
-            expect(output.getMagnitude(2, block) == 0, "Count-in advanced before the requested sound was published");
+            expect(output.getMagnitude(2, 0, block) == 0, "Count-in advanced before the requested sound was published");
         }
         const auto deadline = Time::getMillisecondCounterHiRes() + 4000;
         while (!ready && Time::getMillisecondCounterHiRes() < deadline) floatingControlTests::pump();
@@ -574,7 +574,7 @@ int runTests(const File &directory) {
         int attacks = 0;
         for (int frame = 0; frame < beatFrames * 6; frame += block) {
             render();
-            expect(output.getMagnitude(0, block) == 0 && output.getMagnitude(1, block) == 0,
+            expect(output.getMagnitude(0, 0, block) == 0 && output.getMagnitude(1, 0, block) == 0,
                    "The pre-count bypassed its configured output route");
             for (int i = 0; i < block; ++i) {
                 const int at = frame + i;
