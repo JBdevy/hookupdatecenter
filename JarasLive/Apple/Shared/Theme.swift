@@ -208,6 +208,7 @@ struct DesktopToolbarChrome: ViewModifier {
         content.font(.jarasSystem(size: compact ? 12 : 14, weight: .semibold))
             .foregroundStyle(tone.foreground)
             .lineLimit(1).fixedSize().padding(.horizontal, compact ? 2 : 6).frame(height: 24)
+            .overlay { RoundedRectangle(cornerRadius: 4).strokeBorder(.white.opacity(0.14), lineWidth: 0.7).allowsHitTesting(false) }
             .contentShape(Rectangle())
     }
 }

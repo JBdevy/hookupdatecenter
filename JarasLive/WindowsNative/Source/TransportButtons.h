@@ -193,7 +193,7 @@ class TransportButtons final {
         t->FillRoundedRectangle(bounds,brush.Get());
         auto fg=colour(s.foreground);if(!s.enabled&&!s.accent&&s.icon!=L"pause")fg.a*=.35f;brush->SetColor(fg);
         const bool text=!s.text.empty();
-        const float iconSize = s.icon.empty() ? 0.f : (s.icon == L"metronome" ? 17.f : 12.f);
+        const float iconSize = s.icon.empty() ? 0.f : (s.icon == L"metronome" || s.icon == L"setlist" ? 17.f : 12.f);
         float textWidth=0;
         const float gap=iconSize>0 && text?3.f:0.f;
         Ptr<IDWriteTextLayout> layout;
@@ -312,6 +312,12 @@ class TransportButtons final {
                 sink->EndFigure(D2D1_FIGURE_END_CLOSED);
                 sink->Close();
                 t->FillGeometry(weight.Get(),brush.Get());
+            }
+        }
+        else if(s.icon==L"setlist") {
+            for (float y : {2.5f, 6.f, 9.5f}) {
+                t->FillEllipse(D2D1::Ellipse(D2D1::Point2F(1.5f,y),.75f,.75f),brush.Get());
+                line(4.f,y,11.f,y);
             }
         }
         else if(s.icon==L"teleprompter") {

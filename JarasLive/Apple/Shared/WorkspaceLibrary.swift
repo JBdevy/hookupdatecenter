@@ -202,9 +202,146 @@ private struct LibraryColumns<Folders: View, Entries: View>: View {
     }
 }
 
+private struct LibraryNote: Codable, Identifiable {
+    static let storageKey = "jaras.library.annotations"
+    var id = UUID()
+    var text = ""
+    var name: String?
+
+    var title: String {
+        name.flatMap { $0.isEmpty ? nil : $0 } ?? JarasLocalization.string("Untitled note")
+    }
+
+    static func decode(_ data: Data) -> [Self] {
+        (try? JSONDecoder().decode([Self].self, from: data)) ?? []
+    }
+
+    static func saving(_ note: Self, name: String, in notes: [Self]) -> [Self] {
+        var updated = notes
+        if let index = updated.firstIndex(where: { $0.id == note.id }) {
+            updated[index].name = name
+        } else {
+            var created = note
+            created.name = name
+            updated.append(created)
+        }
+        return updated
+    }
+}
+
+private struct LibraryNoteNameInput: View {
+    let note: LibraryNote
+    let saved: (String) -> Void
+    @State private var name: String
+    @FocusState private var focused: Bool
+
+    init(note: LibraryNote, saved: @escaping (String) -> Void) {
+        self.note = note
+        self.saved = saved
+        _name = State(initialValue: note.name ?? "")
+    }
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(note.name == nil ? "Note name" : "Rename note").font(.headline)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder).focused($focused)
+                .onSubmit(save)
+            Button(note.name == nil ? "Create" : "Save", action: save).disabled(trimmedName.isEmpty)
+        }
+        .padding(12).frame(width: 240)
+        .onAppear { focused = true }
+    }
+
+    private func save() {
+        if !trimmedName.isEmpty { saved(trimmedName) }
+    }
+}
+
+private struct LibraryNoteEditor: View {
+    @Binding var text: String
+    var body: some View {
+        Group {
+            #if os(macOS)
+            TextItemNotepad(text: $text, apply: {}, cancel: {})
+            #else
+            NativeFullLyricsInput(text: $text, outlineStanzas: false,
+                                  font: UIFont(name: CatLiveTypeface.name(nil), size: 15) ?? .systemFont(ofSize: 15))
+            #endif
+        }.accessibilityLabel("Notes").padding(5)
+    }
+}
+
+#if os(macOS)
+struct WorkspaceNotesDock: View {
+    let theme: JarasInterfaceTheme
+    @AppStorage(LibraryNote.storageKey, store: WorkspaceLayoutPreferences.storage) private var storedNotes = Data()
+    @State private var selection: UUID?
+    @State private var namingNote: LibraryNote?
+
+    private var notes: [LibraryNote] { LibraryNote.decode(storedNotes) }
+    private var activeNote: LibraryNote? { notes.first { $0.id == selection } ?? notes.first }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Menu {
+                    Button("Create") { namingNote = LibraryNote() }
+                    if let activeNote { Button("Rename note") { namingNote = activeNote } }
+                    if !notes.isEmpty { Divider() }
+                    ForEach(notes) { note in
+                        Button { selection = note.id } label: {
+                            if activeNote?.id == note.id { Label(note.title, systemImage: "checkmark") }
+                            else { Text(verbatim: note.title) }
+                        }
+                    }
+                } label: {
+                    TransportControlIcon(name: "setlist", size: 17)
+                        .frame(width: 28, height: 24)
+                        .background(theme.display, in: RoundedRectangle(cornerRadius: 5))
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .accessibilityLabel("Notes")
+                .popover(item: $namingNote, arrowEdge: .bottom) { note in
+                    LibraryNoteNameInput(note: note) { name in
+                        persist(LibraryNote.saving(note, name: name, in: notes))
+                        selection = note.id
+                        namingNote = nil
+                    }
+                }
+                Text(verbatim: activeNote?.title ?? JarasLocalization.string("Notes"))
+                    .font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
+                Spacer(minLength: 0)
+            }.padding(5)
+            if let note = activeNote {
+                LibraryNoteEditor(text: Binding(
+                    get: { notes.first { $0.id == note.id }?.text ?? "" },
+                    set: { text in
+                        var updated = notes
+                        guard let index = updated.firstIndex(where: { $0.id == note.id }) else { return }
+                        updated[index].text = text
+                        persist(updated)
+                    }
+                )).id(note.id)
+            } else {
+                Color.clear
+            }
+        }.frame(maxHeight: .infinity, alignment: .top)
+            .background(theme.mixerPanelBackground).foregroundStyle(JarasTheme.text)
+    }
+
+    private func persist(_ notes: [LibraryNote]) {
+        if let encoded = try? JSONEncoder().encode(notes) { storedNotes = encoded }
+    }
+}
+#endif
+
 struct WorkspaceLibrary: View {
     static let folderWidthKey = "jaras.library.foldersWidth"
     static let defaultFolderWidth = 146.0
+    @MainActor private static var categoriesImporting = Set<UUID>()
     private static let maximumDetailsWidth: CGFloat = 364.4921875
     static func maximumWidth(folders: Double, available: CGFloat) -> CGFloat {
         min(available, max(90, CGFloat(folders)) + 1 + maximumDetailsWidth)
@@ -222,10 +359,6 @@ struct WorkspaceLibrary: View {
         case regions, markers
     }
 
-    private struct Note: Codable, Identifiable {
-        var id = UUID()
-        var text = ""
-    }
 
     private struct SamplerCategory: Codable, Identifiable {
         var id = UUID()
@@ -250,11 +383,12 @@ struct WorkspaceLibrary: View {
 
     let theme: JarasInterfaceTheme
     let show: ShowController
+    var samplersOnly = false
     @ObservedObject private var instruments = InstrumentLibrary.shared
     #if os(macOS)
     @ObservedObject private var plugins = PluginCatalog.shared
     #endif
-    @AppStorage("jaras.library.annotations", store: WorkspaceLayoutPreferences.storage) private var storedNotes = Data()
+    @AppStorage(LibraryNote.storageKey, store: WorkspaceLayoutPreferences.storage) private var storedNotes = Data()
     @AppStorage("jaras.library.samplerCategories", store: WorkspaceLayoutPreferences.storage) private var storedSamplerCategories = Data()
     @AppStorage("jaras.library.favorites", store: WorkspaceLayoutPreferences.storage) private var storedFavorites = Data()
     @AppStorage("jaras.library.samplerPreviewDB", store: WorkspaceLayoutPreferences.storage) private var samplerPreviewDB = 0.0
@@ -266,6 +400,7 @@ struct WorkspaceLibrary: View {
     @State private var presetsExpanded = false
     @State private var favoritesExpanded = false
     @State private var annotationExpanded = false
+    @State private var namingNote: LibraryNote?
     @State private var creatingCategory = false
     @State private var categoryName = ""
     @State private var categoryToDelete: SamplerCategory?
@@ -324,11 +459,10 @@ struct WorkspaceLibrary: View {
             return PluginGroup(title: title, entries: entries)
         }
     }
-    private var notes: [Note] {
-        (try? JSONDecoder().decode([Note].self, from: storedNotes)) ?? []
-    }
+    private var notes: [LibraryNote] { LibraryNote.decode(storedNotes) }
     private var samplerCategories: [SamplerCategory] {
-        (try? JSONDecoder().decode([SamplerCategory].self, from: storedSamplerCategories)) ?? []
+        ((try? JSONDecoder().decode([SamplerCategory].self, from: storedSamplerCategories)) ?? [])
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
     private var favoriteKeys: Set<String> {
         Set((try? JSONDecoder().decode([String].self, from: storedFavorites)) ?? [])
@@ -378,6 +512,7 @@ struct WorkspaceLibrary: View {
                             ForEach(Array(samplerCategories.enumerated()), id: \.element.id) { index, category in
                                 navigationRow(category.name, icon: "folder.fill", target: .samplerCategory(category.id),
                                               shaded: index.isMultiple(of: 2))
+                                    .onDrop(of: [UTType.fileURL], isTargeted: nil) { dropSamplers($0, into: category) }
                                     .contextMenu {
                                         Button("Add Samplers") {
                                             selection = .samplerCategory(category.id)
@@ -421,18 +556,22 @@ struct WorkspaceLibrary: View {
                     divider
                     folder("Notes", expanded: $annotationExpanded, shaded: false, icon: "note.text")
                         .contextMenu {
-                            Button("New note") {
-                                let note = Note()
-                                saveNotes(notes + [note])
+                            Button("New note") { namingNote = LibraryNote() }
+                        }
+                        .popover(item: $namingNote, arrowEdge: .trailing) { note in
+                            LibraryNoteNameInput(note: note) { name in
+                                saveNotes(LibraryNote.saving(note, name: name, in: notes))
                                 annotationExpanded = true
                                 selection = .annotation(note.id)
+                                namingNote = nil
                             }
                         }
                     if annotationExpanded {
                         ForEach(Array(notes.enumerated()), id: \.element.id) { index, note in
-                            navigationRow(noteTitle(note), icon: "doc.text", target: .annotation(note.id),
+                            navigationRow(note.title, icon: "doc.text", target: .annotation(note.id),
                                           shaded: index.isMultiple(of: 2))
                                 .contextMenu {
+                                    Button("Rename note") { namingNote = note }
                                     Button("Delete note", role: .destructive) {
                                         saveNotes(notes.filter { $0.id != note.id })
                                         if selection == .annotation(note.id) { selection = nil }
@@ -450,19 +589,38 @@ struct WorkspaceLibrary: View {
     }
 
     var body: some View {
-        LibraryColumns(theme: theme, folders: folders, entries: VStack(spacing: 0) {
-            if showsSearch { searchField }
-            #if os(iOS)
-            details.fileImporter(isPresented: $pickingSoundFonts, allowedContentTypes: [UTType(filenameExtension: "sf2") ?? .data],
-                                 allowsMultipleSelection: true, onCompletion: importSoundFonts)
-            #else
-            details
-            #endif
-        })
+        Group {
+            if samplersOnly {
+                VStack(spacing: 0) {
+                    samplerToolbar
+                    samplerDropArea(details)
+                }
+            } else {
+                LibraryColumns(theme: theme, folders: folders, entries: VStack(spacing: 0) {
+                    if showsSearch { searchField }
+                    #if os(iOS)
+                    details.fileImporter(isPresented: $pickingSoundFonts, allowedContentTypes: [UTType(filenameExtension: "sf2") ?? .data],
+                                         allowsMultipleSelection: true, onCompletion: importSoundFonts)
+                    #else
+                    samplerDropArea(details)
+                    #endif
+                })
+            }
+        }
         .background(theme.mixerPanelBackground)
         .foregroundStyle(JarasTheme.text)
         .accessibilityIdentifier("workspace-library-panel")
-        .onAppear { instruments.refresh(); loadPresets(); refreshPadSamples() }
+        .onAppear {
+            refreshPadSamples()
+            if samplersOnly {
+                if selection == nil {
+                    selection = samplerCategories.first.map { .samplerCategory($0.id) }
+                        ?? Self.nativeSampleCategories.first.map { .nativeSamplers($0) }
+                }
+            } else {
+                instruments.refresh(); loadPresets()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: VinhetasController.padSamplesChanged)) { _ in refreshPadSamples() }
         .onDisappear { stopPreview() }
         .onChange(of: samplerPreviewDB) { _ in
@@ -868,13 +1026,8 @@ struct WorkspaceLibrary: View {
         }
     }
 
-    private func noteTitle(_ note: Note) -> String {
-        let title = ItemTextColors.plain(note.text).split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-        return title.isEmpty ? JarasLocalization.string("New note") : title
-    }
-
-    @ViewBuilder private func annotation(_ id: UUID) -> some View {
-        let text = Binding(
+    private func annotation(_ id: UUID) -> some View {
+        LibraryNoteEditor(text: Binding(
             get: { notes.first(where: { $0.id == id })?.text ?? "" },
             set: { text in
                 var updated = notes
@@ -882,19 +1035,73 @@ struct WorkspaceLibrary: View {
                 updated[index].text = text
                 saveNotes(updated)
             }
-        )
-        Group {
-            #if os(macOS)
-            TextItemNotepad(text: text, apply: {}, cancel: {})
-            #else
-            NativeFullLyricsInput(text: text, outlineStanzas: false,
-                                  font: UIFont(name: CatLiveTypeface.name(nil), size: 15) ?? .systemFont(ofSize: 15))
-            #endif
-        }.accessibilityLabel(Text("Notes")).padding(5).id(id)
+        )).id(id)
     }
 
-    private func saveNotes(_ updated: [Note]) {
+    private func saveNotes(_ updated: [LibraryNote]) {
         if let encoded = try? JSONEncoder().encode(updated) { storedNotes = encoded }
+    }
+
+    private var samplerTitle: String {
+        switch selection {
+        case .samplerCategory(let id): return samplerCategories.first { $0.id == id }?.name ?? JarasLocalization.string("Samplers")
+        case .nativeSamplers(let name): return name
+        case .padSamplers: return "Pads"
+        default: return JarasLocalization.string("Samplers")
+        }
+    }
+
+    private var samplerToolbar: some View {
+        HStack(spacing: 6) {
+            Menu {
+                Button("Create") { categoryName = ""; creatingCategory = true }
+                Divider()
+                ForEach(samplerCategories) { category in
+                    Button(category.name) { selection = .samplerCategory(category.id) }
+                }
+                if hasPadSamples { Button("Pads") { selection = .padSamplers } }
+                ForEach(Self.nativeSampleCategories, id: \.self) { name in
+                    Button(name) { selection = .nativeSamplers(name) }
+                }
+            } label: {
+                TransportControlIcon(name: "setlist", size: 17)
+                    .frame(width: 28, height: 24)
+                    .background(theme.display, in: RoundedRectangle(cornerRadius: 5))
+            }.menuStyle(.borderlessButton)
+                .accessibilityLabel("Sampler categories")
+                .popover(isPresented: $creatingCategory, arrowEdge: .bottom) { categoryInput }
+            Text(verbatim: samplerTitle).font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
+            Spacer(minLength: 0)
+        }.padding(5)
+    }
+
+    @ViewBuilder private func samplerDropArea<V: View>(_ view: V) -> some View {
+        if case .samplerCategory(let id) = selection, let category = samplerCategories.first(where: { $0.id == id }) {
+            view.onDrop(of: [UTType.fileURL], isTargeted: nil) { dropSamplers($0, into: category) }
+        } else {
+            view
+        }
+    }
+
+    private func dropSamplers(_ providers: [NSItemProvider], into category: SamplerCategory) -> Bool {
+        let candidates = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !candidates.isEmpty, !importingSamplers, !pickingSamplers else { return false }
+        selection = .samplerCategory(category.id)
+        importingSamplers = true
+        Task { @MainActor in
+            var urls: [URL] = []
+            for provider in candidates {
+                let url: URL? = await withCheckedContinuation { continuation in
+                    _ = provider.loadObject(ofClass: NSURL.self) { item, _ in
+                        continuation.resume(returning: (item as? NSURL).map { $0 as URL })
+                    }
+                }
+                if let url, url.isFileURL { urls.append(url) }
+            }
+            importingSamplers = false
+            importSamplers(urls, into: category)
+        }
+        return true
     }
 
     private var categoryInput: some View {
@@ -921,7 +1128,7 @@ struct WorkspaceLibrary: View {
     }
 
     private func deleteCategory(_ category: SamplerCategory) {
-        guard !importingSamplers, !pickingSamplers,
+        guard !importingSamplers, !pickingSamplers, !Self.categoriesImporting.contains(category.id),
               samplerCategories.contains(where: { $0.id == category.id }) else { return }
         do {
             let categories = try JSONEncoder().encode(samplerCategories.filter { $0.id != category.id })
@@ -1055,14 +1262,17 @@ struct WorkspaceLibrary: View {
     private func importSamplers(_ result: Result<[URL], Error>) {
         guard let category = samplerDestination else { return }
         samplerDestination = nil
-        guard samplerCategories.contains(where: { $0.id == category.id }) else { return }
-        let urls: [URL]
-        do { urls = try result.get() }
-        catch { samplerError = error.localizedDescription; return }
-        guard !urls.isEmpty else { return }
+        do { importSamplers(try result.get(), into: category) }
+        catch { samplerError = error.localizedDescription }
+    }
+
+    private func importSamplers(_ urls: [URL], into category: SamplerCategory) {
+        guard !urls.isEmpty, !importingSamplers, !Self.categoriesImporting.contains(category.id),
+              samplerCategories.contains(where: { $0.id == category.id }) else { return }
         let directory: URL
         do { directory = try Self.samplerDirectory(category.id) }
         catch { samplerError = error.localizedDescription; return }
+        Self.categoriesImporting.insert(category.id)
         importingSamplers = true
         Task { @MainActor in
             let failures = await Task.detached(priority: .utility) {
@@ -1071,6 +1281,7 @@ struct WorkspaceLibrary: View {
                     catch { return "\(source.lastPathComponent) — \(error.localizedDescription)" }
                 }
             }.value
+            Self.categoriesImporting.remove(category.id)
             importingSamplers = false
             if selection == .samplerCategory(category.id) {
                 loadSamplers()

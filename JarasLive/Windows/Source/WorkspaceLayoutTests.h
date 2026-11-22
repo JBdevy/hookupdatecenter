@@ -401,8 +401,13 @@ struct WorkspaceLayoutTests {
                 vertical->getCurrentRange().getLength() < 128,"MIDI Preview must expose both scroll bars");
         vertical->setCurrentRangeStart(0,sendNotificationSync);
         require(vertical->getCurrentRangeStart() == 0,"MIDI Preview pitch scrolling must move to the requested octave");
-        require(preview.getX()==pads.getX() && preview.getRight()==bounds(*w.vinhetasPanel).getRight() &&
-                preview.getY()>=library->getBottom(),"MIDI Preview must respect the side panels");
+        const auto divider = bounds(w.midiPreviewDivider), currentMixer = bounds(*w.footerMixer);
+        require(preview.getX() == w.focusMixer->getRight() && preview.getRight() == currentMixer.getRight() &&
+                w.focusMixer->getBottom() == preview.getBottom() && library->getBottom() == preview.getBottom(),
+                "MIDI Preview must stay to the right of Library and Track - I until its bottom edge");
+        require(divider.getX() == preview.getX() && divider.getWidth() == preview.getWidth() &&
+                divider.getBottom() == preview.getY() && bounds(*w.keyboard).getY() == preview.getBottom(),
+                "The handle must span the preview column, with Keyboard below it");
         w.setSize(1366,768);
         const auto fixedPads=bounds(*w.vinhetasPanel);
         w.keyboardVisible=true; w.resized();
@@ -440,6 +445,28 @@ struct WorkspaceLayoutTests {
         piano->mouseWheelMove(scrollEvent(ModifierKeys(ModifierKeys::altModifier)),wheel);
         require(vertical->getCurrentRangeStart() > pitch && zoom->getValue() == currentZoom,
                 "Alt scrolling must move only the MIDI Preview pitch rows");
+        w.controls.at("proMode")->onClick();
+        const auto &mode = *w.controls.at("proMode");
+        require(mode.getRight() < w.controls.at("save")->getX() && !w.songDisplay.isVisible() &&
+                w.tempoDisplayBounds.getBottom() <= w.proPlaybackBounds.getY(),
+                "Pro Mode must sit before Save and place BPM and Tuner above the compact playback group");
+        for (const auto *id : {"projectStart","previousTimelinePoint","nextTimelinePoint","projectEnd",
+                               "proStop","proPlay","proPause","proSubplay","proFadeout","proRecord","proRepeat"}) {
+            const auto &button = *w.controls.at(id);
+            require(button.isVisible() && button.getButtonText().isEmpty() && w.proPlaybackBounds.contains(button.getBounds()),
+                    "Pro playback controls must use icons and remain inside a single group");
+        }
+        w.controls.at("proNotes")->onClick();
+        auto *proDock = uiFeatureTests::find(w,"pro-library-dock");
+        auto *setlistPanel = uiFeatureTests::find(w,"setlistPanel");
+        require(proDock && setlistPanel && proDock->isVisible() && proDock->getX() == setlistPanel->getRight(),
+                "Pro Notes must dock next to the right of Setlist");
+        w.controls.at("proSamplers")->onClick();
+        require(w.proDock == Workspace::ProDock::samplers && proDock->isVisible(),
+                "Pro Samplers must switch the dock to sample categories");
+        w.controls.at("proMode")->onClick();
+        require(!proDock->isVisible() && w.songDisplay.isVisible() && w.controls.at("play")->isVisible(),
+                "Returning to the standard transport must restore its controls and close the Pro dock");
     }
     static void transportRegionDisplay(const File &directory) {
         using floatingControlTests::require;

@@ -13,18 +13,37 @@
 #include "VST3Catalog.h"
 
 namespace catlive {
-class WorkspaceLibrary final : public Component, private Timer {
+class WorkspaceLibrary final : public Component, public FileDragAndDropTarget, private Timer {
+    struct SharedSettings {
+        var value;
+        uint64 revision = 0;
+        std::set<String> importingCategories;
+    };
   public:
-    explicit WorkspaceLibrary(Session &owner) : session(owner) {
-        settings = JSON::parse(root().getChildFile("Library.json"));
-        if (!settings.isObject()) settings = object();
+    enum class Presentation { library, notes, samplers };
+    explicit WorkspaceLibrary(Session &owner, WorkspaceLibrary *source = nullptr)
+        : session(owner), store(source ? source->store : std::make_shared<SharedSettings>()), settings(store->value) {
+        if (!source) {
+            settings = JSON::parse(root().getChildFile("Library.json"));
+            if (!settings.isObject()) settings = object();
+        }
         setComponentID("workspace-library-panel");
         addAndMakeVisible(folders);
         addAndMakeVisible(contents);
         addAndMakeVisible(divider);
         addAndMakeVisible(collapseCategories);
+        addChildComponent(picker);
+        picker.setTitle("Library categories");
+        picker.setTooltip("Library categories");
+        picker.getProperties().set("icon", "setlist");
+        picker.getProperties().set("flat", true);
+        picker.onClick = [this] { openPicker(); };
+        addChildComponent(pickerTitle);
+        pickerTitle.setFont(theme::semiboldFont(12));
+        pickerTitle.setBorderSize({});
         collapseCategories.getProperties().set("icon", "arrow.up.and.down.text.horizontal");
         collapseCategories.getProperties().set("iconSize", 16.f);
+        collapseCategories.getProperties().set("flat", true);
         collapseCategories.setTitle(localization::translate("Collapse all categories"));
         collapseCategories.setTooltip(localization::translate("Collapse all categories"));
         collapseCategories.setComponentID("library-collapse-categories");
@@ -94,6 +113,40 @@ class WorkspaceLibrary final : public Component, private Timer {
     std::function<void()> folderWidthChanged;
     std::function<void(const ID &, bool, double)> selectTimelineEntry;
     int maximumPanelWidth() const { return std::max(90, folderWidth) + 1 + 364; }
+    void showCollection(Presentation requested) {
+        if (presentation == requested) return;
+        presentation = requested;
+        folders.setVisible(requested == Presentation::library);
+        collapseCategories.setVisible(requested == Presentation::library);
+        divider.setVisible(requested == Presentation::library);
+        picker.setVisible(requested != Presentation::library);
+        pickerTitle.setVisible(requested != Presentation::library);
+        const auto rows = pickerRows();
+        select(rows.empty() ? Row{} : rows.front());
+    }
+    bool isInterestedInFileDrag(const StringArray &files) override {
+        return !importing && std::any_of(files.begin(), files.end(), [](const String &path) {
+            return File(path).hasFileExtension("wav;wave;aif;aiff;flac;mp3;ogg");
+        });
+    }
+    void filesDropped(const StringArray &files, int x, int y) override {
+        if (!isInterestedInFileDrag(files)) return;
+        const auto point = Point<int>(x,y);
+        Row target = current;
+        if (folders.isVisible() && folders.getBounds().contains(point)) {
+            const auto local = folders.getLocalPoint(this, point);
+            const int index = folders.getRowContainingPosition(local.x,local.y);
+            if (!isPositiveAndBelow(index,(int)folderRows.entries.size())) return;
+            target = folderRows.entries[(size_t)index];
+        } else if (!contents.getBounds().contains(point)) {
+            return;
+        }
+        if (target.kind != "samplerCategory") return;
+        Array<File> selected;
+        for (const auto &file : files) selected.add(File(file));
+        select(target);
+        importSamples(target.key, selected);
+    }
     void visibilityChanged() override {
         if (isVisible()) {
             refreshCatalogs();
@@ -116,14 +169,20 @@ class WorkspaceLibrary final : public Component, private Timer {
     }
     void resized() override {
         auto area = getLocalBounds();
-        const int minimum = std::min(getWidth() / 2, 90);
-        const int width = jlimit(minimum, std::max(minimum, getWidth() - 99), folderWidth);
-        auto folderArea = area.removeFromLeft(width);
-        area.removeFromLeft(1);
-        auto toolbar = folderArea.removeFromTop(32).reduced(6, 4);
-        collapseCategories.setBounds(toolbar.removeFromRight(25));
-        folders.setBounds(folderArea);
-        divider.setBounds(width - 3, 0, 6, getHeight());
+        if (presentation == Presentation::library) {
+            const int minimum = std::min(getWidth() / 2, 90);
+            const int width = jlimit(minimum, std::max(minimum, getWidth() - 99), folderWidth);
+            auto folderArea = area.removeFromLeft(width);
+            area.removeFromLeft(1);
+            auto toolbar = folderArea.removeFromTop(32).reduced(6, 4);
+            collapseCategories.setBounds(toolbar.removeFromRight(25));
+            folders.setBounds(folderArea);
+            divider.setBounds(width - 3, 0, 6, getHeight());
+        } else {
+            auto bar = area.removeFromTop(32).reduced(5,4);
+            picker.setBounds(bar.removeFromLeft(28));
+            pickerTitle.setBounds(bar.withTrimmedLeft(6));
+        }
         if (search.isVisible()) search.setBounds(area.removeFromTop(32).reduced(6, 4));
         if (previewVolume.isVisible()) previewVolume.setBounds(area.removeFromTop(32).reduced(6, 0));
         contents.setBounds(area);
@@ -134,7 +193,7 @@ class WorkspaceLibrary final : public Component, private Timer {
     void paint(Graphics &g) override {
         g.fillAll(theme::mixerPanelBackground());
         g.setColour(theme::libraryEntriesBackground());
-        g.fillRect(getLocalBounds().withTrimmedLeft(folders.getWidth()));
+        g.fillRect(getLocalBounds().withTrimmedLeft(presentation == Presentation::library ? folders.getWidth() : 0));
         g.setColour(theme::line);
         g.drawHorizontalLine(31, 0, float(folders.getWidth()));
     }
@@ -191,10 +250,15 @@ class WorkspaceLibrary final : public Component, private Timer {
         }
     };
     Session &session;
-    var settings, presets;
+    std::shared_ptr<SharedSettings> store;
+    var &settings;
+    var presets;
+    Presentation presentation = Presentation::library;
+    uint64 loadedRevision = 0;
     Rows folderRows{*this, true}, itemRows{*this, false};
     ListBox folders{"Library folders", &folderRows}, contents{"Library entries", &itemRows};
-    QuietButton collapseCategories;
+    QuietButton collapseCategories, picker;
+    Label pickerTitle;
     TextEditor search;
     InlineMixerTrackName timelineName;
     String editingTimelineKey, selectedTimelineKey;
@@ -207,6 +271,7 @@ class WorkspaceLibrary final : public Component, private Timer {
     std::set<String> expanded;
     Row current;
     std::unique_ptr<LibraryNoteEditor> noteEditor;
+    String loadedNoteText;
     std::unique_ptr<FileChooser> chooser;
     std::map<String, std::shared_ptr<instrumentAssets::Download>> downloads;
     uint64 pluginRevision = 0;
@@ -225,8 +290,10 @@ class WorkspaceLibrary final : public Component, private Timer {
     static bool disclosure(const Row &row) { return row.kind == "folder" || row.kind == "user"; }
     bool persist() {
         auto folder = root();
-        if (folder.createDirectory().wasOk() && folder.getChildFile("Library.json").replaceWithText(JSON::toString(settings)))
+        if (folder.createDirectory().wasOk() && folder.getChildFile("Library.json").replaceWithText(JSON::toString(settings))) {
+            loadedRevision = ++store->revision;
             return true;
+        }
         warn("Could not save the Library.");
         return false;
     }
@@ -269,9 +336,10 @@ class WorkspaceLibrary final : public Component, private Timer {
         rows.push_back({{}, {}, {}, {}, {}, true});
         if (folder("Samplers", "samplers")) {
             rows.push_back({"User", "user", "user"});
-            if (expanded.count("user"))
-                for (const auto &category : list(get(settings, "samplerCategories")))
-                    rows.push_back({str(category, "name"), str(category, "id"), "samplerCategory"});
+            if (expanded.count("user")) {
+                const auto categories = samplerCategories();
+                rows.insert(rows.end(), categories.begin(), categories.end());
+            }
             if (VinhetasPanel::padSampleDirectory().isDirectory())
                 rows.push_back({"Pads", "Pads", "padSamplerCategory"});
             for (const auto &category : nativeSampleCategories())
@@ -297,8 +365,7 @@ class WorkspaceLibrary final : public Component, private Timer {
         rows.push_back({{}, {}, {}, {}, {}, true});
         if (folder("Notes", "annotation")) {
             for (const auto &note : list(get(settings, "notes"))) {
-                auto title = ItemTextColors::plain(str(note, "text")).upToFirstOccurrenceOf("\n", false, false).trim();
-                rows.push_back({title.isNotEmpty() ? title : localization::translate("New note"), str(note, "id"), "note"});
+                rows.push_back({noteTitle(note), str(note, "id"), "note"});
             }
         }
         rows.push_back({{}, {}, {}, {}, {}, true});
@@ -307,14 +374,66 @@ class WorkspaceLibrary final : public Component, private Timer {
         folders.updateContent();
         folders.repaint();
     }
-    std::unique_ptr<LibraryNoteEditor> makeNoteEditor(const Row &row) {
-        for (auto note : list(get(settings, "notes"))) {
-            if (str(note, "id") != row.key) continue;
-            return std::make_unique<LibraryNoteEditor>(str(note, "text"), [this, note](String text) mutable {
-                put(note, "text", std::move(text));
-                persist();
-                rebuildFolders();
+    static String noteTitle(const var &note) {
+        const auto name = str(note,"name").trim();
+        return name.isNotEmpty() ? name : localization::translate("Untitled note");
+    }
+    std::vector<Row> samplerCategories() const {
+        std::vector<Row> rows;
+        for (const auto &category : list(get(settings,"samplerCategories")))
+            rows.push_back({str(category,"name"),str(category,"id"),"samplerCategory"});
+        std::stable_sort(rows.begin(), rows.end(), [](const Row &a, const Row &b) { return a.title.compareNatural(b.title) < 0; });
+        return rows;
+    }
+    std::vector<Row> pickerRows() const {
+        std::vector<Row> rows;
+        if (presentation == Presentation::notes) {
+            for (const auto &note : list(get(settings,"notes")))
+                rows.push_back({noteTitle(note),str(note,"id"),"note"});
+        } else if (presentation == Presentation::samplers) {
+            rows = samplerCategories();
+            if (VinhetasPanel::padSampleDirectory().isDirectory()) rows.push_back({"Pads","Pads","padSamplerCategory"});
+            for (const auto &name : nativeSampleCategories()) rows.push_back({name,name,"nativeSamplerCategory"});
+        }
+        return rows;
+    }
+    void openPicker() {
+        if (presentation == Presentation::library) return;
+        auto rows = pickerRows();
+        PopupMenu menu;
+        menu.addItem(1,localization::translate("Create"));
+        if (presentation == Presentation::notes && current.kind == "note")
+            menu.addItem(2,localization::translate("Rename note"));
+        if (!rows.empty()) menu.addSeparator();
+        for (size_t i=0;i<rows.size();++i)
+            menu.addItem(int(i)+3,rows[i].title,true,rows[i].key == current.key && rows[i].kind == current.kind);
+        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&picker),
+            [safe=SafePointer<WorkspaceLibrary>(this), rows=std::move(rows)](int result) {
+                if (!safe || result <= 0) return;
+                if (result == 1) {
+                    if (safe->presentation == Presentation::notes) safe->createNote();
+                    else if (safe->presentation == Presentation::samplers) safe->createCategory();
+                } else if (result == 2 && safe->current.kind == "note") {
+                    safe->createNote(safe->current.key);
+                } else if (isPositiveAndBelow(result-3,int(rows.size()))) {
+                    safe->select(rows[(size_t)(result-3)]);
+                }
             });
+    }
+    std::unique_ptr<LibraryNoteEditor> makeNoteEditor(const Row &row, bool focus = true) {
+        for (const auto &note : list(get(settings,"notes"))) {
+            if (str(note,"id") != row.key) continue;
+            loadedNoteText = str(note,"text");
+            return std::make_unique<LibraryNoteEditor>(loadedNoteText, [this,id=row.key](String text) {
+                for (auto entry : list(get(settings,"notes"))) {
+                    if (str(entry,"id") != id) continue;
+                    put(entry,"text",text);
+                    loadedNoteText = text;
+                    persist();
+                    rebuildFolders();
+                    break;
+                }
+            }, focus);
         }
         return {};
     }
@@ -331,7 +450,9 @@ class WorkspaceLibrary final : public Component, private Timer {
             if (previewingInstrument) stopPreview();
         }
         current = std::move(row);
-        search.setVisible(current.kind != "note");
+        const auto fallbackTitle = presentation == Presentation::notes ? "Notes" : "Samplers";
+        pickerTitle.setText(current.title.isEmpty() ? localization::translate(fallbackTitle) : current.title, dontSendNotification);
+        search.setVisible(presentation == Presentation::library && current.kind != "note");
         noteEditor.reset();
         if (current.kind == "note") {
             noteEditor = makeNoteEditor(current);
@@ -628,7 +749,10 @@ class WorkspaceLibrary final : public Component, private Timer {
         }
         if (row.kind == "padSamplerCategory") menu.addItem(7, localization::translate("Excluir"));
         if (row.key == "annotation" && row.kind == "folder") menu.addItem(3, localization::translate("New note"));
-        if (row.kind == "note") menu.addItem(4, localization::translate("Delete note"));
+        if (row.kind == "note") {
+            menu.addItem(9,localization::translate("Rename note"));
+            menu.addItem(4,localization::translate("Delete note"));
+        }
         if (row.kind == "instrument" && instrumentAssets::installedFile(row.key).existsAsFile())
             menu.addItem(5, localization::translate("Delete instrument"));
         if (!menu.getNumItems()) return;
@@ -643,6 +767,7 @@ class WorkspaceLibrary final : public Component, private Timer {
                     case 6: safe->confirmDeleteCategory(row); break;
                     case 7: safe->confirmDeletePadSamples(); break;
                     case 8: safe->chooseSoundFonts(); break;
+                    case 9: safe->createNote(row.key); break;
                     case 5:
                         try {
                             const auto file = instrumentAssets::installedFile(row.key);
@@ -675,16 +800,18 @@ class WorkspaceLibrary final : public Component, private Timer {
     };
     class CategoryInput final : public Component {
       public:
-        CategoryInput(std::function<bool(String)> validate, std::function<bool(String)> save)
-            : canSave(std::move(validate)), commit(std::move(save)) {
+        CategoryInput(std::function<bool(String)> validate, std::function<bool(String)> save,
+                      String heading = "Create category", int limit = 12, String initial = {}, String action = "Create")
+            : create(localization::translate(action)), canSave(std::move(validate)), commit(std::move(save)) {
             setComponentID("library-category-popover");
-            title.setText(localization::translate("Create category"), dontSendNotification);
+            title.setText(localization::translate(heading), dontSendNotification);
             title.setFont(theme::semiboldFont(13));
             title.setColour(Label::textColourId, Colours::white);
             title.setBorderSize({});
             addAndMakeVisible(title);
             name.setComponentID("library-category-name");
-            name.setInputRestrictions(12);
+            name.setInputRestrictions(limit);
+            name.setText(initial,false);
             name.setIndents(5, 2);
             name.setFont(theme::font(13));
             name.setColour(TextEditor::textColourId, Colours::white);
@@ -698,7 +825,7 @@ class WorkspaceLibrary final : public Component, private Timer {
             name.onEscapeKey = [this] { dismiss(); };
             addAndMakeVisible(name);
             create.setComponentID("library-category-create");
-            create.setEnabled(false);
+            create.setEnabled(canSave(initial.trim()));
             create.onClick = [this] { submit(); };
             addAndMakeVisible(create);
             setSize(186, 89);
@@ -734,7 +861,7 @@ class WorkspaceLibrary final : public Component, private Timer {
         };
         class CreateButton final : public Button {
           public:
-            CreateButton() : Button(localization::translate("Create")) {}
+            explicit CreateButton(String label) : Button(label) {}
             void paintButton(Graphics &g, bool over, bool) override {
                 g.setColour(Colour(isEnabled() && over ? 0xff666666 : 0xff515151));
                 g.fillRoundedRectangle(getLocalBounds().toFloat(), 5.f);
@@ -764,9 +891,10 @@ class WorkspaceLibrary final : public Component, private Timer {
         if (!host) return;
         const auto &rows = folderRows.entries;
         const auto user = std::find_if(rows.begin(), rows.end(), [](const Row &row) { return row.kind == "user"; });
-        if (user == rows.end()) return;
-        const auto bounds = folders.getRowPosition((int)std::distance(rows.begin(), user), true);
-        const auto target = host->getLocalArea(&folders, bounds).removeFromRight(1);
+        if (user == rows.end() && presentation == Presentation::library) return;
+        const auto target = presentation == Presentation::library
+            ? host->getLocalArea(&folders, folders.getRowPosition(int(std::distance(rows.begin(),user)),true)).removeFromRight(1)
+            : host->getLocalArea(&picker,picker.getLocalBounds());
         const SafePointer<WorkspaceLibrary> safe(this);
         auto input = std::make_unique<CategoryInput>(
             [safe](String name) { return safe && safe->categoryNameAvailable(name); },
@@ -794,7 +922,7 @@ class WorkspaceLibrary final : public Component, private Timer {
         MessageManager::callAsync([field] { if (field) field->focus(); });
     }
     void confirmDeleteCategory(const Row &row) {
-        if (importing || !hasCategory(row.key)) return;
+        if (importing || store->importingCategories.count(row.key) || !hasCategory(row.key)) return;
         ConfirmationPanel::show(MessageBoxIconType::QuestionIcon, localization::translate("Excluir") + " " + row.title,
             localization::english ? "Remove this category and its samples from the Library?"
                                   : String::fromUTF8("Excluir esta categoria e seus samples da Library?"),
@@ -804,7 +932,7 @@ class WorkspaceLibrary final : public Component, private Timer {
             }));
     }
     void deleteCategory(const String &id) {
-        if (importing || !hasCategory(id)) return;
+        if (importing || store->importingCategories.count(id) || !hasCategory(id)) return;
         const auto samplerRoot = root().getChildFile("Samplers");
         const auto directory = samplerRoot.getChildFile(id);
         if (directory.getParentDirectory() != samplerRoot) return;
@@ -850,15 +978,42 @@ class WorkspaceLibrary final : public Component, private Timer {
                 safe->refreshPadSamples();
             }));
     }
-    void createNote() {
-        auto notes = list(get(settings, "notes"));
-        const auto id = text(uuid());
-        auto note = object(); put(note, "id", id); put(note, "text", String{}); notes.add(note);
-        put(settings, "notes", notes);
-        persist();
-        expanded.insert("annotation");
-        rebuildFolders();
-        select({localization::translate("New note"), id, "note"});
+    void createNote(String existing = {}) {
+        auto *host = getTopLevelComponent();
+        if (!host) return;
+        String initial;
+        if (existing.isNotEmpty())
+            for (const auto &note : list(get(settings,"notes"))) if (str(note,"id") == existing) initial = str(note,"name");
+        const SafePointer<WorkspaceLibrary> safe(this);
+        auto field = std::make_unique<CategoryInput>([](String name) { return name.isNotEmpty(); },
+            [safe,existing](String name) {
+                if (!safe || name.isEmpty()) return false;
+                const auto snapshot = safe->settings.clone();
+                auto notes = list(get(safe->settings,"notes"));
+                String id = existing;
+                if (id.isEmpty()) {
+                    id = text(uuid());
+                    auto note = object();
+                    put(note,"id",id); put(note,"text",String{}); put(note,"name",name);
+                    notes.add(note);
+                } else {
+                    for (auto note : notes) if (str(note,"id") == id) put(note,"name",name);
+                }
+                put(safe->settings,"notes",notes);
+                if (!safe->persist()) { safe->settings = snapshot; return false; }
+                safe->expanded.insert("annotation");
+                safe->rebuildFolders();
+                safe->pickerTitle.setText(name,dontSendNotification);
+                safe->select({name,id,"note"});
+                return true;
+            }, existing.isEmpty() ? "Note name" : "Rename note", 0, initial, existing.isEmpty() ? "Create" : "Save");
+        const SafePointer<CategoryInput> input(field.get());
+        static CategoryCalloutLook look;
+        const auto target = presentation != Presentation::library ? host->getLocalArea(&picker,picker.getLocalBounds())
+            : host->getLocalArea(this,getLocalBounds().withHeight(32).withWidth(std::max(1,folders.getWidth())).removeFromRight(1));
+        auto &box = CallOutBox::launchAsynchronously(std::move(field),target,host);
+        box.setLookAndFeel(&look);
+        MessageManager::callAsync([input] { if (input) input->focus(); });
     }
     void deleteNote(const String &id) {
         auto notes = list(get(settings, "notes"));
@@ -924,30 +1079,35 @@ class WorkspaceLibrary final : public Component, private Timer {
         chooser = std::make_unique<FileChooser>(localization::translate("Add Samplers"), File{}, "*.wav;*.wave;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
         chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles |
             FileBrowserComponent::canSelectMultipleItems, [safe = SafePointer<WorkspaceLibrary>(this), key = row.key](const FileChooser &chooser) {
-                if (!safe || chooser.getResults().isEmpty() || !safe->hasCategory(key)) return;
-                const auto files = chooser.getResults();
-                const auto destination = root().getChildFile("Samplers").getChildFile(key);
-                safe->importing = true;
-                sampleWorker().addJob([safe, files, destination] {
-                    StringArray failures;
-                    AudioFormatManager formats; formats.registerBasicFormats();
-                    for (const auto &file : files) {
-                        if (destination.createDirectory().failed()) { failures.add(file.getFileName()); continue; }
-                        TemporaryFile staging(destination.getNonexistentChildFile(file.getFileNameWithoutExtension(), file.getFileExtension(), false));
-                        if (!file.copyFileTo(staging.getFile())) { failures.add(file.getFileName()); continue; }
-                        std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(staging.getFile()));
-                        const bool valid = reader && VinhetasAudio::acceptsDuration(reader->lengthInSamples, reader->sampleRate);
-                        reader.reset();
-                        if (!valid || !staging.overwriteTargetFileWithTemporary()) failures.add(file.getFileName());
-                    }
-                    MessageManager::callAsync([safe, failures] {
-                        if (!safe) return;
-                        safe->importing = false;
-                        safe->reloadEntries();
-                        if (!failures.isEmpty()) safe->warn(localization::translate("Samplers must be between 0 and 60 seconds.") + "\n" + failures.joinIntoString("\n"));
-                    });
-                });
+                if (safe) safe->importSamples(key, chooser.getResults());
             });
+    }
+    void importSamples(const String &key, const Array<File> &files) {
+        if (importing || files.isEmpty() || !hasCategory(key) || !store->importingCategories.insert(key).second) return;
+        const auto destination = root().getChildFile("Samplers").getChildFile(key);
+        importing = true;
+        sampleWorker().addJob([safe = SafePointer<WorkspaceLibrary>(this), shared = store, key, files, destination] {
+            StringArray failures;
+            AudioFormatManager formats; formats.registerBasicFormats();
+            for (const auto &file : files) {
+                if (destination.createDirectory().failed()) { failures.add(file.getFileName()); continue; }
+                TemporaryFile staging(destination.getNonexistentChildFile(file.getFileNameWithoutExtension(), file.getFileExtension(), false));
+                if (!file.copyFileTo(staging.getFile())) { failures.add(file.getFileName()); continue; }
+                std::unique_ptr<AudioFormatReader> reader(formats.createReaderFor(staging.getFile()));
+                const bool valid = reader && VinhetasAudio::acceptsDuration(reader->lengthInSamples, reader->sampleRate);
+                reader.reset();
+                if (!valid || !staging.overwriteTargetFileWithTemporary()) failures.add(file.getFileName());
+            }
+            MessageManager::callAsync([safe, shared, key, failures] {
+                shared->importingCategories.erase(key);
+                ++shared->revision;
+                if (!safe) return;
+                safe->importing = false;
+                safe->loadedRevision = shared->revision;
+                safe->reloadEntries();
+                if (!failures.isEmpty()) safe->warn(localization::translate("Samplers must be between 0 and 60 seconds.") + "\n" + failures.joinIntoString("\n"));
+            });
+        });
     }
     void togglePreview(const File &file, bool instrument = false, bool drums = false) {
         const bool same = previewFile == file;
@@ -1015,6 +1175,28 @@ class WorkspaceLibrary final : public Component, private Timer {
         if (current.kind == "padSamplerCategory" || (current.kind == "favorites" && current.key == "samplers")) reloadEntries();
     }
     void timerCallback() override {
+        if (loadedRevision != store->revision) {
+            loadedRevision = store->revision;
+            rebuildFolders();
+            if (current.kind != "note") {
+                reloadEntries();
+            } else {
+                const auto notes = list(get(settings,"notes"));
+                const auto item = std::find_if(notes.begin(),notes.end(),[this](const var &note) { return str(note,"id") == current.key; });
+                if (item == notes.end()) {
+                    const auto available = pickerRows();
+                    select(available.empty() ? Row{} : available.front());
+                } else {
+                    pickerTitle.setText(noteTitle(*item),dontSendNotification);
+                    if (!noteEditor || (str(*item,"text") != loadedNoteText && GetFocus() != noteEditor->nativeEditor())) {
+                        noteEditor = makeNoteEditor(current,false);
+                        if (noteEditor) addAndMakeVisible(*noteEditor);
+                        contents.setVisible(!noteEditor);
+                        resized();
+                    }
+                }
+            }
+        }
         refreshPadSamples();
         if (noteEditor) noteEditor->syncAppearance();
         for (auto it = downloads.begin(); it != downloads.end();) {

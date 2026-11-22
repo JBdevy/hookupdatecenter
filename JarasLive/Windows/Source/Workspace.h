@@ -215,7 +215,12 @@ class Workspace final : public Component,
     std::unique_ptr<StageTimerReadout> stageTimer;
     std::unique_ptr<TempoControl> tempoControl;
     std::unique_ptr<MixerPanel> footerMixer, focusMixer;
-    std::unique_ptr<WorkspaceLibrary> workspaceLibrary;
+    std::unique_ptr<WorkspaceLibrary> workspaceLibrary, proLibraryDock;
+    enum class ProDock { none, notes, samplers };
+    ProDock proDock = ProDock::none;
+    bool proTransport = false;
+    juce::Rectangle<int> proPlaybackBounds;
+    void toggleProDock(ProDock);
     DragDivider libraryDivider;
     int libraryWidth = 344, libraryResizeStart = 344;
     struct DockHeights { int mixer = 0, parts = 0, total = 0, visible = 0, preview = 0; } dockHeights;
