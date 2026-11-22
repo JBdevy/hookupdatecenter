@@ -45,7 +45,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     void paint(Graphics &) override;
     void resized() override;
     void refresh();
-    std::function<void()> createEmpty, createTemporary, createEmptyInNewTab, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
+    std::function<void()> createTemporary, createStems, createReaper, createLogic, createRecording, addStems, addPackage,
         browse, resume;
     std::function<void(File)> open, openInNewTab, deleteProject;
     std::function<void(std::vector<File>)> openMultiple;
@@ -68,10 +68,8 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
         enum Icon { document, plusDocument, folder, plusFolder, waveform, archive, back, piano, recording, clock };
         Action(String title, Icon symbol) : Button(title), icon(symbol) {}
         void paintButton(Graphics &, bool, bool) override;
-        std::function<void(const MouseEvent &)> contextMenu;
         void mouseDown(const MouseEvent &e) override {
-            if (e.mods.isPopupMenu()) { if (isEnabled() && contextMenu) contextMenu(e); return; }
-            Button::mouseDown(e);
+            if (!e.mods.isPopupMenu()) Button::mouseDown(e);
         }
         void mouseUp(const MouseEvent &e) override {
             if (!e.mods.isPopupMenu()) Button::mouseUp(e);
@@ -83,8 +81,7 @@ class ProjectBrowser final : public Component, private ListBoxModel, private Tim
     Action create{"Criar projeto", Action::plusDocument};
     Action add{"Adicionar ao projeto", Action::plusFolder};
     Action recent{"Projetos Recentes", Action::folder};
-    Action empty{"Vazio", Action::document};
-    Action temporary{"Temporary", Action::clock};
+    Action temporary{"Utilited", Action::clock};
     Action stems{"Adicionar stems", Action::waveform};
     Action reaper{"REAPER", Action::waveform};
     Action logic{"Logic", Action::piano};

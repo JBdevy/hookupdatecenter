@@ -5993,11 +5993,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
     };
     projectBrowser = std::make_unique<ProjectBrowser>();
     addChildComponent(*projectBrowser);
-    projectBrowser->createEmpty = [this] { createProject(false); };
     projectBrowser->createTemporary = [this] { createTemporaryProject(); };
-    projectBrowser->createEmptyInNewTab = [this] {
-        if (projectReady && openInNewProjectTab) createProject(false, 0, true);
-    };
     projectBrowser->createStems = [this] { createProject(true); };
     projectBrowser->createRecording = [this] { chooseRecordingProject(); };
     projectBrowser->createReaper = [this] { chooseMigration(false); };
