@@ -172,6 +172,13 @@ final class Scene: UIResponder, UIWindowSceneDelegate {
         pointer.detach(); pointer.removeFromSuperview()
         let resize = IpadItemResizeControl(frame: CGRect(x: 50,y: 200,width: 28,height: 80))
         window!.rootViewController!.view.addSubview(resize)
+        let trimPan = resize.gestureRecognizers!.first!
+        let finger = NSNumber(value: UITouch.TouchType.direct.rawValue)
+        let mouse = NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)
+        resize.touchEnabled = false
+        expect(trimPan.allowedTouchTypes == [mouse], "Trim outside Track Mixer Edit must still allow a mouse")
+        resize.touchEnabled = true
+        expect(trimPan.allowedTouchTypes.contains(finger), "Track Mixer Edit must enable edge trimming by touch")
         let grip = resize.layer.sublayers!.first!
         // A clipped hit area must not move the visible item edge. Include a
         // short item, both viewport edges, offscreen edges and incremental zoom.

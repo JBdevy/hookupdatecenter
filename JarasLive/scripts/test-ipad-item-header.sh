@@ -22,13 +22,17 @@ installed = False
 try:
     source = pathlib.Path('Apple/Shared/GridSelectionInput.swift').read_text()
     geometry = source[source.index('struct GridSelectionItem {'):source.index('/// Immutable item metadata')]
+    buttons = source[source.index('enum TrackMixerButtonAppearance {'):source.index('#if CATLIVE_RENDER_DIAGNOSTICS')]
+    theme = pathlib.Path('Apple/Shared/Theme.swift').read_text()
+    start = theme.index('    init(hex: UInt32)')
+    color = 'extension Color {\n' + theme[start:theme.index('\n', start)] + '\n}\n'
     remote = pathlib.Path('Apple/Shared/DAWRemoteView.swift').read_text()
     mix = remote[remote.index('private struct IpadNativeItemMix:'):remote.index('private struct IpadNativeItemMove:')].replace('private struct','struct',1)
     start = remote.index('    private func cancelItemMix()')
     end = remote.index('    private func timelineRow(', start)
     handler = remote[start:end].replace('private func ', 'func ')
     fixture = pathlib.Path('Tests/Apple/IpadItemHeaderFixture.swift').read_text().replace('// MIX_MODEL', mix).replace('    // MIX_HANDLER',handler)
-    (folder/'HeaderGeometry.swift').write_text('import SwiftUI\nimport UIKit\n' + geometry)
+    (folder/'HeaderGeometry.swift').write_text('import SwiftUI\nimport UIKit\n' + color + buttons + geometry)
     (folder/'HeaderFixture.swift').write_text(fixture)
     workspace = pathlib.Path('Apple/Shared/IpadStandaloneWorkspace.swift').read_text()
     resize = workspace[workspace.index('/// A control excludes resizing'):workspace.index('struct IpadTrackSelectionSurface:')]
