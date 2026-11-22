@@ -159,12 +159,10 @@ struct TransportView: View {
         let statusWidth = width - 16 - groupSpacing - mainWidth
         let detailWidth = TransportControlMetrics.desktopDetailsWidth
         let activeProMode = proMode && !remotePresentation
-        let actionsHeight = activeProMode ? TransportControlMetrics.proHeight : TransportControlMetrics.height
+        let actionsHeight = remotePresentation ? TransportControlMetrics.height : TransportControlMetrics.proHeight
         let modeWidth: CGFloat = remotePresentation ? 0 : 74
         let actionWidth = 2 * TransportControlMetrics.iconWidth + 6 + modeWidth + ((documents?.projectTabCount ?? 0) > 1 ? 62 : 0)
-        let automationWidth = TransportEditingButtons.controlWidth
-        let editGroupSpacing: CGFloat = 8
-        let playbackRoom = statusWidth - detailWidth - actionWidth - automationWidth - playbackSpacing - editGroupSpacing - 30
+        let playbackRoom = statusWidth - detailWidth - actionWidth - playbackSpacing - 30
         let compactWidth = max(43, floor((playbackRoom - 5 * playbackSpacing) / 6))
         let playbackWidth = remotePresentation ? preferredWidth : min(preferredWidth, compactWidth)
         let playbackSpan: CGFloat? = remotePresentation ? nil : 5 * playbackWidth + 4 * playbackSpacing
@@ -312,7 +310,8 @@ struct TransportView: View {
     private func setlistButton(width: CGFloat, height: CGFloat = TransportControlMetrics.height) -> some View {
         PanelCollapseButton(collapsed: setlistCollapsed, title: "Setlist", icon: "setlist",
             label: setlistCollapsed ? "Expandir Setlist" : "Recolher Setlist",
-            tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist", action: toggleSetlist)
+            tooltip: setlistCollapsed ? "Restaurar largura anterior do Setlist" : "Ocultar Setlist",
+            height: height, action: toggleSetlist)
             .frame(width: width, height: height)
             #if os(macOS)
             .contextMenu {
@@ -365,9 +364,12 @@ struct TimelineNavigationControls: View {
 }
 
 struct SongProgressBar: View {
+    static let standardHeight: CGFloat = 2
+    static let proHeight = 2 * standardHeight
     let position: Double?
     let start: Double?
     let end: Double?
+    var height = standardHeight
 
     var body: some View {
         GeometryReader { geometry in
@@ -378,17 +380,18 @@ struct SongProgressBar: View {
                     Rectangle().fill(JarasTheme.green).frame(width: geometry.size.width * fraction)
                 }
             }
-        }.frame(height: 2).allowsHitTesting(false).accessibilityHidden(true)
+        }.frame(height: height).allowsHitTesting(false).accessibilityHidden(true)
     }
 }
 
 private struct LiveSongProgressBar: View {
     let show: ShowController
     let region: Part?
+    let height: CGFloat
     @State private var position: Double?
 
     var body: some View {
-        SongProgressBar(position: position, start: region?.startTime, end: region?.endTime)
+        SongProgressBar(position: position, start: region?.startTime, end: region?.endTime, height: height)
             .onReceive(show.$snapshot.map { snapshot -> Double? in
                 let transport = snapshot.transport
                 return transport.playing || transport.paused == true ? transport.position : nil
@@ -470,36 +473,34 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
                     proLayout(width: geometry.size.width, regionName: name, playing: transport.playing)
                 } else {
                     title.frame(height: halfHeight)
-                        .overlay(alignment: .trailing) { noticeView.frame(width: noticeWidth).padding(.trailing, 8) }
+                        .overlay(alignment: .trailing) {
+                            if desktopPlaybackSpan == nil {
+                                noticeView.frame(width: noticeWidth).padding(.trailing, 8)
+                            }
+                        }
                     if let desktopPlaybackSpan {
                         let bottomInset: CGFloat = 4
                         HStack(alignment: .bottom, spacing: 8) {
                             playback.padding(.bottom, bottomInset)
                             GeometryReader { room in
                                 let detailsWidth = TransportControlMetrics.desktopDetailsWidth
-                                let toolsWidth = timelineToolbar == nil ? 0 : TransportControlMetrics.desktopToolsWidth
+                                let toolsWidth: CGFloat = timelineToolbar == nil ? 0 : 191
                                 let toolsSpan = toolsWidth > 0 ? toolsWidth + 10 : 0
-                                let editSpan = TransportEditingButtons.span
-                                let detailStart = editSpan + 8
-                                let scale = min(1, max(1, room.size.width - detailStart) / (detailsWidth + toolsSpan))
+                                let scale = min(1, max(1, room.size.width) / (detailsWidth + toolsSpan))
                                 let detailsHalf = detailsWidth * scale / 2
                                 // The room excludes playback and actions. Translate the
                                 // panel's midpoint into this space before fitting the controls.
-                                let panelCenter = geometry.size.width / 2 - (6 + desktopPlaybackSpan + 8)
+                                let panelCenter = geometry.size.width / 2 - (8 + desktopPlaybackSpan + 8)
                                 let rightLimit = room.size.width - toolsSpan * scale - detailsHalf
-                                let center = max(detailStart + detailsHalf, min(panelCenter, rightLimit))
+                                let center = max(detailsHalf, min(panelCenter, rightLimit))
                                 let bottom = room.size.height - bottomInset
-                                // REC ends eight points before this room; BPM starts at center - detailsHalf.
-                                desktopEditControls
-                                    .position(x: (center - detailsHalf - 8) / 2,
-                                              y: bottom - TransportControlMetrics.playbackHeight / 2)
                                 details.frame(width: detailsWidth)
                                     .scaleEffect(scale)
                                     .position(x: center, y: bottom - TransportControlMetrics.detailHeight * scale / 2)
                                 if let timelineToolbar {
                                     let toolbarStart = center + detailsHalf
                                     let toolbarSpan = room.size.width - toolbarStart
-                                    DesktopTimelineToolbarView(show: show, controls: timelineToolbar)
+                                        DesktopTimelineToolbarView(show: show, controls: timelineToolbar, section: .zoom)
                                         .frame(width: max(toolsWidth, toolbarSpan / scale))
                                         .scaleEffect(scale)
                                         .position(x: toolbarStart + toolbarSpan / 2, y: bottom - 12 * scale)
@@ -507,7 +508,7 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
                             }
                             .frame(minWidth: min(max(0, geometry.size.width - desktopPlaybackSpan - 230), 200))
                             actions.padding(.bottom, bottomInset)
-                        }.padding(.leading, 6).padding(.trailing, 8).frame(height: halfHeight)
+                        }.padding(.horizontal, 8).frame(height: halfHeight)
                     } else {
                         details.offset(y: -4).frame(maxWidth: .infinity).frame(height: halfHeight)
                             .overlay(alignment: .leading) { playback.padding(.leading, 6) }
@@ -536,8 +537,10 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
                                      startPoint: .top, endPoint: .bottom))
             #endif
         }
-        .overlay(alignment: proMode ? .bottom : .center) {
-            LiveSongProgressBar(show: show, region: displays.current).padding(.horizontal, 3)
+        .overlay(alignment: desktopPlaybackSpan != nil || proMode ? .bottom : .center) {
+            LiveSongProgressBar(show: show, region: displays.current,
+                height: proMode ? SongProgressBar.proHeight : SongProgressBar.standardHeight)
+                .padding(.horizontal, 3)
         }
         .overlay {
             #if os(macOS)
@@ -552,8 +555,6 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
         let controlsHeight = TransportControlMetrics.proHeight
         let compact = width < 1220
         let detailSpacing: CGFloat = 8
-        let editSpan = TransportEditingButtons.span + 2 * detailSpacing
-        let switchesSpan: CGFloat = timelineToolbar == nil ? 0 : 53 + detailSpacing
         let zoomControls = Group {
             if let timelineToolbar {
                 DesktopTimelineToolbarView(show: show, controls: timelineToolbar, section: .zoom)
@@ -578,29 +579,28 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
             }
         }
         if compact {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 0) {
+            VStack(spacing: 4) {
+                HStack(spacing: detailSpacing) {
                     ProTimelinePosition(show: show)
-                        .frame(maxHeight: .infinity, alignment: .center)
-                    playback
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    actions.frame(maxWidth: .infinity, alignment: .trailing)
-                }.frame(width: max(315, width - TransportControlMetrics.desktopDetailsWidth - editSpan - switchesSpan - 24))
-                VStack(spacing: 0) {
-                    name
-                        .padding(.leading, editSpan)
-                        .padding(.trailing, switchesSpan)
-                        .padding(.top, 24)
-                    HStack(alignment: .bottom, spacing: detailSpacing) {
+                    Spacer(minLength: 0)
+                    HStack(spacing: detailSpacing) {
                         editing
                         details
                         switches
                     }.fixedSize()
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            }.padding(.horizontal, 8).padding(.vertical, 4)
-                .overlay(alignment: .topTrailing) {
-                    zoomControls.padding(.trailing, 8).padding(.top, 2)
+                    Spacer(minLength: 0)
+                    zoomControls
                 }
+                .frame(width: max(1000, width - 16))
+                .scaleEffect(min(1, max(1, width - 16) / 1000))
+                .frame(width: max(1, width - 16))
+                .frame(maxHeight: .infinity)
+                HStack(spacing: detailSpacing) {
+                    playback
+                    name
+                    actions
+                }.frame(height: controlsHeight)
+            }.padding(.horizontal, 8).padding(.vertical, 4)
         } else {
             HStack(alignment: .bottom, spacing: detailSpacing) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -850,18 +850,18 @@ struct ProTransportButtons: View {
 }
 #if os(macOS)
 private struct DesktopTimelineToolbarView: View {
-    enum Section { case all, switches, zoom }
+    enum Section { case switches, zoom }
     let show: ShowController
     @ObservedObject var controls: DesktopTimelineToolbar
-    var section = Section.all
+    let section: Section
     @AppStorage(TimelineSnapPreference.key) private var snapEnabled = true
     @State private var pendingTimebase: (project: UUID, song: UUID, relative: Bool)?
     @State private var confirmingTimebase = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            if section != .zoom { timelineToggles.frame(maxWidth: .infinity) }
-            if section != .switches { zoomControls.fixedSize(horizontal: true, vertical: false) }
+        Group {
+            if section == .switches { timelineToggles.frame(maxWidth: .infinity) }
+            else { zoomControls.fixedSize(horizontal: true, vertical: false) }
         }
         .controlSize(.small)
         .alert(Text(verbatim: JarasLocalization.string(pendingTimebase?.relative == true ? "Enable relative timebase?" : "Disable relative timebase?")), isPresented: $confirmingTimebase) {
@@ -1117,12 +1117,13 @@ struct FooterPlaylistDisplay: View {
 struct FooterInformationDisplay: View {
     let show: ShowController
     @StateObject private var updates: ShowPresentationObserver
-    init(show: ShowController, documents: ProjectDocuments? = nil, embedded: Bool = false) {
-        self.show = show; self.documents = documents; self.embedded = embedded
+    init(show: ShowController, documents: ProjectDocuments? = nil, embedded: Bool = false, alignment: Alignment = .trailing) {
+        self.show = show; self.documents = documents; self.embedded = embedded; self.alignment = alignment
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     var documents: ProjectDocuments? = nil
     var embedded = false
+    var alignment: Alignment
     private var displayHeight: CGFloat { embedded ? 25 : 21 }
     private var hasMultiLoop: Bool {
         guard let song = show.current, show.snapshot.transport.multiLoopsBypassed != true else { return false }
@@ -1165,7 +1166,7 @@ struct FooterInformationDisplay: View {
                     #endif
                     .lineLimit(1)
                     .foregroundStyle(JarasTheme.yellow)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .frame(maxWidth: .infinity, alignment: alignment)
                     .padding(.horizontal, 3).frame(height: displayHeight)
                     .allowsHitTesting(false)
             } else {
@@ -1372,8 +1373,9 @@ struct FooterSongDisplays: View {
                 SongNameDisplay(title: "Next song label", name: next, bpm: nextBPM, fontScale: fontScale, labelFontScale: labelFontScale, stackedHeight: stackedSongNames ? height : nil).frame(width: songWidth)
                 Rectangle().fill(JarasTheme.line).frame(width: 1)
                 if let noticeShow {
-                    FooterInformationDisplay(show: noticeShow, embedded: true)
-                        .frame(width: max(0, noticeWidth - 1), height: height)
+                    FooterInformationDisplay(show: noticeShow, embedded: true, alignment: .center)
+                        .frame(width: max(0, noticeWidth - 1))
+                        .frame(height: height)
                     Rectangle().fill(JarasTheme.line).frame(width: 1)
                 }
                 SongNameDisplay(title: subPlaying ? "Sub Play" : "Queued", name: queued, bpm: queuedBPM, fontScale: fontScale, labelFontScale: labelFontScale, stackedHeight: stackedSongNames ? height : nil).frame(width: songWidth)
@@ -1393,6 +1395,7 @@ private struct PanelCollapseButton: View {
     var icon: String? = nil
     let label: String
     let tooltip: String
+    var height = TransportControlMetrics.height
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -1401,7 +1404,7 @@ private struct PanelCollapseButton: View {
                 else { Text(verbatim: title).font(.jarasSystem(size: 9, weight: .bold)) }
             }
                 .foregroundStyle(collapsed ? Color.white : Color.black)
-                .frame(maxWidth: .infinity).frame(height: TransportControlMetrics.height)
+                .frame(maxWidth: .infinity).frame(height: height)
                 .background(collapsed ? Color(hex: 0x454545) : JarasTheme.green)
                 #if os(macOS)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -1712,7 +1715,6 @@ enum TransportControlMetrics {
     static let playbackWidth: CGFloat = 60
     #if os(macOS)
     static let desktopDetailsWidth: CGFloat = 384
-    static let desktopToolsWidth: CGFloat = 252
     static let playbackHeight: CGFloat = 24
     static let detailHeight: CGFloat = 35
     static let metronomeButtonHeight: CGFloat = 24

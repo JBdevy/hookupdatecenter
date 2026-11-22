@@ -275,17 +275,15 @@ class Workspace final : public Component,
     std::optional<std::pair<double, double>> transportProgressRange;
     int transportProgressPixels = -1;
     juce::Rectangle<int> transportProgressBounds() const {
-        return {transportDisplayBounds.getX() + 3,
-                proTransport ? transportDisplayBounds.getBottom() - 2
-                             : std::min(transportDisplayBounds.getCentreY() - 1, tempoDisplayBounds.getY() - 2),
-                std::max(0, transportDisplayBounds.getWidth() - 6), 2};
+        const int height = proTransport ? 4 : 2;
+        return transportDisplayBounds.reduced(3, 0).removeFromBottom(height);
     }
     Label songDisplay, transportTime, transportInfo, footer, tempo;
     DragDivider mixerDivider, setlistDivider, partsLeftDivider, partsRightDivider;
     DragDivider footerHeightDivider{false}, mixerHeightDivider{false};
     int resizeStart = 0, footerHeightSetting = 27, mixerHeightSetting = 300, mixerHeightLimit = 724, midiPreviewHeightLimit = 724;
     int footerLeftWidth = 155, footerRightWidth = 230;
-    juce::Rectangle<int> footerSongBounds, proNoticeBounds;
+    juce::Rectangle<int> footerSongBounds, footerNoticeBounds;
     bool mixerDetached = false;
     bool layoutInitialized = false, layoutActive = true, restoringLayout = false;
     double layoutSaveTime = 0;

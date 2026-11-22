@@ -5363,7 +5363,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
         addAndMakeVisible(*label);
         label->setFont(theme::font(11));
     }
-    transportInfo.setJustificationType(Justification::centredRight);
+    transportInfo.setJustificationType(Justification::centred);
     transportInfo.setFont(theme::semiboldFont(13));
     transportInfo.setColour(Label::textColourId, theme::yellow);
     transportInfo.setColour(Label::backgroundColourId, Colours::transparentBlack);
@@ -6769,16 +6769,16 @@ void Workspace::paint(Graphics &g) {
         const auto cpu = footerBounds.withWidth(footerSongBounds.getX() - footerBounds.getX());
         const int totalWidth = roundToInt(footerSongBounds.getWidth() * .10);
         auto names = footerSongBounds.withTrimmedRight(totalWidth);
-        auto next = names.removeFromLeft((names.getWidth() - proNoticeBounds.getWidth()) / 2);
-        names.removeFromLeft(proNoticeBounds.getWidth());
+        auto next = names.removeFromLeft((names.getWidth() - footerNoticeBounds.getWidth()) / 2);
+        names.removeFromLeft(footerNoticeBounds.getWidth());
         auto queued = names;
         auto total = footerSongBounds.withLeft(footerSongBounds.getRight() - totalWidth);
         g.setColour(theme::display); g.fillRoundedRectangle(footerSongBounds.toFloat(), 4);
         g.setColour(theme::line); g.drawRoundedRectangle(footerSongBounds.toFloat().reduced(.5f), 4, 1);
         g.drawVerticalLine(total.getX(), (float)total.getY() + 1, (float)total.getBottom() - 1);
         g.drawVerticalLine(queued.getX(), (float)queued.getY()+1, (float)queued.getBottom()-1);
-        if (!proNoticeBounds.isEmpty())
-            g.drawVerticalLine(proNoticeBounds.getX(),(float)queued.getY()+1,(float)queued.getBottom()-1);
+        if (!footerNoticeBounds.isEmpty())
+            g.drawVerticalLine(footerNoticeBounds.getX(),(float)queued.getY()+1,(float)queued.getBottom()-1);
         g.setColour(theme::secondary); g.setFont(theme::mediumFont(9));
         g.drawText("CPU " + ResourceUsage::percent(resourceUsage.cpu), cpu.getX() + 8, cpu.getY(), 70, cpu.getHeight(), Justification::centredLeft);
         g.drawText("RAM " + ResourceUsage::percent(resourceUsage.ram), cpu.getX() + 84, cpu.getY(), std::max(1, cpu.getWidth() - 90), cpu.getHeight(), Justification::centredLeft);
@@ -6912,9 +6912,9 @@ void Workspace::resized() {
     if(audioPreparationOverlay)audioPreparationOverlay->setBounds(getLocalBounds());
     if (fadeoutOverlay) fadeoutOverlay->setBounds(getLocalBounds());
     constexpr int statusX = mainStripWidth + 8, playbackInset = 8, editControlWidth = 28;
-    constexpr int playbackHeight = 24, playbackGap = 4, editGroupSpacing = 8, navigationWidth = 29;
-    constexpr int detailHeight = 35;
-    constexpr int bpmWidth = 179, metroStripWidth = 88, tempoGap = 8, timelineToolsWidth = 244;
+    constexpr int playbackHeight = 24, playbackGap = 4, navigationWidth = 29;
+    constexpr int actionHeight = 30, detailHeight = 35;
+    constexpr int bpmWidth = 179, metroStripWidth = 88, tempoGap = 8, timelineToolsWidth = 190;
     const auto navigation = {"projectStart", "previousTimelinePoint", "nextTimelinePoint", "projectEnd"};
     const auto playback = {"play", "fadeout", "pause", "loop", "record"};
     const auto proPlayback = {"proPlay","proPause","proFadeout","proRecord","proRepeat"};
@@ -6926,8 +6926,9 @@ void Workspace::resized() {
     constexpr int proCellWidth = 31;
     const int proGroupWidth = proCellWidth * (int)(navigation.size() + proPlayback.size()) + 4;
     const int proEditSpan = editSpan + 2 * playbackGap;
-    const int actionWidth = buttonWidth * 2 + 12 + modeWidth +
-        (proTransport ? 3 * (proToolWidth + proControlGap) + toolPickerWidth + proControlGap : 0);
+    constexpr int standardActionWidth = buttonWidth * 2 + 12 + modeWidth;
+    constexpr int proActionWidth = standardActionWidth + 3 * (proToolWidth + proControlGap) + toolPickerWidth + proControlGap;
+    const int actionWidth = proTransport ? proActionWidth : standardActionWidth;
     const int masterX = 0;
     const int statusWidth = std::max(1, getWidth() - statusX - 8);
     const int tempoWidth = metroStripWidth + bpmWidth;
@@ -6935,9 +6936,9 @@ void Workspace::resized() {
     const int tuningSpan = tempoWidth + tempoGap + tunerWidth;
     const int detailWidth = tuningSpan + timelineToolsWidth;
     const int playbackWidth = getWidth() < 1600 ? 54 : 60;
-    const int playbackSpan = (int)playback.size() * (playbackWidth + playbackGap) + editGroupSpacing + editSpan;
-    const int rightControlSpan = actionWidth + (multipleProjects ? 62 : 0);
-    const bool narrowTransport = !proTransport && statusWidth < playbackSpan + detailWidth + rightControlSpan + 2 * playbackInset + 24;
+    const int playbackSpan = (int)playback.size() * (playbackWidth + playbackGap);
+    const int tabSpan = multipleProjects ? 62 : 0;
+    const bool narrowTransport = statusWidth < playbackSpan + detailWidth + standardActionWidth + tabSpan + 2 * playbackInset + 24;
     const int rail = 0, title = workspaceFullscreen ? 0 : 32;
     constexpr int toolbarInset = 4, toolbarButtonHeight = 21, toolBarHeight = 24;
     constexpr int settingsWidth = 28, timerWidth = 92;
@@ -6954,9 +6955,9 @@ void Workspace::resized() {
         ((int)primaryTools.size() + (int)integrations.size() + (int)liveTools.size())*(29 + toolbarGap);
     const int settingsX = getWidth() - settingsWidth - toolbarInset;
     const int proMinimumWidth = 2 * playbackInset + proGroupWidth + proEditSpan + tuningSpan +
-        switchesWidth + rightControlSpan + 24;
-    const bool compactProTransport = proTransport && statusWidth < proMinimumWidth;
-    const int transport = toolBarHeight + (narrowTransport ? 126 : compactProTransport ? 108 : 86);
+        switchesWidth + proActionWidth + tabSpan + 24;
+    const bool compactTransport = narrowTransport || statusWidth < proMinimumWidth;
+    const int transport = toolBarHeight + (compactTransport ? 116 : 86);
     const int footerHeight = jlimit(27, 161, footerHeightSetting);
     const bool previewDocked = midiPreviewVisible && !midiPreviewDetached;
     const bool partsDockedFlat = partsLeftVisible && partsLeftHorizontal && !partsLeftDetached;
@@ -7031,15 +7032,12 @@ void Workspace::resized() {
     transportDisplayBounds = {statusX, panelY + 6, statusWidth, transportBounds.getHeight() - 12};
     const auto status = transportDisplayBounds;
     const int midpoint = status.getCentreY();
-    const int titleY = status.getY() + std::max(0, (midpoint - status.getY() - 27) / 2);
+    const int titleY = compactTransport ? status.getY() + 2 : status.getY() + std::max(0, (midpoint - status.getY() - 27) / 2);
     const int actionX = status.getRight() - 8 - actionWidth;
     const int playbackX = status.getX() + playbackInset;
-    const int detailY = proTransport ? status.getY() + 2 : narrowTransport
-        ? status.getBottom() - playbackHeight - detailHeight - 7
-        : midpoint + std::max(0, (status.getBottom() - midpoint - detailHeight) / 2) - 4;
-    const int controlBottom = proTransport ? status.getBottom() - 4 : narrowTransport ? status.getBottom() - 2 : detailY + detailHeight;
+    const int controlBottom = status.getBottom() - 4;
+    const int detailY = controlBottom - detailHeight - (narrowTransport ? actionHeight + 4 : 0);
     const int playbackY = controlBottom - playbackHeight;
-    const int actionHeight = proTransport ? 30 : 26;
     const int actionY = controlBottom - actionHeight;
     int modeX = actionX;
     for (auto id : {"proTool","proClock","proNotes","proSamplers"}) {
@@ -7061,26 +7059,17 @@ void Workspace::resized() {
         controls[id]->setBounds(keyX, playbackY, playbackWidth, playbackHeight);
         keyX += playbackWidth + playbackGap;
     }
-    const int recordRight = controls["record"]->getRight();
-    keyX += editGroupSpacing + editSpan + playbackGap;
     const int tabsX = actionX - 62, tabsY = actionY + 3;
     controls["previousProjectTab"]->setBounds(tabsX, tabsY, 25, 20);
     auto *nextProjectTab = controls["nextProjectTab"];
     nextProjectTab->setBounds(controls["previousProjectTab"]->getBounds().translated(31, 0));
     const int titleInset = std::min((status.getWidth() - 1) / 2, 282);
-    const int rightToolsX = actionX - (multipleProjects ? 62 : 0) - timelineToolsWidth;
-    const bool toolsShareDetailRow = !narrowTransport || rightToolsX < keyX;
-    const int detailRight = toolsShareDetailRow ? (narrowTransport ? status.getRight() - timelineToolsWidth : rightToolsX) : rightToolsX;
+    const int rightToolsX = actionX - tabSpan - timelineToolsWidth;
+    const int detailRight = narrowTransport ? status.getRight() - 8 : rightToolsX;
     const int firstTempoX = (proTransport || narrowTransport) ? playbackX : keyX + 10;
     const int centeredTempoX = status.getX() + (status.getWidth() - tuningSpan) / 2;
     const int lastTempoX = std::max(firstTempoX, detailRight - tuningSpan - 10);
     const int tempoX = jlimit(firstTempoX, lastTempoX, centeredTempoX);
-    const int editLimit = narrowTransport ? (toolsShareDetailRow ? (multipleProjects ? tabsX : actionX) : rightToolsX) : tempoX;
-    const int editX = std::max(recordRight + playbackGap, (recordRight + editLimit - editSpan) / 2);
-    if (!proTransport) {
-        controls["editMode"]->setBounds(editX, playbackY, editControlWidth, playbackHeight);
-        controls["track-envelopes"]->setBounds(editX + editControlWidth + playbackGap, playbackY, editControlWidth, playbackHeight);
-    }
     songDisplay.setBounds(status.getX() + titleInset, titleY, std::max(1, status.getWidth() - 2 * titleInset), 27);
     tempoDisplayBounds = {tempoX, detailY, tempoWidth, detailHeight};
     constexpr int metronomeButtonHeight = 24;
@@ -7089,12 +7078,8 @@ void Workspace::resized() {
     controls["metronome"]->setBounds(tempoX + 42, metronomeY, 30, metronomeButtonHeight);
     tempoControl->setBounds(tempoX + metroStripWidth, detailY, bpmWidth, detailHeight);
     tuner->setBounds(tempoDisplayBounds.getRight() + tempoGap, tempoDisplayBounds.getY(), tunerWidth, tempoDisplayBounds.getHeight());
-    const int toolsY = (toolsShareDetailRow ? tuner->getBottom() : controlBottom) - 24;
-    const int toolsX = (toolsShareDetailRow && narrowTransport ? tuner->getRight() + 10 : rightToolsX) + 46;
-    const int switchesLeft = toolsShareDetailRow ? tuner->getRight() : std::max(tuner->getRight(), controls["track-envelopes"]->getRight());
-    const int switchesX = std::min(toolsX - switchesWidth, (switchesLeft + toolsX - switchesWidth) / 2);
-    timelineSnap.setBounds(switchesX, toolsY, switchWidth, 24);
-    timelineTimebase.setBounds(switchesX + switchWidth + switchGap, toolsY, switchWidth, 24);
+    const int toolsY = controlBottom - 24;
+    const int toolsX = rightToolsX;
     controls["trackHeightFit"]->setBounds(toolsX, toolsY, 24, 24);
     controls["zoomFit"]->setBounds(toolsX + 24, toolsY, 24, 24);
     trackHeightSlider.setBounds(toolsX + 54, toolsY, 68, 24);
@@ -7105,8 +7090,6 @@ void Workspace::resized() {
         navX += navigationWidth + playbackGap;
     }
     transportTime.setBounds(navX + 4, titleY, std::max(1, songDisplay.getX() - navX - 10), 27);
-    const int noticeWidth = std::max(0, titleInset - 8);
-    transportInfo.setBounds(status.getRight() - noticeWidth - 8, titleY + 1, noticeWidth, 25);
 
     for (auto id : {"masterMono", "masterPatch", "masterFX", "masterMute", "masterSolo"})
         controls[id]->setTopLeftPosition(masterX + controls[id]->getX(), panelY + controls[id]->getY());
@@ -7114,13 +7097,15 @@ void Workspace::resized() {
         if (component) component->setTopLeftPosition(masterX + component->getX(), panelY + component->getY());
     for (auto id : playback) controls[id]->setVisible(!proTransport);
     for (auto id : proPlayback) controls[id]->setVisible(proTransport);
-    for (auto id : {"editMode","track-envelopes"}) controls[id]->setVisible(true);
+    for (auto id : {"editMode","track-envelopes"}) controls[id]->setVisible(proTransport);
+    timelineSnap.setVisible(proTransport);
+    timelineTimebase.setVisible(proTransport);
     transportTime.setVisible(!proTransport);
     if (proTransport) {
         constexpr int toolsWidth = 190;
         const int rowHeight=actionHeight;
         const int groupWidth = proGroupWidth;
-        const int groupY = compactProTransport ? actionY - rowHeight - 4 : actionY;
+        const int groupY = actionY;
         proPlaybackBounds = {playbackX, groupY, groupWidth, rowHeight};
         int x = playbackX + 2;
         for (const auto &group : {navigation,proPlayback}) {
@@ -7130,7 +7115,6 @@ void Workspace::resized() {
                 x += proCellWidth;
             }
         }
-        const int leftSpan=std::max(groupWidth,actionWidth+(multipleProjects?62:0));
         const int settingsRight = status.getRight() - 8;
         const int fitsX = settingsRight - toolsWidth;
         const int settingsY = status.getY() + 4;
@@ -7138,20 +7122,14 @@ void Workspace::resized() {
         controls["zoomFit"]->setBounds(fitsX+24,settingsY,24,24);
         trackHeightSlider.setBounds(fitsX+54,settingsY,68,24);
         zoom.setBounds(trackHeightSlider.getRight(),settingsY,68,24);
-        if (compactProTransport) {
-            const auto shift = playbackX + leftSpan - controls["setlist"]->getRight();
-            for (auto id : {"proTool","proClock","proNotes","proSamplers",
-                            "proMode","save","setlist","previousProjectTab","nextProjectTab"})
-                controls[id]->setTopLeftPosition(controls[id]->getPosition() + Point<int>(shift,0));
-        }
-        const int firstPanelX = playbackX + (compactProTransport ? leftSpan : groupWidth) + 8 + proEditSpan;
-        const int panelRight = compactProTransport ? status.getRight() - 8 : actionX - (multipleProjects ? 62 : 0) - 8;
+        const int firstPanelX = playbackX + (compactTransport ? 0 : groupWidth) + 8 + proEditSpan;
+        const int panelRight = compactTransport ? status.getRight() - 8 : actionX - tabSpan - 8;
         const int limitsWidth = switchesWidth + 8;
-        const int panelX = compactProTransport ? firstPanelX
-            : jlimit(firstPanelX, std::max(firstPanelX,panelRight-tuningSpan-limitsWidth), centeredTempoX + proEditSpan / 2);
+        const int panelX = jlimit(firstPanelX, std::max(firstPanelX,panelRight-tuningSpan-limitsWidth), centeredTempoX + proEditSpan / 2);
         const int panelHeight = detailHeight;
-        const int panelY = controlBottom - panelHeight;
-        const int panelWidth = compactProTransport ? std::min(tempoWidth,
+        const int panelBottom = compactTransport ? actionY - 4 : controlBottom;
+        const int panelY = panelBottom - panelHeight;
+        const int panelWidth = compactTransport ? std::min(tempoWidth,
             std::max(metroStripWidth+94,panelRight-panelX-tunerWidth-tempoGap-limitsWidth)) : tempoWidth;
         tempoDisplayBounds = {panelX,panelY,panelWidth,panelHeight};
         const int modeY = tempoDisplayBounds.getCentreY() - metronomeButtonHeight / 2;
@@ -7160,18 +7138,22 @@ void Workspace::resized() {
         tempoControl->setBounds(panelX+metroStripWidth,panelY,panelWidth-metroStripWidth,panelHeight);
         tuner->setBounds(tempoDisplayBounds.getRight()+tempoGap,panelY,tunerWidth,panelHeight);
         const int firstActionX = multipleProjects ? tabsX : controls["proTool"]->getX();
-        const int snapX = compactProTransport ? tuner->getRight() + 8
+        const int snapX = compactTransport ? tuner->getRight() + 8
             : (tuner->getRight() + firstActionX - switchesWidth) / 2;
-        timelineSnap.setBounds(snapX,controlBottom-24,switchWidth,24);
-        timelineTimebase.setBounds(snapX+switchWidth+switchGap,controlBottom-24,switchWidth,24);
-        const int proEditX = compactProTransport ? panelX - editSpan - playbackGap
+        timelineSnap.setBounds(snapX,panelBottom-24,switchWidth,24);
+        timelineTimebase.setBounds(snapX+switchWidth+switchGap,panelBottom-24,switchWidth,24);
+        const int proEditX = compactTransport ? panelX - editSpan - playbackGap
             : (proPlaybackBounds.getRight() + panelX - editSpan) / 2;
-        controls["editMode"]->setBounds(proEditX,playbackY,editControlWidth,playbackHeight);
-        controls["track-envelopes"]->setBounds(proEditX+editControlWidth+playbackGap,playbackY,editControlWidth,playbackHeight);
-        const int nameTop = compactProTransport ? settingsY + 26 : status.getY();
-        songDisplay.setBounds(panelX, nameTop, tuner->getRight() - panelX, panelY - nameTop);
+        controls["editMode"]->setBounds(proEditX,panelBottom-playbackHeight,editControlWidth,playbackHeight);
+        controls["track-envelopes"]->setBounds(proEditX+editControlWidth+playbackGap,panelBottom-playbackHeight,editControlWidth,playbackHeight);
+        if (compactTransport) {
+            const int nameX = proPlaybackBounds.getRight() + 8;
+            songDisplay.setBounds(nameX, actionY, std::max(0, firstActionX - 8 - nameX), rowHeight);
+        } else {
+            songDisplay.setBounds(panelX, status.getY(), tuner->getRight() - panelX, panelY - status.getY());
+        }
         const int positionY = settingsY;
-        proTimeBounds = {playbackX,positionY,groupWidth,groupY-positionY};
+        proTimeBounds = {playbackX,positionY,groupWidth,(compactTransport ? panelY : groupY)-positionY};
     } else {
         proPlaybackBounds = {};
         proTimeBounds = {};
@@ -7212,8 +7194,6 @@ void Workspace::resized() {
         const int timerX = jlimit(toolX, lastTimerX, (getWidth() - timerWidth) / 2);
         stageTimer->setBounds(timerX, toolbarY, timerWidth, toolbarButtonHeight);
     } else {
-        // The countdown can share the existing notices row when the toolbar is full.
-        if (!proTransport) transportInfo.setSize(std::max(0, noticeWidth - timerWidth - 6), transportInfo.getHeight());
         stageTimer->setBounds(status.getRight() - timerWidth - 8, titleY, timerWidth, 25);
     }
     toolX = liveX;
@@ -7381,12 +7361,11 @@ void Workspace::layoutWorkspaceColumns(bool widthOnly) {
     mixerHeightDivider.setBounds(dockX + mixerInset, dockViewport.getY() - 3, mixerDockWidth, 6);
     mixerDivider.refreshScroll();setlistDivider.refreshScroll();partsRightDivider.refreshScroll();
     footerSongBounds = footerBounds.withTrimmedLeft(std::min(footerLeftWidth, footerBounds.getWidth() / 3));
-    const int proNoticeWidth = proTransport ? std::min(300,footerSongBounds.getWidth()/4) : 0;
+    const int noticeWidth = std::min(300,footerSongBounds.getWidth()/4);
     const int songRowWidth = footerSongBounds.getWidth() - roundToInt(footerSongBounds.getWidth() * .10);
-    proNoticeBounds = proTransport ? juce::Rectangle<int>(footerSongBounds.getX() + (songRowWidth-proNoticeWidth)/2,
-        footerSongBounds.getY(),proNoticeWidth,footerSongBounds.getHeight()) : juce::Rectangle<int>{};
-    if (proTransport) transportInfo.setBounds(proNoticeBounds.reduced(7,1));
-    transportInfo.setJustificationType(proTransport ? Justification::centred : Justification::centredRight);
+    footerNoticeBounds = {footerSongBounds.getX() + (songRowWidth-noticeWidth)/2,
+        footerSongBounds.getY(),noticeWidth,footerSongBounds.getHeight()};
+    transportInfo.setBounds(footerNoticeBounds.reduced(7,1));
     trackHeightHandle->setBounds(tracksViewport.getBounds());
     trackHeightHandle->setVisible(projectReady && !browserVisible && mixerVisible);
     if (widthOnly) return;

@@ -2223,10 +2223,10 @@ private struct TrackMixFeedbackPanel: View {
                 .modifier(RemoteControlSurface(color: solid ? color : active ? color.opacity(0.35) : nil, radius: 5))
         }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(solid ? (active ? Color.black : .white) : color).accessibilityLabel(label)
     }
-    private var transportProgress: some View {
+    private func transportProgress(height: CGFloat = SongProgressBar.standardHeight) -> some View {
         let region = state.transportDisplayRegion
         return SongProgressBar(position: state.playing || state.paused ? state.position : nil,
-                               start: region?.start, end: region?.end)
+                               start: region?.start, end: region?.end, height: height)
     }
     private var phoneTransport: some View {
         VStack(spacing: 4) {
@@ -2237,7 +2237,7 @@ private struct TrackMixFeedbackPanel: View {
                 .frame(maxWidth: .infinity, minHeight: 25)
                 .background(RemoteSurface.display)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
-                .overlay(alignment: .bottom) { transportProgress.padding(.horizontal, 3) }
+                .overlay(alignment: .bottom) { transportProgress().padding(.horizontal, 3) }
             HStack(spacing: 4) {
                 phoneTransportButton(state.playing || state.paused ? "Stop" : "Play", icon: state.playing || state.paused ? "stopall" : "play", active: state.playing) {
                     action(state.playing || state.paused ? .stop : .play)
@@ -3007,7 +3007,7 @@ private struct TrackMixFeedbackPanel: View {
             FooterSongDisplays(next: displays?.next, nextBPM: displays?.nextBPM,
                 queued: displays?.queued, queuedBPM: displays?.queuedBPM, subPlaying: state.subPlaying,
                 duration: String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60),
-                noticeShow: local && nativeProMode ? localShow : nil)
+                noticeShow: local ? localShow : nil)
         }.padding(.horizontal, 8).padding(.vertical, 3).frame(height: 31).background(RemoteSurface.panel)
     }
     private func resizeHandle(label: String, showsRail: Bool = true, changed: @escaping (Double) -> Void, ended: @escaping () -> Void) -> some View {
@@ -3141,6 +3141,8 @@ private struct TrackMixFeedbackPanel: View {
         }.font(.jarasSystem(size: 12, weight: .semibold)).lineLimit(1)
     }
 
+    private var transportActionHeight: CGFloat { local ? TransportControlMetrics.proHeight : 28 }
+
     private var transportSaveButton: some View {
         Button { action(.save) } label: {
             Label {
@@ -3149,7 +3151,7 @@ private struct TrackMixFeedbackPanel: View {
                 ControlIcon(name: state.pendingSave ? "save" : "check", size: 17, tintable: state.pendingSave)
             }
                 .labelStyle(.iconOnly)
-                .frame(width: 34, height: local && nativeProMode ? TransportControlMetrics.proHeight : 28)
+                .frame(width: 34, height: transportActionHeight)
                 .foregroundStyle(state.pendingSave ? Color.black : JarasTheme.secondary)
                 .modifier(RemoteControlSurface(color: state.pendingSave ? JarasTheme.yellow : nil))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(state.pendingSave ? JarasTheme.yellow : JarasTheme.line))
@@ -3167,7 +3169,7 @@ private struct TrackMixFeedbackPanel: View {
         }
         .accessibilityLabel("Setlist")
         .buttonStyle(TransportButtonStyle(color: mainSetlistVisible ? JarasTheme.green : Color(hex: 0xc44545),
-            active: true, fontSize: 11, width: 34, height: local && nativeProMode ? TransportControlMetrics.proHeight : 28))
+            active: true, fontSize: 11, width: 34, height: transportActionHeight))
         .accessibilityValue(mainSetlistVisible ? "Shown" : "Hidden")
     }
 
@@ -3182,7 +3184,7 @@ private struct TrackMixFeedbackPanel: View {
                 } label: { Text(verbatim: nativeProMode ? "Simple Mode" : "Pro Mode") }
                 .buttonStyle(TransportButtonStyle(color: nativeProMode ? JarasTheme.green : Color(hex: 0x454545),
                     active: nativeProMode, inactiveOpacity: 1, width: 68,
-                    height: nativeProMode ? TransportControlMetrics.proHeight : 28, bordered: false))
+                    height: transportActionHeight, bordered: false))
             }
             transportSaveButton
             transportSetlistButton
@@ -3198,9 +3200,9 @@ private struct TrackMixFeedbackPanel: View {
                 Group {
                     if local { nativeTransportReadout }
                     else { tabletRemoteTransportReadout }
-                }.frame(height: 30)
-                transportProgress.padding(.vertical, 1)
-                HStack(spacing: 6) {
+                }.frame(height: local ? 64 : 30)
+                if !local { transportProgress().padding(.vertical, 1) }
+                HStack(alignment: local ? .bottom : .center, spacing: 6) {
                     GeometryReader { geometry in
                         if local { nativeTransportControls(width: geometry.size.width) }
                         else { remoteTransportControls(width: geometry.size.width) }
@@ -3209,7 +3211,7 @@ private struct TrackMixFeedbackPanel: View {
                 }.frame(height: 32)
                 } }
             }
-            .padding(.horizontal, 6).padding(.vertical, 3)
+            .padding(.horizontal, 6).padding(.vertical, 3).padding(.bottom, local ? 1 : 0)
             .background {
                 RoundedRectangle(cornerRadius: 7)
                     .fill(LinearGradient(colors: local && !nativeProMode ? JarasTheme.desktopTransportGradient : JarasTheme.workspaceTransportGradient,
@@ -3219,7 +3221,13 @@ private struct TrackMixFeedbackPanel: View {
                 RoundedRectangle(cornerRadius: 7).strokeBorder(JarasInterfaceTheme.lightDark.transportBorder)
                     .allowsHitTesting(false)
             }
-        }.padding(6).frame(height: local && nativeProMode ? 114 : 82, alignment: .top).background(RemoteSurface.panel)
+            .overlay(alignment: .bottom) {
+                if local {
+                    transportProgress(height: nativeProMode ? SongProgressBar.proHeight : SongProgressBar.standardHeight)
+                        .padding(.horizontal, 3)
+                }
+            }
+        }.padding(6).frame(height: local ? 115 : 82, alignment: .top).background(RemoteSurface.panel)
     }
     private func nativeProTransport(show: ShowController) -> some View {
         let playback = ProTransportButtons(show: show, configureFadeout: { fadeoutSettingsOpen = true })
@@ -3255,16 +3263,18 @@ private struct TrackMixFeedbackPanel: View {
                     .allowsHitTesting(false)
             }
             details.frame(maxWidth: .infinity, maxHeight: 32)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 4) {
-                    playback
-                    Spacer(minLength: 4)
-                    tools
-                    transportActions
+            HStack(spacing: 6) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 4) {
+                        playback
+                        Spacer(minLength: 4)
+                        tools
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) { playback; tools }
+                    }
                 }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) { playback; tools; transportActions }
-                }
+                transportActions
             }.frame(height: TransportControlMetrics.proHeight)
         }.frame(height: 96)
     }
@@ -3305,13 +3315,6 @@ private struct TrackMixFeedbackPanel: View {
                         .accessibilityLabel("Tempo da agulha")
                 }.frame(width: side, alignment: .leading)
             }.frame(height: 24)
-                .overlay(alignment: .trailing) {
-                    if !footerInformationText.isEmpty {
-                        Text(verbatim: footerInformationText).font(.jarasSystem(size: 11, weight: .bold))
-                            .foregroundStyle(JarasTheme.yellow).lineLimit(1).minimumScaleFactor(0.65)
-                            .frame(width: side, alignment: .trailing).accessibilityLabel("Information")
-                    }
-                }
         }.font(.jarasSystem(size: 15, weight: .semibold)).frame(height: 24)
     }
     private func remoteTransportControls(width: CGFloat) -> some View {
@@ -3346,8 +3349,8 @@ private struct TrackMixFeedbackPanel: View {
         let hasTuner = visible.contains(.tuner)
         let showsTempo = hasBPM || hasMetronome
         let buttonCount = CGFloat(playback.count - (hasFadeout ? 1 : 0))
-        let playbackSpacing = CGFloat(playback.count) * 4 + 3
-        let fixedWidth = playbackSpacing + TransportEditingButtons.span + (hasFadeout ? 50 : 0)
+        let playbackSpacing = CGFloat(max(0, playback.count - 1)) * 4
+        let fixedWidth = playbackSpacing + (hasFadeout ? 50 : 0)
         let detailSpacing: CGFloat = (showsTempo || hasTuner ? 8 : 0) + (showsTempo && hasTuner ? 8 : 0)
         let tempoInsets: CGFloat = (showsTempo ? 12 : 0) + (hasMetronome ? 68 : 0)
             + (hasMetronome && hasBPM ? 10 : 0) + (hasBPM ? 56 : 0)
@@ -3398,10 +3401,6 @@ private struct TrackMixFeedbackPanel: View {
                 default:
                     EmptyView()
                 }
-            }
-            if let localShow {
-                TransportEditingButtons(show: localShow, key: TimelineEditPreferences.native)
-                    .padding(.leading, 3)
             }
         }.fixedSize()
     }
@@ -3642,7 +3641,8 @@ private struct TrackMixFeedbackPanel: View {
                         Spacer(minLength: 0)
                         IpadTimelineToolbar(show: localShow, addTrack: { addTrack?() }, editing: Binding(
                             get: { editingTracks }, set: { editingTracks = $0; if !$0 { trackReordering.cancel(); draggingSetlistEntries = [] } }),
-                            showRegions: $showNativeRegionLanes, showTempo: $showNativeTempoLane)
+                            showRegions: $showNativeRegionLanes, showTempo: $showNativeTempoLane,
+                            showsTimelineSwitches: nativeProMode)
                             .layoutPriority(1)
                     }.frame(height: bands.rulerHeight)
                 }.background(RemoteSurface.panel)
