@@ -2234,7 +2234,7 @@ private struct TrackMixFeedbackPanel: View {
                 }
                 fadeoutButton(width: nil, height: 44)
                 phoneTransportButton(state.paused ? "Play" : "Pause", icon: state.paused ? "play" : "pause", active: state.paused,
-                                     color: JarasTheme.yellow, iconOnly: true, solid: true) {
+                                     color: JarasTheme.pauseBackground(state.paused), iconOnly: true, solid: true) {
                     action(state.paused ? .play : .pause)
                 }.disabled(!state.playing && !state.paused)
                 phoneTransportButton("Repeat", icon: "loop", active: state.loop, color: state.loop ? JarasTheme.yellow : Color(hex: 0x454545), iconOnly: true, solid: true) { action(.toggleLoop) }
@@ -3225,7 +3225,7 @@ private struct TrackMixFeedbackPanel: View {
             fadeoutButton(width: buttonWidth, height: 28)
             Button { action(state.paused ? .play : .pause) } label: {
                 ControlIcon(name: state.paused ? "play" : "pause", active: state.paused, size: 14)
-            }.buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: state.paused, inactiveOpacity: 1,
+            }.buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(state.paused), active: state.paused, inactiveOpacity: 1,
                 fontSize: 12, width: buttonWidth, height: 28)).disabled(!state.playing && !state.paused)
                 .accessibilityLabel(state.paused ? "Play" : "Pause")
             Button { action(.toggleLoop) } label: { ControlIcon(name: "loop", active: state.loop, size: 14).accessibilityLabel("Repeat") }
@@ -3285,7 +3285,7 @@ private struct TrackMixFeedbackPanel: View {
                     fadeoutButton(width: 50, height: 28)
                 case .pause:
                     Button { action(.pause) } label: { ControlIcon(name: "pause", active: state.paused, size: 14) }
-                        .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow,
+                        .buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(state.paused),
                             active: state.paused, inactiveOpacity: 1, fontSize: 11, width: width, height: 28))
                         .disabled(!state.playing).accessibilityLabel("Pause")
                 case .repeatPlayback:

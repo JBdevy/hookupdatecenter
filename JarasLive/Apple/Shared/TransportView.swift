@@ -200,7 +200,7 @@ struct TransportView: View {
                     }
                     #endif
                     Button { show.send(.pause) } label: { ControlIcon(name: "pause", active: paused, size: 14) }
-                        .buttonStyle(TransportButtonStyle(color: JarasTheme.yellow, active: paused, inactiveOpacity: 1,
+                        .buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(paused), active: paused, inactiveOpacity: 1,
                             width: playbackWidth, height: TransportControlMetrics.playbackHeight, bordered: false))
                         .accessibilityLabel("Pause").jarasHelp("Pause").disabled(!transport.playing)
                     RepeatControl(active: transport.loop.enabled, width: playbackWidth) { show.send(.toggleLoop) }

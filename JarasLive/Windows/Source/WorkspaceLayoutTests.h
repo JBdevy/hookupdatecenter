@@ -499,6 +499,10 @@ struct WorkspaceLayoutTests {
         require(w.timelineBands.findColour(TextButton::buttonColourId) == theme::secondary.withAlpha(.12f)
                 && w.timelineBands.findColour(TextButton::buttonOnColourId) == theme::secondary.withAlpha(.12f),
                 "Regions and tempo menu must keep the same matte gray background in both states");
+        const auto* pause = w.controls.at("pause");
+        require(pause->findColour(TextButton::buttonColourId) == Colour(0xff454545)
+                && pause->findColour(TextButton::buttonOnColourId) == theme::yellow,
+                "Pause must reserve the yellow background for the paused transport");
         const auto minimum = host.getConstrainer()->getMinimumWidth();
         require(minimum > 900 && minimum < 1600,"Native window minimum must follow the toolbar width");
         for (const int width : {minimum, minimum + 12, 1600}) {
