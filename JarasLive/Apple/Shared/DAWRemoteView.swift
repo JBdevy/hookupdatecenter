@@ -3246,12 +3246,12 @@ private struct TrackMixFeedbackPanel: View {
         }.fixedSize()
         let selected = state.focusedRegion.map(show.playlistRegionSourceID)
         let name = state.nativeTransportSongName(selectedRegionID: selected)
-        return VStack(spacing: 2) {
+        return VStack(spacing: 0) {
             HStack(spacing: 6) {
                 ProTimelinePosition(show: show)
                 Spacer(minLength: 0)
                 editing
-            }.frame(height: TransportControlMetrics.proHeight)
+            }.frame(height: 64)
             .overlay {
                 Text(verbatim: name)
                     .font(.jarasSystem(size: 15, weight: .semibold))
@@ -3262,20 +3262,21 @@ private struct TrackMixFeedbackPanel: View {
                     .accessibilityLabel("Current song").accessibilityValue(name)
                     .allowsHitTesting(false)
             }
-            details.frame(maxWidth: .infinity, maxHeight: 32)
-            HStack(spacing: 6) {
+            HStack(alignment: .bottom, spacing: 6) {
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 6) {
                         playback
+                        Spacer(minLength: 4)
+                        details.frame(height: 32)
                         Spacer(minLength: 4)
                         tools
                     }
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) { playback; tools }
+                        HStack(spacing: 6) { playback; details.frame(height: 32); tools }
                     }
                 }
                 transportActions
-            }.frame(height: TransportControlMetrics.proHeight)
+            }.frame(height: 32)
         }.frame(height: 96)
     }
     private func nativeProButton(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
