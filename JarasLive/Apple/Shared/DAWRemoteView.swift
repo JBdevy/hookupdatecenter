@@ -3212,13 +3212,15 @@ private struct TrackMixFeedbackPanel: View {
                 RoundedRectangle(cornerRadius: 7).strokeBorder(JarasInterfaceTheme.lightDark.transportBorder)
                     .allowsHitTesting(false)
             }
-        }.padding(6).frame(height: local && nativeProMode ? 112 : 82, alignment: .top).background(RemoteSurface.panel)
+        }.padding(6).frame(height: local && nativeProMode ? 114 : 82, alignment: .top).background(RemoteSurface.panel)
     }
     private func nativeProTransport(show: ShowController) -> some View {
         let playback = ProTransportButtons(show: show, configureFadeout: { fadeoutSettingsOpen = true })
-        let details = HStack(spacing: 8) {
+        let editing = HStack(spacing: 4) {
             TimelineEditButton(show: show, key: TimelineEditPreferences.native, width: 28, height: TransportControlMetrics.proHeight)
             TransportEnvelopeButton(show: show, width: 28, height: TransportControlMetrics.proHeight)
+        }.fixedSize()
+        let details = HStack(spacing: 8) {
             TempoControl(show: show)
             RegionTunerControl(show: show)
         }.fixedSize()
@@ -3235,17 +3237,22 @@ private struct TrackMixFeedbackPanel: View {
         let selected = state.focusedRegion.map(show.playlistRegionSourceID)
         let name = state.nativeTransportSongName(selectedRegionID: selected)
         let compact = VStack(spacing: 0) {
-            Text(verbatim: name)
-                .font(.jarasSystem(size: 15, weight: .semibold))
-                .foregroundStyle(state.playing ? JarasTheme.green : JarasTheme.text)
-                .lineLimit(1).minimumScaleFactor(0.7)
-                .frame(maxWidth: .infinity).frame(height: 22)
-                .accessibilityLabel("Current song").accessibilityValue(name)
-            HStack(spacing: 7) {
+            HStack(spacing: 6) {
                 ProTimelinePosition(show: show)
                 Spacer(minLength: 0)
-                details
+                editing
+            }.frame(height: TransportControlMetrics.proHeight)
+            .overlay {
+                Text(verbatim: name)
+                    .font(.jarasSystem(size: 15, weight: .semibold))
+                    .foregroundStyle(state.playing ? JarasTheme.green : JarasTheme.text)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 258)
+                    .accessibilityLabel("Current song").accessibilityValue(name)
+                    .allowsHitTesting(false)
             }
+            details.frame(maxWidth: .infinity)
             HStack(spacing: 4) {
                 playback
                 Spacer(minLength: 0)
@@ -3256,7 +3263,7 @@ private struct TrackMixFeedbackPanel: View {
         return ViewThatFits(in: .horizontal) {
             compact
             ScrollView(.horizontal, showsIndicators: false) { compact.fixedSize(horizontal: true, vertical: false) }
-        }.frame(height: 94)
+        }.frame(height: 96)
     }
     private func nativeProButton(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) { TransportControlIcon(name: icon, size: 15) }

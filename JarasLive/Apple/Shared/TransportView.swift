@@ -555,7 +555,7 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
         }
     }
     #if os(macOS)
-    private func proLayout(width: CGFloat, regionName: String, playing: Bool) -> some View {
+    @ViewBuilder private func proLayout(width: CGFloat, regionName: String, playing: Bool) -> some View {
         let controlsHeight = TransportControlMetrics.proHeight
         let compact = width < 1220
         let editWidth: CGFloat = 29
@@ -568,48 +568,70 @@ private struct TransportDisplaysLive<Actions: View, Playback: View>: View {
                     .fixedSize().frame(height: controlsHeight)
             }
         }
-        return HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 0) {
-                ProTimelinePosition(show: show)
-                    .frame(maxHeight: .infinity, alignment: .center)
-                playback
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if compact {
+        let name = Text(verbatim: regionName)
+            .font(.jarasSystem(size: TransportControlMetrics.readoutSize, weight: .semibold))
+            .foregroundStyle(playing ? JarasTheme.green : JarasTheme.text)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityLabel("Current song").accessibilityValue(regionName)
+        let editing = HStack(spacing: detailSpacing) {
+            TimelineEditButton(show: show, key: TimelineEditPreferences.desktop, width: editWidth, height: controlsHeight)
+            TransportEnvelopeButton(show: show, width: editWidth, height: controlsHeight)
+        }.fixedSize()
+        let details = HStack(spacing: detailSpacing) {
+            TempoControl(show: show)
+            if displaysTuner { RegionTunerControl(show: show) }
+        }.fixedSize()
+        let switches = Group {
+            if let timelineToolbar {
+                DesktopTimelineToolbarView(show: show, controls: timelineToolbar, section: .switches)
+                    .fixedSize()
+            }
+        }
+        if compact {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ProTimelinePosition(show: show)
+                        .frame(maxHeight: .infinity, alignment: .center)
+                    playback
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     actions.frame(maxWidth: .infinity, alignment: .trailing)
+                }.frame(width: max(315, width - TransportControlMetrics.desktopDetailsWidth - editSpan - switchesSpan - 24))
+                VStack(spacing: 0) {
+                    name
+                        .padding(.leading, editSpan)
+                        .padding(.trailing, switchesSpan)
+                        .padding(.top, 24)
+                    HStack(alignment: .bottom, spacing: detailSpacing) {
+                        editing
+                        details
+                        switches
+                    }.fixedSize()
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }.padding(.horizontal, 8).padding(.vertical, 4)
+                .overlay(alignment: .topTrailing) {
+                    zoomControls.padding(.trailing, 8).padding(.top, 2)
                 }
-            }.frame(width: compact ? max(315, width - TransportControlMetrics.desktopDetailsWidth - editSpan - switchesSpan - 24) : 317)
-            VStack(spacing: 0) {
-                Text(verbatim: regionName)
-                    .font(.jarasSystem(size: TransportControlMetrics.readoutSize, weight: .semibold))
-                    .foregroundStyle(playing ? JarasTheme.green : JarasTheme.text)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.leading, editSpan)
-                    .padding(.trailing, switchesSpan)
-                    .padding(.top, compact ? 24 : 0)
-                    .accessibilityLabel("Current song").accessibilityValue(regionName)
-                HStack(alignment: .bottom, spacing: detailSpacing) {
-                    TimelineEditButton(show: show, key: TimelineEditPreferences.desktop, width: editWidth, height: controlsHeight)
-                    TransportEnvelopeButton(show: show, width: editWidth, height: controlsHeight)
-                    TempoControl(show: show)
-                    if displaysTuner { RegionTunerControl(show: show) }
-                    if let timelineToolbar {
-                        DesktopTimelineToolbarView(show: show, controls: timelineToolbar, section: .switches)
-                            .fixedSize()
-                    }
-                }.fixedSize()
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            if !compact {
-                VStack(alignment: .trailing) {
+        } else {
+            HStack(alignment: .bottom, spacing: detailSpacing) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ProTimelinePosition(show: show)
+                        .frame(maxHeight: .infinity, alignment: .center)
+                    playback
+                }.fixedSize(horizontal: true, vertical: false)
+                editing.frame(maxWidth: .infinity)
+                VStack(spacing: 0) {
+                    name
+                    details
+                }.frame(width: TransportControlMetrics.desktopDetailsWidth)
+                switches.frame(maxWidth: .infinity)
+                VStack(alignment: .trailing, spacing: 0) {
                     zoomControls
                     Spacer(minLength: 0)
                     actions
                 }.fixedSize(horizontal: true, vertical: false)
-            }
-        }.padding(.horizontal, 8).padding(.vertical, 4)
-            .overlay(alignment: .topTrailing) {
-                if compact { zoomControls.padding(.trailing, 8).padding(.top, 2) }
-            }
+            }.padding(.horizontal, 8).padding(.vertical, 4)
+        }
     }
     #endif
 }
