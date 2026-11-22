@@ -95,6 +95,11 @@ import Foundation
         waveforms[clip.id] = ClipWaveform(clip)
     }
     func editMasterColor(_ color: UInt32) throws { try core.editMasterColor(color) }
+    func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws {
+        try core.setTrackMixerComponents(song.uuidString, masks: Dictionary(uniqueKeysWithValues: masks.map {
+            ($0.key.uuidString, NSNumber(value: $0.value))
+        }))
+    }
     func editTrack(_ id: UUID, name: String, color: UInt32) throws { try core.editTrack(id.uuidString, name: name, color: color) }
     func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws { try core.setRegionInit(id.uuidString, count: Int32(count), bars: bars) }
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws { try core.setRegionPitch(id.uuidString, semitones: Int32(semitones), tracks: tracks.map(\.uuidString), groups: groups.map(\.uuidString)) }

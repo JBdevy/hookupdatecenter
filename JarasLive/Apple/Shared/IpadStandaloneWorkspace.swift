@@ -162,7 +162,6 @@ import Combine
     }
     @AppStorage(JarasInterfaceTheme.preferenceKey) private var interfaceTheme = JarasInterfaceTheme.defaultTheme
     @State private var remoteSettingsOpen = false
-    @State private var meterEditorOpen = false
     @State private var remoteTeleprompter: Int?
     @State private var settingsOpen = false
     @State private var settingsSection: SettingsView.Section = .general
@@ -194,7 +193,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        homeOpen || clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || meterEditorOpen || regionActions != nil || detectingRegion != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
+        homeOpen || clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -226,7 +225,6 @@ import Combine
                     shareProject: { sharingProject = true },
                     groupTracks: { show.groupTracks($0) }, groupableTracks: Set((show.current?.tracks ?? []).filter { $0.kind == .standard && $0.stereoLink == nil }.map(\.id)), openRegionLoops: { regionLoops = .init(clip: $0) }, openAdvanced: { advancedOpen = true }, nativeAdvancedOpen: advancedOpen,
                     openMatrixPatch: { matrixOpen = true }, nativeMatrixOpen: matrixOpen,
-                    openMeterEditor: { if show.transportMeterEditingAllowed { meterEditorOpen = true } },
                     toggleHozMixer: { hozMixerOpen.toggle() }, hozMixerOpen: hozMixerOpen, openSettings: { settingsSection = .general; settingsOpen = true }, nativeSettingsOpen: settingsOpen, openAudioSettings: { settingsSection = .audio; settingsOpen = true }, openRemoteSettings: { remoteSettingsOpen = true }, openTeleprompterRemote: { remoteTeleprompter = $0 }, remote: local.session)
             } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
@@ -369,18 +367,6 @@ import Combine
             IpadCompactModal(preferredSize: CGSize(width: 560, height: 360)) {
                 TextItemEditor(text: show.current?.tracks.flatMap(\.clips).first(where: { $0.id == item })?.text ?? "",
                     apply: { show.updateTextItem(item, text: $0) }, close: { editingTextItem = nil })
-            }
-        } else if meterEditorOpen, let song = show.current, let meter = show.transportMeter {
-            IpadCompactModal(preferredSize: CGSize(width: 360, height: 182)) {
-                IpadTimeSignatureEditor(beats: meter.beats, unit: meter.unit,
-                    apply: { beats, unit in
-                        guard let current = show.current, current.id == song.id else { return false }
-                        if show.setTransportMeter(beats: beats, unit: unit) {
-                            meterEditorOpen = false
-                            return true
-                        }
-                        return false
-                    }, close: { meterEditorOpen = false })
             }
         } else if metronomeOpen {
             IpadCompactModal(preferredSize: CGSize(width: 620, height: 520)) {
@@ -1364,37 +1350,6 @@ final class IpadRegionHeaderTouchView: UIView {
 }
 
 /// One desktop-style panel directly on the workspace. No UIKit sheet behind it.
-private struct IpadTimeSignatureEditor: View {
-    @State private var beats: String
-    @State private var unit: String
-    @State private var invalid = false
-    let apply: (Int, Int) -> Bool
-    let close: () -> Void
-
-    init(beats: Int, unit: Int, apply: @escaping (Int, Int) -> Bool, close: @escaping () -> Void) {
-        _beats = State(initialValue: String(beats))
-        _unit = State(initialValue: String(unit))
-        self.apply = apply; self.close = close
-    }
-    var body: some View {
-        VStack(spacing: 12) {
-            IpadModalHeader(title: "Time signature", close: close)
-            HStack(spacing: 12) {
-                TextField("Beats per bar", text: $beats)
-                Text(verbatim: "/")
-                TextField("Beat unit", text: $unit)
-            }.textFieldStyle(.roundedBorder).keyboardType(.numberPad).multilineTextAlignment(.center)
-                .frame(maxWidth: 160)
-            if invalid { Text("Invalid time signature.").foregroundStyle(Color.red) }
-            Spacer(minLength: 0)
-            Button("Apply") {
-                guard let beats = Int(beats), (1...32).contains(beats), let unit = Int(unit),
-                      TimelineTempo.beatUnits.contains(unit) else { invalid = true; return }
-                invalid = !apply(beats, unit)
-            }.padding(.bottom, 12).keyboardShortcut(.defaultAction)
-        }
-    }
-}
 struct IpadCompactModal<Content: View>: View {
     var preferredSize: CGSize? = nil
     var onDismiss: (() -> Void)? = nil

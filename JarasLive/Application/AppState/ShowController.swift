@@ -3562,17 +3562,22 @@ public struct ShowTimelinePresentationState: Equatable {
         }
         guard !rows.isEmpty else { return }
         let restore = showWhenMixed
-            ? hiddenTrackMixerComponents(ids) & mask != 0
+            ? rows.contains { next.songs[song].tracks[$0].mixerComponentMask & mask != 0 }
             : rows.allSatisfy { next.songs[song].tracks[$0].mixerComponentMask & mask == mask }
+        var masks: [UUID: Int] = [:]
         for row in rows {
-            let current = next.songs[song].tracks[row].hiddenMixerComponents ?? 0
+            let track = next.songs[song].tracks[row]
+            let current = track.mixerComponentMask
             let hidden = restore ? current & ~mask : current | mask
+            guard hidden != current else { continue }
+            masks[track.id] = hidden
             next.songs[song].tracks[row].hiddenMixerComponents = hidden == 0 ? nil : hidden
         }
+        guard !masks.isEmpty else { return }
         do {
-            tick(); try executor.applyProjectEdit(next)
-            snapshot = try executor.snapshot()
-            markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
+            try executor.setTrackMixerComponents(songID, masks: masks)
+            snapshot.project = next
+            markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
         } catch { message = error.localizedDescription }
     }
 

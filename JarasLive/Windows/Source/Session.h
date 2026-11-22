@@ -116,6 +116,8 @@ class Session final : private Timer {
     String insertLibraryEffect(const ID &destination, const String &identity, const String &presetID,
                                const String &before = {}, bool itemTarget = false);
     void edit(const std::function<void(jaras::Project &)> &, bool rebuild = true, bool allowTimingEdit = false, bool regionOperation = false);
+    void setTrackMixerComponents(const std::map<ID, int> &);
+    std::function<void()> trackMixerComponentsChanged;
     void setTrackInstrumentIcon(const std::set<ID> &, std::optional<std::string>);
     void resizeItem(const ID &, double start, double end);
     void resizeItems(const std::map<ID, std::pair<double, double>> &);
@@ -244,6 +246,9 @@ class Session final : private Timer {
     void applyTrackHierarchy(const TrackHierarchyHistory &, bool recordHistory);
     struct SetlistHistory { std::optional<jaras::RegionSetlist> state; };
     void applySetlistHistory(const SetlistHistory &, bool recordHistory);
+    struct TrackMixerComponentsHistory { ID song; std::map<ID, int> masks; };
+    TrackMixerComponentsHistory applyTrackMixerComponents(const TrackMixerComponentsHistory &);
+    void notifyTrackMixerComponents();
     struct HistoryEntry {
         var project;
         std::optional<TimelineHistory> timeline;
@@ -255,6 +260,7 @@ class Session final : private Timer {
         std::optional<ItemTimingHistory> itemTiming;
         std::optional<ItemHistory> items;
         std::optional<TrackHierarchyHistory> hierarchy;
+        std::optional<TrackMixerComponentsHistory> components;
         HistoryEntry(ItemPitchHistory value) : itemPitch(std::move(value)) {}
         HistoryEntry(PitchHistory value) : pitch(std::move(value)) {}
         HistoryEntry(TimelineHistory value) : timeline(std::move(value)) {}
@@ -265,6 +271,7 @@ class Session final : private Timer {
         HistoryEntry(ItemTimingHistory value) : itemTiming(std::move(value)) {}
         HistoryEntry(ItemHistory value) : items(std::move(value)) {}
         HistoryEntry(TrackHierarchyHistory value) : hierarchy(std::move(value)) {}
+        HistoryEntry(TrackMixerComponentsHistory value) : components(std::move(value)) {}
     };
     // Appending an edit must not copy every prior project snapshot.
     std::deque<HistoryEntry> undoHistory, redoHistory;

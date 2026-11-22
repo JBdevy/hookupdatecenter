@@ -803,6 +803,14 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
         _engine->addRecordedClip(str(track), std::move(clip), true); return YES;
     } catch(const std::exception& e) { report(error,e); return NO; }
 }
+- (BOOL)setTrackMixerComponents:(NSString*)song masks:(NSDictionary<NSString*, NSNumber*>*)masks error:(NSError**)error {
+    try {
+        std::map<ID, int> values;
+        for (NSString* track in masks) values.emplace(str(track), masks[track].intValue);
+        _engine->setTrackMixerComponents(str(song), values);
+        return YES;
+    } catch (const std::exception& e) { report(error,e); return NO; }
+}
 - (BOOL)editMasterColor:(unsigned int)color error:(NSError**)error {
     try { _engine->editMasterColor(color); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }

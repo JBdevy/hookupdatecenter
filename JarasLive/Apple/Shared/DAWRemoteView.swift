@@ -1205,7 +1205,6 @@ private struct TrackMixFeedbackPanel: View {
     var nativeAdvancedOpen = false
     var openMatrixPatch: (() -> Void)? = nil
     var nativeMatrixOpen = false
-    var openMeterEditor: (() -> Void)? = nil
     var toggleHozMixer: (() -> Void)? = nil
     var hozMixerOpen = false
     var openSettings: (() -> Void)? = nil
@@ -3220,10 +3219,8 @@ private struct TrackMixFeedbackPanel: View {
             TimelineEditButton(show: show, key: TimelineEditPreferences.native, width: 28, height: TransportControlMetrics.proHeight)
             TransportEnvelopeButton(show: show, width: 28, height: TransportControlMetrics.proHeight)
         }.fixedSize()
-        let details = HStack(spacing: 8) {
-            TempoControl(show: show)
-            RegionTunerControl(show: show)
-        }.fixedSize()
+        let controls = IpadTransportControl.visible(hidden: hiddenTransport)
+        let details = nativeTempoControls(controls, bpmWidth: 88, tunerWidth: 96)
         let tools = HStack(spacing: 4) {
             ProGridToolPicker(selection: $nativeProTool)
             nativeProButton("Clock", icon: "timer", active: nativeClockPositionOpen) { nativeClockPositionOpen.toggle() }
@@ -3236,7 +3233,7 @@ private struct TrackMixFeedbackPanel: View {
         }.fixedSize()
         let selected = state.focusedRegion.map(show.playlistRegionSourceID)
         let name = state.nativeTransportSongName(selectedRegionID: selected)
-        let compact = VStack(spacing: 0) {
+        return VStack(spacing: 2) {
             HStack(spacing: 6) {
                 ProTimelinePosition(show: show)
                 Spacer(minLength: 0)
@@ -3248,21 +3245,22 @@ private struct TrackMixFeedbackPanel: View {
                     .foregroundStyle(state.playing ? JarasTheme.green : JarasTheme.text)
                     .lineLimit(1).minimumScaleFactor(0.7)
                     .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 258)
+                    .padding(.horizontal, 252)
                     .accessibilityLabel("Current song").accessibilityValue(name)
                     .allowsHitTesting(false)
             }
-            details.frame(maxWidth: .infinity)
-            HStack(spacing: 4) {
-                playback
-                Spacer(minLength: 0)
-                tools
-                transportActions
-            }
-        }
-        return ViewThatFits(in: .horizontal) {
-            compact
-            ScrollView(.horizontal, showsIndicators: false) { compact.fixedSize(horizontal: true, vertical: false) }
+            details.frame(maxWidth: .infinity, maxHeight: 32)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) {
+                    playback
+                    Spacer(minLength: 4)
+                    tools
+                    transportActions
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) { playback; tools; transportActions }
+                }
+            }.frame(height: TransportControlMetrics.proHeight)
         }.frame(height: 96)
     }
     private func nativeProButton(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
@@ -3346,14 +3344,15 @@ private struct TrackMixFeedbackPanel: View {
         let playbackSpacing = CGFloat(playback.count + 1) * 4 + 3
         let fixedWidth = playbackSpacing + 28 + (hasFadeout ? 50 : 0)
         let detailSpacing: CGFloat = (showsTempo || hasTuner ? 8 : 0) + (showsTempo && hasTuner ? 8 : 0)
-        let tempoInsets: CGFloat = (showsTempo ? 12 : 0) + (hasMetronome ? 68 : 0) + (hasMetronome && hasBPM ? 10 : 0)
+        let tempoInsets: CGFloat = (showsTempo ? 12 : 0) + (hasMetronome ? 68 : 0)
+            + (hasMetronome && hasBPM ? 10 : 0) + (hasBPM ? 56 : 0)
         let minBPM: CGFloat = hasBPM ? 88 : 0
         let minTuner: CGFloat = hasTuner ? 96 : 0
         let buttonWidth = min(48, max(28, (width - fixedWidth - detailSpacing - tempoInsets - minBPM - minTuner) / buttonCount))
         let extra = max(0, width - fixedWidth - buttonCount * buttonWidth - detailSpacing - tempoInsets - minBPM - minTuner)
         let tunerExtra = hasTuner ? extra * (hasBPM ? 0.4 : 1) : 0
-        let bpmWidth = minBPM + (hasBPM ? extra - tunerExtra : 0)
-        let tunerWidth = minTuner + tunerExtra
+        let bpmWidth = minBPM + (hasBPM ? min(12, extra - tunerExtra) : 0)
+        let tunerWidth = minTuner + min(12, tunerExtra)
         let controls = HStack(spacing: 8) {
             nativePlaybackButtons(playback, width: buttonWidth)
             if showsTempo || hasTuner {
@@ -3412,7 +3411,15 @@ private struct TrackMixFeedbackPanel: View {
                             IpadAudioTransportButtons(show: localShow, configureMetronome: openMetronome, only: .metronome, controlWidth: 30)
                         }
                     }
-                    if visible.contains(.bpm) { nativeTransportStepper(width: bpmWidth, pitch: false) }
+                    if visible.contains(.bpm) {
+                        HStack(spacing: 8) {
+                            if let localShow {
+                                NativeTransportMeterField(show: localShow)
+                                    .id(localShow.projectSessionID)
+                            }
+                            nativeTransportStepper(width: bpmWidth, pitch: false)
+                        }
+                    }
                 }.padding(.horizontal, 6).background(nativeTransportControlBackground)
             }
             if visible.contains(.tuner) {
@@ -3427,28 +3434,19 @@ private struct TrackMixFeedbackPanel: View {
     private func nativeTransportStepper(width: Double, pitch: Bool) -> some View {
         let buttonWidth = min(28, max(18, width * 0.24))
         let bpm = localShow?.tempoControlBPM ?? state.bpm
-        let meter = pitch ? nil : localShow?.transportMeter
         return HStack(spacing: 0) {
             Button { if pitch { stepPitch(-1) } else { stepTempo(-1) } } label: {
                 Image(systemName: "minus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
             }.disabled(pitch ? state.pitchRegion == nil || (state.pitchSemitones ?? 0) <= -12 : bpm <= 60)
                 .accessibilityLabel(pitch ? "Diminuir afinação" : "Diminuir BPM")
             VStack(spacing: 0) {
-                Text(verbatim: pitch ? "Tuner" : meter.map { "BPM  \($0.beats)/\($0.unit)" } ?? "BPM")
+                Text(verbatim: pitch ? "Tuner" : "BPM")
                     .font(.jarasSystem(size: 9))
                 Text(verbatim: pitch ? String(format: "%+dst", state.pitchSemitones ?? 0) : String(format: "%.0f", bpm))
                     .monospacedDigit().font(.jarasSystem(size: 13, weight: .semibold))
                     .foregroundStyle(pitch ? JarasTheme.green : state.tempoNeedsRender == true ? JarasTheme.yellow : JarasTheme.text)
             }.lineLimit(1).minimumScaleFactor(0.6).frame(maxWidth: .infinity)
                 .modifier(NativeTunerTargets(show: pitch ? localShow : nil))
-                .overlay {
-                    if !pitch, let openMeterEditor, localShow?.transportMeterEditingAllowed == true {
-                        Color.clear.contentShape(Rectangle())
-                            .onLongPressGesture(perform: openMeterEditor)
-                            .accessibilityLabel("Time signature")
-                            .accessibilityAction { openMeterEditor() }
-                    }
-                }
             Button { if pitch { stepPitch(1) } else { stepTempo(1) } } label: {
                 Image(systemName: "plus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
             }.disabled(pitch ? state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 12 : bpm >= 300)
@@ -6754,11 +6752,15 @@ struct RemoteNativeSlider: View {
                 Group {
                     if let meter {
                         IpadMixerMeter(meter: meter, preparesOffscreen: true, linked: linked, fixedUpperSpan: usesFixedUpperSpan)
+                    } else if mixerFader {
+                        Capsule()
+                            .fill(Color(cgColor: linked ? MixerMeterStyle.linkedBackground : MixerMeterStyle.railBackground(for: railTheme)))
+                            .overlay { Capsule().strokeBorder(Color(cgColor: MixerMeterStyle.railBorder), lineWidth: 0.75) }
                     } else {
                         RoundedRectangle(cornerRadius: 3)
-                            .fill(mixerFader ? Color(cgColor: MixerMeterStyle.railBackground(for: railTheme)) : linked ? JarasTheme.yellow : Color.white.opacity(0.22))
+                            .fill(linked ? JarasTheme.yellow : Color.white.opacity(0.22))
                     }
-                }.frame(height: meter == nil ? 6 : MixerMeterStyle.railThickness).padding(.horizontal, 6)
+                }.frame(height: mixerFader || meter != nil ? MixerMeterStyle.railThickness : 6).padding(.horizontal, 6)
                 Group {
                     if mixerFader {
                         MixerFaderThumb(vertical: false, linked: linked, selected: faderSelected)
@@ -7828,6 +7830,52 @@ struct InlineMixerTrackName: View {
         guard editing else { return }
         editing = false
         commit(draft)
+    }
+}
+
+private struct NativeTransportMeterField: View {
+    let show: ShowController
+    @State private var draft = ""
+    @FocusState private var editing: Bool
+
+    private var displayedMeter: String {
+        guard let meter = show.transportMeter else { return "–" }
+        return "\(meter.beats)/\(meter.unit)"
+    }
+
+    var body: some View {
+        TextField("4/4", text: $draft)
+            .textFieldStyle(.plain)
+            .multilineTextAlignment(.center)
+            .font(.jarasSystem(size: 12, weight: .semibold, design: .monospaced))
+            .keyboardType(.numbersAndPunctuation)
+            .submitLabel(.done)
+            .focused($editing)
+            .frame(width: 48, height: 25)
+            .background(.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 5))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5).strokeBorder(editing ? JarasTheme.green : JarasTheme.line)
+                    .allowsHitTesting(false)
+            }
+            .disabled(!show.transportMeterEditingAllowed)
+            .accessibilityLabel("Time signature")
+            .onAppear { draft = displayedMeter }
+            .onChange(of: displayedMeter) { value in if !editing { draft = value } }
+            .onChange(of: show.transportMeterEditingAllowed) { allowed in
+                if !allowed { editing = false; draft = displayedMeter }
+            }
+            .onChange(of: editing) { focused in if !focused { commit() } }
+            .onSubmit { editing = false }
+    }
+
+    private func commit() {
+        let fields = draft.split(separator: "/", omittingEmptySubsequences: false)
+        if draft != displayedMeter, fields.count == 2,
+           let beats = Int(fields[0].trimmingCharacters(in: .whitespaces)),
+           let unit = Int(fields[1].trimmingCharacters(in: .whitespaces)) {
+            _ = show.setTransportMeter(beats: beats, unit: unit)
+        }
+        draft = displayedMeter
     }
 }
 

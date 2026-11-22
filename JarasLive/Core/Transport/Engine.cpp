@@ -959,6 +959,26 @@ void Engine::editTrack(const ID& id, std::string name, unsigned color) {
     }
     throw std::invalid_argument("Unknown track");
 }
+std::map<ID, int> Engine::setTrackMixerComponents(const ID& songID, const std::map<ID, int>& masks) {
+    projectSync::requireWritable();
+    auto song = std::find_if(project_.songs.begin(), project_.songs.end(), [&](const auto& entry) { return entry.id == songID; });
+    if (song == project_.songs.end()) throw std::invalid_argument("Unknown grid");
+
+    std::map<ID, int> previous;
+    std::vector<std::pair<Track*, int>> changes;
+    for (auto& track : song->tracks) {
+        const auto mask = masks.find(track.id);
+        if (mask == masks.end() || !track.supportsMixerComponents()) continue;
+        const int oldMask = track.hiddenMixerComponents.value_or(0);
+        if (oldMask == mask->second) continue;
+        previous.emplace(track.id, oldMask);
+        changes.emplace_back(&track, mask->second);
+    }
+    for (const auto& [track, mask] : changes) {
+        track->hiddenMixerComponents = mask ? std::optional<int>(mask) : std::nullopt;
+    }
+    return previous;
+}
 void Engine::setOutputPatches(const ID& id, const std::vector<OutputPatch>& patches) {
     projectSync::requireWritable();
     for (const auto& patch : patches)
