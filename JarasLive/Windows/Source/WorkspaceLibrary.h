@@ -4,6 +4,7 @@
 #include "DesktopToolbarSymbols.h"
 #include "FXPresets.h"
 #include "Instrument.h"
+#include "InterfaceIcons.h"
 #include "InlineMixerTrackName.h"
 #include "LibraryNoteEditor.h"
 #include "LibraryMIDIChords.h"
@@ -520,13 +521,17 @@ class WorkspaceLibrary final : public Component, private Timer {
                 if (row.key == "favorites") icon = "star.fill";
                 else if (row.key == "annotation") icon = "note.text";
                 else if (row.key == "midi") icon = "pianokeys";
-                else icon = "library." + row.key;
             } else if (row.kind == "note") icon = "doc.text";
             else if (row.kind == "regions") icon = "rectangle";
             else if (row.kind == "markers") icon = "flag";
             else if (row.kind == "pluginCategory" && row.key.isEmpty()) icon = "square.grid.2x2";
-            drawControlIcon(g, icon, selected || (disclosure(row) && expanded.count(row.key)),
-                            {19.f, y - 8.f, 16.f, 16.f}, 1.f);
+            const juce::Rectangle<float> bounds{19.f, y - 8.f, 16.f, 16.f};
+            if (icon == "folder.fill") {
+                g.setColour(theme::green);
+                drawInterfaceIcon(g, "folderFilled", bounds);
+            } else {
+                drawControlIcon(g, icon, selected || (disclosure(row) && expanded.count(row.key)), bounds, 1.f);
+            }
             start = 39;
         } else if (row.kind == "sample" || row.kind == "native" || row.kind == "external") {
             const float y = height * .5f;

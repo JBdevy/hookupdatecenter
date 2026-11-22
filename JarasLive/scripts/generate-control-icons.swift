@@ -1,6 +1,7 @@
 // Run from the JarasLive root with swift scripts/generate-control-icons.swift.
 // Pass Android's drawable-nodpi directory to also export the transport drawables.
 import AppKit
+import CoreImage
 import ImageIO
 
 let resources = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Resources")
@@ -46,9 +47,9 @@ struct Material {
 
 let materials: [UInt32: [String]] = [
     0x6cafff: ["doc.text", "line.3.horizontal", "sidebar.left", "fitTime", "timelineZoomAxis", "midiPreview", "tabs.mappings", "refresh"],
-    0x39dbce: ["slider.horizontal.3", "library.instruments", "itemTimebase", "projection", "eye", "tabs.waveform"],
+    0x39dbce: ["slider.horizontal.3", "library.instruments", "projection", "eye", "tabs.waveform"],
     0x997cff: ["pause", "trackMixer", "hozMixer", "slider.vertical.3", "square.grid.3x3", "video", "automationLanes", "teleprompter2", "library.plugins", "tabs.plugins", "tabs.account"],
-    0xffad61: ["stopwatch", "magnet", "note.text", "fadeout", "metronome", "tabs.metronome", "search"],
+    0xffad61: ["stopwatch", "magnet", "itemTimebase", "note.text", "fadeout", "metronome", "tabs.metronome", "search"],
     0x52df94: ["play", "addTrack", "tabs.transport", "text.bubble", "rectangle", "tabs.actions", "save", "check", "send"],
     0xf773a8: ["square.grid.3x2.fill", "flag", "library.samplers", "editCursor", "teleprompter1", "arrow.up.and.down.text.horizontal"],
     0xf1cc5c: ["folder.fill", "books.vertical", "library.presets", "star.fill", "loop", "lock", "pin"],
@@ -65,7 +66,7 @@ let indicators: Set<String> = [
     "magnet", "itemTimebase"
 ]
 
-let toolbarStatusIcons: Set<String> = ["preview", "dot.radiowaves.left.and.right", "trackMixer", "hozMixer"]
+let greenActiveIcons: Set<String> = ["preview", "dot.radiowaves.left.and.right", "trackMixer", "hozMixer", "magnet", "itemTimebase"]
 
 func stroke(_ path: CGPath, width: CGFloat) -> CGPath {
     path.copy(strokingWithWidth: width, lineCap: .round, lineJoin: .round, miterLimit: 2)
@@ -114,7 +115,7 @@ func paintMaterial(_ context: CGContext, _ shape: CGPath, _ material: Material, 
 func renderSymbol(_ context: CGContext, name: String, outline: CGPath, filled: CGPath, active: Bool) {
     let darkInk = name == "fadeout" ||
         (active && ["pause", "editCursor", "automationLanes", "lock", "loop", "record", "stopall", "metronome", "save"].contains(name))
-    var color = active && toolbarStatusIcons.contains(name) ? 0x54ed87 : iconColors[name, default: 0x90adcf]
+    var color = active && greenActiveIcons.contains(name) ? 0x54ed87 : iconColors[name, default: 0x90adcf]
     if darkInk {
         switch name {
         case "record": color = 0x681827
@@ -210,6 +211,18 @@ for active in [false, true] {
     let image = ctx.makeImage()!
     let bitmap = NSBitmapImageRep(cgImage: image)
     try bitmap.representation(using: .png, properties: [:])!.write(to: folder.appendingPathComponent(active ? "controlsOn.png" : "controlsOff.png"))
+    if !active {
+        // Preserve depth and transparency while giving the entire idle toolbar
+        // the same cool material, including the textured moving head.
+        let luminance = CIVector(x: 0.11, y: 0.37, z: 0.05, w: 0)
+        let neutral = CIImage(cgImage: image).applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": luminance, "inputGVector": luminance, "inputBVector": luminance,
+            "inputBiasVector": CIVector(x: 0.42, y: 0.45, z: 0.49, w: 0)
+        ])
+        let ice = CIContext().createCGImage(neutral, from: neutral.extent, format: .RGBA8, colorSpace: space)!
+        try NSBitmapImageRep(cgImage: ice).representation(using: .png, properties: [:])!
+            .write(to: folder.appendingPathComponent("controlsToolbarOff.png"))
+    }
     if let output = CommandLine.arguments.dropFirst().first {
         let android = URL(fileURLWithPath: output, isDirectory: true)
         let keys = active ? ["fadeout", "loop", "play", "stopall"] : ["fadeout", "loop", "pause", "play"]

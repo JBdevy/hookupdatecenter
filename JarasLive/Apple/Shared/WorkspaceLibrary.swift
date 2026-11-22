@@ -562,7 +562,13 @@ struct WorkspaceLibrary: View {
             } else {
                 Color.clear.frame(width: 11)
             }
-            ControlIcon(name: icon, active: selected || chevron == "chevron.down", size: 16)
+            if icon == "folder.fill" || icon.hasPrefix("library.") {
+                Image(systemName: "folder.fill").font(.jarasSystem(size: 12))
+                    .foregroundStyle(JarasTheme.green).frame(width: 16, height: 16)
+                    .accessibilityHidden(true)
+            } else {
+                ControlIcon(name: icon, active: selected || chevron == "chevron.down", size: 16)
+            }
             Text(verbatim: name).font(.jarasSystem(size: 12, weight: .medium)).lineLimit(1)
             Spacer(minLength: 0)
         }

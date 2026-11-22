@@ -107,9 +107,9 @@ struct IpadTimelineToolbar: View {
 
     @ViewBuilder private var timelineButtons: some View {
         Button { snapEnabled.toggle() } label: {
-            ControlIcon(name: "magnet", active: snapEnabled)
+            TransportControlIcon(name: "magnet")
                 .frame(width: 32, height: 32).contentShape(Rectangle())
-        }.buttonStyle(IpadTimelineToolbarButtonStyle(color: snapEnabled ? JarasTheme.accent : JarasTheme.secondary))
+        }.buttonStyle(IpadTimelineToolbarButtonStyle(color: snapEnabled ? JarasTheme.green : JarasTheme.yellow))
             .accessibilityLabel("Timeline snapping")
             .accessibilityIdentifier("timeline-snap")
             .accessibilityValue(snapEnabled ? "On" : "Off")
@@ -123,8 +123,8 @@ struct IpadTimelineToolbar: View {
             pendingTimebase = TimebaseRequest(project: show.snapshot.project.id, song: song.id,
                                               relative: song.projectTime.timebase != .relative)
         } label: {
-            ControlIcon(name: "itemTimebase", active: relativeTimebase).frame(width: 32, height: 32).contentShape(Rectangle())
-        }.buttonStyle(IpadTimelineToolbarButtonStyle(color: relativeTimebase ? JarasTheme.green : .yellow))
+            TransportControlIcon(name: "itemTimebase").frame(width: 32, height: 32).contentShape(Rectangle())
+        }.buttonStyle(IpadTimelineToolbarButtonStyle(color: relativeTimebase ? JarasTheme.green : JarasTheme.yellow))
             .accessibilityLabel("Relative timebase")
             .accessibilityIdentifier("timeline-timebase")
             .accessibilityValue(relativeTimebase ? "Enabled" : "Disabled")

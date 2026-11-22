@@ -1484,7 +1484,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
                 Label {
                     if (controlWidth ?? 47) >= 42 { Text(verbatim: "REC") }
                 } icon: {
-                    ControlIcon(name: "record", active: recorder.recording || recorder.countingIn, size: 13)
+                    TransportControlIcon(name: "record", size: 13, color: recorder.recording || recorder.countingIn ? nil : JarasTheme.liveOffRed)
                 }
             }.buttonStyle(RecordingButtonStyle(active: recorder.recording || recorder.countingIn, width: controlWidth ?? 47,
                     height: 28, fontSize: 10, cornerRadius: 6, transport: true,
@@ -1501,7 +1501,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
             }
             if only == nil || only == .metronome {
             Button { metronome.enabled.toggle() } label: {
-                ControlIcon(name: "metronome", active: metronome.enabled, size: 17)
+                TransportControlIcon(name: "metronome", size: 17)
             }.buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : Color(hex: 0x454545),
                 active: metronome.enabled, inactiveOpacity: 1, fontSize: TransportControlMetrics.font,
                 width: controlWidth ?? 30, height: TransportControlMetrics.metronomeButtonHeight, bordered: false))

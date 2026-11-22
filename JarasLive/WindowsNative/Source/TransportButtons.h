@@ -241,6 +241,21 @@ class TransportButtons final {
             Ptr<ID2D1PathGeometry> path;factory->CreatePathGeometry(&path);Ptr<ID2D1GeometrySink> sink;if(path&&SUCCEEDED(path->Open(&sink))){sink->BeginFigure(D2D1::Point2F(2,1),D2D1_FIGURE_BEGIN_FILLED);sink->AddLine(D2D1::Point2F(11,6));sink->AddLine(D2D1::Point2F(2,11));sink->EndFigure(D2D1_FIGURE_END_CLOSED);sink->Close();t->FillGeometry(path.Get(),brush.Get());}
         }else if(s.icon==L"pause"){rect(2,1,4.5f,11);rect(7.5f,1,10,11);}
         else if(s.icon==L"stopall")rect(1.5f,1.5f,10.5f,10.5f);
+        else if(s.icon==L"fadeout") {
+            Ptr<ID2D1PathGeometry> path;
+            factory->CreatePathGeometry(&path);
+            Ptr<ID2D1GeometrySink> sink;
+            if(path && SUCCEEDED(path->Open(&sink))) {
+                sink->BeginFigure(D2D1::Point2F(1.5f,1.5f),D2D1_FIGURE_BEGIN_HOLLOW);
+                sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(3.5f,1.5f),D2D1::Point2F(4.5f,3.5f),D2D1::Point2F(5.5f,5.5f)));
+                sink->AddBezier(D2D1::BezierSegment(D2D1::Point2F(7.f,8.f),D2D1::Point2F(8.5f,9.5f),D2D1::Point2F(10.5f,9.5f)));
+                sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                sink->Close();
+                t->DrawGeometry(path.Get(),brush.Get(),stroke,iconStroke.Get());
+            }
+            line(1.5f,4.f,1.5f,10.f);line(3.5f,6.f,3.5f,10.f);
+            line(5.5f,8.f,5.5f,10.f);line(7.5f,9.5f,7.5f,10.f);
+        }
         else if(s.icon==L"record") {
             const auto circle = D2D1::Ellipse(D2D1::Point2F(6,6),5,5);
             if (s.active) {
