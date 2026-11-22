@@ -541,6 +541,56 @@ int runTests(const File &directory) {
         expect(std::abs(output.getSample(2,128)-clave.data[128])<.0001f,
                "Graph replacement lost an unconsumed metronome preference");
     });
+    test("Recording count-in keeps its first attack after sound preparation and a stopped fade", [&] {
+        jaras::Song song; song.id = uuid(); song.duration = 8;
+        jaras::Track track; track.id = uuid(); track.role.id = "other";
+        song.tracks.push_back(track);
+        constexpr int rate = 48000, block = 512, beatFrames = rate / 4;
+        auto audio = std::make_unique<AudioEngine>(rate, false);
+        audio->prepareSong(song, directory);
+        audio->startTrackFadeout({track.id}, 1);
+        AudioBuffer<float> output(4, block);
+        const auto render = [&] { audio->render(output.getArrayOfWritePointers(), 4, block); };
+        for (int frame = 0; frame < rate; frame += block) render();
+        expect(audio->trackFadeoutComplete(), "Fixture must leave a completed fade held in Stop");
+        audio->setExternalRenderDriven(true);
+
+        auto settings = object(), patch = object();
+        put(settings, "preset", "Wood"); put(settings, "mode", 0);
+        put(settings, "gainA", -6); put(settings, "gainB", -3); put(settings, "enabled", false);
+        put(patch, "firstChannel", 3); put(patch, "channelCount", 2); put(settings, "output", patch);
+        bool ready = false;
+        audio->configureMetronome(settings, [&](String error) { expect(error.isEmpty(), "Wood click failed to load"); ready = true; });
+        expect(audio->startRecordingCountIn(120, 6, 8), "REC did not arm its six-beat count-in");
+        for (int i = 0; i < 4; ++i) {
+            render();
+            expect(output.getMagnitude(2, block) == 0, "Count-in advanced before the requested sound was published");
+        }
+        const auto deadline = Time::getMillisecondCounterHiRes() + 4000;
+        while (!ready && Time::getMillisecondCounterHiRes() < deadline) floatingControlTests::pump();
+        expect(ready, "Metronome preparation did not complete");
+        const auto accent = ClickProgram::tone("Wood", true);
+        const auto ordinary = ClickProgram::tone("Wood", false);
+        int attacks = 0;
+        for (int frame = 0; frame < beatFrames * 6; frame += block) {
+            render();
+            expect(output.getMagnitude(0, block) == 0 && output.getMagnitude(1, block) == 0,
+                   "The pre-count bypassed its configured output route");
+            for (int i = 0; i < block; ++i) {
+                const int at = frame + i;
+                if (at >= beatFrames * 6 || at % beatFrames != 128) continue;
+                const bool downbeat = at < beatFrames;
+                const auto &sample = downbeat ? accent : ordinary;
+                const float expected = sample.data[128] * Decibels::decibelsToGain(downbeat ? -6.f : -3.f);
+                expect(std::abs(output.getSample(2, i) - expected) < .0001f &&
+                       output.getSample(3, i) == output.getSample(2, i),
+                       "The first or a following count-in attack was dropped or used the wrong click");
+                ++attacks;
+            }
+        }
+        expect(attacks == 6 && !audio->recordingCountInPlaying(), "Count-in did not finish at the end of one bar");
+        audio->stopRecordingCountIn();
+    });
     test("Audio command queue overflow keeps control off the callback lock and preserves offline mixer state", [&] {
         for (bool offline : {false, true}) {
             jaras::Project project; project.id=uuid();
