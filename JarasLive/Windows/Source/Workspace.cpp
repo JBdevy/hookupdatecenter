@@ -6674,7 +6674,7 @@ void Workspace::syncNativeTransport() {
         state.rect = {area.getX(), area.getY(), area.getRight(), area.getBottom()};
         state.scale = scaleY;
         state.dimming=1.f-model->getAlpha();
-        state.savePulse=String(id)=="save" && session.dirty;
+        state.savePulse=String(id)=="save" && session.dirty && !session.isSaving();
         state.fontSize = theme::semiboldFont((float)model->getProperties().getWithDefault("fontSize", 10.f)).getHeightInPoints();
         state.active = model->getToggleState() || (bool)model->getProperties()["solidTransportColour"]; state.enabled = model->isEnabled();
         state.blocked = Component::getCurrentlyModalComponent() != nullptr;
@@ -6715,8 +6715,11 @@ void Workspace::syncNativeTransport() {
                     if (!image.isValid()) continue;
                     Image::BitmapData data(image, Image::BitmapData::readOnly);
                     pixels.reserve(data.width * data.height);
-                    for (int y=0; y<data.height; ++y) for (int x=0; x<data.width; ++x)
-                        pixels.push_back(data.getPixelColour(x,y).getPixelARGB().getNativeARGB());
+                    for (int y=0; y<data.height; ++y) for (int x=0; x<data.width; ++x) {
+                        const auto pixel = data.getPixelColour(x,y);
+                        pixels.push_back(key == "save" ? (unsigned)pixel.getAlpha() << 24
+                                                        : pixel.getPixelARGB().getNativeARGB());
+                    }
                 }
                 return result;
             }();
@@ -7697,7 +7700,7 @@ void Workspace::updateState() {
     controls["save"]->setEnabled(!session.isSaving());
     controls["save"]->getProperties().set("icon", session.dirty ? "save" : "check");
     controls["save"]->setColour(TextButton::buttonColourId,
-                                session.dirty ? theme::green : Colour(0xff454545));
+                                session.dirty ? theme::yellow : Colour(0xff454545));
     controls["save"]->setColour(TextButton::textColourOffId,
                                 session.dirty ? Colours::black : Colours::white);
     controls["railUndo"]->setEnabled(session.canUndo());

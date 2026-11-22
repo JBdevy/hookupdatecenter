@@ -1603,13 +1603,13 @@ private struct ProjectSaveButton: View {
             Label {
                 Text(verbatim: "Save")
             } icon: {
-                ControlIcon(name: pending ? "save" : "check", active: pending, size: 17)
+                ControlIcon(name: pending ? "save" : "check", size: 17, tintable: pending)
             }
                 .labelStyle(.iconOnly)
                 .frame(width: buttonWidth, height: buttonHeight)
                 .foregroundStyle(pending ? Color.black : .white)
-                .background(RoundedRectangle(cornerRadius: 6).fill(pending ? JarasTheme.green : Color(hex: 0x454545)))
-                .modifier(JarasSavePulse(active: pending))
+                .background(RoundedRectangle(cornerRadius: 6).fill(pending ? JarasTheme.yellow : Color(hex: 0x454545)))
+                .modifier(JarasSavePulse(active: pending && !saving))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).disabled(saving)
             .accessibilityValue(saving ? Text("Salvando…") : Text(""))

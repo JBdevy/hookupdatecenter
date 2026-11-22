@@ -2144,8 +2144,15 @@ private struct TrackMixFeedbackPanel: View {
                     .foregroundStyle(JarasTheme.toolbarTint(active: timerOpen)).accessibilityLabel("Timer")
                 IpadPreviewButton(width: 44, horizontal: false, active: state.previewActive == true, page: state.previewPage ?? 0, toggle: { action(.togglePreview) }, selectPage: { action(.selectPreviewPage, value: Double($0)) }).disabled(state.previewActive == nil)
                 Button { action(.save) } label: {
-                    ControlIcon(name: "save", active: state.pendingSave, size: 21).frame(width: 44, height: 44)
-                }.foregroundStyle(JarasTheme.toolbarTint(active: state.saving)).disabled(!state.pendingSave || state.saving)
+                    ControlIcon(name: "save", size: 21, tintable: state.pendingSave).frame(width: 44, height: 44)
+                        .foregroundStyle(state.pendingSave ? .black : JarasTheme.secondary)
+                        .background {
+                            if state.pendingSave {
+                                RoundedRectangle(cornerRadius: 6).fill(JarasTheme.yellow)
+                            }
+                        }
+                        .modifier(JarasBlink(active: state.pendingSave && !state.saving, lowOpacity: 0.48))
+                }.disabled(!state.pendingSave || state.saving)
                     .accessibilityLabel("Save")
                 Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
                 RemoteDesktopBatteryBadge(percent: state.desktopBatteryPercent, vertical: true)
@@ -3139,13 +3146,14 @@ private struct TrackMixFeedbackPanel: View {
             Label {
                 Text(verbatim: "Save")
             } icon: {
-                ControlIcon(name: state.pendingSave ? "save" : "check", active: state.pendingSave, size: 17)
+                ControlIcon(name: state.pendingSave ? "save" : "check", size: 17, tintable: state.pendingSave)
             }
                 .labelStyle(.iconOnly)
                 .frame(width: 34, height: local && nativeProMode ? TransportControlMetrics.proHeight : 28)
                 .foregroundStyle(state.pendingSave ? Color.black : JarasTheme.secondary)
-                .modifier(RemoteControlSurface(color: state.pendingSave ? JarasTheme.green : nil))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(state.pendingSave ? JarasTheme.green : JarasTheme.line))
+                .modifier(RemoteControlSurface(color: state.pendingSave ? JarasTheme.yellow : nil))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(state.pendingSave ? JarasTheme.yellow : JarasTheme.line))
+                .modifier(JarasBlink(active: state.pendingSave && !state.saving, lowOpacity: 0.48))
         }.disabled(state.saving || (!local && !state.pendingSave))
             .accessibilityValue(state.saving ? Text("Salvando…") : Text(""))
             .modifier(NativeProjectShareHold(share: shareProject))
