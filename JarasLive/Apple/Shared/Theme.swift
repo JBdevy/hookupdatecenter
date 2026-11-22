@@ -338,21 +338,6 @@ struct TransportDetailSurface: View {
     }
 }
 
-struct ProjectSaveIcon: Shape {
-    func path(in rect: CGRect) -> Path {
-        let unit = min(rect.width, rect.height) / 12
-        let origin = CGPoint(x: rect.midX - unit * 6, y: rect.midY - unit * 6)
-        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: origin.x + x * unit, y: origin.y + y * unit)
-        }
-        var path = Path()
-        path.addRect(CGRect(origin: point(1, 1), size: CGSize(width: 10 * unit, height: 10 * unit)))
-        path.addLines([point(3, 1), point(3, 5), point(9, 5), point(9, 1)])
-        path.addLines([point(3, 11), point(3, 8), point(9, 8), point(9, 11)])
-        return path.strokedPath(StrokeStyle(lineWidth: unit * 1.1, lineCap: .round, lineJoin: .round))
-    }
-}
-
 struct StageButtonStyle: ButtonStyle {
     var color = JarasTheme.panel
     var active = false

@@ -67,7 +67,7 @@ private struct TrackEnvelopeButton: View {
         Button {
             show.toggleAutomationLanes(track)
         } label: {
-            DesktopToolbarSymbol(name: "automationLanes").frame(width: 15, height: 15)
+            ControlIcon(name: "automationLanes", active: visible, size: 16)
         }.buttonStyle(CompactTrackButtonStyle(activeColor: visible ? JarasTheme.green : nil, width: 28))
             .accessibilityLabel("Envelopes").accessibilityAddTraits(visible ? .isSelected : [])
             .jarasHelp("Envelopes")

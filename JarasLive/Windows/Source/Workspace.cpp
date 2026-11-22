@@ -371,8 +371,7 @@ void MacLook::drawButtonText(Graphics &g, TextButton &b, bool, bool) {
     if (icon.isNotEmpty()) {
         const auto bounds = b.getLocalBounds().toFloat().withSizeKeepingCentre(iconSize, iconSize);
         const auto artwork = icon == "visibility" ? String("eye") : icon;
-        if ((icon != "automationLanes" || b.getComponentID() == "track-envelopes") &&
-            drawControlIcon(g, artwork, b.getToggleState() || b.isDown(), bounds, opacity)) return;
+        if (drawControlIcon(g, artwork, b.getToggleState() || b.isDown(), bounds, opacity)) return;
         if (drawDesktopToolbarSymbol(g, icon, bounds) || drawInterfaceIcon(g, icon, bounds)) return;
     }
     // Keep compact labels such as Patch at their natural width. Use the spare
@@ -444,7 +443,9 @@ void MacLook::drawLinearSlider(Graphics &g, int x, int y, int w, int h, float po
         const float middle = y + h * .5f;
         if (samplePreview) {
             g.setColour(Colours::white);
-            drawDesktopToolbarSymbol(g, "speaker.wave.2", {0.f, middle - 6.f, 12.f, 12.f});
+            const juce::Rectangle<float> iconBounds{0.f, middle - 7.f, 14.f, 14.f};
+            if (!drawControlIcon(g, "speaker.wave.2", false, iconBounds, 1.f))
+                drawDesktopToolbarSymbol(g, "speaker.wave.2", iconBounds);
             g.setFont(theme::font(10));
             g.drawText(slider.getTextFromValue(slider.getValue()), slider.getWidth() - 37, y, 37, h,
                        Justification::centredRight);
@@ -6520,7 +6521,7 @@ void Workspace::syncNativeTransport() {
         auto icon = model->getProperties()["leadingIcon"].toString();
         if (icon.isEmpty() && StringArray{"play", "pause", "loop", "record", "metronome"}.contains(id)) icon = id;
         state.icon = icon.toWideCharPointer();
-        static const StringArray pngIcons{"play","stopall","fadeout","pause","loop","record","metronome"};
+        static const StringArray pngIcons{"play","stopall","fadeout","pause","loop","record","metronome","save","check"};
         if (pngIcons.contains(icon)) {
             // Native transport HWNDs own their render targets. Share immutable PNG pixels between them.
             static const auto bitmaps = [] {

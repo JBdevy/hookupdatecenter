@@ -2063,8 +2063,8 @@ private struct TrackMixFeedbackPanel: View {
         let active = phonePanel == panel || (panel == .sections && horizontalPartsOpen)
         let button = Button { choosePhonePanel(panel) } label: {
             Group {
-                if panel == .sections { SectionButtonsIcon() }
-                else if let icon { Image(systemName: icon).font(.jarasSystem(size: 18, weight: .semibold)) }
+                if panel == .sections { ControlIcon(name: "list.bullet.indent", active: active, size: 21) }
+                else if let icon { ControlIcon(name: icon, active: active, size: 21) }
                 else { Text(verbatim: title).font(.jarasSystem(size: 11, weight: .bold)) }
             }.frame(width: 44, height: 44)
                 .modifier(RemoteControlSurface(color: active ? JarasTheme.green.opacity(0.14) : nil, radius: 5))
@@ -2130,23 +2130,23 @@ private struct TrackMixFeedbackPanel: View {
                 } label: { Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle()) }
                     .accessibilityLabel("Menu")
                 phonePanelButton(.mixer, title: "Track Mixer", icon: "slider.horizontal.3")
-                phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet")
+                phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet.indent")
                 phonePanelButton(.grid, title: "Grid", icon: "square.grid.3x3")
                 phonePanelButton(.sections, title: "Parts")
-                phonePanelButton(.vinhetas, title: "Pads", icon: "square.grid.4x3.fill")
+                phonePanelButton(.vinhetas, title: "Pads", icon: "square.grid.3x2.fill")
                 phonePanelButton(.teleprompter1, title: "TP1")
                 phonePanelButton(.teleprompter2, title: "TP2")
                 phonePanelButton(.notices, title: "Notices", icon: "text.bubble")
-                Button { timerOpen = true } label: { Image(systemName: "clock").frame(width: 44, height: 44) }
+                Button { timerOpen = true } label: { ControlIcon(name: "stopwatch", active: timerOpen, size: 21).frame(width: 44, height: 44) }
                     .foregroundStyle(JarasTheme.toolbarTint(active: timerOpen)).accessibilityLabel("Timer")
                 IpadPreviewButton(width: 44, horizontal: false, active: state.previewActive == true, page: state.previewPage ?? 0, toggle: { action(.togglePreview) }, selectPage: { action(.selectPreviewPage, value: Double($0)) }).disabled(state.previewActive == nil)
                 Button { action(.save) } label: {
-                    ProjectSaveIcon().frame(width: 16, height: 16).frame(width: 44, height: 44)
+                    ControlIcon(name: "save", active: state.pendingSave, size: 21).frame(width: 44, height: 44)
                 }.foregroundStyle(JarasTheme.toolbarTint(active: state.saving)).disabled(!state.pendingSave || state.saving)
                     .accessibilityLabel("Save")
                 Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
                 RemoteDesktopBatteryBadge(percent: state.desktopBatteryPercent, vertical: true)
-                Button { if let openSettings { openSettings() } else { settingsOpen = true } } label: { Image(systemName: "gearshape").frame(width: 44, height: 44) }
+                Button { if let openSettings { openSettings() } else { settingsOpen = true } } label: { ControlIcon(name: "gearshape", active: settingsOpen, size: 21).frame(width: 44, height: 44) }
                     .foregroundStyle(JarasTheme.toolbarTint(active: settingsOpen)).accessibilityLabel("Configurações")
                 if UIDevice.current.userInterfaceIdiom == .pad { hideSidebarButton(width: 44) }
             }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(JarasTheme.toolbarInactive)
@@ -2269,7 +2269,7 @@ private struct TrackMixFeedbackPanel: View {
                 Menu { Button("Exit Remote", action: exitRemote) } label: {
                     Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Menu")
-                phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet")
+                phonePanelButton(.setlist, title: "Setlist", icon: "list.bullet.indent")
                 phonePanelButton(.teleprompter1, title: "TP1")
                 phonePanelButton(.teleprompter2, title: "TP2")
                 Spacer(minLength: RemoteSidebarMetrics.groupSpacing)
@@ -3119,8 +3119,7 @@ private struct TrackMixFeedbackPanel: View {
             Label {
                 Text(verbatim: "Save")
             } icon: {
-                if state.pendingSave { ProjectSaveIcon().frame(width: 12, height: 12) }
-                else { Image(systemName: "checkmark") }
+                ControlIcon(name: state.pendingSave ? "save" : "check", active: state.pendingSave, size: 14)
             }
                 .font(.jarasSystem(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
                 .frame(width: local ? 56 : 72, height: 28)
@@ -7794,10 +7793,11 @@ private struct RemoteNativeMixerRow: View, Equatable {
                                 width: RemoteNativeTrackControlLayout.patchWidth, touchPadding: 0, height: buttonHeight))
                         }
                         if visible(.envelope), controlLayout.env, let openAutomation {
+                            let expanded = nativeTrack?.automation?.visibleEnvelopes.isEmpty == false
                             Button(action: openAutomation) {
-                                DesktopToolbarSymbol(name: "automationLanes").frame(width: 14, height: 14)
+                                ControlIcon(name: "automationLanes", active: expanded, size: 16)
                             }.buttonStyle(RemoteNativeTrackButtonStyle(
-                                activeColor: nativeTrack?.automation?.visibleEnvelopes.isEmpty == false ? JarasTheme.green : nil,
+                                activeColor: expanded ? JarasTheme.green : nil,
                                 width: RemoteNativeTrackControlLayout.envWidth, touchPadding: 0, height: buttonHeight, usesTrackFace: true))
                                 .accessibilityLabel("Envelopes")
                         }

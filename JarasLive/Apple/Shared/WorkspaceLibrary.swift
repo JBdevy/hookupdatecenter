@@ -1003,11 +1003,7 @@ struct WorkspaceLibrary: View {
     private var samplerList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 5) {
-                #if os(macOS)
-                DesktopToolbarSymbol(name: "speaker.wave.2").frame(width: 12, height: 12)
-                #else
-                Image(systemName: "speaker.wave.2").font(.jarasSystem(size: 11)).accessibilityHidden(true)
-                #endif
+                ControlIcon(name: "speaker.wave.2", size: 14)
                 Slider(value: $samplerPreviewDB, in: -60...0, step: 1)
                     .tint(JarasTheme.green)
                     .accessibilityLabel("Sample preview volume")
