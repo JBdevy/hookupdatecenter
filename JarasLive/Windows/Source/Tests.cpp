@@ -2286,7 +2286,7 @@ int runTests(const File &directory) {
             int y=16;
             for (const auto trackColour : {Colour(0xffffff00),Colour(0xff828282),Colour(0xff00ff00)}) {
                 graphics.setColour(trackColour);graphics.fillRect(0,y,96,16);
-                graphics.setColour(theme::panel);graphics.fillRect(0,y,96,16);
+                graphics.setColour(selected);graphics.fillRect(0,y,96,16);
                 y+=16;
             }
             for(y=0;y<64;y+=16) {
@@ -2461,7 +2461,9 @@ int runTests(const File &directory) {
             auto *button=dynamic_cast<TextButton *>(uiFeatureTests::find(workspace,"timelineTimebase"));
             auto *lock=uiFeatureTests::find(workspace,"timelineMovementLock");
             expect(button && lock && button->onClick,"Timebase shortcut missing");
-            expect(button->getRight()<lock->getX(),"Timebase shortcut is not left of the lock");
+            const auto *snap = uiFeatureTests::find(workspace, "timelineSnap");
+            expect(snap && snap->getRight() <= button->getX() && snap->getY() == button->getY(),
+                   "Timebase must sit next to Snap in the transport");
             expect(button->getToggleState()==initiallyRelative,"Timebase button did not reflect the project");
             expect(button->findColour(TextButton::textColourOnId)==theme::green && button->findColour(TextButton::textColourOffId)==theme::yellow,"Timebase colours do not match the requested states");
             button->onClick();
@@ -2526,18 +2528,21 @@ int runTests(const File &directory) {
         }
     });
     test("Stereo fader rail stays yellow at zero and clips only above zero dB", [&] {
-        Image image(Image::ARGB, 200, 14, true, SoftwareImageType());
+        // A wide fixture makes a +0.1 dB segment several pixels wide.
+        constexpr int width = 3000;
+        Image image(Image::ARGB, width, 14, true, SoftwareImageType());
         {
             Graphics graphics(image);
             meterDisplay::rail(graphics, image.getBounds().toFloat(), {1.f, std::pow(10.f, .1f / 20.f)}, false);
         }
-        const auto yellow = image.getPixelAt(189, 3);
-        const auto red = image.getPixelAt(189, 10);
+        const float unity = width * meterDisplay::fractionForDB(0.f);
+        const auto yellow = image.getPixelAt(int(unity) - 2, 3);
+        const auto red = image.getPixelAt(roundToInt(unity) + 1, 10);
         expect(yellow.getRed() > 200 && yellow.getGreen() > 150,
                "Zero dBFS must stay yellow: " + yellow.toDisplayString(true));
         expect(red.getRed() > 200 && red.getGreen() < 115,
                "+0.1 dBFS must show a red tip for the matching channel: " + red.toDisplayString(true));
-        const auto earlyYellow = image.getPixelAt(144, 3);
+        const auto earlyYellow = image.getPixelAt(roundToInt(width * meterDisplay::yellowTransitionEnd) + 2, 3);
         expect(earlyYellow.getRed() > 200 && earlyYellow.getGreen() > 150,
                "The meter must already be fully yellow by -17 dBFS");
     });
@@ -2557,7 +2562,8 @@ int runTests(const File &directory) {
                 if(button->getButtonText()=="M"||button->getButtonText()=="S")expect(button->isVisible()==(track.role.id=="generatedClick"||track.role.id=="timecode"),"Mute/Solo only on audio-generating special tracks");
                 if(button->getButtonText()==String::fromUTF8("Ø"))expect(!button->isVisible(),"Special tracks have no phase inversion button");
             }
-            auto *pan=uiFeatureTests::find(*row,"trackPan");expect(!pan,"Track Mixer does not create a pan knob");
+            auto *pan=uiFeatureTests::find(*row,"trackPan");
+            expect(!pan || !pan->isVisible(), "Special tracks do not show the standard pan knob");
             if(track.role.id=="generatedClick") {
                 auto *insert=uiFeatureTests::find(*controls,"insertClick"),*patch=uiFeatureTests::find(*controls,"specialPatch");
                 expect(insert->isVisible()&&patch&&patch->isVisible()&&patch->getRight()<insert->getX(),"Click must expose Patch immediately before Insert");
@@ -2744,17 +2750,26 @@ int runTests(const File &directory) {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
         Auth auth;Lighting lighting(session);Workspace workspace(session,auth,lighting,false,directory.getNonexistentChildFile("height-drag",".json"));workspace.setSize(1366,768);workspace.setVisible(true);
         auto *handle=uiFeatureTests::find(workspace,"trackHeightHandle");expect(handle!=nullptr,"Height input exists");
+        auto *height = dynamic_cast<Slider *>(uiFeatureTests::find(workspace, "track-height-slider"));
+        auto *zoom = dynamic_cast<Slider *>(uiFeatureTests::find(workspace, "timeline-zoom-slider"));
+        expect(height && zoom, "Timeline scales exist");
+        height->setValue(74, sendNotificationSync);
+        zoom->setValue(30, sendNotificationSync);
+        auto *firstRow = uiFeatureTests::find(workspace, "trackRow:" + text(song.tracks.front().id));
+        expect(firstRow, "First mixer row exists");
+        const auto firstBounds = handle->getLocalArea(firstRow, firstRow->getLocalBounds());
+        const int bottom = firstBounds.getBottom();
         const auto before=JSON::toString(ProjectCodec::encode(session.project()));
         auto event=[&](Point<float> at,Point<float> anchor,int mods,bool dragged){return MouseEvent(Desktop::getInstance().getMainMouseSource(),at,ModifierKeys(mods),1,0,0,0,0,handle,handle,Time::getCurrentTime(),anchor,Time::getCurrentTime(),1,dragged);};
         auto *canvas=uiFeatureTests::find(workspace,"timelineCanvas");
         expect(!handle->hitTest(50,0)&&!handle->hitTest(50,2),"Row tops do not resize tracks");
-        expect(handle->hitTest(50,58)&&handle->hitTest(50,63),"Footer hits belong to the row above");
-        expect(!handle->hitTest(50,64)&&!handle->hitTest(50,65),"Moving below a footer must not resize the next track");
+        expect(handle->hitTest(50,bottom-6)&&handle->hitTest(50,bottom-1),"Footer hits belong to the row above");
+        expect(!handle->hitTest(50,bottom)&&!handle->hitTest(50,bottom+1),"Moving below a footer must not resize the next track");
         const auto alignedGrid=handle->getLocalPoint(canvas,Point<int>{100,110});
         expect(!handle->hitTest(alignedGrid.x,alignedGrid.y),"An aligned point in the grid cannot resize a track");
         const auto gridTarget=workspace.getComponentAt(workspace.getLocalPoint(canvas,Point<int>{100,110}));
         expect(gridTarget&&gridTarget!=handle,"Native grid hit testing must not return the mixer resize overlay");
-        for(const auto point:{Point<float>{50,1},Point<float>{50,65},alignedGrid.toFloat()}) {
+        for(const auto point:{Point<float>{50,1},Point<float>{50,float(bottom+1)},alignedGrid.toFloat()}) {
             handle->mouseDown(event(point,point,ModifierKeys::leftButtonModifier,false));
             handle->mouseDrag(event(point+Point<float>{0,20},point,ModifierKeys::leftButtonModifier,true));
             handle->mouseUp(event(point+Point<float>{0,20},point,0,true));
@@ -2762,18 +2777,19 @@ int runTests(const File &directory) {
         expect(JSON::toString(ProjectCodec::encode(session.project()))==before,
                "Top, next-row and aligned-grid gestures cannot change any track");
         auto firstImage=canvas->createComponentSnapshot(canvas->getLocalBounds());
-        expect(firstImage.getPixelAt(75,140).getRed()<100,"Baseline sample is below first item");
-        Point<float> anchor{50,62},end{50,94};
+        const int sampleY = canvas->getLocalPoint(handle, Point<int>{0,bottom+10}).y;
+        expect(firstImage.getPixelAt(75,sampleY).getRed()<100,"Baseline sample is below first item");
+        Point<float> anchor{50,float(bottom-2)},end=anchor+Point<float>{0,36};
         handle->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));handle->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier,true));
         expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Preview leaves stored project unchanged");
         auto previewImage=canvas->createComponentSnapshot(canvas->getLocalBounds());
         // Drag previews are coalesced at 60 Hz; let the native timer publish a frame.
         const auto previewDeadline=Time::getMillisecondCounterHiRes()+500;
-        while(previewImage.getPixelAt(75,140).getRed()<=100 && Time::getMillisecondCounterHiRes()<previewDeadline) {
+        while(previewImage.getPixelAt(75,sampleY).getRed()<=100 && Time::getMillisecondCounterHiRes()<previewDeadline) {
             floatingControlTests::pump();
             previewImage=canvas->createComponentSnapshot(canvas->getLocalBounds());
         }
-        expect(previewImage.getPixelAt(75,140).getRed()>100,"Grid item grows with its mixer row before mouse release");
+        expect(previewImage.getPixelAt(75,sampleY).getRed()>100,"Grid item grows with its mixer row before mouse release");
         expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Published preview leaves stored project unchanged");
         handle->mouseUp(event(end,anchor,0,true));
         expect(session.song()->tracks.front().heightScale.value_or(1)>1.4,"Only dragged row grows");
@@ -2782,7 +2798,7 @@ int runTests(const File &directory) {
         handle->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));handle->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier,true));handle->keyPressed(KeyPress(KeyPress::escapeKey));handle->mouseUp(event(end,anchor,0,true));
         for(int frame=0;frame<4;++frame)floatingControlTests::pump();
         expect(JSON::toString(ProjectCodec::encode(session.project()))==before,"Escape cancels resize without a project mutation");
-        expect(canvas->createComponentSnapshot(canvas->getLocalBounds()).getPixelAt(75,140).getRed()<100,"Cancelled preview cannot return on a later timer frame");
+        expect(canvas->createComponentSnapshot(canvas->getLocalBounds()).getPixelAt(75,sampleY).getRed()<100,"Cancelled preview cannot return on a later timer frame");
     });
     test("Track drop destination matches group indicator and preserves routes and descendants", [&] {
         jaras::Song song;auto make=[](const char *id,std::optional<ID> parent={}){jaras::Track t;t.id=id;t.name=id;t.role.id="other";t.parentTrackID=parent;t.patch=jaras::OutputPatch{parent?-2:0,2};return t;};
@@ -2881,7 +2897,9 @@ int runTests(const File &directory) {
         const double edit=session.transport().editPosition;
         const int modals=Component::getNumCurrentlyModalComponents();
         // Start in the track area, below the edit cursor head's hit target.
-        Point<float> anchor{0,72},end{(float)canvas->getWidth()-1,(float)canvas->getHeight()-1};
+        const auto timeline = get(workspace.diagnostics(), "timeline");
+        Point<float> anchor{0,float(num(timeline, "headerHeight") + 2)};
+        Point<float> end{float(canvas->getWidth() - 1),float(canvas->getHeight() - 1)};
         canvas->mouseDown(event(anchor,anchor,ModifierKeys::rightButtonModifier,false));
         expect(Component::getNumCurrentlyModalComponents()==modals,"Right down defers menu");
         canvas->mouseDrag(event(end,anchor,ModifierKeys::rightButtonModifier,true));
@@ -3710,7 +3728,7 @@ int runTests(const File &directory) {
                    face.getTypefaceName() + " / " + face.getTypefacePtr()->getName() + " / " + face.getTypefaceStyle());
             expect(face.getTypefacePtr() != bold.getTypefacePtr(), "Heavy option fell back to the existing bold font");
         }
-        expect(std::abs(regular.getHeightInPoints() - 13.f * .9f) < .01f, "Compact Windows text remains independent of display DPI");
+        expect(std::abs(regular.getHeightInPoints() - 13.f) < .01f, "Windows uses the shared point size independent of display DPI");
     });
     test("Timecode LTC physical route, Master bypass, spans and main-only playback", [&] {
         auto project = projectFixture();
@@ -5771,7 +5789,10 @@ int runTests(const File &directory) {
         expect(out.getMagnitude(0,0,128)==0&&out.getMagnitude(1,0,128)==0,"Group mute did not silence its children");
         expect(std::abs(out.getSample(2,64)-.3f)<.0001f,"Group mute leaked to an independent direct output");
         engine.armTrack(mono.id,false);render();
-        expect(out.getMagnitude(2,0,128)==0,"Disarmed track still monitored its input");
+        expect(std::abs(out.getSample(2,64)-.3f)<.0001f,"Turning REC off must preserve manual monitoring");
+        song.tracks.back().inputMonitoring = false;
+        engine.setMixer(project,song);render();
+        expect(out.getMagnitude(2,0,128)==0,"Turning I off with REC disarmed must silence input");
     });
     test("Generated Click and metronome follow tempo, spans, mute and output patch", [&] {
         jaras::Song song;

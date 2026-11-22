@@ -96,7 +96,7 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         FileOutputStream output(directory.getChildFile("mixer-fixed-master.png"));output.setPosition(0);output.truncate();
         require(output.openedOk()&&PNGImageFormat().writeImageToStream(mixer.createComponentSnapshot(mixer.getLocalBounds()),output),"Cannot save Master fixture screenshot");
     });
-    test("Library effects dropped on mixer strip bodies append and slot drops retain order", [&] {
+    test("Library effects require mixer slots and preserve order", [&] {
         jaras::Project project; project.id = uuid(); project.name = "Library drop";
         jaras::Song song; song.id = uuid(); song.name = "Song"; song.duration = 30;
         jaras::Track track; track.id = uuid(); track.name = "Target"; track.role.id = "other";
@@ -123,8 +123,10 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         };
         const auto keys = [&] { return list(get(fxchain::settings(session, track.id), "inserted")); };
         drop("native:EQ", {20, strip->getHeight() - 12});
+        require(keys().isEmpty(), "Dropping anywhere outside a slot must leave the effect chain alone");
+        drop("native:EQ", {20, 19});
         auto chain = keys();
-        require(chain.size() == 1, "Dropping on the strip body did not append an effect");
+        require(chain.size() == 1, "The first empty slot must accept an effect");
         const auto eq = chain[0];
         drop("native:Compressor", {20, 19});
         chain = keys();
@@ -132,8 +134,8 @@ template<typename Test> void registerTests(const File &directory,Test &test) {
         const auto compressor = chain[0];
         drop("native:Delay", {20, strip->getHeight() - 12});
         chain = keys();
-        require(chain.size() == 3 && chain[0] == compressor && chain[1] == eq,
-                "A body drop must append after the existing effects");
+        require(chain.size() == 2 && chain[0] == compressor && chain[1] == eq,
+                "Dropping outside a slot must preserve the existing chain order");
 
         std::vector<jaras::CommandKind> mapped;
         mixer.mapControl = [&](const ID &targetID, jaras::CommandKind kind) {

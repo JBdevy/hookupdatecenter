@@ -131,10 +131,17 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                 "Typing Space in a text field triggered playback or playlist picker");
     });
     test("FX window routes transport and undo while preserving text, local keys and held Space", [&] {
-        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(fixture()));session.audio.setOffline(true);
+        auto project = fixture();
+        jaras::AudioClip clip;
+        clip.id = uuid();
+        clip.name = "Item with FX";
+        clip.duration = 3;
+        project.songs[0].tracks[0].clips = {clip};
+        Session session;session.inspection=true;session.audio.prepareOffline(48000);session.restoreSnapshot(ProjectCodec::encode(project));session.audio.setOffline(true);
         Auth auth;Lighting lighting(session);Workspace w(session,auth,lighting,false,directory.getNonexistentChildFile("floating-keys",".json"));w.setSize(1366,768);
-        const auto id=session.song()->tracks[0].id;
-        w.openFX(id);pump();
+        const auto id = session.song()->tracks[0].id;
+        const auto item = clip.id;
+        w.openItemFX(item);pump();
         DocumentWindow *window=nullptr;
         auto &desktop=Desktop::getInstance();
         for(int i=0;i<desktop.getNumComponents();++i)if(auto *candidate=dynamic_cast<DocumentWindow *>(desktop.getComponent(i)))
@@ -228,9 +235,9 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(single("advancedTab0")==advanced.getComponent()&&tempo(*advanced)->getText()=="137",
                 "Reopening Advanced replaced the window or discarded its draft");
         editTrack(.37);
-        button(*advanced,"Cancelar")->onClick();
-        require(!advanced||!advanced->isVisible(),"Advanced Cancel did not close its floating window");
-        pump();require(session.song()->bpm==before,"Advanced Cancel applied the draft tempo");
+        advanced->closeButtonPressed();
+        require(!advanced||!advanced->isVisible(),"Advanced Close did not close its floating window");
+        pump();require(session.song()->bpm==before,"Advanced Close applied the draft tempo");
         w.openAdvanced();pump();advanced=single("advancedTab0");
         tempo(*advanced)->setText("137",false);button(*advanced,"Aplicar")->onClick();
         require((!advanced||!advanced->isVisible())&&session.song()->bpm==137,

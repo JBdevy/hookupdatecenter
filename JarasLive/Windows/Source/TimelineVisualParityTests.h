@@ -50,7 +50,8 @@ inline juce::Rectangle<float> localRect(Workspace &workspace, const var &rectang
 inline void zoomInForInspection(Workspace &workspace) {
     auto *slider = dynamic_cast<Slider *>(uiFeatureTests::find(workspace, "timeline-zoom-slider"));
     require(slider && bool(slider->onValueChange), "Timeline zoom slider is missing");
-    slider->setValue(slider->getMaximum(), dontSendNotification);
+    // Keep the fixture's items at seconds 3–20 within the viewport.
+    slider->setValue(30., dontSendNotification);
     slider->onValueChange();
 }
 
@@ -189,7 +190,7 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
                     Time::getCurrentTime(),start,Time::getCurrentTime(),1,dragged);
             };
             canvas->createComponentSnapshot(canvas->getLocalBounds());
-            Point<float> head{(float)(marker.position*zoom-offset+2),(float)(num(state,"headerHeight")-48+(tempo?22:6))};
+            Point<float> head{(float)(marker.position*zoom-offset+2),(float)(num(state,"rulerTop")-(tempo ? 8 : 24))};
             auto target=head+Point<float>((float)((15.41-marker.position)*zoom),0);
             canvas->mouseDown(event(head,head,true,false));canvas->mouseDrag(event(target,head,true,true));canvas->mouseUp(event(target,head,false,true));
             auto found=std::find_if(session.song()->markers->begin(),session.song()->markers->end(),[&](const auto &value){return value.id==marker.id;});
