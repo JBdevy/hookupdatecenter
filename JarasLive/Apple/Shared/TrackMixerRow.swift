@@ -1468,7 +1468,7 @@ struct TrackMixerRow: View, Equatable {
                 componentMask: track.supportsMixerComponents ? { show.hiddenTrackMixerComponents(deletionTargets) } : nil,
                 toggleComponent: { component in
                     guard show.snapshot.project.id == project else { return }
-                    show.toggleTrackMixerComponents(deletionTargets, mask: component.rawValue)
+                    show.toggleTrackMixerComponents(deletionTargets, mask: component.rawValue, showWhenMixed: true)
                 }))
             #else
             .onTapGesture(perform: select)

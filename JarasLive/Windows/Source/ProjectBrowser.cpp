@@ -101,7 +101,7 @@ ProjectBrowser::ProjectBrowser() {
     setOpaque(true);
     setWantsKeyboardFocus(true);
     for (auto *button :
-         {&create, &add, &recent, &empty, &temporary, &stems, &reaper, &logic, &recording, &package, &back}) {
+         {&create, &add, &recent, &temporary, &stems, &reaper, &logic, &recording, &package, &back}) {
         addAndMakeVisible(*button);
         button->setComponentID(button->getName());
     }
@@ -131,24 +131,7 @@ ProjectBrowser::ProjectBrowser() {
     create.onClick = [this] { selectMode(mode == creating ? none : creating); };
     add.onClick = [this] { selectMode(mode == adding ? none : adding); };
     recent.onClick = [this] { selectMode(opening); };
-    empty.onClick = [this] {
-        if (createEmpty)
-            createEmpty();
-    };
     temporary.onClick = [this] { if (createTemporary) createTemporary(); };
-    empty.contextMenu = [this](const MouseEvent &event) {
-        if (!projectOpen || loading || !createEmptyInNewTab) return;
-        PopupMenu menu;
-        menu.addItem(1, localization::translate("Open in new tab"));
-        const auto position = event.getScreenPosition();
-        const Component::SafePointer<ProjectBrowser> safe(this);
-        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&empty)
-            .withTargetScreenArea({position.x, position.y, 1, 1}),
-            [safe](int result) {
-                if (result == 1 && safe && safe->projectOpen && !safe->loading && safe->createEmptyInNewTab)
-                    safe->createEmptyInNewTab();
-            });
-    };
     reaper.onClick = [this] {
         if (createReaper)
             createReaper();
@@ -253,7 +236,7 @@ void ProjectBrowser::finishLoading(const String &error) {
     repaint();
 }
 void ProjectBrowser::updateEnabled() {
-    for (auto *button : {&create, &add, &recent, &empty, &temporary, &stems, &reaper,
+    for (auto *button : {&create, &add, &recent, &temporary, &stems, &reaper,
                          &logic, &recording, &package, &back})
         button->setEnabled(!loading);
     browseButton.setEnabled(!loading);
@@ -263,7 +246,7 @@ void ProjectBrowser::updateEnabled() {
     recents.setEnabled(!loading);
 }
 void ProjectBrowser::refresh() {
-    for (auto *button : {&create, &add, &recent, &empty, &temporary, &stems, &reaper, &logic, &recording, &package, &back})
+    for (auto *button : {&create, &add, &recent, &temporary, &stems, &reaper, &logic, &recording, &package, &back})
         button->setButtonText(localization::translate(button->getName()));
     browseButton.setButtonText(localization::english ? "Open existing" : "Abrir existente");
     multipleButton.setButtonText(localization::translate("Open multiple projects"));
@@ -333,7 +316,6 @@ void ProjectBrowser::resized() {
     add.setBounds(34 + cell, 60, cell, 38);
     recent.setBounds(44 + 2 * cell, 60, width - 2 * cell - 20, 38);
     stems.setVisible(mode == creating || mode == adding);
-    empty.setVisible(mode == creating);
     temporary.setVisible(mode == creating);
     package.setVisible(mode == adding);
     reaper.setVisible(mode == creating);
@@ -344,12 +326,11 @@ void ProjectBrowser::resized() {
     if (mode == creating) {
         const int creationWidth = (width - 16) / 3;
         stems.setBounds(24, 114, creationWidth, 38);
-        empty.setBounds(32 + creationWidth, 114, creationWidth, 38);
+        temporary.setBounds(32 + creationWidth, 114, creationWidth, 38);
         recording.setBounds(40 + 2 * creationWidth, 114, width - 2 * creationWidth - 16, 38);
-        temporary.setBounds(24, 160, width, 38);
         const int importWidth = (width - 8) / 2;
-        reaper.setBounds(24, 206, importWidth, 38);
-        logic.setBounds(32 + importWidth, 206, width - importWidth - 8, 38);
+        reaper.setBounds(24, 160, importWidth, 38);
+        logic.setBounds(32 + importWidth, 160, width - importWidth - 8, 38);
     } else if (mode == adding) {
         const int optionWidth = (width - 10) / 2;
         stems.setBounds(24, 114, optionWidth, 38);

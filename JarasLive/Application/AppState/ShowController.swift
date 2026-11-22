@@ -3552,7 +3552,7 @@ public struct ShowTimelinePresentationState: Equatable {
         }
     }
 
-    public func toggleTrackMixerComponents(_ ids: Set<UUID>, mask: Int) {
+    public func toggleTrackMixerComponents(_ ids: Set<UUID>, mask: Int, showWhenMixed: Bool = false) {
         guard canControl(), !finishing, let songID = current?.id, !ids.isEmpty, mask > 0,
               let song = snapshot.project.songs.firstIndex(where: { $0.id == songID }) else { return }
         var next = snapshot.project
@@ -3561,7 +3561,9 @@ public struct ShowTimelinePresentationState: Equatable {
             return ids.contains(t.id) && t.supportsMixerComponents
         }
         guard !rows.isEmpty else { return }
-        let restore = hiddenTrackMixerComponents(ids) & mask != 0
+        let restore = showWhenMixed
+            ? hiddenTrackMixerComponents(ids) & mask != 0
+            : rows.allSatisfy { next.songs[song].tracks[$0].mixerComponentMask & mask == mask }
         for row in rows {
             let current = next.songs[song].tracks[row].hiddenMixerComponents ?? 0
             let hidden = restore ? current & ~mask : current | mask

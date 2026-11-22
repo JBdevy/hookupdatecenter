@@ -81,6 +81,22 @@ final class TrackInstrumentIconTests: XCTestCase {
         XCTAssertFalse(show.current!.tracks[1].automation!.visibleEnvelopes.isEmpty)
         XCTAssertFalse(show.current!.tracks[1].compactMixerControls)
     }
+    @MainActor func testComponentMenuRevealsMixedSelectionThenHidesAllSelectedRows() throws {
+        var project = Project.empty(name: "Mixer")
+        var first = Track(id: UUID(), name: "Kit", role: .drums)
+        let second = Track(id: UUID(), name: "Bass", role: .bass)
+        let other = Track(id: UUID(), name: "Keys", role: .keys)
+        let mask = TrackMixerComponent.pan.rawValue
+        first.hiddenMixerComponents = mask
+        project.songs[0].tracks = [first, second, other]
+        let show = try ShowController(executor: IconExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let selection: Set<UUID> = [first.id, second.id]
+        XCTAssertEqual(show.hiddenTrackMixerComponents(selection), mask)
+        show.toggleTrackMixerComponents(selection, mask: mask, showWhenMixed: true)
+        XCTAssertEqual(show.current?.tracks.map { $0.showsMixerComponent(.pan) }, [true, true, true])
+        show.toggleTrackMixerComponents(selection, mask: mask, showWhenMixed: true)
+        XCTAssertEqual(show.current?.tracks.map { $0.showsMixerComponent(.pan) }, [false, false, true])
+    }
     @MainActor func testIconOnlyOnLegacyTrackKeepsDefaultColorAndHistoryEmpty() throws {
         var project = Project.empty(name: "Legacy")
         let track = Track(id: UUID(), name: "Conga", role: .drums)

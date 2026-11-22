@@ -2208,19 +2208,9 @@ struct ProjectBrowserView: View {
                         VStack(spacing: 8) {
                             HStack {
                                 action("Add Stems", icon: "waveform") { documents.chooseStems(adding: false) }
-                                action("Empty", icon: "doc") { documents.createEmpty() }
-                                    #if os(macOS)
-                                    .contextMenu {
-                                        if documents.ready, documents.openInNewProjectTab != nil {
-                                            Button("Open in new tab") {
-                                                if documents.createEmptyInNewTab() { completed() }
-                                            }
-                                        }
-                                    }
-                                    #endif
+                                action("Utilited", icon: "clock") { documents.createTemporary() }
                                 action("REC Multitrack", icon: "record.circle") { recordingSetup = true }
                             }
-                            action("Temporary", icon: "clock") { documents.createTemporary() }
                             HStack {
                                 action("REAPER", icon: "waveform.path") { documents.chooseMigration("rpp") }
                                 action("Logic", icon: "pianokeys") { documents.chooseMigration("logicx") }

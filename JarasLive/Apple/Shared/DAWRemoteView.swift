@@ -3184,7 +3184,7 @@ private struct TrackMixFeedbackPanel: View {
 
     private var transportBar: some View {
         HStack(alignment: .top, spacing: local ? 5 : 8) {
-            masterStrip.frame(width: local ? 224 : 220)
+            if !local { masterStrip.frame(width: 220) }
             Group {
                 if local && nativeProMode, let localShow { nativeProTransport(show: localShow) }
                 else { VStack(spacing: 0) {
@@ -3612,11 +3612,10 @@ private struct TrackMixFeedbackPanel: View {
                 Rectangle().fill(JarasTheme.timelineHeaderLine).frame(height: 1).allowsHitTesting(false)
             }
     }
-    private var trackMixer: some View {
-        VStack(spacing: local ? 0 : 1) {
-            trackMixerHeader
-            trackMixerViewport
-        }
+    private var trackMixer: NativeTrackMixerPane {
+        NativeTrackMixerPane(spacing: local ? 0 : 1,
+            header: { AnyView(trackMixerHeader) },
+            viewport: { AnyView(trackMixerViewport) })
     }
 
     @ViewBuilder private var trackMixerHeader: some View {
@@ -3847,7 +3846,7 @@ private struct TrackMixFeedbackPanel: View {
             componentMask: track?.supportsMixerComponents == true ? localShow?.hiddenTrackMixerComponents(ids) : nil,
             toggleComponent: { component in
                 guard localShow?.snapshot.project.id == project, localShow?.current?.id == songID else { return }
-                localShow?.toggleTrackMixerComponents(ids, mask: component.rawValue)
+                localShow?.toggleTrackMixerComponents(ids, mask: component.rawValue, showWhenMixed: true)
             })
     }
     private func linkSelectedTracks(_ ids: Set<UUID>) {
@@ -7822,6 +7821,21 @@ struct InlineMixerTrackName: View {
         guard editing else { return }
         editing = false
         commit(draft)
+    }
+}
+
+// Build the mixer in its own SwiftUI update. Merely erasing the already-built
+// mixer still resolves its layout types on the project window's startup stack.
+private struct NativeTrackMixerPane: View {
+    let spacing: CGFloat
+    let header: () -> AnyView
+    let viewport: () -> AnyView
+
+    var body: some View {
+        VStack(spacing: spacing) {
+            header()
+            viewport()
+        }
     }
 }
 
