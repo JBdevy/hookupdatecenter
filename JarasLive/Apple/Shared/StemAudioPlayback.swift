@@ -5691,7 +5691,9 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
                 // Prime in the background while the outgoing audio continues;
                 // keep the original deadline for last-instant clicks.
                 let lead = jump.host > nowHost ? AVAudioTime.seconds(forHostTime: jump.host - nowHost) : 0
-                if lead > max(0.10, elapsed * 2) {
+                // The previous UI tick can be late even when this beat is
+                // still far enough away to prepare asynchronously.
+                if lead > 0.10 {
                     if prepareDestination(beatDestination, snapshot, revision: revision, position: beat.destination) != nil { continue }
                 } else if beatDestination.task != nil { beatDestination.cancel() }
             }
