@@ -3068,7 +3068,7 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
             if (out[ch]) FloatVectorOperations::clear(out[ch], samples);
     }
     if (attached && !offlineMode && !offlineRendering && !exportCapture)
-        remoteMainAudio.push(masterBuffer.getReadPointer(0), masterBuffer.getReadPointer(1), unsigned(samples), unsigned(sr));
+        remoteMainAudio->push(masterBuffer.getReadPointer(0), masterBuffer.getReadPointer(1), unsigned(samples), unsigned(sr));
     if (!offlineMode && !offlineRendering) renderCountIn(out, channels, samples, sr);
     for (int ch = 0; ch < channels; ++ch)
         if (out[ch]) {

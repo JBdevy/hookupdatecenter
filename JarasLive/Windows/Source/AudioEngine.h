@@ -34,8 +34,8 @@ class ClipAudio;
 // Prepared readers, buffers and routing live outside the device callback.
 class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallback, private MidiKeyboardState::Listener, private Timer {
   public:
-    void setRemoteMainAudioStreaming(bool enabled) { remoteMainAudio.setEnabled(enabled); }
-    std::vector<uint8_t> takeRemoteMainAudio() { return remoteMainAudio.pop(); }
+    void setRemoteMainAudioStreaming(bool enabled) { remoteMainAudio->setEnabled(enabled); }
+    std::vector<uint8_t> takeRemoteMainAudio() { return remoteMainAudio->pop(); }
     VinhetasAudio vinhetas;
     void playLibrarySample(std::shared_ptr<VinhetasAudio::Sample>, float gain);
     void setLibrarySampleGain(float gain);
@@ -342,7 +342,8 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     var preparationDiagnostics;
 
   private:
-    jaras::audio::RemoteMainAudio remoteMainAudio;
+    // Allocate the fixed PCM ring once, off the render thread and off the Session stack.
+    std::unique_ptr<jaras::audio::RemoteMainAudio> remoteMainAudio = std::make_unique<jaras::audio::RemoteMainAudio>();
     NativeFX *effects(const ID &, int head = 0) const;
     int lastPrimedSources = 0;
     double lastPrimeWaitMilliseconds = 0;
