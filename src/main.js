@@ -1923,7 +1923,7 @@ async function downloadHookCenterUpdateInstaller() {
       cacheVersion: remoteValidator?.token || artifactIdentity,
       timeoutMs: 120000
     });
-    validateUpdateInstallerFile(partial);
+    await validateUpdateInstallerFile(partial);
     const integrity = getFileIntegrity(partial);
     const expectedHash = String(update.installerSha256 || '').trim().toLowerCase();
     if (expectedHash && integrity.sha256 !== expectedHash) {
@@ -2085,7 +2085,7 @@ async function installDownloadedHookCenterUpdate() {
   if (downloaded.platform && downloaded.platform !== process.platform) {
     throw new Error('O instalador baixado pertence a outro sistema operacional. Baixe novamente.');
   }
-  validateUpdateInstallerFile(dest);
+  await validateUpdateInstallerFile(dest);
   const integrity = getFileIntegrity(dest);
   const expectedHash = String(downloaded.sha256 || '').trim().toLowerCase();
   if (!/^[a-f0-9]{64}$/.test(expectedHash) || integrity.sha256 !== expectedHash) {
@@ -5489,7 +5489,7 @@ function validateExtensionBinaryFile(filePath, key = '') {
   throw new Error('O tipo do arquivo da extensão não pôde ser validado.');
 }
 
-function validateUpdateInstallerFile(filePath) {
+async function validateUpdateInstallerFile(filePath) {
   if (!filePath || !fs.existsSync(filePath)) {
     throw new Error('O instalador baixado não foi encontrado.');
   }
@@ -5498,15 +5498,11 @@ function validateUpdateInstallerFile(filePath) {
     throw new Error('O instalador baixado está vazio ou incompleto.');
   }
 
-  const handle = fs.openSync(filePath, 'r');
-  try {
-    if (process.platform === 'win32') {
-      const header = Buffer.alloc(2);
-      if (fs.readSync(handle, header, 0, header.length, 0) !== header.length ||
-          header[0] !== 0x4d || header[1] !== 0x5a) {
-        throw new Error('O instalador baixado não é um executável válido do Windows.');
-      }
-    } else if (process.platform === 'darwin') {
+  if (process.platform === 'win32') {
+    await require('./nsis-installer').validateNsisInstaller(filePath, stat.size);
+  } else if (process.platform === 'darwin') {
+    const handle = fs.openSync(filePath, 'r');
+    try {
       // Pacotes planos do macOS são arquivos XAR ("xar!").
       const signature = Buffer.alloc(4);
       const hasPkgHeader = fs.readSync(handle, signature, 0, signature.length, 0) === signature.length &&
@@ -5514,9 +5510,9 @@ function validateUpdateInstallerFile(filePath) {
       if (!hasPkgHeader) {
         throw new Error('O instalador baixado não é um pacote PKG válido do macOS.');
       }
+    } finally {
+      fs.closeSync(handle);
     }
-  } finally {
-    fs.closeSync(handle);
   }
   return true;
 }
@@ -5836,8 +5832,10 @@ async function cachedUpdateEntryIsReusable({
   try {
     if (!fs.statSync(target).isFile()) return false;
     const integrity = await getFileIntegrityAsync(target);
-    return integrity.size === Number(previousEntry.size) &&
-      integrity.sha256 === String(previousEntry.sha256).toLowerCase();
+    if (integrity.size !== Number(previousEntry.size) ||
+        integrity.sha256 !== String(previousEntry.sha256).toLowerCase()) return false;
+    if (entry.key === 'installer' && process.platform === 'win32') await validateUpdateInstallerFile(target);
+    return true;
   } catch (_) {
     return false;
   }
@@ -5982,7 +5980,7 @@ async function cacheUpdatePackage(updateOverride = null, options = {}) {
           if (isExtensionEntry) {
             validateExtensionBinaryFile(partial, entry.key);
           } else if (entry.key === 'installer') {
-            validateUpdateInstallerFile(partial);
+            await validateUpdateInstallerFile(partial);
           }
           await fs.promises.rm(dest, { force: true }).catch(() => {});
           await fs.promises.rename(partial, dest);
@@ -6208,7 +6206,7 @@ async function installCachedUpdatePackage(updateOverride = null, options = {}) {
   if (!cachedFiles.installer || !fs.existsSync(cachedFiles.installer)) {
     throw new Error('O instalador local da Hook Center não foi encontrado.');
   }
-  validateUpdateInstallerFile(cachedFiles.installer);
+  await validateUpdateInstallerFile(cachedFiles.installer);
   const installerExpectedHash = String(manifest.files?.installer?.sha256 || '').trim().toLowerCase();
   const installerIntegrity = getFileIntegrity(cachedFiles.installer);
   if (!/^[a-f0-9]{64}$/.test(installerExpectedHash) ||

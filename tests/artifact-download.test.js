@@ -4,6 +4,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { downloadArtifact } = require('../src/artifact-download');
+const { validateNsisInstaller } = require('../src/nsis-installer');
 
 const currentBody = Buffer.from('PUBLICACAO-NOVA-COMPLETA');
 let invalidRangeRequests = 0;
@@ -60,6 +61,28 @@ async function seedPartial(filename, url, etag) {
   }));
 }
 
+async function testInstallerIntegrity(root) {
+  const filename = path.join(root, 'installer.exe');
+  const installer = Buffer.alloc(8192);
+  installer.write('MZ');
+  Buffer.from('efbeadde4e756c6c736f6674496e7374', 'hex').copy(installer, 1028);
+  installer.writeUInt32LE(72, 1044);
+  installer.writeUInt32LE(installer.length - 1024, 1048);
+  installer.write('HOOK', 4096);
+  installer.writeUInt32LE(0xf290c026, installer.length - 4);
+
+  const withSigningData = Buffer.concat([installer, Buffer.alloc(64, 1)]);
+  fs.writeFileSync(filename, withSigningData);
+  await validateNsisInstaller(filename, withSigningData.length);
+
+  fs.writeFileSync(filename, installer.subarray(0, -1));
+  await assert.rejects(validateNsisInstaller(filename, installer.length - 1), /incompleto/);
+
+  installer[4096] ^= 1;
+  fs.writeFileSync(filename, installer);
+  await assert.rejects(validateNsisInstaller(filename, installer.length), /integridade/);
+}
+
 async function run() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vshook-download-test-'));
   const baseUrl = await listen();
@@ -91,6 +114,8 @@ async function run() {
     assert.deepEqual(fs.readFileSync(invalidFile), currentBody,
       'Uma faixa 206 incompatível deve reiniciar, nunca formar um arquivo hibrido.');
     assert.equal(fs.existsSync(`${invalidFile}.resume.json`), false);
+
+    await testInstallerIntegrity(root);
 
     console.log('ARTIFACT_DOWNLOAD_RESUME_OK');
   } finally {

@@ -47,6 +47,9 @@ jobs:
       - name: Validate controls-only Project Sync
         run: npm run test:project-sync
 
+      - name: Validate installer downloads and integrity checks
+        run: npm run test:artifact-download
+
       - name: Build Teleprompt Settings companion
         shell: pwsh
         env:
@@ -79,6 +82,13 @@ jobs:
 
       - name: Build Windows
         run: npm run build:win
+
+      - name: Check the packaged NSIS installer integrity
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath dist -File -Filter 'Hook-Center-*-Windows.exe')
+          if ($installers.Count -ne 1) { throw 'Esperado um instalador Windows do Hook Center.' }
+          node -e "const fs = require('node:fs'); const asar = require('@electron/asar'); const filename = process.argv[1]; asar.extractFile('dist/win-unpacked/resources/app.asar', 'src/nsis-installer.js'); require('./src/nsis-installer').validateNsisInstaller(filename, fs.statSync(filename).size).catch(error => { console.error(error); process.exitCode = 1; });" $installers[0].FullName
 
       - name: Validate Hook Center protocol payload
         shell: pwsh
