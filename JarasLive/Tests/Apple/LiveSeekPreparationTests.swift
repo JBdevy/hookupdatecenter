@@ -108,10 +108,12 @@ private final class ReadCounter: @unchecked Sendable {
 
     // The core already chose the beat. Keep ticking the outgoing transport
     // while the other head warms, then deliver the core's normal jump serial.
-    let boundary = target + 1.0, beatTarget = 60.5
+    let beatRequestedAt = ProcessInfo.processInfo.systemUptime
+    let beatLead = 1.25
+    let boundary = target + beatRequestedAt - seekStart + beatLead, beatTarget = 60.5
     state.transport.beatSeek = TransportBeatSeek(boundary: boundary, destination: beatTarget)
     var promoted = false, heardDestination = false
-    while ProcessInfo.processInfo.systemUptime < seekStart + 1.4 {
+    while ProcessInfo.processInfo.systemUptime < beatRequestedAt + beatLead + 0.4 {
         let now = ProcessInfo.processInfo.systemUptime
         let outgoing = target + now - seekStart
         if outgoing >= boundary && !promoted {
@@ -126,8 +128,10 @@ private final class ReadCounter: @unchecked Sendable {
         if outgoing > boundary + 0.2 { heardDestination = abs(sample - 3 * before) < 0.01 }
         try await Task.sleep(nanoseconds: 10_666_667)
     }
-    precondition(heardDestination && counter.counts().main == reads.main,
-                 "A queued ruler seek with sufficient lead must meet its beat without foreground PCM reads")
+    let afterBeatReads = counter.counts()
+    precondition(heardDestination, "The queued ruler seek did not play its destination at the beat")
+    precondition(afterBeatReads.main == reads.main,
+                 "The queued ruler seek read PCM on the interface thread: \(afterBeatReads.main - reads.main) reads")
 
     // Within the normal 150 ms timestamp tolerance, an explicit seek must
     // still replace the head at the exact new source position.
