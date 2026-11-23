@@ -2461,9 +2461,12 @@ try audioAutoreleasepool {
             return noErr
         }
     }
-    func waitForMeterRelease(from peak: Double) {
+    func waitForMeterRelease(from peak: Double, until isSilent: () -> Bool) {
         let release = 20 * log10(peak / 0.001) / TrackMeterLevel.releaseDecibelsPerSecond
-        RunLoop.main.run(until: Date().addingTimeInterval(release + 0.15))
+        let deadline = ProcessInfo.processInfo.systemUptime + release + 0.6
+        while !isSilent(), ProcessInfo.processInfo.systemUptime < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 30))
+        }
     }
     playback.setInputMonitor(track.id, source: monitor(), format: outputFormat)
     // Raw input metering bypasses the idle playback graph. Seed the received
@@ -2474,7 +2477,7 @@ try audioAutoreleasepool {
     playback.setInputMonitor(track.id, source: nil)
     precondition(meter.level > 0 && playback.masterMeter.level > 0,
         "disarm preserves the display release instead of abruptly clearing bars")
-    waitForMeterRelease(from: 0.4)
+    waitForMeterRelease(from: 0.4) { meter.level == 0 && playback.masterMeter.level == 0 }
     precondition(meter.level == 0 && playback.masterMeter.level == 0,
         "last disarm finishes the meter release instead of freezing the last sample")
     precondition(meter.peakHold.decibels == peak, "disarm preserves the independent held peak readout")
@@ -2484,7 +2487,7 @@ try audioAutoreleasepool {
     playback.setInputMonitor(track.id, source: nil)
     precondition(otherMeter.level > 0.01, "disarming one track preserves another armed input's metering")
     playback.setInputMonitor(other.id, source: nil)
-    waitForMeterRelease(from: 0.2)
+    waitForMeterRelease(from: 0.2) { otherMeter.level == 0 && meter.level == 0 }
     precondition(otherMeter.level == 0 && meter.level == 0)
     playback.prepareForClosing()
 }
