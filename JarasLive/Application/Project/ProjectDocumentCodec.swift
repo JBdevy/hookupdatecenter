@@ -97,6 +97,16 @@ public enum ProjectDocumentCodec {
         } else { throw ProjectError.invalid("Invalid or unsupported .jl project.") }
         var project = try JSONDecoder().decode(Project.self, from: plaintext)
         project.promoteLoopSectionMarkers()
+        for song in project.songs.indices {
+            for index in project.songs[song].tracks.indices {
+                let track = project.songs[song].tracks[index]
+                guard track.supportsMixerComponents, let midi = track.midiInput,
+                      let line = track.inputPatch, line.firstChannel > 0 else { continue }
+                if track.recordingChannels == TrackRecordingMode.midi.rawValue {
+                    project.songs[song].selectMIDIInput(midi, forTrack: index)
+                } else { project.songs[song].tracks[index].midiInput = nil }
+            }
+        }
         try project.validate()
         return project
     }

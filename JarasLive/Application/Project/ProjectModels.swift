@@ -110,6 +110,20 @@ public struct Track: Codable, Identifiable, Equatable, Sendable {
     public var parentTrackID: UUID?
     public var stereoLink: TrackStereoLink?
     public var inputPatch: OutputPatch?
+    mutating func selectLineInput(_ patch: OutputPatch) {
+        inputPatch = patch
+        if patch.firstChannel > 0 {
+            midiInput = nil
+            if recordingChannels == TrackRecordingMode.midi.rawValue { recordingChannels = patch.channelCount }
+        }
+    }
+    mutating func selectMIDIInput(_ slot: Int?) {
+        midiInput = slot
+        if slot != nil {
+            inputPatch = .some(.none)
+            if !receivesMain { recordingChannels = TrackRecordingMode.midi.rawValue }
+        }
+    }
     public var inputMonitoring: Bool?
     public func monitorsInput(armed: Bool) -> Bool {
         !receivesMain && (inputMonitoring ?? armed)
@@ -251,8 +265,23 @@ public extension Song {
             tracks[index].stereoLink = TrackStereoLink(partner: offset == 0 ? bottom.id : top.id, left: offset == 0, original: TrackLinkOriginal(original))
             tracks[index].name = (offset == 0 ? "L - " : "R - ") + original.name
             tracks[index].color = color; tracks[index].volume = top.volume; tracks[index].pan = offset == 0 ? -1 : 1
-            tracks[index].inputPatch = OutputPatch(firstChannel: firstInput + offset, channelCount: 1)
+            tracks[index].selectLineInput(OutputPatch(firstChannel: firstInput + offset, channelCount: 1))
         }
+    }
+    mutating func selectLineInput(_ patch: OutputPatch, forTrack index: Int) {
+        guard let link = tracks[index].stereoLink else {
+            tracks[index].selectLineInput(patch)
+            return
+        }
+        let first = min(1023, max(1, patch.firstChannel - (link.left ? 0 : 1)))
+        tracks[index].selectLineInput(patch == .none ? .none : OutputPatch(firstChannel: first + (link.left ? 0 : 1), channelCount: 1))
+        if let partner = tracks.firstIndex(where: { $0.id == link.partner }) {
+            tracks[partner].selectLineInput(patch == .none ? .none : OutputPatch(firstChannel: first + (link.left ? 1 : 0), channelCount: 1))
+        }
+    }
+    mutating func selectMIDIInput(_ slot: Int?, forTrack index: Int, clearLineInput: Bool = false) {
+        if slot != nil || clearLineInput { selectLineInput(.none, forTrack: index) }
+        tracks[index].selectMIDIInput(slot)
     }
     mutating func unlinkTracks(_ id: UUID) {
         guard let index = tracks.firstIndex(where: { $0.id == id }), let link = tracks[index].stereoLink else { return }
@@ -1218,6 +1247,8 @@ public enum TrackKind: String, CaseIterable, Sendable {
         default: return nil
         }
     }
+    public var supportsTrackSolo: Bool { self == .standard || self == .click || self == .video || self == .programChange }
+    public var supportsTrackMute: Bool { supportsTrackSolo || self == .timecode }
     public var isTeleprompter: Bool { self == .teleprompt || self == .teleprompt2 }
     public var isText: Bool { isTeleprompter || self == .chords }
     public var isSingleLane: Bool { isText || self == .video }

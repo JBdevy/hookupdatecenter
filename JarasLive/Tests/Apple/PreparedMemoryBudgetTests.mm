@@ -44,7 +44,26 @@ int main() {
         }
         auto next = make();
         assert(next->stretch.handle() == idleSeed);
-        active.reset(); idle.reset(); next.reset(); reader.reset();
+        const auto peakReservation = active->stretchGroup->reservedStates;
+        next.reset(); idle.reset();
+        // One voice keeps the file alive while another repeatedly changes
+        // media or is destroyed. Only voices currently using it own a slot.
+        auto otherReader = std::make_shared<PreparedPCMReader>(reader->file);
+        for (int iteration = 0; iteration < 12; ++iteration) {
+            auto changing = make();
+            assert(active->stretchGroup->registeredVoices == 2);
+            changing->cache = std::make_shared<PreparedPCMCache>(otherReader);
+            changing->configureStretchGroup();
+            assert(active->stretchGroup->registeredVoices == 1);
+            changing->cache = std::make_shared<PreparedPCMCache>(reader);
+            changing->configureStretchGroup();
+            assert(changing->stretchGroup == active->stretchGroup);
+            changing.reset();
+            assert(active->stretchGroup->registeredVoices == 1);
+            assert(active->stretchGroup->reservedStates == peakReservation);
+        }
+        otherReader.reset(); active.reset(); reader.reset();
+        std::cout << "PREPARED_REBIND_AND_RELEASE_KEEPS_SHARED_DSP_CAPACITY_BOUNDED_OK\n";
         assert([JarasPreparedClip memoryDiagnostics][@"caches"].unsignedLongLongValue == 0);
         assert([JarasPreparedClip memoryDiagnostics][@"readers"].unsignedLongLongValue == 0);
         assert([JarasPreparedClip memoryDiagnostics][@"stretchStates"].unsignedLongLongValue == 0);

@@ -464,6 +464,11 @@ class Presentation final {
                 save();
             return true;
         }
+        if (a == "tapTempo") {
+            if (c.target.empty()) session.tapTempo();
+            else session.tapTempo(c.value, c.target);
+            return true;
+        }
         if (a == "tempo") {
             session.setTempo(c.value);
             return true;

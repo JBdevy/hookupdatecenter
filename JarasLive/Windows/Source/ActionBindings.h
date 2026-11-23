@@ -237,6 +237,7 @@ class ActionBindings final : public ChangeBroadcaster,
         cancelPendingUpdate();
     }
     std::function<void(const String &, float, int)> invoke;
+    double eventTime() const { return currentMIDIEventTime.value_or(Time::getMillisecondCounterHiRes() / 1000.); }
     std::function<bool(int,int,int,int)> rawMIDI;
     std::function<bool(MidiInput *,const MidiMessage &)> claimedMIDI;
     std::function<String(const var &)> externalMIDIConflict;
@@ -479,7 +480,9 @@ class ActionBindings final : public ChangeBroadcaster,
     AudioDeviceManager &devices;
     struct Input {
         int status = 0, number = 0, value = 0, channel = 0;
+        double time = 0;
     };
+    std::optional<double> currentMIDIEventTime;
     AbstractFifo queue{256};
     CriticalSection producers;
     std::array<Input, 256> pending;
@@ -494,12 +497,13 @@ class ActionBindings final : public ChangeBroadcaster,
         if (!inputEnabled.load(std::memory_order_relaxed)) return;
         if (!message.isNoteOnOrOff() && !message.isController())
             return;
+        const double arrival = Time::getMillisecondCounterHiRes() / 1000.;
         const ScopedLock lock(producers);
         int start, count, other, unused;
         queue.prepareToWrite(1, start, count, other, unused);
         if (count) {
             const auto *bytes = message.getRawData();
-            pending[(size_t)start] = {bytes[0] & 0xf0, bytes[1], bytes[2], message.getChannel()};
+            pending[(size_t)start] = {bytes[0] & 0xf0, bytes[1], bytes[2], message.getChannel(), arrival};
             queue.finishedWrite(1);
             triggerAsyncUpdate();
         }
@@ -513,6 +517,7 @@ class ActionBindings final : public ChangeBroadcaster,
             const auto input = pending[(size_t)start];
             queue.finishedRead(1);
             if (!inputEnabled.load(std::memory_order_relaxed)) continue;
+            const ScopedValueSetter<std::optional<double>> eventTimeScope(currentMIDIEventTime, input.time);
             const bool release = input.status == 0x80 || input.value == 0;
             const int pressedKey = ((input.status == 0x80 ? 0x90 : input.status) << 16) | (input.channel << 8) | input.number;
             const bool wasHeld = heldMIDI.count(pressedKey) != 0;
@@ -567,7 +572,7 @@ class ActionBindings final : public ChangeBroadcaster,
                         (int)num(midi, "channel") != input.channel) continue;
                     const String action(definition.id);
                     const bool oncePerPress = action == "cancelSection" || action == "togglePreview" ||
-                                              action == "playStop" || action == "subPlayStop";
+                                              action == "playStop" || action == "subPlayStop" || action == "tapTempo";
                     if (invoke && (definition.continuous || input.value > 0) &&
                         (!oncePerPress || !wasHeld))
                         invoke(definition.id, input.value / 127.f, number);

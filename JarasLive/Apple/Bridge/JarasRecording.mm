@@ -44,11 +44,15 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
 }
 - (void)pushBuffer:(AVAudioPCMBuffer *)buffer { [self pushBuffer:buffer hostTime:0]; }
 - (void)pushBuffer:(AVAudioPCMBuffer *)buffer hostTime:(uint64_t)hostTime {
-    if (!buffer.floatChannelData || buffer.format.channelCount != _channels || !_capacity) return;
+    const auto channels = buffer.floatChannelData;
+    if (!channels || buffer.format.channelCount != _channels || !_capacity) return;
+    const NSUInteger frameCount = buffer.frameLength;
+    const NSUInteger stride = buffer.stride;
     // Input indication is independent of recording and monitor audibility.
-    for(NSUInteger c=0;c<_channels;++c) {
-        float peak=0;
-        for(NSUInteger f=0;f<buffer.frameLength;++f) peak=std::max(peak,std::abs(buffer.floatChannelData[c][f*buffer.stride]));
+    for (NSUInteger c = 0; c < _channels; ++c) {
+        const float *input = channels[c];
+        float peak = 0;
+        for (NSUInteger f = 0; f < frameCount; ++f) peak = std::max(peak, std::abs(input[f * stride]));
         auto previous=_inputPeaks[c].load(std::memory_order_relaxed);
         while(peak>previous && !_inputPeaks[c].compare_exchange_weak(previous,peak,std::memory_order_relaxed)) {}
     }
@@ -56,22 +60,24 @@ static bool JarasWriteMP3GaplessTag(lame_t encoder, FILE *output,
     if (!_captureState.compare_exchange_strong(accepting, 3, std::memory_order_acquire)) return;
     // The input tap may batch far more frames than its requested buffer size.
     // Publish the actual producer quantum before publishing the corresponding PCM.
-    _inputBlockFrames.store(std::max<uint64_t>(_inputBlockFrames.load(std::memory_order_relaxed), buffer.frameLength), std::memory_order_relaxed);
+    _inputBlockFrames.store(std::max<uint64_t>(_inputBlockFrames.load(std::memory_order_relaxed), frameCount), std::memory_order_relaxed);
     uint64_t skipped=0;
     const auto startHost=_startHost.load(std::memory_order_relaxed);
     if(startHost) {
         const auto firstHost=hostTime ? hostTime : mach_absolute_time();
         if(startHost>firstHost) {
             const auto frames=[AVAudioTime secondsForHostTime:startHost-firstHost]*buffer.format.sampleRate;
-            skipped=uint64_t(std::min(double(buffer.frameLength),std::ceil(frames-1e-8)));
+            skipped=uint64_t(std::min(double(frameCount),std::ceil(frames-1e-8)));
         }
     }
-    const auto available=buffer.frameLength-skipped;
+    const auto available=frameCount-skipped;
     auto write=_write.load(std::memory_order_relaxed), read=_read.load(std::memory_order_acquire);
     auto count=std::min<uint64_t>(available, _capacity-(write-read));
-    auto channels=buffer.floatChannelData;
-    for(uint64_t f=0;f<count;++f) for(NSUInteger c=0;c<_channels;++c)
-        _samples[((write+f)%_capacity)*_channels+c]=channels[c][(f+skipped)*buffer.stride];
+    for (uint64_t f = 0; f < count; ++f) {
+        float *output = _samples.data() + ((write + f) % _capacity) * _channels;
+        const auto offset = (f + skipped) * stride;
+        for (NSUInteger c = 0; c < _channels; ++c) output[c] = channels[c][offset];
+    }
     _write.store(write+count,std::memory_order_release);
     _dropped.fetch_add(available-count,std::memory_order_relaxed);
     _captureState.fetch_and(~2u, std::memory_order_release);

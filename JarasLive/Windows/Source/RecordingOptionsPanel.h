@@ -28,10 +28,22 @@ class RecordingOptionsPanel final : public Component, private Timer {
         modes.changed = [this](int choice) {
             if(this->track() && this->track()->role.id=="vinhetas" && choice==2)return;
             const int channels = choice == 2 ? 0 : choice + 1;
-            change([channels](jaras::Track &track) {
-                track.recordingChannels = channels;
-                if (channels == 0 && !track.midiInput) track.midiInput = 1;
-            });
+            if (channels == 0) {
+                if (session.busy || session.audio.isRecording()) { refresh(); return; }
+                try {
+                    const auto first = session.firstAvailableMIDIInputSlot();
+                    session.editTrackSettings([&](jaras::Project &project) {
+                        for (auto &song : project.songs) for (auto &track : song.tracks) {
+                            if (!targets.count(track.id) || !track.supportsMixerComponents() || track.receivesMain()) continue;
+                            jaras::selectMIDIInput(song, track, track.midiInput ? track.midiInput : first, true);
+                            track.recordingChannels = 0;
+                        }
+                    });
+                } catch (const std::exception &failure) {
+                    if (error) error(String::fromUTF8(failure.what()));
+                }
+                refresh();
+            } else change([channels](jaras::Track &track) { track.recordingChannels = channels; });
         };
         addAndMakeVisible(format);
         format.setComponentID("recordingFormat");

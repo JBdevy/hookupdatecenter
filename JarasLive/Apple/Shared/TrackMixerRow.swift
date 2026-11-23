@@ -1468,6 +1468,7 @@ struct TrackMixerRow: View, Equatable {
                 let valid = range?.song == show.current?.id
                 show.addMIDIItem(track: track.id, start: valid ? range?.start : nil, duration: valid ? range.map { $0.end - $0.start } : nil)
             } : nil, duplicateTracks: duplicateSelection, deleteTracks: deleteSelection, deleteTrackCount: deletionTargets.count,
+                cursorMix: { tool in tool.apply(to: track.id, show: show) },
                 componentMask: track.supportsMixerComponents ? { show.hiddenTrackMixerComponents(deletionTargets) } : nil,
                 toggleComponent: { component in
                     guard show.snapshot.project.id == project else { return }
@@ -1804,6 +1805,36 @@ struct PatchButton: View {
             }
     }
 }
+
+struct PatchOutputControls: View {
+    let outputs: [OutputPatch]
+    let outputChoices: [OutputPatch]
+    var canAdd = true
+    let edit: ((inout [OutputPatch]) -> Void) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Output").font(.jarasSubheadline.bold())
+                Spacer()
+                Button { edit { $0.append(.none) } } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add output").disabled(!canAdd)
+            }
+            ForEach(Array(outputs.enumerated()), id: \.offset) { entry in
+                let slot = entry.offset
+                HStack {
+                    Picker("Output", selection: Binding(get: { outputs.indices.contains(slot) ? outputs[slot] : .none }, set: { value in edit { if $0.indices.contains(slot) { $0[slot] = value } } })) {
+                        if !outputChoices.contains(entry.element) { Text(entry.element.title + " — " + JarasLocalization.string("Unavailable")).tag(entry.element) }
+                        ForEach(outputChoices, id: \.self) { Text($0.title).tag($0) }
+                    }.labelsHidden()
+                    Button { edit { if $0.indices.contains(slot) { $0.remove(at: slot) } } } label: { Image(systemName: "minus.circle") }
+                        .accessibilityLabel("Remove output")
+                }.id("patch-output-\(slot)")
+            }
+        }
+    }
+}
+
 struct PatchEditor: View {
     @ObservedObject var show: ShowController
     let track: UUID?
@@ -1881,23 +1912,7 @@ struct PatchEditor: View {
                         #endif
                     }
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("Output").font(.jarasSubheadline.bold())
-                            Spacer()
-                            Button { editOutputs { $0.append(.none) } } label: { Image(systemName: "plus") }
-                                .accessibilityLabel("Add output")
-                        }
-                        ForEach(Array(outputs.enumerated()), id: \.offset) { entry in
-                            let slot = entry.offset
-                            HStack {
-                                Picker("Output", selection: Binding(get: { outputs.indices.contains(slot) ? outputs[slot] : .none }, set: { value in editOutputs { if $0.indices.contains(slot) { $0[slot] = value } } })) {
-                                    if !outputChoices.contains(entry.element) { Text(entry.element.title + " — " + JarasLocalization.string("Unavailable")).tag(entry.element) }
-                                    ForEach(outputChoices, id: \.self) { Text($0.title).tag($0) }
-                                }.labelsHidden()
-                                Button { editOutputs { if $0.indices.contains(slot) { $0.remove(at: slot) } } } label: { Image(systemName: "minus.circle") }
-                                    .accessibilityLabel("Remove output")
-                            }.id("patch-output-\(slot)")
-                        }
+                        PatchOutputControls(outputs: outputs, outputChoices: outputChoices, edit: editOutputs)
                         if settings?.kind == .standard && settings?.role.rawValue != "vinhetas" {
                             ForEach([true, false], id: \.self) { receive in
                                 Divider()
@@ -3061,13 +3076,14 @@ private struct TrackRightClickInput: NSViewRepresentable {
     var duplicateTracks: (() -> Void)? = nil
     var deleteTracks: (() -> Void)? = nil
     var deleteTrackCount = 1
+    var cursorMix: ((ProGridTool) -> Void)? = nil
     var componentMask: (() -> Int)? = nil
     var toggleComponent: ((TrackMixerComponent) -> Void)? = nil
     var cancelScan: (() -> Void)? = nil
     func makeNSView(context: Context) -> TrackRightClickView { TrackRightClickView() }
     func updateNSView(_ view: TrackRightClickView, context: Context) {
         view.interactionBlocked = interactionBlocked; view.project = project; view.track = track; view.kind = kind; view.dragName = dragName; view.selected = selected; view.select = select; view.patch = patch; view.fx = fx; view.edit = edit; view.icon = icon; view.group = group; view.ungroup = ungroup; view.removeFromGroup = removeFromGroup; view.link = link; view.unlink = unlink; view.soundDesigner = soundDesigner; view.createMIDI = createMIDI; view.duplicateTracks = duplicateTracks; view.deleteTracks = deleteTracks; view.deleteTrackCount = deleteTrackCount
-        view.componentMask = componentMask; view.toggleComponent = toggleComponent; view.cancelScan = cancelScan
+        view.cursorMix = cursorMix; view.componentMask = componentMask; view.toggleComponent = toggleComponent; view.cancelScan = cancelScan
         view.action = { [weak view] in view?.openMenu() }
     }
 }
@@ -3182,15 +3198,20 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
             return source.compact ? point.x : -point.y
         }
         let origin = position(source)
-        let candidates = titles.allObjects.filter {
-            $0.window === window && $0.enclosingScrollView === scroll && $0.compact == source.compact &&
-            $0.project == source.project && $0.track != source.track && !$0.isHiddenOrHasHiddenAncestor &&
-            $0.editableName != nil && $0.rename != nil && $0.interactionEnabled &&
-            (position($0) - origin) * CGFloat(direction) > 0.5
+        var nearest: (title: TrackDragTitleView, distance: CGFloat)?
+        for title in titles.allObjects {
+            guard title.window === window, title.compact == source.compact,
+                  title.project == source.project, title.track != source.track, title.interactionEnabled,
+                  title.editableName != nil, title.rename != nil,
+                  !title.isHiddenOrHasHiddenAncestor, title.enclosingScrollView === scroll else { continue }
+            let distance = (position(title) - origin) * CGFloat(direction)
+            if distance > 0.5 && distance < (nearest?.distance ?? .infinity) {
+                nearest = (title, distance)
+            }
         }
-        guard let next = candidates.min(by: { abs(position($0) - origin) < abs(position($1) - origin) }) else { return }
+        guard let next = nearest?.title else { return }
         source.finishRename(save: true)
-        next.scrollToVisible(next.bounds)
+        if !next.visibleRect.contains(next.bounds) { next.scrollToVisible(next.bounds) }
         next.select?()
         _ = next.beginRename()
     }
@@ -3229,12 +3250,22 @@ final class TrackControlSelectionExclusionView: NSView, NativeTimelineInputObser
         }
         guard let row = matches.min(by: { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }) else { return }
         pressedTrack = row.track
+        let tool = ProGridTool.current
+        let cursorMix = tool.appliesToTrack ? row.cursorMix : nil
         if controls.allObjects.contains(where: { button in
-            if (button as? TrackControlSelectionExclusionView)?.selectsTrack == true { return false }
+            if cursorMix == nil, (button as? TrackControlSelectionExclusionView)?.selectsTrack == true { return false }
             let point = button.convert(event.locationInWindow, from: nil)
             return button.window === window && !button.isHiddenOrHasHiddenAncestor &&
                 button.bounds.contains(point) && button.visibleRect.contains(point)
         }) { return }
+        if let cursorMix {
+            let track = row.track
+            pendingSelection = { [weak row] in
+                guard let row, row.track == track, row.window === window else { return }
+                cursorMix(tool)
+            }
+            return
+        }
         // The title already owns its native drag source. All other unoccupied
         // space uses this row, while registered controls retain their gestures.
         if let root = window.contentView {
@@ -3320,6 +3351,7 @@ private final class TrackRightClickView: RightClickTargetView {
     var project = UUID()
     var track = UUID()
     var select: (() -> Void)?
+    var cursorMix: ((ProGridTool) -> Void)?
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { TrackSelectionRouter.shared.add(self) }
@@ -3533,12 +3565,15 @@ private final class TrackDragTitleView: NSView, NSTextFieldDelegate {
         TrackSelectionRouter.shared.editingTitle = self
         nameField = field; addSubview(field)
         needsDisplay = true
-        // The second mouse-up may still finish a pending row selection.
-        // Focus the new field after that native event finishes dispatching.
-        DispatchQueue.main.async { [weak self, weak field] in
+        let focus = { [weak self, weak field] in
             guard let self, let field, self.nameField === field,
                   NativeTimelineKeyboardFocus.activate(window: self.window, responder: field) else { return }
             (field.currentEditor() as? NSTextView)?.selectAll(nil)
+        }
+        if event == nil { focus() }
+        else {
+            // Finish the mouse event before changing focus after a double-click.
+            DispatchQueue.main.async(execute: focus)
         }
         return true
     }
@@ -6290,6 +6325,7 @@ struct ProgramChangeTrackRow: View {
             .overlay(TrackRightClickInput(project: show.snapshot.project.id, track: track.id, kind: .programChange,
                 selected: selected, select: select, patch: { patch = true }, fx: {},
                 group: nil, ungroup: nil, deleteTracks: deleteTrack,
+                cursorMix: { tool in tool.apply(to: track.id, show: show) },
                 cancelScan: scanning ? { mappings.cancelProgramChangeScan() } : nil))
             .workspaceEditor("Patch", isPresented: $patch, scrolls: false) { patchEditor }
             .workspaceEditor("Program Change", isPresented: $naming) { nameEditor }

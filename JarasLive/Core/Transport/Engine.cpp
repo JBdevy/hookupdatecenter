@@ -829,7 +829,10 @@ void Engine::setMIDIInput(const ID& id, int slot) {
     if(slot < 0 || slot > 6) throw std::invalid_argument("Invalid MIDI input");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
         if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
-        track.midiInput = slot == 0 ? std::nullopt : std::optional<int>(slot); return;
+        const auto input = slot == 0 ? std::nullopt : std::optional<int>(slot);
+        if (track.supportsMixerComponents()) selectMIDIInput(song, track, input);
+        else track.midiInput = input;
+        return;
     }
     throw std::invalid_argument("Unknown MIDI track");
 }
@@ -855,6 +858,8 @@ void Engine::setRecordingChannels(const ID& id, int channel) {
     if(channel < 0 || channel > 2) throw std::invalid_argument("Invalid recording channel mode");
     for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
         if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
+        if (channel == 0 && track.supportsMixerComponents() && !track.receivesMain())
+            selectMIDIInput(song, track, track.midiInput, true);
         track.recordingChannels = channel == 0 && track.receivesMain() ? 2 : channel; return;
     }
     throw std::invalid_argument("Unknown MIDI track");
@@ -862,12 +867,12 @@ void Engine::setRecordingChannels(const ID& id, int channel) {
 void Engine::setRecording(const ID& id, int first, int count, std::string format) {
     projectSync::requireWritable();
     if(first < 1 || count < 1 || count > 2 || (format != "wav" && format != "wav32" && format != "mp3")) throw std::invalid_argument("Invalid recording settings");
-    for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) { if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX"); if (track.stereoLinkPartner) {
-        const int top = std::clamp(first - (track.stereoLinkLeft ? 0 : 1), 1, 1023);
-        track.inputPatch = OutputPatch{top + (track.stereoLinkLeft ? 0 : 1), 1};
-        for (auto& other : song.tracks) if (other.id == *track.stereoLinkPartner && other.stereoLinkPartner == track.id)
-            other.inputPatch = OutputPatch{top + (track.stereoLinkLeft ? 1 : 0), 1};
-    } else track.inputPatch = OutputPatch{first,count}; track.recordingFormat = std::move(format); return; }
+    for(auto& song : project_.songs) for(auto& track : song.tracks) if(track.id == id) {
+        if (isTeleprompterRole(track.role) || track.role.id == "chords" || track.role.id == "generatedClick") throw std::invalid_argument("This special track cannot contain FX");
+        selectLineInput(song, track, {first, count});
+        track.recordingFormat = std::move(format);
+        return;
+    }
     throw std::invalid_argument("Unknown track");
 }
 void Engine::pasteItems(const ID& songID, std::vector<Track> tracks, bool moving) {
@@ -951,13 +956,33 @@ void Engine::editMasterColor(unsigned color) {
     if (color > 0xffffff) throw std::invalid_argument("Invalid master color");
     project_.masterColor = color;
 }
-void Engine::editTrack(const ID& id, std::string name, unsigned color) {
+void Engine::editTrack(const ID& id, std::string name, std::optional<unsigned> color) {
     projectSync::requireWritable();
-    if (name.empty() || color > 0xffffff) throw std::invalid_argument("Invalid track name or color");
+    if (name.empty() || (color && *color > 0xffffff)) throw std::invalid_argument("Invalid track name or color");
     for (auto& song : project_.songs) for (auto& track : song.tracks) if (track.id == id) {
-        track.name = fixedTrackName(track.role).empty() ? std::move(name) : fixedTrackName(track.role); track.color = color; return;
+        track.name = fixedTrackName(track.role).empty() ? std::move(name) : fixedTrackName(track.role);
+        if (color) track.color = *color;
+        return;
     }
     throw std::invalid_argument("Unknown track");
+}
+bool Engine::soloTrackExclusively(const ID& id) {
+    projectSync::requireWritable();
+    for (auto& song : project_.songs) if (song.id == transport_.songId) {
+        const auto target = std::find_if(song.tracks.begin(), song.tracks.end(), [&](const auto& track) {
+            return track.id == id;
+        });
+        if (target == song.tracks.end() || (!fixedTrackName(target->role).empty() &&
+            target->role.id != "video" && target->role.id != "generatedClick" && target->role.id != "programChange")) return false;
+        bool changed = false;
+        for (auto& track : song.tracks) {
+            const bool solo = track.id == id;
+            changed |= track.solo != solo;
+            track.solo = solo;
+        }
+        return changed;
+    }
+    return false;
 }
 std::map<ID, int> Engine::setTrackMixerComponents(const ID& songID, const std::map<ID, int>& masks) {
     projectSync::requireWritable();

@@ -1,5 +1,6 @@
 #pragma once
 #include "../../Core/Audio/DrummerPad.hpp"
+#include "../../Core/Audio/CatSynth.hpp"
 #include "Common.h"
 #include "Include/EQAnalysis.hpp"
 #include "../../WindowsNative/Source/StemSeparator.h"
@@ -68,6 +69,7 @@ public:
     std::shared_ptr<native::vst3::Processor> external(const String &key) const;
     void captureExternalState(var &) const;
     std::shared_ptr<jaras::audio::DrummerPad> drummerVoice(const String &key) const;
+    std::shared_ptr<jaras::audio::CatSynth> synthVoice(const String &key) const;
     StringArray unsupported;
 private:
     struct Effect;

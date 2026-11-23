@@ -2,6 +2,77 @@ import SwiftUI
 #if os(iOS)
 import UIKit
 #endif
+
+struct SelectionTempoRequest: Identifiable {
+    let id = UUID()
+    let song: Song
+    let range: ClosedRange<Double>
+    let directory: URL?
+
+    @MainActor init?(selection: TimelineAreaSelection.Range, song: Song, documents: ProjectDocuments) {
+        guard selection.song == song.id, selection.end > selection.start else { return nil }
+        self.song = song
+        range = selection.start...selection.end
+        directory = documents.currentURL?.deletingLastPathComponent() ?? documents.projectAudio.mediaDirectory
+    }
+}
+
+@MainActor struct SelectionTempoResultView: View {
+    let request: SelectionTempoRequest
+    let close: () -> Void
+    @Environment(\.locale) private var locale
+    @State private var fraction = 0.0
+    @State private var result: String?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let result {
+                Text("BPM detected.").font(.jarasHeadline)
+                Text(verbatim: result).font(.jarasTitle).monospacedDigit().textSelection(.enabled)
+            } else if let error {
+                Text("Detect BPM").font(.jarasHeadline)
+                Text(verbatim: error).font(.jarasBody)
+            } else {
+                BPMDetectionProgress(fraction: fraction)
+            }
+            HStack {
+                Spacer()
+                if result != nil || error != nil {
+                    Button("OK", action: close).keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Cancel", role: .cancel, action: close).keyboardShortcut(.cancelAction)
+                }
+            }
+        }
+        .padding(24).frame(width: 320)
+        .task(id: request.id) { await analyze() }
+    }
+
+    private func analyze() async {
+        guard let directory = request.directory else {
+            error = JarasLocalization.string("The project media folder is unavailable.")
+            return
+        }
+        do {
+            let bpm = try await SelectionTempoAnalysis.detect(song: request.song, range: request.range,
+                directory: directory) { value in
+                    Task { @MainActor in fraction = max(fraction, value) }
+                }
+            try Task.checkCancellation()
+            if let bpm {
+                result = bpm.formatted(.number.locale(locale).precision(.fractionLength(0...2))) + " BPM"
+            } else {
+                error = JarasLocalization.string("No stable tempo was found in the selected audio.")
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            if !Task.isCancelled { self.error = error.localizedDescription }
+        }
+    }
+}
+
 struct RegionEditor: View {
     let region: Part
     let initialColor: UInt32

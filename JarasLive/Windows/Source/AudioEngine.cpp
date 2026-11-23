@@ -1257,7 +1257,7 @@ void AudioEngine::prepareSong(const jaras::Song &song, const File &directory,
             bus->mute = track.mute;
             bus->solo = track.solo;
             bus->phase = track.phaseInverted.value_or(false);
-            bus->inputFirst = !bus->vinhetasBus && track.inputPatch ? track.inputPatch->firstChannel : 0;
+            bus->inputFirst = !bus->vinhetasBus && !track.midiInput && track.inputPatch ? track.inputPatch->firstChannel : 0;
             bus->inputChannels = track.inputPatch ? track.inputPatch->channelCount : 2;
             bus->inputMonitoring = monitorMode(track);
             bus->outputs = track.outputPatches();
@@ -3067,6 +3067,8 @@ void AudioEngine::render(float *const *out, int channels, int samples, const flo
         for (int ch = 0; ch < channels; ++ch)
             if (out[ch]) FloatVectorOperations::clear(out[ch], samples);
     }
+    if (attached && !offlineMode && !offlineRendering && !exportCapture)
+        remoteMainAudio.push(masterBuffer.getReadPointer(0), masterBuffer.getReadPointer(1), unsigned(samples), unsigned(sr));
     if (!offlineMode && !offlineRendering) renderCountIn(out, channels, samples, sr);
     for (int ch = 0; ch < channels; ++ch)
         if (out[ch]) {

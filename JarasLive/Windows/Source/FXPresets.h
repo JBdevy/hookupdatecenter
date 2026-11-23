@@ -26,6 +26,7 @@ inline const StringArray &fields(const String &kind) {
         {"Reverb", {"reverbEnabled", "reverbRoom", "reverbMix", "reverbDecay", "reverbLowCut", "reverbHighCut", "reverbChannels"}},
         {"Chorus", {"chorusEnabled", "chorus"}}, {"Phaser", {"phaserEnabled", "phaser"}},
         {"Drummer Pad 16", {"drummer16Enabled", "drummer16"}}, {"Drummer Pad 48", {"drummer48Enabled", "drummer48"}},
+        {"CatSynth", {"catSynthEnabled", "catSynth"}},
         {"Arpeggiator", {"arpeggiatorEnabled"}}, {"Amp", {"ampEnabled", "amp"}}, {"Soft Clipper", {"softClipperEnabled", "softClipper"}}, {"Gate Divisor", {"divisionGateEnabled", "divisionGate"}},
         {"Instruments", {"instrumentID", "instrumentParameters", "instrumentBypassed"}}};
     static const StringArray empty;

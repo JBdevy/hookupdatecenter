@@ -23,7 +23,9 @@ import XCTest
     func execute(_ command: ShowCommand, target: UUID?, value: Double) throws {
         commands.append(command)
         switch command {
-        case .play: transport.playing = true
+        case .play: transport.playing = true; transport.paused = false
+        case .subPlay: transport.subPlay.playing = true
+        case .pause: transport.playing = false; transport.paused = true
         case .stop, .stopAll: transport.playing = false; transport.subPlay.playing = false
         case .subSeek: transport.subPlay.position = value
         case .editSeek: transport.editPosition = value; transport.position = value
@@ -160,6 +162,46 @@ final class ProjectSessionResetTests: XCTestCase {
             XCTAssertEqual(show.snapshot.project.masterAutomation, automation,
                            "Discarded recording must never overwrite the reloaded document")
         }
+    }
+
+    @MainActor func testTapTempoRequiresStoppedHeadsAndUsesFreshIntervalsAfterStop() throws {
+        var project = project()
+        project.songs[0].parts = []
+        project.songs[0].bpm = 100
+        let show = try ShowController(executor: SessionResetExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+        let remote = UUID()
+        show.tapTempo(at: 1000, source: remote)
+        show.tapTempo(at: 1000.5, source: remote)
+        XCTAssertEqual(show.tempoControlBPM, 120)
+        for (start, stop) in [(ShowCommand.play, ShowCommand.pause), (.subPlay, .stopAll)] {
+            show.send(start)
+            XCTAssertTrue(show.isPlaying)
+            show.tapTempo(at: 1001.5, source: remote)
+            show.performAction(.tapTempo)
+            XCTAssertEqual(show.tempoControlBPM, 120)
+            show.send(stop)
+            XCTAssertFalse(show.isPlaying)
+            show.tapTempo(at: 1002, source: remote)
+            XCTAssertEqual(show.tempoControlBPM, 120)
+            show.tapTempo(at: 1003, source: remote)
+            XCTAssertEqual(show.tempoControlBPM, 60)
+            show.resetTapTempo()
+            show.tapTempo(at: 1000, source: remote)
+            show.tapTempo(at: 1000.5, source: remote)
+            XCTAssertEqual(show.tempoControlBPM, 120)
+        }
+        show.recordingBlocksTapTempo = { true }
+        show.tapTempo(at: 1001.5, source: remote)
+        XCTAssertEqual(show.tempoControlBPM, 120)
+        show.recordingBlocksTapTempo = { false }
+        show.tapTempo(at: 50)
+        XCTAssertEqual(show.tempoControlBPM, 120, "Local and remote clocks have different origins")
+        show.tapTempo(at: 50.75)
+        XCTAssertEqual(show.tempoControlBPM, 80)
+        show.tapTempo(at: 50.75)
+        show.tapTempo(at: 50.25)
+        show.tapTempo(at: 51.5)
+        XCTAssertEqual(show.tempoControlBPM, 80, "Repeated or out-of-order events must not restart the series")
     }
 
     @MainActor func testOpeningSessionClearsTapHistoryButPreservesGlobalAuthorizationAndBypass() throws {

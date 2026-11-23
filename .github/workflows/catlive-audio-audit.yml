@@ -61,6 +61,8 @@ jobs:
       - name: Validate prepared PCM, mobile clock and native output mapping
         run: |
           bash scripts/test-prepared-clip-audio.sh
+          bash scripts/test-prepared-memory-budget.sh
+          bash scripts/test-buffered-audio-output.sh
           bash scripts/test-mobile-audio-driver.sh
           bash scripts/test-audio-output-connection.sh
       - name: Prepare generated native instrument fixture
@@ -85,6 +87,9 @@ jobs:
             Tests/Apple/MobileQueueSyncTests.swift \
             Tests/Apple/AudioPhaseTests.swift \
             Tests/Apple/AudioMediaPreparationTests.swift \
+            Tests/Apple/PlaybackMediaCacheTests.swift \
+            Tests/Apple/SubplayMediaPreparationTests.swift \
+            Tests/Apple/LiveSeekPreparationTests.swift \
             Tests/Apple/AutomationAudioTests.swift \
             Tests/Apple/ItemGainOrderTests.swift \
             Tests/Apple/RecordingItemSilenceTests.swift \

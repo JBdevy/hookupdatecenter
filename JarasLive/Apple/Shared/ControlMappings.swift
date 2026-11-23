@@ -363,7 +363,7 @@ struct MappingTransferRequest: Identifiable {
             persistActions(); persist()
         }
     }
-    private func execute(_ input: ControlInput) {
+    private func execute(_ input: ControlInput, midiTime: Double? = nil) {
         guard let show else { return }
         if let entry = current.first(where: { $0.input.matches(input) }) {
             if let number = entry.globalSetlistBlockNumber { _ = show.focusSetlistBlock(number: number); return }
@@ -372,6 +372,7 @@ struct MappingTransferRequest: Identifiable {
             return
         }
         if let binding = actions.matchingBinding(input) {
+            if binding.action == .tapTempo, let midiTime { show.tapTempo(at: midiTime); return }
             show.performAction(binding.action, trackNumber: binding.trackNumber)
         }
     }
@@ -477,7 +478,7 @@ struct MappingTransferRequest: Identifiable {
         if !down { pressedMIDI.remove(key); return }
         guard pressedMIDI.insert(key).inserted else { return }
         if editing != nil { if mode == "midi" { candidate = input; error = "" }; return }
-        execute(input)
+        execute(input, midiTime: timestamp)
     }
     /// The UIKit adapter has already checked text focus, presentation and scene
     /// activity. Reuse the persisted Mac bindings and the same execution path.

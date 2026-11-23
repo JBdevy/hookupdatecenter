@@ -7,11 +7,29 @@ import AppKit
     private(set) var enabled = false
     func setEnabled(_ value: Bool) { enabled = value }
 }
+final class JarasRemoteMainAudio {
+    static let pcm = Data([0x80, 0xbb, 0, 0, 0xff, 0x7f, 0x01, 0x80])
+    private var capturing = false
+    func setCapturing(_ value: Bool) { capturing = value }
+    func nextPacket() -> Data? { capturing ? Self.pcm : nil }
+}
+@MainActor final class StemAudioPlayback {
+    static let shared = StemAudioPlayback()
+    func setRemoteMainAudioCapture(_ capture: JarasRemoteMainAudio?) {}
+}
 setbuf(stdout, nil)
 func require(_ value: @autoclosure () -> Bool, _ message: String) {
     if !value() { fatalError(message) }
 }
 let project = UUID(), song = UUID(), trackID = UUID(), regionID = UUID()
+if case .mainAudioSubscription(let enabled) = try DAWRemoteWire.decode(DAWRemoteWire.mainAudioSubscription(true)) {
+    require(enabled, "Main audio subscription preserves the enabled preference")
+} else { fatalError("Invalid Main audio subscription kind") }
+let stereoAudio = JarasRemoteMainAudio.pcm
+if case .mainAudio(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.mainAudio(stereoAudio)) {
+    require(decoded == stereoAudio, "Main audio preserves the sample rate and signed stereo PCM")
+} else { fatalError("Invalid Main audio packet kind") }
+require((try? DAWRemoteWire.decode(DAWRemoteWire.mainAudio(stereoAudio.dropLast()))) == nil, "Reject partial stereo frames")
 var fixture = DAWRemoteState(project: project, projectName: "Remote native test", song: song, songName: "Test",
     songs: [.init(id: song, name: "Test")],
     tracks: [.init(id: trackID, name: "Track", color: 0x828282, volume: 1, pan: 0, mute: false, solo: false,
@@ -268,6 +286,14 @@ require(DAWRemoteItemLayout.tracks([visibleLaneTrack], within: nil)[0].clips.isE
 if case .state(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.state(laneFixture)) {
     require(decoded.tracks[0].laneCount == 2 && decoded.tracks[0].clips[0].lane == 1, "desktop item lane metadata roundtrip")
 } else { fatalError("lane state packet") }
+let tapSource = UUID()
+let tapCommand = DAWRemoteCommand(project: project, song: song, action: .tapTempo, target: tapSource, value: 123.456)
+if case .command(let decoded) = try DAWRemoteWire.decode(DAWRemoteWire.command(tapCommand)) {
+    require(decoded.action == .tapTempo && decoded.target == tapSource && decoded.value == 123.456,
+            "Remote BPM taps must preserve the sending clock and the original touch timestamp")
+    require(DAWRemoteAccessRules.allows(decoded, mode: .director) && !DAWRemoteAccessRules.allows(decoded, mode: .notices),
+            "Only a transport-capable Remote can tap tempo")
+} else { fatalError("tap tempo packet") }
 let volume = DAWRemoteCommand(project: project, song: song, action: .volume, target: trackID, value: 0.5)
 if case .command(let command) = try DAWRemoteWire.decode(DAWRemoteWire.command(volume)) {
     require(command.id == volume.id && command.value == 0.5 && command.target == trackID, "typed action roundtrip")
@@ -374,6 +400,65 @@ func waitFor(_ message: String, seconds: Double = 5, _ done: () -> Bool) {
     require(done(), message)
 }
 
+let controlParameters = DAWRemoteChannel.parameters()
+require(controlParameters.includePeerToPeer,
+        "Remote controls must retain the original Bonjour paths")
+require(DAWRemoteNetworkRoute.priority(name: "en0", type: .wifi) == 0 &&
+        DAWRemoteNetworkRoute.priority(name: "awdl0", type: .other) == 1,
+        "Remote accepts the Wi-Fi LAN and Apple wireless peer-to-peer")
+require(DAWRemoteNetworkRoute.priority(name: "anpi0", type: .other) == nil &&
+        DAWRemoteNetworkRoute.priority(name: "en2", type: .wiredEthernet) == nil,
+        "Remote must never select the iPad cable route")
+let wiredIPv4 = NWEndpoint.hostPort(host: .ipv4(IPv4Address("169.254.10.2")!), port: 62000)
+let wiredIPv6 = NWEndpoint.hostPort(host: .ipv6(IPv6Address("fe80::2")!), port: 62000)
+let routedLAN = NWEndpoint.hostPort(host: .ipv4(IPv4Address("10.0.0.105")!), port: 62000)
+require(!DAWRemoteChannel.allowsMainAudio(local: wiredIPv4, remote: wiredIPv6, wired: true),
+        "Do not stream Main audio over the wired device link")
+require(!DAWRemoteChannel.allowsMainAudio(local: routedLAN, remote: wiredIPv4, wired: true),
+        "Check both ends of the wired device link")
+require(DAWRemoteChannel.allowsMainAudio(local: routedLAN, remote: nil, wired: true),
+        "Ethernet on the local network may carry Main audio")
+require(DAWRemoteChannel.allowsMainAudio(local: wiredIPv6, remote: nil, wired: false),
+        "Wireless peer-to-peer may carry Main audio")
+
+do {
+    let audioHost = DAWRemoteSession(role: .host, name: "Main Audio Host")
+    audioHost.stateProvider = { fixture }
+    let endpoint = try audioHost.testListen()
+    var receiving = Set<String>()
+    func audioPeer(_ name: String, access: DAWRemoteAccess) -> DAWRemoteChannel {
+        let connection = NWConnection(to: endpoint, using: DAWRemoteChannel.parameters())
+        let client = DAWRemoteChannel(connection: connection, role: .client, name: name,
+                                      queue: DispatchQueue(label: name))
+        var requested = false
+        client.onReady = { [weak client] _ in
+            client?.send(try! DAWRemoteWire.accessRequest(.init(mode: access, pin: "")))
+        }
+        client.onPacket = { [weak client] packet in
+            if case .state(let state) = packet {
+                client?.send(try! DAWRemoteWire.acknowledge(state.sequence))
+                if !requested && state.mainAudioAvailable == true {
+                    requested = true
+                    client?.send(DAWRemoteWire.mainAudioSubscription(true))
+                }
+            }
+        }
+        client.onMainAudio = { pcm in
+            DispatchQueue.main.async {
+                if pcm == stereoAudio { receiving.insert(name) }
+            }
+        }
+        client.start()
+        return client
+    }
+    let first = audioPeer("First controller", access: .director)
+    waitFor("the first controller receives Main audio with no other connection") { receiving.contains("First controller") }
+    let second = audioPeer("Second observer", access: .observer)
+    waitFor("the second observer also receives the stereo stream") { receiving.contains("Second observer") }
+    first.close(); second.close(); audioHost.stop()
+    print("REMOTE_MAIN_PCM_FIRST_AND_SUBSEQUENT_PEERS_OK")
+}
+
 let plain = try DAWRemoteWire.command(volume)
 let encoderHost = DAWRemoteCipher(role: .host, name: "Mac test")
 let encoderClient = DAWRemoteCipher(role: .client, name: "iPad test")
@@ -421,7 +506,6 @@ extension DAWRemoteSession {
     func testListen() throws -> NWEndpoint {
         stop(); enabled = true
         let parameters = DAWRemoteChannel.parameters()
-        require(parameters.includePeerToPeer, "direct path enables Apple peer-to-peer discovery and transport")
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         let listener = try NWListener(using: parameters)
         startListener(listener)
@@ -549,6 +633,7 @@ var timerPublications = 0
 let timerObservation = timerClient.$remoteState.dropFirst().sink { _ in timerPublications += 1 }
 // Synthetic snapshots bypass the host battery sampler. Keep that field stable while testing timer ticks.
 timerFixture.desktopBatteryPercent = timerClient.remoteState?.desktopBatteryPercent
+timerFixture.mainAudioAvailable = timerClient.remoteState?.mainAudioAvailable
 let ticks = (1...100).map { tick -> DAWRemoteState in
     var state = timerFixture; state.timer?.remainingSeconds -= Double(tick) * 0.1; return state
 }

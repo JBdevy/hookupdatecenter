@@ -6,6 +6,7 @@
 
 #import "JarasSoundFont.h"
 #import "JarasDrummerPad.h"
+#import "JarasCatSynth.h"
 
 #import "JarasTimecode.h"
 

@@ -68,16 +68,20 @@ class PitchTargetsPanel final : public Component {
                       std::function<void(String)> failure)
         : session(owner), region(std::move(target)), close(std::move(finish)),
           error(std::move(failure)) {
-        if (auto *song = session.song()) {
-            tracks = asSet(regionPitch::defaults(*song, false));
-            groups = asSet(regionPitch::defaults(*song, true));
-            for (const auto &part : song->parts)
-                if (part.id == region) {
-                    if (part.pitchTrackIDs)
-                        tracks = asSet(*part.pitchTrackIDs);
-                    if (part.pitchGroupIDs)
-                        groups = asSet(*part.pitchGroupIDs);
+        if (const auto *song = session.song()) {
+            const auto part = std::find_if(song->parts.begin(), song->parts.end(), [&](const auto &p) { return p.id == region; });
+            for (const auto &track : song->tracks) {
+                if (!jaras::fixedTrackName(track.role).empty() || regionPitch::folder(*song, track.id)) continue;
+                if (part != song->parts.end() && regionPitch::selected(*song, track, *part)) tracks.insert(track.id);
+                auto parent = track.parentTrackID;
+                for (size_t depth = 0; parent && depth < song->tracks.size(); ++depth) {
+                    groupTracks[*parent].insert(track.id);
+                    const auto found = std::find_if(song->tracks.begin(), song->tracks.end(),
+                        [&](const auto &candidate) { return candidate.id == *parent; });
+                    if (found == song->tracks.end()) break;
+                    parent = found->parentTrackID;
                 }
+            }
         }
         for (auto *button : {&tracksTab, &groupsTab, &all, &apply}) {
             addAndMakeVisible(button);
@@ -136,7 +140,8 @@ class PitchTargetsPanel final : public Component {
     std::function<void()> close;
     std::function<void(String)> error;
     int tab = 0;
-    std::set<ID> tracks, groups;
+    std::set<ID> tracks;
+    std::map<ID, std::set<ID>> groupTracks;
     std::vector<ID> visible;
     Viewport view;
     Component content;
@@ -146,59 +151,15 @@ class PitchTargetsPanel final : public Component {
     static std::set<ID> asSet(const std::vector<ID> &values) {
         return {values.begin(), values.end()};
     }
-    bool selected(const jaras::Track &track) const {
-        if (!tab) {
-            if (tracks.count(track.id))
-                return true;
-            auto parent = track.parentTrackID;
-            const auto *song = session.song();
-            for (size_t depth = 0; parent && song && depth < song->tracks.size(); ++depth) {
-                if (groups.count(*parent))
-                    return true;
-                auto found = std::find_if(song->tracks.begin(), song->tracks.end(),
-                                          [&](const auto &t) { return t.id == *parent; });
-                if (found == song->tracks.end())
-                    break;
-                parent = found->parentTrackID;
-            }
-            return false;
-        }
-        if (groups.count(track.id))
-            return true;
-        bool any = false;
-        for (const auto &child : session.song()->tracks)
-            if (child.parentTrackID == track.id) {
-                any = true;
-                if (!tracks.count(child.id))
-                    return false;
-            }
-        return any;
+    std::set<ID> targetIDs(const ID &id) const {
+        if (tab == 0) return {id};
+        const auto group = groupTracks.find(id);
+        return group == groupTracks.end() ? std::set<ID>{} : group->second;
     }
     void select(const ID &id, bool value) {
-        const auto *song = session.song();
-        if (!song)
-            return;
-        if (tab) {
-            for (const auto &track : song->tracks)
-                if (track.id == id || track.parentTrackID == id)
-                    tracks.erase(track.id);
-            if (value)
-                groups.insert(id);
-            else
-                groups.erase(id);
-        } else {
-            if (!value) { // Expand selected ancestor groups into explicit leaf targets before
-                          // clearing one leaf.
-                std::set<ID> explicitTracks = tracks;
-                for (const auto &track : song->tracks)
-                    if (!regionPitch::folder(*song, track.id) && selected(track))
-                        explicitTracks.insert(track.id);
-                tracks = std::move(explicitTracks);
-                groups.clear();
-                tracks.erase(id);
-            } else
-                tracks.insert(id);
-        }
+        const auto targets = targetIDs(id);
+        if (value) tracks.insert(targets.begin(), targets.end());
+        else for (const auto &track : targets) tracks.erase(track);
     }
     void refresh() {
         checks.clear();
@@ -212,7 +173,10 @@ class PitchTargetsPanel final : public Component {
                     visible.push_back(track.id);
                     auto *check = checks.add(new ToggleButton(text(track.name)));
                     content.addAndMakeVisible(check);
-                    check->setToggleState(selected(track), dontSendNotification);
+                    const auto targets = targetIDs(track.id);
+                    check->setEnabled(!targets.empty());
+                    check->setToggleState(!targets.empty() && std::includes(tracks.begin(), tracks.end(), targets.begin(), targets.end()),
+                        dontSendNotification);
                     check->onClick = [this, id = track.id, check] {
                         select(id, check->getToggleState());
                         refresh();
@@ -228,8 +192,10 @@ class PitchTargetsPanel final : public Component {
         try {
             if (const auto *song = session.song()) for (const auto &part : song->parts)
                 if (part.id == region) {
-                    session.setRegionPitch(region, part.pitchSemitones.value_or(0),
-                        std::vector<ID>(tracks.begin(), tracks.end()), std::vector<ID>(groups.begin(), groups.end()));
+                    if (!part.pitchTrackIDs || tracks != asSet(*part.pitchTrackIDs) ||
+                        !part.pitchGroupIDs || !part.pitchGroupIDs->empty())
+                        session.setRegionPitch(region, part.pitchSemitones.value_or(0),
+                            std::vector<ID>(tracks.begin(), tracks.end()), std::vector<ID>{});
                     break;
                 }
             close();

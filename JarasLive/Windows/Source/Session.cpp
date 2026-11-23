@@ -12,6 +12,7 @@
 #include "TrackTree.h"
 #include "MediaCleanup.h"
 #include "ClickTempo.h"
+#include "SelectionTempoAnalysis.h"
 #include "TempoEditing.h"
 #include "RecordingProject.h"
 #include "TrackEditing.h"
@@ -904,6 +905,7 @@ void Session::syncClock() {
 void Session::publishTransport(bool preserveLatency, bool routingOnly, bool followMainClock) {
     const auto &t = transport();
     if (tempoInputAllowed()) liveTempoEdits.reset();
+    else resetTapTempo();
     audio.setLoopMixer(t.multiLoop);
     AudioEngine::State state;
     state.preserveLatency = preserveLatency;
@@ -1294,6 +1296,13 @@ void Session::mixerCommand(jaras::CommandKind kind, const ID &id, const std::set
     }
     dirty = true; audio.setMixer(project(), *song()); notifyMixer();
 }
+void Session::soloTrackExclusively(const ID &id) {
+    if (jaras::projectSync::readOnly() || (busy && !controlAllowedDuringSave(jaras::CommandKind::solo)) ||
+        !core.soloTrackExclusively(id)) return;
+    dirty = true;
+    audio.setMixer(project(), *song());
+    notifyMixer();
+}
 void Session::toggleRecording(bool stopPlayback) {
     if (jaras::projectSync::readOnly()) return;
     if (countingIn) { cancelRecordingCountIn(); notify(); return; }
@@ -1463,6 +1472,7 @@ void Session::toggleRecording(bool stopPlayback) {
         const auto meter = ClickProgram::meterAt(*song(),recordingStart);
         if (!audio.startRecordingCountIn(meter.bpm,meter.beats,meter.unit))
             throw std::runtime_error("Unable to play the recording count-in.");
+        resetTapTempo();
         countingIn = true;
         busy = true;
         startTimerHz(60);
@@ -1541,7 +1551,7 @@ void Session::updateRecordingTargets(bool starting) {
             target.bus = target.output || (track.fxJSON &&
                          !instrumentAssets::settings(JSON::parse(text(*track.fxJSON))).empty());
             target.input = track.inputPatch ? std::max(1, track.inputPatch->firstChannel) : 1;
-            target.silent = !target.midi && !target.bus && (!track.inputPatch ||
+            target.silent = !target.midi && !target.bus && (track.midiInput || !track.inputPatch ||
                 !audio.hasRecordingInputs(track.inputPatch->firstChannel, target.channels));
             const auto encoding = recordingEncoding::resolve(track.recordingFormat, advancedFormat, bits, bitrate);
             const auto takeName = allocateName(text(track.name));
@@ -1652,6 +1662,31 @@ void Session::applyMarkerHistory(const MarkerHistory &state, bool recordHistory)
     dirty = true;
     notify();
 }
+void Session::detectSelectionBPM(double start, double end, std::shared_ptr<std::atomic<double>> progress,
+                                 std::function<void(String)> result) {
+    if (busy || isDetectingBPM() || !song() || !std::isfinite(start) || !std::isfinite(end) || end <= start) return;
+    auto lanes = selectionTempo::plan(*song(), {start,end});
+    const auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    bpmCancellation = cancelled;
+    const auto projectID = project().id, songID = song()->id;
+    const auto directory = mediaDirectory;
+    std::weak_ptr<int> lifetime = alive;
+    bpmWorker.addJob([this,lifetime,projectID,songID,directory,lanes=std::move(lanes),cancelled,progress,result=std::move(result)] {
+        String output;
+        try {
+            const auto bpm = selectionTempo::analyse(lanes,directory,*cancelled,*progress);
+            output = bpm ? String(*bpm,*bpm == std::round(*bpm) ? 0 : 2) + " BPM"
+                         : String("No stable tempo found in the selection.");
+        } catch (const std::exception& e) { output = String::fromUTF8(e.what()); }
+        MessageManager::callAsync([this,lifetime,projectID,songID,cancelled,result,output] {
+            if (lifetime.expired() || bpmCancellation != cancelled) return;
+            bpmCancellation.reset();
+            if (!cancelled->load() && project().id == projectID && song() && song()->id == songID && result)
+                result(localization::translate(output));
+        });
+    });
+}
+
 void Session::detectRegionBPM(std::set<ID> ids) {
     if (busy || isDetectingBPM() || !song() || ids.empty()) return;
     if (audio.isRecording())
@@ -2136,6 +2171,28 @@ void Session::setTrackInstrumentIcon(const std::set<ID> &ids, std::optional<std:
     rebase(undoHistory);rebase(redoHistory);
     dirty=true;notify();
 }
+std::optional<int> Session::firstAvailableMIDIInputSlot() {
+    if (inspection) return std::nullopt;
+    const auto devices = MidiInput::getAvailableDevices();
+    if (devices.isEmpty()) return std::nullopt;
+    Appearance preferences;
+    int free = 0;
+    for (int slot = 1; slot <= 6; ++slot) {
+        const auto key = "catlive.midi.slot" + String(slot);
+        const auto saved = preferences.value(key).toString();
+        if (saved.isEmpty() && !free) free = slot;
+        const auto identifier = midiDeviceCompatibility::resolve(saved, true);
+        if (identifier.isNotEmpty() && std::any_of(devices.begin(), devices.end(), [&](const auto &device) {
+                return device.identifier == identifier;
+            })) return slot;
+    }
+    if (!free) return std::nullopt;
+    const auto identifier = devices.getFirst().identifier;
+    if (!preferences.set("catlive.midi.slot" + String(free), identifier).wasOk()) return std::nullopt;
+    audio.setMIDISlot(free - 1, identifier);
+    return free;
+}
+
 void Session::configureEffects(const ID &id, const var &settings) {
     if (jaras::projectSync::readOnly()) return;
     configureEffects(std::map<ID, var>{{id, settings}});
@@ -2299,13 +2356,27 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
     auto before = currentEffects(changes);
     auto p = project();
     auto canonical = changes;
+    std::optional<var> beforeInputChanges;
+    std::optional<int> midiSlot;
+    bool needsRoutingUpdate = false;
     for (auto &[id, settings] : canonical) settings = fxschema::complete(settings);
     for (const auto &[id, settings] : canonical) {
         const std::optional<std::string> json = settings.isVoid() ? std::nullopt : std::optional<std::string>(utf8(JSON::toString(settings, true, 17)));
         bool found = id.empty();
         if (id.empty()) p.masterFXJSON = json;
         else for (auto &song : p.songs) for (auto &track : song.tracks) {
-            if (track.id == id) { track.fxJSON = json; found = true; }
+            if (track.id == id) {
+                if (recordHistory && track.supportsMixerComponents() && fxchain::addsInstrument(before.at(id), settings)) {
+                    if (!beforeInputChanges) {
+                        beforeInputChanges = snapshot();
+                        midiSlot = firstAvailableMIDIInputSlot();
+                    }
+                    needsRoutingUpdate |= track.inputPatch && track.inputPatch->firstChannel > 0;
+                    jaras::selectMIDIInput(song, track, midiSlot, true);
+                }
+                track.fxJSON = json;
+                found = true;
+            }
             for (auto &clip : track.clips)
                 if (clip.id == id) { clip.fxJSON = json; found = true; }
         }
@@ -2340,8 +2411,13 @@ void Session::applyEffects(const std::map<ID, var> &changes, bool recordHistory)
         std::rethrow_exception(failure);
     }
     core.applyProjectEdit(std::move(p));
+    if (beforeInputChanges && song()) {
+        if (needsRoutingUpdate) prepareLiveGraph();
+        else { audio.setMixer(project(), *song()); updateRecordArms(); }
+    }
     if (recordHistory) {
-        undoHistory.emplace_back(std::move(before));
+        if (beforeInputChanges) undoHistory.emplace_back(std::move(*beforeInputChanges));
+        else undoHistory.emplace_back(std::move(before));
         if (undoHistory.size() > 40) undoHistory.erase(undoHistory.begin());
         redoHistory.clear();
     }
@@ -2458,6 +2534,10 @@ bool Session::rejectOverCapacity(std::optional<double> position, bool assumingPl
     capacityWarningUntil = Time::getMillisecondCounterHiRes() + 2000;
     notify();
     return true;
+}
+void Session::tapTempo(double time, const ID& source) {
+    if (!tempoInputAllowed() || countingIn || audio.isRecording()) return;
+    if (auto bpm = tempoTaps.tap(time, source)) setTempo(*bpm);
 }
 void Session::setTempo(double value) {
     if (jaras::projectSync::readOnly()) return;

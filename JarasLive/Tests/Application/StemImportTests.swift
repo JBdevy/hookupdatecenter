@@ -3,6 +3,26 @@ import AVFoundation
 @testable import JarasApplication
 
 final class StemImportTests: XCTestCase {
+    func testImportedTracksUseTheirInstrumentIconAndKeepAnExistingCustomIcon() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let initial = try fixture(root, folder: "First", file: "Rhodes.wav")
+        _ = try fixture(root, folder: "First", file: "An unclassified take.wav")
+        let destination = root.appendingPathComponent("Project/Show.jl")
+        var project = try StemProjectImporter.build(scan: StemProjectImporter.scan([initial]), remove: "",
+            base: .empty(name: "Icons"), destination: destination)
+        let index = try XCTUnwrap(project.songs[0].tracks.firstIndex(where: { $0.name == "Rhodes" }))
+        XCTAssertEqual(project.songs[0].tracks[index].instrumentIcon, "png:Keyboards/electric-piano")
+        XCTAssertEqual(project.songs[0].tracks.first(where: { $0.name.hasPrefix("Out") })?.instrumentIcon, "png:Other/waveform")
+        project.songs[0].tracks[index].instrumentIcon = "png:Other/dynamic-mic"
+        let next = try fixture(root, folder: "Second", file: "Rhodes.wav")
+        _ = try fixture(root, folder: "Second", file: "Cagueite.wav")
+        project = try StemProjectImporter.build(scan: StemProjectImporter.scan([next]), remove: "",
+            base: project, destination: destination)
+        XCTAssertEqual(project.songs[0].tracks.first(where: { $0.name == "Rhodes" })?.instrumentIcon, "png:Other/dynamic-mic")
+        XCTAssertEqual(project.songs[0].tracks.first(where: { $0.name == "Regência" })?.instrumentIcon, "png:Other/dynamic-mic")
+    }
+
     func testSavedProjectFolderIsRecognizedInAddStems() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

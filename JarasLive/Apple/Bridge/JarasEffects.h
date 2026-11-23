@@ -203,6 +203,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)configure:(AVAudioUnitEffect *)node pitch:(float)pitch formant:(float)formant;
 @end
 
+@interface JarasRemoteMainAudio : NSObject
+- (void)setCapturing:(BOOL)capturing;
+- (void)captureBuffer:(AVAudioPCMBuffer *)buffer;
+- (nullable NSData *)nextPacket;
+@end
+
 @interface JarasCreativeEffects : NSObject
 + (float)gainReduction:(AVAudioUnitEffect *)node;
 + (AVAudioUnitEffect *)makeEffect:(NSInteger)kind;

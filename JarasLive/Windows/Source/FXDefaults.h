@@ -6,6 +6,7 @@
 namespace catlive::fxui {
 inline String enabledKey(const String &kind) {
     if (const auto *spec = jaras::audio::creativeEffect(utf8(kind))) return spec->enabledField;
+    if (kind == "CatSynth") return "catSynthEnabled";
     return kind == "Drummer Pad 16" ? "drummer16Enabled" : kind == "Drummer Pad 48" ? "drummer48Enabled" : kind == "Arpeggiator" ? "arpeggiatorEnabled"
            : kind == "CatLive Trigger" ? "triggerEnabled"
            : kind == "Cat Gate" ? "gateEnabled"

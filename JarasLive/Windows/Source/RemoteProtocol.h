@@ -150,6 +150,8 @@ struct Command {
             valid = range(0, 4);
         else if (a == "pan")
             valid = range(-1, 1);
+        else if (a == "tapTempo")
+            valid = target ? c.value >= 0 : zero;
         else if (a == "tempo")
             valid = range(20, 400);
         else if (a == "pitch")

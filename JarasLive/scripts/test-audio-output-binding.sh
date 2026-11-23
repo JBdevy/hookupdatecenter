@@ -10,11 +10,12 @@ from pathlib import Path
 
 source = Path('Apple/Shared/AudioDeviceSettings.swift').read_text()
 names = ['observeOutputRate', 'observeOutputBuffer', 'permitConfigurationChange', 'selectInput', 'bindInput', 'select', 'bindOutput', 'systemDefaultDevice', 'refreshSystemDefaults',
+         'defaultHardwareID', 'scheduleCatalogRefresh', 'applyHardwareCatalog', 'refresh', 'setSampleRate', 'setBuffer',
          'suspendOutput', 'outputDeviceDidChange', 'validateOutputBinding',
          'outputIsBound', 'requireSelectedOutput', 'applyBuffer']
 methods = []
 for name in names:
-    match = re.search(r'^    (?:(?:private|fileprivate) )?func ' + re.escape(name) + r'\(', source, re.M)
+    match = re.search(r'^    (?:(?:private|fileprivate) )?(?:nonisolated )?(?:static )?func ' + re.escape(name) + r'\(', source, re.M)
     if match is None:
         raise SystemExit(f'Production method {name} is missing')
     opening = source.index('{', match.end())
@@ -24,19 +25,12 @@ for name in names:
         if source[cursor] == '{': depth += 1
         elif source[cursor] == '}': depth -= 1
         cursor += 1
-    methods.append(re.sub(r'\b(?:private|fileprivate) func ', 'func ', source[match.start():cursor]))
-# Include the rate/buffer setters but substitute only their environment readers.
-for name in ['setSampleRate', 'setBuffer']:
-    match = re.search(r'^    func ' + name + r'\(', source, re.M)
-    opening = source.index('{', match.end())
-    depth = 1
-    cursor = opening + 1
-    while depth:
-        if source[cursor] == '{': depth += 1
-        elif source[cursor] == '}': depth -= 1
-        cursor += 1
-    methods.append(source[match.start():cursor])
+    methods.append(re.sub(r'^    (?:private|fileprivate) ', '    ', source[match.start():cursor]))
 fixture = Path('Tests/Apple/AudioOutputBindingTests.swift').read_text()
+catalog_start = source.index('    private struct HardwareCatalog:')
+catalog_end = source.index('    private var deviceListener:', catalog_start)
+catalog = source[catalog_start:catalog_end].replace('private struct HardwareCatalog:', 'struct HardwareCatalog:')
+fixture = fixture.replace('    /* HARDWARE_CATALOG */', catalog.rstrip())
 rate_start = source.index('    var currentOutputSampleRate: Double? {')
 rate_end = source.index('\n    }', rate_start) + 6
 fixture = fixture.replace('    /* OUTPUT_RATE_PROPERTY */', source[rate_start:rate_end])

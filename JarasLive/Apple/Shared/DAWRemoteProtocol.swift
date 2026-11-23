@@ -1,12 +1,17 @@
 import Foundation
 
 /// The Remote exchanges native presentation state, typed actions and requested
-/// still images, never screen captures, audio, file paths or pointer coordinates.
+/// still images and optional stereo audio from the desktop Main.
 enum DAWRemoteWire {
     static let service = "jaras-live"
     static let version: UInt8 = 2
     static let maximumPacket = 2 * 1024 * 1024
-    enum Packet { case projectSync(Data), command(DAWRemoteCommand), state(DAWRemoteState), acknowledge(UInt64), noticeReceipt(DAWRemoteNoticeReceipt), imageAsset(DAWRemoteImageAsset), accessRequest(DAWRemoteAccessRequest), accessStatus(DAWRemoteAccessStatus) }
+    enum Packet {
+        case projectSync(Data), command(DAWRemoteCommand), state(DAWRemoteState), acknowledge(UInt64)
+        case noticeReceipt(DAWRemoteNoticeReceipt), imageAsset(DAWRemoteImageAsset)
+        case accessRequest(DAWRemoteAccessRequest), accessStatus(DAWRemoteAccessStatus)
+        case mainAudioSubscription(Bool), mainAudio(Data)
+    }
     enum Failure: Error { case invalid }
     private static func encode<T: Encodable>(_ value: T, kind: UInt8) throws -> Data {
         var data = Data([0x4a, 0x4c, version, kind])
@@ -17,6 +22,12 @@ enum DAWRemoteWire {
     static func projectSync(_ payload: Data) throws -> Data {
         guard payload.count <= 524288 else { throw Failure.invalid }
         return Data([0x4a, 0x4c, version, 8]) + payload
+    }
+    static func mainAudioSubscription(_ enabled: Bool) -> Data {
+        Data([0x4a, 0x4c, version, 9]) + Data((enabled ? "true" : "false").utf8)
+    }
+    static func mainAudio(_ payload: Data) -> Data {
+        Data([0x4a, 0x4c, version, 10]) + payload
     }
     static func command(_ value: DAWRemoteCommand) throws -> Data {
         guard value.valid else { throw Failure.invalid }
@@ -76,6 +87,12 @@ enum DAWRemoteWire {
         case 7:
             guard data.count <= 256 else { throw Failure.invalid }
             return .noticeReceipt(try decoder.decode(DAWRemoteNoticeReceipt.self, from: payload))
+        case 9:
+            guard data.count <= 9 else { throw Failure.invalid }
+            return .mainAudioSubscription(try decoder.decode(Bool.self, from: payload))
+        case 10:
+            guard (8...8200).contains(payload.count), payload.count.isMultiple(of: 4) else { throw Failure.invalid }
+            return .mainAudio(Data(payload))
         default: throw Failure.invalid
         }
     }
@@ -156,7 +173,7 @@ enum DAWRemoteNoticeDelivery: Equatable {
 struct DAWRemoteCommand: Codable {
     enum Action: String, Codable {
         case play, pause, stop, subPlay, subStop, toggleLoop, seek, queueSection, cancelSection, toggleMultiLoopBypass, toggleSetlistLive
-        case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, openRecentProjectInNewTab, selectProjectTab, closeProjectTab
+        case volume, pan, mute, solo, masterMono, resetMeterPeak, selectRegion, selectSong, tempo, tapTempo, pitch, save, toggleRegionAuto, clipGain, clipMute, selectPlaylist, openRecentProject, openRecentProjectInNewTab, selectProjectTab, closeProjectTab
         case remotePanel, noticeSend, noticeClear, noticePin, noticePinStopped, noticeDestination, noticeSaveTemplate
         case requestImage
         case timerStart, timerStartProgressive, timerSetMode, timerStop, transportFadeout
@@ -232,6 +249,7 @@ struct DAWRemoteCommand: Codable {
         case .clipMute, .queueSection, .browseRegion: return target != nil && value == 0
         case .volume: return (0...4).contains(value)
         case .pan: return (-1...1).contains(value)
+        case .tapTempo: return target == nil ? value == 0 : value >= 0
         case .tempo: return (20...400).contains(value)
         case .pitch: return (-12...12).contains(value) && value.rounded() == value && target != nil
         case .seek: return (0...604800).contains(value)
@@ -385,6 +403,8 @@ struct DAWRemoteState: Codable, Equatable {
     var pendingSave: Bool
     var saving: Bool
     var message: String
+    var transportPreparing: Bool? = nil
+    var transportControlRunning: Bool { playing || paused || transportPreparing == true }
     var tempoNeedsRender: Bool? = nil
     var loopStart: Double? = nil
     var loopEnd: Double? = nil
@@ -427,6 +447,7 @@ struct DAWRemoteState: Codable, Equatable {
     var notices: DAWRemoteNotices? = nil
     var timer: DAWRemoteTimerState? = nil
     var desktopBatteryPercent: Int? = nil
+    var mainAudioAvailable: Bool? = nil
     var fadeout: DAWRemoteFadeoutState? = nil
     var gridTempo: [GridTempo]? = nil
     var gridDivisions: Int? = nil
@@ -567,6 +588,307 @@ struct DAWRemoteBlockPreparation: Equatable {
         // Derived titles from the outgoing packet must not cover the local selection.
         next.songDisplays = nil
         return next
+    }
+}
+
+/// Play/Stop feedback belongs to the transport button. Grid position, meters
+/// and audio still use the host snapshot.
+struct DAWRemoteTransportFeedback {
+    static let timeout: TimeInterval = 3
+    let running: Bool
+    private let project: UUID
+    private let song: UUID?
+    private var waitForEarlierTransition: Bool
+
+    init(running: Bool, state: DAWRemoteState, previous: Self?) {
+        self.running = running
+        project = state.project
+        song = state.song
+        // A snapshot already matches the final state after a quick reversal.
+        // Hold the last tap through a delayed snapshot for the first command.
+        waitForEarlierTransition = previous?.matches(state) == true && previous?.running != running
+            && state.transportControlRunning == running
+    }
+
+    mutating func isPending(after state: DAWRemoteState) -> Bool {
+        guard matches(state) else { return false }
+        if state.transportControlRunning != running { waitForEarlierTransition = false; return true }
+        return waitForEarlierTransition
+    }
+
+    private func matches(_ state: DAWRemoteState) -> Bool { project == state.project && song == state.song }
+}
+
+/// Optimistic control values are reconciled against the raw host snapshot. A
+/// late packet may update meters and cursor position without undoing a local edit.
+struct DAWRemoteControlFeedback {
+    private typealias State = DAWRemoteState
+    private struct Key: Hashable { var field: AnyKeyPath; var target: UUID?; var index: Int? = nil }
+    private struct Edit {
+        var key: Key
+        var matches: (State) -> Bool
+        var apply: (inout State) -> Void
+        var expiration: TimeInterval
+        var waitForChange: Bool
+    }
+    private var project: UUID?
+    private var song: UUID?
+    private var edits: [Edit] = []
+    var nextExpiration: TimeInterval? { edits.map(\.expiration).min() }
+
+    mutating func receive(_ host: DAWRemoteState, now: TimeInterval) {
+        scope(host)
+        edits = edits.filter { stored in
+            guard stored.expiration > now else { return false }
+            return !stored.matches(host) || stored.waitForChange
+        }.map { stored in
+            var edit = stored
+            if !edit.matches(host) { edit.waitForChange = false }
+            return edit
+        }
+    }
+    mutating func expire(now: TimeInterval) { edits.removeAll { $0.expiration <= now } }
+    mutating func reset() { self = Self() }
+
+    func overlay(_ host: DAWRemoteState) -> DAWRemoteState {
+        guard !edits.isEmpty, host.project == project, host.song == song else { return host }
+        var result = host
+        for edit in edits { edit.apply(&result) }
+        if edits.contains(where: { $0.key.field == \DAWRemoteState.Track.mute || $0.key.field == \DAWRemoteState.Track.solo }) {
+            let original = Self.silentTracks(host.tracks)
+            let current = Self.silentTracks(result.tracks)
+            for index in result.tracks.indices {
+                let id = result.tracks[index].id
+                let hiddenSolo = host.tracks[index].silenced == true && !original.contains(id)
+                result.tracks[index].silenced = current.contains(id) || hiddenSolo
+            }
+        }
+        return result
+    }
+
+    @discardableResult mutating func record(_ command: DAWRemoteCommand, display: DAWRemoteState,
+                                            host: DAWRemoteState, now: TimeInterval) -> Bool {
+        guard command.project == host.project, command.song == nil || command.song == host.song else { return false }
+        scope(host)
+        let target = command.target
+        let oldCount = edits.count
+        switch command.action {
+        case .pause:
+            guard display.playing else { return false }
+            put(\.paused, true, host: host, now: now) { $0.playing = false; $0.subPlaying = false }
+        case .play, .stop:
+            // Play/Stop visual feedback has its own host preparation handling.
+            edits.removeAll { $0.key.field == \State.paused }
+            return edits.count != oldCount
+        case .toggleLoop: put(\.loop, !display.loop, host: host, now: now)
+        case .toggleMultiLoopBypass: put(\.multiLoopsBypassed, display.multiLoopsBypassed != true, host: host, now: now)
+        case .toggleSetlistLive:
+            let enabled = display.setlistLiveEnabled != true
+            put(\.setlistLiveEnabled, enabled, host: host, now: now) { if !enabled { $0.playedLiveRegionIDs = [] } }
+        case .toggleRegionAuto: put(\.regionAuto, display.regionAuto != true, host: host, now: now)
+        case .toggleRecord: put(\.recording, display.recording != true, host: host, now: now)
+        case .togglePreview:
+            guard let active = display.previewActive else { return false }
+            put(\.previewActive, !active, host: host, now: now) { state in
+                for index in state.teleprompters?.indices ?? 0..<0 { state.teleprompters?[index].preview = !active }
+            }
+        case .selectPreviewPage: put(\.previewPage, Int(command.value), host: host, now: now)
+        case .subPlay, .subStop: put(\.subPlaying, command.action == .subPlay, host: host, now: now)
+        case .tempo: put(\.bpm, command.value, host: host, now: now)
+        case .pitch:
+            guard let target, display.pitchRegion == target else { return false }
+            let semitones = Int(command.value)
+            add(Key(field: \State.pitchSemitones, target: target), host: host, now: now,
+                matches: { $0.pitchRegion != target || $0.pitchSemitones == semitones },
+                apply: { if $0.pitchRegion == target { $0.pitchSemitones = semitones } })
+        case .masterMono: put(\.masterMono, !display.masterMono, host: host, now: now)
+        case .mute, .solo, .volume, .pan, .resetMeterPeak, .setOutputRoutes:
+            let gain = min(pow(10, 12.0 / 20), command.value)
+            if let target {
+                guard let track = display.tracks.first(where: { $0.id == target }) else { return false }
+                switch command.action {
+                case .mute: putTrack(\.mute, !track.mute, id: target, host: host, now: now)
+                case .solo: putTrack(\.solo, !track.solo, id: target, host: host, now: now)
+                case .volume: putTrack(\.volume, gain, id: target, host: host, now: now)
+                case .pan:
+                    putTrack(\.pan, command.value, id: target, host: host, now: now)
+                    if let partner = track.linkedTrack, display.tracks.contains(where: { $0.id == partner && $0.linkedTrack == target }) {
+                        putTrack(\.pan, -command.value, id: partner, host: host, now: now)
+                    }
+                case .resetMeterPeak: putTrack(\.peakDB, nil, id: target, host: host, now: now)
+                case .setOutputRoutes: putTrack(\.outputRoutes, command.outputRoutes, id: target, host: host, now: now)
+                default: return false
+                }
+            } else {
+                switch command.action {
+                case .mute: put(\.masterMute, !display.masterMute, host: host, now: now)
+                case .solo: put(\.masterSolo, !display.masterSolo, host: host, now: now)
+                case .volume: put(\.masterVolume, gain, host: host, now: now)
+                case .pan: put(\.masterPan, command.value, host: host, now: now)
+                case .resetMeterPeak: put(\.masterPeakDB, nil, host: host, now: now)
+                case .setOutputRoutes: put(\.masterOutputRoutes, command.outputRoutes, host: host, now: now)
+                default: return false
+                }
+            }
+        case .clipMute, .clipGain:
+            guard let target, let clip = display.tracks.lazy.compactMap({ $0.clips.first(where: { $0.id == target }) }).first else { return false }
+            if command.action == .clipMute { putClip(\.muted, clip.muted != true, id: target, host: host, now: now) }
+            else { putClip(\.gain, command.value, id: target, host: host, now: now) }
+        case .queueSection, .cancelSection:
+            let marker = command.action == .queueSection ? target : nil
+            guard display.sectionPlayback != nil else { return false }
+            add(Key(field: \State.sectionPlayback, target: nil), host: host, now: now,
+                matches: { $0.sectionPlayback?.queuedMarker == marker }, apply: { $0.sectionPlayback?.queuedMarker = marker })
+        case .selectRegion, .browseRegion:
+            guard let target, let region = (display.regions + display.timelineRegions).first(where: { $0.id == target }) else { return false }
+            let source = region.sourceRegionId ?? region.id
+            if command.action == .browseRegion {
+                put(\.focusedRegion, target, host: host, now: now)
+            } else if display.playing {
+                guard DAWRemoteSetlistPresentation.canQueueDuplicate(target, in: display) else { return false }
+                let current = display.timelineRegions.first { $0.id == display.currentRegion }
+                if let parent = region.parentRegion, parent == current?.id || parent == current?.parentRegion { return false }
+                let queued = display.setlistQueuedEntryId == target
+                let focusingCurrent = source == current?.id || source == current?.parentRegion
+                put(\.focusedRegion, queued ? nil : target, host: host, now: now) { state in
+                    guard !focusingCurrent else { return }
+                    state.queuedRegion = queued ? nil : source
+                    state.queuedPlaylistEntryId = queued || state.selectedPlaylist == nil ? nil : target
+                    state.songDisplays?.queued = queued ? nil : region.name
+                    state.songDisplays?.queuedBPM = nil
+                    state.sectionPlayback?.secondaryRegion = state.queuedRegion
+                    state.queueStartedAt = queued ? nil : state.position
+                    if queued { state.regionAuto = false; state.subPlaying = false }
+                }
+            } else {
+                put(\.focusedRegion, target, host: host, now: now) { state in
+                    state.currentRegion = source; state.currentPlaylistEntryId = state.selectedPlaylist == nil ? nil : target
+                    state.gridRegion = region.parentRegion ?? source
+                    state.position = region.start; state.editPosition = region.start
+                    state.songDisplays?.current = region.name; state.songDisplays?.currentBPM = nil
+                    state.sectionPlayback?.currentRegion = source; state.sectionPlayback?.position = region.start
+                }
+            }
+        case .selectPlaylist:
+            guard target == nil || display.playlists?.contains(where: { $0.id == target }) == true else { return false }
+            put(\.selectedPlaylist, target, host: host, now: now)
+        case .editRegion:
+            guard let target, let name = command.text?.trimmingCharacters(in: .whitespacesAndNewlines), let region = display.regions.first(where: { $0.id == target }) else { return false }
+            let source = region.sourceRegionId ?? target, color = UInt32(command.value)
+            add(Key(field: \State.regions, target: source), host: host, now: now,
+                matches: { state in state.timelineRegions.first(where: { $0.id == source }).map { $0.name == name && $0.color == color } ?? true },
+                apply: { state in
+                    for index in state.regions.indices where (state.regions[index].sourceRegionId ?? state.regions[index].id) == source {
+                        state.regions[index].name = name; state.regions[index].color = color
+                    }
+                    if let index = state.timelineRegions.firstIndex(where: { $0.id == source }) {
+                        state.timelineRegions[index].name = name; state.timelineRegions[index].color = color
+                    }
+                })
+        case .deleteRegion:
+            guard let target else { return false }
+            add(Key(field: \State.regions, target: target), host: host, now: now,
+                matches: { !$0.regions.contains(where: { $0.id == target }) },
+                apply: { state in
+                    state.regions.removeAll { $0.id == target }
+                    if command.playlist == nil { state.timelineRegions.removeAll { $0.id == target || $0.parentRegion == target } }
+                })
+        case .renamePlaylist, .deletePlaylist:
+            guard let target else { return false }
+            let name = command.action == .deletePlaylist ? nil : command.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            add(Key(field: \State.playlists, target: target), host: host, now: now,
+                matches: { $0.playlists?.first(where: { $0.id == target })?.name == name },
+                apply: { state in
+                    if let name, let index = state.playlists?.firstIndex(where: { $0.id == target }) { state.playlists?[index].name = name }
+                    else { state.playlists?.removeAll { $0.id == target } }
+                })
+        case .vinhetasPreset:
+            let preset = Int(command.value)
+            add(Key(field: \DAWRemoteVinhetas.selectedPreset, target: nil), host: host, now: now,
+                matches: { $0.vinhetas?.selectedPreset == preset }, apply: { $0.vinhetas?.selectedPreset = preset })
+        case .vinhetasVolume:
+            guard let preset = command.preset, let pad = command.pad, let pads = display.vinhetas?.presets, pads.indices.contains(preset), pads[preset].pads.indices.contains(pad) else { return false }
+            add(Key(field: \DAWRemoteVinhetas.Pad.volume, target: nil, index: preset * 16 + pad), host: host, now: now,
+                matches: { $0.vinhetas?.presets[preset].pads[pad].volume == command.value },
+                apply: { $0.vinhetas?.presets[preset].pads[pad].volume = command.value })
+        case .save:
+            guard display.pendingSave, !display.saving else { return false }
+            add(Key(field: \State.saving, target: nil), host: host, now: now,
+                matches: { $0.saving || !$0.pendingSave }, apply: { $0.saving = true })
+        case .openRecentProject, .openRecentProjectInNewTab:
+            guard display.projects?.busy == false else { return false }
+            add(Key(field: \State.projects, target: nil), host: host, now: now,
+                matches: { $0.projects?.busy == true || $0.projects?.commandID == command.id },
+                apply: { $0.projects?.busy = true; $0.projects?.canOpen = false; $0.projects?.canOpenInNewTab = false })
+        case .noticeClear, .noticePin, .noticePinStopped, .noticeDestination, .noticeSaveTemplate:
+            guard display.notices != nil else { return false }
+            switch command.action {
+            case .noticeClear:
+                add(Key(field: \DAWRemoteNotices.active, target: nil), host: host, now: now,
+                    matches: { $0.notices?.active != true },
+                    apply: { $0.notices?.active = false; $0.notices?.pinned = false; $0.notices?.remaining = 0 })
+            case .noticePin: putNotice(\.pinned, command.value == 1, host: host, now: now)
+            case .noticePinStopped: putNotice(\.pinWhenStopped, command.enabled, host: host, now: now)
+            case .noticeDestination:
+                putNotice(command.value == 1 ? \.window1 : \.window2, command.enabled == true, host: host, now: now)
+            case .noticeSaveTemplate:
+                let index = Int(command.value), text = command.text ?? ""
+                add(Key(field: \DAWRemoteNotices.templates, target: nil, index: index), host: host, now: now,
+                    matches: { $0.notices?.templates[index] == text }, apply: { $0.notices?.templates[index] = text })
+            default: return false
+            }
+        default: return false
+        }
+        return true
+    }
+
+    private mutating func scope(_ state: State) {
+        guard state.project != project || state.song != song else { return }
+        edits.removeAll(); project = state.project; song = state.song
+    }
+    private mutating func add(_ key: Key, host: State, now: TimeInterval, matches: @escaping (State) -> Bool,
+                              apply: @escaping (inout State) -> Void) {
+        let pending = edits.contains { $0.key == key }
+        edits.removeAll { $0.key == key }
+        edits.append(Edit(key: key, matches: matches, apply: apply, expiration: now + 3, waitForChange: pending && matches(host)))
+    }
+    private mutating func put<Value: Equatable>(_ path: WritableKeyPath<State, Value>, _ value: Value, host: State, now: TimeInterval,
+                                                apply: @escaping (inout State) -> Void = { _ in }) {
+        add(Key(field: path, target: nil), host: host, now: now, matches: { $0[keyPath: path] == value },
+            apply: { $0[keyPath: path] = value; apply(&$0) })
+    }
+    private mutating func putTrack<Value: Equatable>(_ path: WritableKeyPath<State.Track, Value>, _ value: Value,
+                                                     id: UUID, host: State, now: TimeInterval) {
+        add(Key(field: path, target: id), host: host, now: now,
+            matches: { $0.tracks.first(where: { $0.id == id }).map { $0[keyPath: path] == value } ?? true },
+            apply: { if let index = $0.tracks.firstIndex(where: { $0.id == id }) { $0.tracks[index][keyPath: path] = value } })
+    }
+    private mutating func putNotice<Value: Equatable>(_ path: WritableKeyPath<DAWRemoteNotices, Value>, _ value: Value,
+                                                      host: State, now: TimeInterval) {
+        add(Key(field: path, target: nil), host: host, now: now,
+            matches: { $0.notices.map { $0[keyPath: path] == value } ?? true },
+            apply: { $0.notices?[keyPath: path] = value })
+    }
+    private mutating func putClip<Value: Equatable>(_ path: WritableKeyPath<State.Clip, Value>, _ value: Value,
+                                                    id: UUID, host: State, now: TimeInterval) {
+        add(Key(field: path, target: id), host: host, now: now,
+            matches: { state in state.tracks.lazy.compactMap { $0.clips.first(where: { $0.id == id }) }.first.map { $0[keyPath: path] == value } ?? true },
+            apply: { state in
+                for track in state.tracks.indices {
+                    guard let clip = state.tracks[track].clips.firstIndex(where: { $0.id == id }) else { continue }
+                    state.tracks[track].clips[clip][keyPath: path] = value
+                    break
+                }
+            })
+    }
+    private static func silentTracks(_ tracks: [State.Track]) -> Set<UUID> {
+        let hierarchy = DAWRemoteTrackHierarchy(tracks)
+        let solos = Set(tracks.lazy.filter(\.solo).map(\.id))
+        guard !solos.isEmpty else { return Set(tracks.lazy.filter(\.mute).map(\.id)) }
+        let soloAncestors = solos.reduce(into: Set<UUID>()) { $0.formUnion(hierarchy.ancestors(of: $1)) }
+        return Set(tracks.lazy.filter { track in
+            track.mute || (!solos.contains(track.id) && !soloAncestors.contains(track.id) && !hierarchy.ancestors(of: track.id).contains(where: solos.contains))
+        }.map(\.id))
     }
 }
 

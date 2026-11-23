@@ -75,6 +75,14 @@ import Combine
         }
         throw ProjectError.invalid("Missing clip")
     }
+    func soloTrackExclusively(_ id: UUID) throws {
+        mixerCommands.append(.solo)
+        if failMixerCommand == .solo { throw ProjectError.invalid("Injected solo failure") }
+        guard let song = project.songs.firstIndex(where: { $0.id == transport.songId }) else { return }
+        for track in project.songs[song].tracks.indices {
+            project.songs[song].tracks[track].solo = project.songs[song].tracks[track].id == id
+        }
+    }
     private func mutate(_ id: UUID,operation: String,edit: (inout Track) -> Void) throws {
         settingsCommands.append(operation)
         if failSettingsCommand == operation || failSettingsCommandAt == settingsCommands.count { throw ProjectError.invalid("Injected settings failure") }
@@ -98,6 +106,7 @@ import Combine
         project.masterColor = color
     }
     func editTrack(_ track: UUID,name: String,color: UInt32) throws { try mutate(track,operation: "details") { $0.name = name; $0.color = color } }
+    func renameTrack(_ track: UUID, name: String) throws { try mutate(track, operation: "rename") { $0.name = name } }
     func editRegion(_ id: UUID,name: String,color: UInt32,uppercaseName: Bool) throws {
         settingsCommands.append("region")
         for song in project.songs.indices {
@@ -111,7 +120,7 @@ import Combine
         guard (0...16).contains(channel) else { throw ProjectError.invalid("Invalid MIDI channel") }
         try mutate(track, operation: "midiChannel") { $0.midiChannel = channel == 0 ? nil : channel }
     }
-    func setMIDIInput(_ track: UUID,slot: Int) throws { try mutate(track,operation: "midi") { $0.midiInput = slot == 0 ? nil : slot } }
+    func setMIDIInput(_ track: UUID,slot: Int) throws { try mutate(track,operation: "midi") { $0.selectMIDIInput(slot == 0 ? nil : slot) } }
     func setRecording(_ track: UUID,input: OutputPatch,format: String) throws { try mutate(track,operation: "recording") { $0.inputPatch = input; $0.recordingFormat = format } }
     func setOutputPatch(track: UUID?,patch: OutputPatch,slot: Int) throws {
         if let track {
@@ -610,6 +619,39 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(executor.mixerCommands.count, count, "Clearing an already-clear mixer does nothing")
         XCTAssertEqual(executor.fullEdits, 0); XCTAssertEqual(executor.snapshotReads, 0)
     }
+    @MainActor func testExclusiveSoloTargetsOnlyClickedTrackAndPublishesOneEdit() throws {
+        var project = fixture()
+        var a = Track(id: UUID(), name: "A", role: .keys)
+        var b = Track(id: UUID(), name: "B", role: .keys)
+        let c = Track(id: UUID(), name: "C", role: .keys)
+        a.solo = true; b.solo = true; b.mute = true
+        project.songs[0].tracks = [a, b, c]
+        let (controller, executor) = try show(project)
+        controller.setMixerTrackSelection([b.id, c.id], anchor: b.id)
+        var sound: [UUID: Bool] = [:]
+        controller.audioSolo = { sound[$0] = $1 }
+
+        controller.soloTrackExclusively(c.id)
+        controller.soloTrackExclusively(c.id)
+        controller.soloTrackExclusively(UUID())
+
+        let tracks = try XCTUnwrap(controller.current).tracks
+        XCTAssertEqual(tracks.filter(\.solo).map(\.id), [c.id])
+        XCTAssertTrue(tracks[1].mute)
+        XCTAssertEqual(controller.snapshot.project, executor.project)
+        XCTAssertEqual(sound, [a.id: false, b.id: false, c.id: true])
+        XCTAssertEqual(controller.mixerTrackSelection, [b.id, c.id])
+        XCTAssertEqual(controller.projectRevision, 1)
+        XCTAssertEqual(executor.mixerCommands, [.solo])
+        XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertEqual(executor.snapshotReads, 0)
+
+        executor.failMixerCommand = .solo
+        controller.soloTrackExclusively(a.id)
+        XCTAssertEqual(controller.current?.tracks, tracks)
+        XCTAssertEqual(controller.projectRevision, 1)
+    }
+
     @MainActor func testSelectedMixerControlsShareStatesAndPreserveUnselectedTracks() throws {
         var project = fixture()
         var a = Track(id: UUID(), name: "A", role: .keys)
@@ -732,6 +774,33 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         let data = try JSONEncoder().encode(show.snapshot.project)
         XCTAssertEqual(try JSONDecoder().decode(Project.self, from: data), show.snapshot.project)
     }
+    @MainActor func testInlineTrackRenameUsesOneEditAndPreservesColorAudioAndUndo() throws {
+        var project = fixture()
+        project.songs[0].tracks[1].color = nil
+        let track = project.songs[0].tracks[1]
+        let (show, executor) = try show(project)
+        let transport = show.snapshot.transport
+        var audioUpdates = 0
+        show.audioUpdate = { _, _ in audioUpdates += 1 }
+
+        show.renameMixerTrack(track.id, name: "  Stage Keys  ", project: project.id)
+        show.renameMixerTrack(track.id, name: "Stage Keys", project: project.id)
+        show.renameMixerTrack(track.id, name: " ", project: project.id)
+        show.renameMixerTrack(track.id, name: "Neither", project: UUID())
+
+        var expected = track
+        expected.name = "Stage Keys"
+        XCTAssertEqual(show.current?.tracks[1], expected)
+        XCTAssertEqual(show.snapshot.project, executor.project)
+        XCTAssertEqual(show.snapshot.transport, transport)
+        XCTAssertEqual(executor.settingsCommands, ["rename"])
+        XCTAssertEqual(executor.fullEdits, 0)
+        XCTAssertEqual(executor.snapshotReads, 0)
+        XCTAssertEqual(audioUpdates, 0)
+        show.undo()
+        XCTAssertEqual(show.current?.tracks[1], track)
+    }
+
     @MainActor func testTrackDetailsMIDIRecordingAndRoutingUseIncrementalSettingsWithoutSnapshot() throws {
         let project = fixture(), (show,executor) = try show(project)
         let track = project.songs[0].tracks[1].id, originalClips = project.songs[0].tracks[1].clips
@@ -760,8 +829,10 @@ final class IncrementalTrackSettingsTests: XCTestCase {
         XCTAssertEqual(callbacks,[.midi(track,2),.patch(track,OutputPatch(firstChannel: 5,channelCount: 2),1),.patch(nil,OutputPatch(firstChannel: 7,channelCount: 2),0)])
         XCTAssertEqual(show.snapshot.transport,originalTransport); XCTAssertEqual(show.current?.tracks[1].clips,originalClips)
         XCTAssertEqual(show.snapshot.project,executor.project)
-        XCTAssertEqual(show.current?.tracks[1].name,"Piano"); XCTAssertEqual(show.current?.tracks[1].inputPatch,input)
+        XCTAssertEqual(show.current?.tracks[1].name,"Piano")
+        XCTAssertEqual(show.current?.tracks[1].inputPatch,OutputPatch.none)
         XCTAssertEqual(show.current?.tracks[1].midiInput,2)
+        XCTAssertEqual(show.current?.tracks[1].recordingMode,.midi)
     }
     @MainActor func testBatchRegionColorsPreserveNamesAndTimingWithoutReload() throws {
         var project = fixture()

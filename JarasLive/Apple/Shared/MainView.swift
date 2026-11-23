@@ -36,7 +36,6 @@ struct TrackMixerColumnGeometry {
 private struct FooterDisplayIdentity: Hashable {
     let show: ObjectIdentifier
     let theme: JarasInterfaceTheme
-    let proMode: Bool
 }
 private struct WorkspaceProjectIdentity: Hashable {
     let project: UUID
@@ -96,7 +95,6 @@ struct MainView: View {
     @AppStorage("jaras.layout.library.open", store: WorkspaceLayoutPreferences.storage) private var libraryOpen = false
     @AppStorage("jaras.layout.focus.open", store: WorkspaceLayoutPreferences.storage) private var focusOpen = false
     @State private var midiPreviewOpen = false
-    @AppStorage("jaras.transport.proMode", store: WorkspaceLayoutPreferences.storage) private var proMode = false
     @State private var proNotesOpen = false
     @State private var proSamplersOpen = false
     @StateObject private var midiPreviewWindow = RecordingPianoWindow()
@@ -308,11 +306,10 @@ struct MainView: View {
         let notesOpen = proNotesOpen, samplersOpen = proSamplersOpen
         let notesAction = { proNotesOpen.toggle(); if proNotesOpen { proSamplersOpen = false } }
         let samplersAction = { proSamplersOpen.toggle(); if proSamplersOpen { proNotesOpen = false } }
-        let closeDocks = { proNotesOpen = false; proSamplersOpen = false }
         #else
         let share: (() -> Void)? = nil
         let notesOpen = false, samplersOpen = false
-        let notesAction: () -> Void = {}, samplersAction: () -> Void = {}, closeDocks: () -> Void = {}
+        let notesAction: () -> Void = {}, samplersAction: () -> Void = {}
         #endif
         let transport = TransportView(show: show, documents: documents, remotePresentation: remotePresentation,
             mediaDirectory: documents.currentURL?.deletingLastPathComponent(),
@@ -321,14 +318,14 @@ struct MainView: View {
             toggleMixer: toggleMixer, toggleSetlist: toggleSetlist,
             setlistPlacement: setlistPlacement, placeSetlist: placeSetlist,
             shareProject: share, proNotesOpen: notesOpen, proSamplersOpen: samplersOpen,
-            toggleProNotes: notesAction, toggleProSamplers: samplersAction, closeProDocks: closeDocks)
+            toggleProNotes: notesAction, toggleProSamplers: samplersAction)
         let editor = VStack(spacing: 0) {
             #if os(macOS)
             if desktopExtras && documents.projectTabCount > 1 { DesktopProjectTabBar().frame(height: 24) }
             desktopToolBar.fixedSize(horizontal: false, vertical: true)
             #endif
             GeometryReader { geometry in
-                workspace(height: geometry.size.height, transport: transport)
+                workspace(width: geometry.size.width, height: geometry.size.height, transport: transport)
             }
         }
         #if os(macOS)
@@ -371,10 +368,15 @@ struct MainView: View {
         }
     }
     #endif
-    private func workspace<Transport: View>(height workspaceHeight: CGFloat, transport: Transport) -> some View {
+    private func workspace<Transport: View>(width workspaceWidth: CGFloat, height workspaceHeight: CGFloat, transport: Transport) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
+                #if os(macOS)
+                transport.frame(height: TransportView.desktopHeight(width: workspaceWidth, remote: remotePresentation,
+                                                                     multipleProjects: documents.projectTabCount > 1))
+                #else
                 transport
+                #endif
                     #if os(macOS)
                     GeometryReader { geometry in
                         let proDockOpen = proNotesOpen || proSamplersOpen
@@ -466,7 +468,7 @@ struct MainView: View {
                     #endif
                 #if os(macOS)
                 FooterNativeHeightHost(storedHeight: CGFloat(storedFooterHeight), minimum: 27, maximum: 161.046875,
-                    active: true, identity: AnyHashable(FooterDisplayIdentity(show: ObjectIdentifier(show), theme: interfaceTheme, proMode: proMode)), role: .display,
+                    active: true, identity: AnyHashable(FooterDisplayIdentity(show: ObjectIdentifier(show), theme: interfaceTheme)), role: .display,
                     resizeCoordinator: footerResizeCoordinator,
                     displayAvailableHeight: workspaceHeight - 150 - (keyboardOpen ? 108 : 0),
                     fallbackMixerHeight: footerMixerOpen ? min(723.55859375, max(273, footerMixerHeight)) : 0) {
@@ -858,7 +860,7 @@ struct MainView: View {
             }
             .accessibilityIdentifier("workspace-library").help(Text(verbatim: "Library"))
             Button(action: toggleFocus) {
-                toolbarLabel("Track - I", "sidebar.left", active: focusOpen)
+                toolbarLabel("Track - I", "trackInspector", active: focusOpen)
             }
             .accessibilityIdentifier("workspace-focus").help(Text(verbatim: "Track - I"))
         }
@@ -1088,10 +1090,11 @@ private struct AudioDropOptions: View {
 /// Reuses the per-song pitch state and target editor in the transport.
 struct RegionTunerControl: View {
     let show: ShowController
+    let panelWidth: CGFloat?
     let panelHeight: CGFloat
     @StateObject private var updates: ShowPresentationObserver
-    init(show: ShowController, panelHeight: CGFloat = TransportControlMetrics.detailHeight) {
-        self.show = show; self.panelHeight = panelHeight
+    init(show: ShowController, panelWidth: CGFloat? = nil, panelHeight: CGFloat = TransportControlMetrics.detailHeight) {
+        self.show = show; self.panelWidth = panelWidth; self.panelHeight = panelHeight
         _updates = StateObject(wrappedValue: show.presentationObserver)
     }
     @State private var editing: Part?
@@ -1104,6 +1107,7 @@ struct RegionTunerControl: View {
     var body: some View {
         HStack(spacing: 3) {
             Text(verbatim: "Tuner").font(.jarasSystem(size: 9, weight: .semibold)).foregroundStyle(JarasTheme.text)
+                .fixedSize(horizontal: true, vertical: false)
             Button { step(-1) } label: { tunerStepLabel("minus", step: -1) }
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) <= -12).jarasHelp("Lower song pitch")
                 .onHover { updateHover(-1, inside: $0) }
@@ -1120,7 +1124,7 @@ struct RegionTunerControl: View {
                 .disabled(show.pitchRegion == nil || (show.pitchRegion?.semitones ?? 0) >= 12).jarasHelp("Raise song pitch")
                 .onHover { updateHover(1, inside: $0) }
         }.buttonStyle(.plain).foregroundStyle(JarasTheme.green)
-        .padding(.horizontal, 6).frame(height: panelHeight)
+        .padding(.horizontal, 6).frame(width: panelWidth, height: panelHeight)
         .background(TransportDetailSurface())
         .sheet(item: $editing) { region in
             if let song = show.current {
@@ -1148,31 +1152,34 @@ struct RegionPitchTargets: View {
     let close: () -> Void
     @State private var tab = 0
     @State private var tracks: Set<UUID>
-    @State private var groups: Set<UUID>
+    private let groupTracks: [UUID: Set<UUID>]
     init(show: ShowController, song: Song, region: Part, close: @escaping () -> Void) {
         self.show = show; self.song = song; self.region = region; self.close = close
+        let hierarchy = TrackHierarchy(song.tracks)
+        var contents: [UUID: Set<UUID>] = [:]
+        for track in song.pitchTracks {
+            for parent in hierarchy.ancestors(of: track.id) {
+                contents[parent, default: []].insert(track.id)
+            }
+        }
+        groupTracks = contents
         let selection = song.pitchTargets(region)
-        _tracks = State(initialValue: selection.tracks); _groups = State(initialValue: selection.groups)
+        _tracks = State(initialValue: selection.groups.reduce(into: selection.tracks) { result, group in
+            result.formUnion(contents[group] ?? [])
+        })
     }
     private var visibleTracks: [Track] { tab == 0 ? song.pitchTracks : song.pitchGroups }
     private var allSelected: Bool { !visibleTracks.isEmpty && visibleTracks.allSatisfy(isSelected) }
+    private func targetIDs(_ track: Track) -> Set<UUID> {
+        tab == 0 ? [track.id] : groupTracks[track.id] ?? []
+    }
     private func isSelected(_ track: Track) -> Bool {
-        if tab == 0 { return tracks.contains(track.id) || track.parentTrackID.map(groups.contains) == true }
-        let members = song.tracks.filter { $0.parentTrackID == track.id }
-        return groups.contains(track.id) || (!members.isEmpty && members.allSatisfy { tracks.contains($0.id) })
+        let targets = targetIDs(track)
+        return !targets.isEmpty && targets.isSubset(of: tracks)
     }
     private func setSelected(_ track: Track, _ selected: Bool) {
-        if tab == 0 {
-            // Deselecting one child keeps its siblings selected.
-            if !selected, let parent = track.parentTrackID, groups.remove(parent) != nil {
-                tracks.insert(parent)
-                tracks.formUnion(song.tracks.filter { $0.parentTrackID == parent && $0.id != track.id }.map(\.id))
-            }
-            if selected { tracks.insert(track.id) } else { tracks.remove(track.id) }
-        } else {
-            tracks.subtract(song.tracks.filter { $0.parentTrackID == track.id || $0.id == track.id }.map(\.id))
-            if selected { groups.insert(track.id) } else { groups.remove(track.id) }
-        }
+        let targets = targetIDs(track)
+        if selected { tracks.formUnion(targets) } else { tracks.subtract(targets) }
     }
     var body: some View {
         VStack(spacing: 14) {
@@ -1190,12 +1197,16 @@ struct RegionPitchTargets: View {
                     ForEach(visibleTracks) { track in
                         Toggle(track.name, isOn: Binding(get: { isSelected(track) }, set: { setSelected(track, $0) }))
                             .toggleStyle(.automatic).tint(JarasTheme.green)
+                            .disabled(targetIDs(track).isEmpty)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
             }.frame(height: 245)
             HStack { Spacer(); Button("Apply") {
-                let current = show.current?.parts.first { $0.id == region.id } ?? region
-                show.setRegionPitch(region.id, semitones: current.semitones, tracks: tracks, groups: groups); close()
+                if let current = show.current?.parts.first(where: { $0.id == region.id }),
+                   current.pitchTrackIDs.map(Set.init) != tracks || current.pitchGroupIDs != [] {
+                    show.setRegionPitch(region.id, semitones: current.semitones, tracks: tracks, groups: [])
+                }
+                close()
             }.keyboardShortcut(.defaultAction) }
         }.padding(20).frame(width: 410).background(JarasTheme.panel).foregroundStyle(JarasTheme.text)
     }

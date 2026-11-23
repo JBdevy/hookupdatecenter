@@ -248,7 +248,66 @@ require(preparationClient.remoteState?.focusedRegion == localNext && preparation
 waitFor("Remote sends exactly the requested Stop") { preparationCommands == 1 }
 preparationPacket = localPrepared
 waitFor("Remote accepts manual Stop confirmation") { preparationClient.remoteState?.currentRegion == localNext }
+
+preparationPacket.regionAutoUntilBlockEnd = false
+waitFor("Remote receives stopped transport outside block preparation") { preparationClient.remoteState?.regionAutoUntilBlockEnd == false }
+let rapidTransportState = preparationPacket
+func sendPreparationTransport(_ action: DAWRemoteCommand.Action) {
+    preparationClient.send(.init(project: rapidTransportState.project, song: rapidTransportState.song, action: action))
+}
+sendPreparationTransport(.play)
+require(preparationClient.predictedTransportRunning == true && preparationClient.remoteState?.playing == false,
+        "Play changes the client button immediately while audio position still uses the host snapshot")
+sendPreparationTransport(.stop)
+require(preparationClient.predictedTransportRunning == false, "Stop overrides an unconfirmed Play immediately")
+preparationPacket.position += 0.1
+waitFor("Remote receives a stopped packet sent before Play") { preparationClient.remoteState?.position == preparationPacket.position }
+require(preparationClient.predictedTransportRunning == false, "An old stopped packet cannot clear a rapid Stop")
+preparationPacket.playing = true
+waitFor("Remote receives a late playing packet") { preparationClient.remoteState?.playing == true }
+require(preparationClient.predictedTransportRunning == false, "A late Play packet cannot undo the latest Stop")
+preparationPacket.playing = false
+waitFor("Remote clears local feedback when the host confirms Stop") {
+    preparationClient.remoteState?.playing == false && preparationClient.predictedTransportRunning == nil
+}
+sendPreparationTransport(.play)
+require(preparationClient.predictedTransportRunning == true, "A new Play is rendered before the host responds")
+preparationPacket.transportPreparing = true
+waitFor("Remote leaves Stop visible while the host prepares audio") {
+    preparationClient.remoteState?.transportControlRunning == true && preparationClient.remoteState?.playing == false
+        && preparationClient.predictedTransportRunning == nil
+}
+preparationPacket.transportPreparing = nil
+preparationPacket.playing = true
+waitFor("Remote reconciles Play with the host") {
+    preparationClient.remoteState?.playing == true && preparationClient.predictedTransportRunning == nil
+}
+sendPreparationTransport(.stop)
+require(preparationClient.predictedTransportRunning == false && preparationClient.remoteState?.playing == true,
+        "Stop changes a normal playing button immediately, without waiting for block or host updates")
+require(!preparationPacket.tracks.isEmpty, "Mixer test requires a track")
+let remoteMixerTrack = preparationPacket.tracks[0].id
+let originalMute = preparationPacket.tracks[0].mute, originalSolo = preparationPacket.tracks[0].solo
+preparationClient.send(.init(project: rapidTransportState.project, song: rapidTransportState.song, action: .mute, target: remoteMixerTrack))
+require(preparationClient.remoteState?.tracks[0].mute == !originalMute && preparationPacket.tracks[0].mute == originalMute,
+        "M changes on the Remote before the host snapshot changes")
+preparationClient.send(.init(project: rapidTransportState.project, song: rapidTransportState.song, action: .solo, target: remoteMixerTrack))
+require(preparationClient.remoteState?.tracks[0].solo == !originalSolo && preparationPacket.tracks[0].solo == originalSolo,
+        "S changes on the Remote before the host snapshot changes")
+sendPreparationTransport(.toggleMultiLoopBypass)
+require(preparationClient.remoteState?.multiLoopsBypassed == (preparationPacket.multiLoopsBypassed != true),
+        "Bypass changes on the Remote before the host snapshot changes")
+sendPreparationTransport(.toggleLoop)
+require(preparationClient.remoteState?.loop == !preparationPacket.loop, "Repeat responds immediately too")
+preparationPacket.position += 0.1
+waitFor("Mixer receives a stale snapshot without reverting local controls") { preparationClient.remoteState?.position == preparationPacket.position }
+require(preparationClient.remoteState?.tracks[0].mute == !originalMute && preparationClient.remoteState?.tracks[0].solo == !originalSolo,
+        "Stale host snapshots keep local M and S state")
+require(preparationClient.remoteState?.multiLoopsBypassed == (preparationPacket.multiLoopsBypassed != true), "Stale host snapshots keep Bypass state")
 preparationClient.stop(); preparationHost.stop()
+require(preparationClient.predictedTransportRunning == nil, "Disconnect removes pending transport feedback")
+print("REMOTE_MUTE_SOLO_BYPASS_REPEAT_IMMEDIATE_OK")
+print("REMOTE_PLAY_STOP_IMMEDIATE_AND_LATE_HOST_PACKETS_OK")
 print("REMOTE_NETWORK_LOCAL_BLOCK_TIMER_NO_TRANSPORT_COMMANDS_OK")
 
 // Stop must predict the same grid/blue selection before any host round trip.

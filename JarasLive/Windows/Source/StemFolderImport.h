@@ -390,6 +390,7 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
     for(const auto& channel:values(audit["tracks"])){auto key=channel["key"].toString();if(keys.count(key) || !audioKeys.count(key))continue;
         jaras::Track track;track.id=uuid();track.name=utf8(channel["name"].toString());auto group=channel["groupKey"].toString();
         track.role.id=track.name=="Click"?"click":track.name=="Guia"||track.name==utf8(String::fromUTF8("Regência"))?"guide":group=="sanfonas"?"accordion":text(track.name).startsWith("Baixo")?"bass":group=="teclados"?"keys":group=="percussivo"?"drums":group=="guitarras"?"guitar":"other";
+        track.instrumentIcon = utf8(rules.call("catLiveStemIcon", {text(track.name)}).toString());
         track.color=0x828282;keys[key]=arrangement.tracks.size();arrangement.tracks.push_back(track);
     }
     Array<File> owned;
@@ -501,7 +502,11 @@ inline jaras::Project build(const Scan& scan,const String& removal,jaras::Projec
             unsigned color=(unsigned)group["colorHex"].toString().trimCharactersAtStart("#").getHexValue32();std::optional<ID> parent;
             if(!folder.isVoid()&&!folder.isUndefined()){auto& existing=arrangement.tracks.at((int)folder);parent=existing.id;color=existing.color.value_or(color);}
             else if(!anchor.isVoid()&&!anchor.isUndefined())color=arrangement.tracks.at((int)anchor).color.value_or(color);
-            else {jaras::Track root;root.id=uuid();root.name=utf8(group["name"].toString());root.role.id="other";root.color=color;parent=root.id;arrangement.tracks.push_back(root);}
+            else {
+                jaras::Track root;root.id=uuid();root.name=utf8(group["name"].toString());root.role.id="other";root.color=color;
+                root.instrumentIcon = utf8(rules.call("catLiveStemIcon", {text(root.name)}).toString());
+                parent=root.id;arrangement.tracks.push_back(root);
+            }
             auto soften=[](unsigned value){return value+(255-value)*28/100;};unsigned soft=(soften((color>>16)&255)<<16)|(soften((color>>8)&255)<<8)|soften(color&255);
             for(auto i:members){auto& track=arrangement.tracks[i];track.color=soft;track.parentTrackID=parent;if(parent)track.patch=jaras::OutputPatch{-2,2};else if(!anchor.isVoid()&&!anchor.isUndefined())anchors[track.id]=arrangement.tracks.at((int)anchor).id;}
         }

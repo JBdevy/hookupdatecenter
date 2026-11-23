@@ -139,11 +139,7 @@ struct TeleprompterTimerConfiguration: View {
                             .overlay(RoundedRectangle(cornerRadius: 6).stroke(field == index ? JarasTheme.yellow : JarasTheme.line))
                     }
                 }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(),spacing: 5),count: 3),spacing: 5) {
-                    ForEach(["1","2","3","4","5","6","7","8","9","Clear","0","⌫"],id: \.self) { key in
-                        Button { edit(key) } label: { Text(LocalizedStringKey(key)).frame(maxWidth: .infinity,minHeight: 26).contentShape(Rectangle()) }.buttonStyle(.bordered)
-                    }
-                }
+                TimerNumberPad(edit: edit)
             }
             .disabled(controller.running)
             }
@@ -180,5 +176,19 @@ struct TeleprompterTimerConfiguration: View {
         }
         digits[field] = String(format: "%02d",min(field == 0 ? 99 : 59,Int(String(chars)) ?? 0))
         controller.setTargetText(digits.joined(separator: ":"))
+    }
+}
+
+struct TimerNumberPad: View {
+    let edit: (String) -> Void
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 3), spacing: 5) {
+            ForEach(["1", "2", "3", "4", "5", "6", "7", "8", "9", "Clear", "0", "⌫"], id: \.self) { key in
+                Button { edit(key) } label: {
+                    Text(LocalizedStringKey(key)).frame(maxWidth: .infinity, minHeight: 26).contentShape(Rectangle())
+                }.buttonStyle(.bordered)
+            }
+        }
     }
 }

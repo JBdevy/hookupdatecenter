@@ -353,6 +353,7 @@
 "Volume" = "Volume";
 "Mute" = "Mute";
 "Solo" = "Solo";
+"Exclusive Solo" = "Exclusive Solo";
 "Video" = "Video";
 "Image" = "Image";
 "⌘ / Ctrl: multiple · Shift: range" = "⌘ / Ctrl: multiple · Shift: range";
@@ -805,10 +806,13 @@
 "No plugins found" = "No plugins found";
 
 "Detect BPM…" = "Detect BPM…";
+"Bpm detect" = "Bpm detect";
 "Detect BPM" = "Detect BPM";
 "Detect BPM from the Click track?" = "Detect BPM from the Click track?";
 "Detecting BPM…" = "Detecting BPM…";
 "No stable click tempo was found." = "No stable click tempo was found.";
+"No stable tempo was found in the selected audio." = "No stable tempo was found in the selected audio.";
+"The project media folder is unavailable." = "The project media folder is unavailable.";
 "BPM detected." = "BPM detected.";
 "Quality" = "Quality";
 "Re-render" = "Re-render";
@@ -2715,3 +2719,5 @@
 "Import SF2…" = "Import SF2…";
 
 "Could not import SF2:" = "Could not import SF2:";
+
+"Receive Audio Transmitter" = "Receive Audio Transmitter";

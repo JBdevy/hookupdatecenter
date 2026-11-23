@@ -84,6 +84,10 @@ struct FXEditor: View {
                 }
             }
             switch page {
+            case "CatSynth":
+                CatSynthEditor(bank: Binding(get: { settings.catSynth ?? CatSynthBank() }, set: { settings.catSynth = $0 }),
+                               enabled: Binding(get: { settings.catSynthEnabled == true }, set: { settings.catSynthEnabled = $0 }),
+                               audio: drumAudio, track: audioTarget, effect: effectKey)
             case "Drummer Pad 16", "Drummer Pad 48":
                 if let kind = DrummerPadKind(rawValue: page) {
                     DrummerPadEditor(kind: kind, kit: Binding(get: { settings.drumKit(kind) }, set: { settings.setDrumKit($0, for: kind) }), audio: drumAudio, track: audioTarget, effect: effectKey)

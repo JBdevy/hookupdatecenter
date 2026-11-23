@@ -200,6 +200,13 @@ enum AppStartupPresentation {
                 #endif
                 return audio?.pendingSubplayPreparation(snapshot, revision: revision)
             }
+            show.pendingSeekPreparation = { [weak self, weak audio] snapshot, revision, position in
+                #if os(iOS)
+                guard self?.localPlaybackEnabled == true else { return nil }
+                #endif
+                return audio?.pendingSeekPreparation(snapshot, revision: revision, position: position)
+            }
+            show.cancelDestinationPreparations = { [weak audio] in audio?.cancelDestinationPreparations() }
             var repeatWasEnabled = show.snapshot.transport.loop.enabled
             show.audioUpdate = { [weak self, weak show] snapshot, revision in
                 #if os(iOS)
@@ -298,6 +305,7 @@ enum AppStartupPresentation {
                 if let track, let show, show.current?.tracks.first(where: { $0.id == track })?.kind == .timecode { audio.updateTimecode(show.snapshot) }
             }
             show.audioMIDIChannel = { audio.previewMIDIChannel($0, channel: $1) }
+            show.preferredInstrumentMIDIInput = { AudioDeviceSettings.shared.firstAvailableMIDIInputSlot() }
             show.audioMIDIInput = { audio.previewMIDIInput($0, slot: $1) }
             audio.prepareAfterDeviceChange = { [weak show] in show?.preparePlayback() }
             #if os(macOS)
@@ -324,6 +332,9 @@ enum AppStartupPresentation {
             }
             AudioDeviceSettings.shared.mobileSessionEvent = { event in NativeProjectTabs.shared.handleAudioEvent(event) }
             #endif
+        }
+        show.recordingBlocksTapTempo = { [weak recorder = projectRecorder] in
+            recorder?.countingIn == true || recorder?.recording == true
         }
         show.onStop = { [weak auth, weak recorder = projectRecorder] in
             recorder?.cancelCountIn()

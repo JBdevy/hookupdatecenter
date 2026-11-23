@@ -10,6 +10,7 @@
 #include "CatDynamicsEditor.h"
 #include "InstrumentParameterEditor.h"
 #include "DrummerPadEditor.h"
+#include "CatSynthEditor.h"
 namespace catlive {
 namespace fxui {
 class EQGraph final : public Component {
@@ -521,7 +522,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
             g.fillRect(0, getHeight() - 40, sidebarWidth(), 40);
         }
         auto r = content();
-        if(kind()=="CatStemSeparation 5"||kind()=="External"||dynamicsEditor)return;
+        if(kind()=="CatStemSeparation 5"||kind()=="External"||dynamicsEditor||synthEditor)return;
         g.setColour(Colours::white);
         g.setFont(theme::semiboldFont(22));
         if (kind().isEmpty()) {
@@ -578,6 +579,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         if(stemEditor)stemEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
         if(dynamicsEditor)dynamicsEditor->setBounds(r.getX(),40,r.getWidth(),getHeight()-40);
         if(drummerEditor)drummerEditor->setBounds(r.getX(),6,r.getWidth(),std::max(1,getHeight()-12));
+        if(synthEditor)synthEditor->setBounds(r.getX(),40,r.getWidth(),std::max(1,getHeight()-50));
         if(instrumentEditor)instrumentEditor->setBounds(r.getX(),headerY+88,r.getWidth(),std::max(1,getHeight()-headerY-104));
         graph.setBounds(r.getX(), headerY + 102, r.getWidth(),
                         std::max(40, getHeight() - headerY - 141));
@@ -607,6 +609,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
     std::unique_ptr<CatDynamicsEditor> dynamicsEditor;
     std::unique_ptr<InstrumentParameterEditor> instrumentEditor;
     std::unique_ptr<DrummerPadEditor> drummerEditor;
+    std::unique_ptr<CatSynthEditor> synthEditor;
     std::unique_ptr<ExternalEffectEditor> externalEditor;
     String externalEditorKey;
     void openExternalEditor() {
@@ -798,6 +801,7 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         dynamicsEditor.reset();
         instrumentEditor.reset();
         drummerEditor.reset();
+        synthEditor.reset();
         knobs.clear();
         refreshPresets();
         const auto k = kind();
@@ -928,6 +932,12 @@ class EffectsPanel final : public Component, public DragAndDropContainer, public
         if (k == "Pitch") {
             knob("Semitones", "pitchSemitones", -12, 12, 1, " st");
             knob("Formant", "pitchFormant", -12, 12, .1, " st");
+        }
+        if (k == "CatSynth") {
+            synthEditor = std::make_unique<CatSynthEditor>(session.audio, track, key(), get(current(), "catSynth"),
+                [this](var bank) { auto value = current(); put(value, "catSynth", std::move(bank)); commit(false); });
+            addAndMakeVisible(*synthEditor);
+            removeEffect.setVisible(false); enabled.setVisible(false);
         }
         if (const auto n = drummer::count(k)) {
             drummerEditor = std::make_unique<DrummerPadEditor>(session.audio, track, key(), k,

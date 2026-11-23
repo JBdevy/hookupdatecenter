@@ -441,8 +441,14 @@ private final class FXChainEffectNameView: NSTextField {
             }
             let kind = settings.kind(of: effect)
             let compactControls = kind == "Delay" || kind == "Reverb"
-            size = NSSize(width: kind == DrummerPadKind.full.rawValue ? 1000 : 740, height: compactControls ? 360 : 560)
-            panel?.contentMinSize = NSSize(width: sidebarWidth + 640, height: compactControls ? 340 : 540)
+            if kind == "CatSynth" {
+                size = NSSize(width: 1000, height: 610)
+                panel?.contentMinSize = NSSize(width: sidebarWidth + 700, height: 490)
+            } else {
+                size = NSSize(width: kind == DrummerPadKind.full.rawValue ? 1000 : 740,
+                              height: compactControls ? 360 : 560)
+                panel?.contentMinSize = NSSize(width: sidebarWidth + 640, height: compactControls ? 340 : 540)
+            }
         }
         editor = content; editorArea.addSubview(content)
         if let panel, !presetBar.isHidden { panel.contentMinSize.height += 36 }

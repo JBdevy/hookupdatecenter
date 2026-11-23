@@ -153,7 +153,8 @@ struct BufferedAudioState {
         const auto began=mach_absolute_time();
         OSStatus error=noErr;
         buffer.frameLength=frames;
-        const auto result=render(frames,buffer.mutableAudioBufferList,&error);
+        auto *buffers = buffer.mutableAudioBufferList;
+        const auto result=render(frames,buffers,&error);
         const auto duration=mach_absolute_time()-began;
         jaras::realtimeClock=previous;
         ++renders; renderTicks.fetch_add(duration,std::memory_order_relaxed);
@@ -166,22 +167,28 @@ struct BufferedAudioState {
         const bool clean=!stoppingBefore && !stopping.load(std::memory_order_acquire) &&
             stamp==generation.load(std::memory_order_acquire) &&
             !discardPostStopRender.exchange(false,std::memory_order_acq_rel);
-        for(unsigned ch=0;ch<channels;++ch) {
-            auto *destination=pcm.data()+ch*capacity;
-            const auto *source=buffer.floatChannelData[ch];
-            if(clean && result==AVAudioEngineManualRenderingStatusSuccess && error==noErr) {
-                std::copy_n(source,initial,destination+offset);
-                if(initial<frames) std::copy_n(source+initial,frames-initial,destination);
-            } else {
-                std::fill_n(destination+offset,initial,0.f);
-                if(initial<frames) std::fill_n(destination,frames-initial,0.f);
-            }
+        // A starved input may still return valid PCM from the other sources.
+        // The ABL reports how many bytes each channel actually rendered.
+        const bool hasPCM = error == noErr && (result == AVAudioEngineManualRenderingStatusSuccess ||
+            result == AVAudioEngineManualRenderingStatusInsufficientDataFromInputNode);
+        for (unsigned ch = 0; ch < channels; ++ch) {
+            auto *destination = pcm.data() + ch * capacity;
+            const auto &channel = buffers->mBuffers[ch];
+            const float *source = static_cast<const float *>(channel.mData);
+            const int64_t valid = clean && hasPCM && source
+                ? std::min<int64_t>(frames, channel.mDataByteSize / sizeof(float)) : 0;
+            auto write = [&](float *dest, int64_t start, int64_t count) {
+                const auto copied = std::clamp<int64_t>(valid - start, 0, count);
+                if (copied) std::copy_n(source + start, copied, dest);
+                std::fill(dest + copied, dest + count, 0.f);
+            };
+            write(destination + offset, 0, initial);
+            if (initial < frames) write(destination, initial, frames - initial);
         }
         std::fill_n(stamps.begin()+offset,initial,stamp);
         if(initial<frames) std::fill_n(stamps.begin(),frames-initial,stamp);
-        if (result==AVAudioEngineManualRenderingStatusSuccess ||
-            result==AVAudioEngineManualRenderingStatusInsufficientDataFromInputNode) {
-            const auto rendered=buffer.mutableAudioBufferList->mBuffers[0].mDataByteSize/sizeof(float);
+        if (hasPCM) {
+            const auto rendered = std::min<unsigned>(frames, buffers->mBuffers[0].mDataByteSize / sizeof(float));
             graphSample=(observedGraphTime ? graphSample : sample)+rendered;
         }
         graphClock.publish(host+uint64_t(frames/rate*ticksPerSecond),graphSample);
@@ -243,21 +250,39 @@ struct BufferedAudioState {
 - (AVAudioChannelCount)configuredHardwareChannels { return _hardwareChannels; }
 - (double)preferredProcessingSampleRate { return _preferredProcessingSampleRate; }
 - (void)setPreferredProcessingSampleRate:(double)rate { _preferredProcessingSampleRate=rate; }
+- (void)clearConfiguration {
+    if (_clockUnit) { [_clockUnit removeRenderObserver:_clockObserver]; _clockUnit = nil; }
+    if (_source.engine) [_hardware detachNode:_source];
+    _source = nil; _render = nil; _buffer = nil; _state.reset();
+    _hardwareRate = 0; _hardwareChannels = 0;
+}
 - (AVAudioFormat *)configureAndReturnError:(NSError **)error {
+    @try {
+        return [self configureHardware:error];
+    } @catch (NSException *exception) {
+        // Hardware can disappear after validation but before AVFAudio connects it.
+        [self stop];
+        [self clearConfiguration];
+        if (error) *error = [NSError errorWithDomain:@"CatLive.BufferedAudio" code:2
+            userInfo:@{NSLocalizedDescriptionKey:@"Audio output is unavailable",
+                       NSDebugDescriptionErrorKey:exception.reason ?: exception.name}];
+        return nil;
+    }
+}
+- (AVAudioFormat *)configureHardware:(NSError **)error {
     const auto hardware=[_hardware.outputNode outputFormatForBus:0];
     const char *testRate=getenv("CATLIVE_GRAPH_SAMPLE_RATE");
     const auto requested=testRate ? atof(testRate) : (_preferredProcessingSampleRate>0 ? _preferredProcessingSampleRate : hardware.sampleRate);
     const auto rate=std::isfinite(requested) && requested>=8000 && requested<=192000 ? requested : hardware.sampleRate;
     const auto channels=hardware.channelCount;
-    if(!std::isfinite(rate) || rate<=0 || !channels || channels>1024) {
+    if(!std::isfinite(hardware.sampleRate) || hardware.sampleRate<=0 || !channels || channels>1024) {
         if(error) *error=[NSError errorWithDomain:@"CatLive.BufferedAudio" code:-50 userInfo:@{NSLocalizedDescriptionKey:@"Audio output is unavailable"}];
         return nil;
     }
     if(_state && _state->rate==rate && _state->channels==channels &&
        _hardwareRate==hardware.sampleRate && _hardwareChannels==channels) return _engine.manualRenderingFormat;
     [self stop];
-    if(_clockUnit) { [_clockUnit removeRenderObserver:_clockObserver]; _clockUnit=nil; }
-    if(_source) [_hardware detachNode:_source];
+    [self clearConfiguration];
     if(_engine.isRunning) [_engine stop];
     if(_engine.isInManualRenderingMode) [_engine disableManualRenderingMode];
     const auto layout=[[AVAudioChannelLayout alloc] initWithLayoutTag:kAudioChannelLayoutTag_DiscreteInOrder | channels];
@@ -272,11 +297,12 @@ struct BufferedAudioState {
     _state->setLiveMonitoring(_liveInstrumentMonitoring);
     _buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:BufferedAudioState::maximumBlock];
     auto state=_state;
-    _clockUnit=_engine.mainMixerNode.AUAudioUnit;
-    _clockObserver=[_clockUnit tokenByAddingRenderObserver:^(AudioUnitRenderActionFlags flags,
+    auto unit = _engine.mainMixerNode.AUAudioUnit;
+    auto observer = [unit tokenByAddingRenderObserver:^(AudioUnitRenderActionFlags flags,
         const AudioTimeStamp *time, AVAudioFrameCount frames, NSInteger bus) {
         if(flags & kAudioUnitRenderAction_PreRender) state->observeGraphTime(time);
     }];
+    _clockUnit = unit; _clockObserver = observer;
     auto engine=_engine; auto render=_render; auto buffer=_buffer;
     _source=[[AVAudioSourceNode alloc] initWithFormat:format renderBlock:^OSStatus(BOOL *silent,const AudioTimeStamp *time,AVAudioFrameCount frames,AudioBufferList *output) {
         *silent=NO;
@@ -367,7 +393,6 @@ struct BufferedAudioState {
 }
 - (void)dealloc {
     [self stop];
-    if(_clockUnit) [_clockUnit removeRenderObserver:_clockObserver];
-    if(_source) [_hardware detachNode:_source];
+    [self clearConfiguration];
 }
 @end

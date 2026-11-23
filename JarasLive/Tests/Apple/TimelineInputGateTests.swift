@@ -840,6 +840,28 @@ for width: CGFloat in [800, 200, 400] {
 }
 ruler.documentWidth = nil
 print("RULER_RETAINED_SURFACE_LOGICAL_ZOOM_SEEK_AND_RANGE_OK")
+var selectionMenuRequests = 0
+ruler.openSelectionMenu = { _, _ in selectionMenuRequests += 1 }
+ruler.selectedTime = { (0.25, 0.75) }
+let intervalsBeforeMenu = intervals.count
+for x: CGFloat in [30, 100, 200, 300, 360] {
+    ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: x))
+    ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: x))
+}
+precondition(selectionMenuRequests == 3 && intervals.count == intervalsBeforeMenu)
+ruler.mouseDown(with: selectionEvent(.leftMouseDown, x: 200, modifiers: .control))
+ruler.mouseUp(with: selectionEvent(.leftMouseUp, x: 200, modifiers: .control))
+precondition(selectionMenuRequests == 4, "Control-click also opens the ruler selection menu")
+ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: 200))
+ruler.rightMouseDragged(with: selectionEvent(.rightMouseDragged, x: 230))
+ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: 200))
+precondition(selectionMenuRequests == 4 && intervals.count > intervalsBeforeMenu)
+ruler.selectedTime = { nil }
+ruler.rightMouseDown(with: selectionEvent(.rightMouseDown, x: 200))
+ruler.rightMouseUp(with: selectionEvent(.rightMouseUp, x: 200))
+precondition(selectionMenuRequests == 4)
+ruler.openSelectionMenu = nil
+print("RULER_SELECTION_BPM_MENU_ONLY_ON_STATIONARY_INSIDE_EXISTING_RANGE_OK")
 if #available(macOS 14.0, *) {
     window.orderBack(nil)
     RunLoop.main.run(until: Date().addingTimeInterval(0.03))

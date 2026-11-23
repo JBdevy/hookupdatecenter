@@ -1,12 +1,41 @@
 #include "../../Core/Transport/PlaybackScope.hpp"
 #include "../../Core/Transport/Engine.hpp"
 #include "../../Core/Import/TrackTaxonomy.hpp"
+#include "../../Core/Audio/CatSynth.hpp"
 #include <iostream>
 #include <set>
 #include <limits>
 #include <stdexcept>
 using namespace jaras;
 static void expect(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
+static void testCatSynthEditorKeyboard() {
+    audio::CatSynth synth(48000);
+    const auto render = [&](unsigned blocks) {
+        float peak = 0;
+        for (unsigned block = 0; block < blocks; ++block) {
+            float left[256]{}, right[256]{};
+            synth.beginBlock();
+            synth.render(left, right, 256);
+            synth.publishScreenVoiceActivity();
+            for (const auto sample : left) peak = std::max(peak, std::abs(sample));
+        }
+        return peak;
+    };
+    synth.screenKey(60, 100);
+    synth.screenKey(60, 0);
+    expect(render(1) > .001f, "a complete keyboard click between render blocks still attacks");
+    expect(render(8) > .001f && !synth.keyIsActive(60) && synth.screenVoiceIsActive(),
+           "a released key clears its light while its envelope is still sounding");
+    render(90);
+    expect(!synth.screenVoiceIsActive(), "the released keyboard voice eventually stops");
+    for (unsigned note : {60u, 64u, 67u}) {
+        synth.screenKey(note, 100);
+        expect(render(32) > .001f && synth.keyIsActive(note), "holding a keyboard key sustains the voice");
+        synth.screenKey(note, 0);
+        render(4);
+        expect(!synth.keyIsActive(note), "key release clears the corresponding keyboard light");
+    }
+}
 static void testAutoUntilBlockEnd() {
     Project project; project.id = "block-project"; project.name = "Blocks";
     project.songs = {{"block-song", "Songs", 80, 120, {},
@@ -735,6 +764,7 @@ static void testChordMarkers() {
 }
 
 int main() try {
+    testCatSynthEditorKeyboard();
     testBeatSeek();
     testChordMarkers();
     testQueuedSubplayCancellationAndRequeue();

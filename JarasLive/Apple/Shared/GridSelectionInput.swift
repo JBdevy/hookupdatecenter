@@ -729,6 +729,7 @@ struct GridSelectionInput: NSViewRepresentable {
     var itemMoveBegan: () -> Void = {}
     var proTools = false
     var applyProTool: (ProGridTool, UUID, CGFloat) -> Void = { _, _, _ in }
+    var applyTrackTool: (ProGridTool, CGFloat) -> Void = { _, _ in }
     var setLoopArea: (CGFloat, CGFloat) -> Void = { _, _ in }
     var separateAudio: ((UUID) -> Void)? = nil
     var canSeparateAudio: ((UUID) -> Bool)? = nil
@@ -763,7 +764,7 @@ struct GridSelectionInput: NSViewRepresentable {
         view.fileLocation = fileLocation; view.separateAudio = separateAudio; view.canSeparateAudio = canSeparateAudio; view.configureRate = configureRate
         view.marqueeBegan = marqueeBegan
         view.itemMoveBegan = itemMoveBegan
-        view.supportsProTools = proTools; view.applyProTool = applyProTool; view.setLoopArea = setLoopArea
+        view.supportsProTools = proTools; view.applyProTool = applyProTool; view.applyTrackTool = applyTrackTool; view.setLoopArea = setLoopArea
         view.renameItem = renameItem; view.exportMIDI = exportMIDI
         view.mute = mute; view.move = move; view.seek = seek; view.selectRow = selectRow; view.selectionChanged = selectionChanged; view.createRegion = createRegion; view.reRender = reRender; view.normalize = normalize; view.resetRate = resetRate; view.resetDuration = resetDuration; view.convert = convert; view.freezeMIDI = freezeMIDI; view.glue = glue; view.tuner = tuner; view.export = export; view.resize = resize; view.resizeShared = resizeShared; view.fade = fade; view.fadeShape = fadeShape; view.gain = gain; view.phase = phase; view.pan = pan; view.fx = fx; view.editText = editText; view.editMIDI = editMIDI; view.createMIDI = createMIDI
         view.observeHeaderScroll()
@@ -771,12 +772,13 @@ struct GridSelectionInput: NSViewRepresentable {
 }
 final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimelineBodyInput {
     var supportsProTools = false
-    private var proTools: Bool { supportsProTools && WorkspaceLayoutPreferences.storage.bool(forKey: "jaras.transport.proMode") }
+    private var proTools: Bool { supportsProTools }
     var applyProTool: ((ProGridTool, UUID, CGFloat) -> Void)?
     var setLoopArea: ((CGFloat, CGFloat) -> Void)?
     private var proMarquee = false
     private var proLoop = false
-    private var pendingProTool: (ProGridTool, UUID, CGFloat)?
+    var applyTrackTool: ((ProGridTool, CGFloat) -> Void)?
+    private var pendingProTool: (tool: ProGridTool, item: UUID?, point: CGPoint)?
     var editMIDI: ((UUID) -> Void)?
     var createMIDI: ((CGPoint, CGFloat?) -> Void)?
     private var midiStart: CGPoint?
@@ -1241,6 +1243,7 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         heldItemGuide = nil
         pendingSeek = nil
         pendingShiftSelection = nil
+        pendingProTool = nil
         // Keep ownership of mouse-up so it cannot activate another view after
         // the viewport has moved. Existing item/gain/edge drags still commit.
         draggedItem = nil; movingAllowed = false; resizingLeft = nil; gainItem = nil; panItem = nil; liveHeaderPan = nil; fadeItem = nil; liveFade = nil
@@ -1264,16 +1267,21 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         sharedResize = nil
         draggedItem = nil; hasDragged = false; movingAllowed = false; resizingLeft = nil; gainItem = nil; panItem = nil; liveHeaderPan = nil; fadeItem = nil; liveFade = nil
         pressedHeader = nil; headerPressCancelled = false
+        let tool = proTools ? ProGridTool.current : .select
         guard let item = hitItem(at: timeline) else {
+            if tool.appliesToTrack {
+                pendingProTool = (tool, nil, timeline)
+                return
+            }
             if createMIDI != nil && !event.modifierFlags.intersection([.command,.control]).isEmpty { midiStart = timeline; return }
-            if proTools && ProGridTool.current == .select {
+            if proTools && tool == .select {
                 beginAreaGesture(timeline, event: event)
                 proMarquee = true
             }
             pendingSeek = timeline; return
         }
-        if proTools && ProGridTool.current != .select {
-            pendingProTool = (ProGridTool.current,item.id,timeline.x)
+        if tool != .select {
+            pendingProTool = (tool, item.id, timeline)
             return
         }
         if event.modifierFlags.contains(.shift), let rect = item.fxRect, rect.contains(timeline) {
@@ -1404,8 +1412,12 @@ final class GridSelectionView: NSView, NativeTimelineInputObserver, NativeTimeli
         if let pendingProTool {
             self.pendingProTool = nil
             if hypot(event.locationInWindow.x-dragStart.x,event.locationInWindow.y-dragStart.y) < 3 {
-                selected = [pendingProTool.1]; selectionChanged?(selected)
-                applyProTool?(pendingProTool.0,pendingProTool.1,pendingProTool.2)
+                if let item = pendingProTool.item {
+                    selected = [item]; selectionChanged?(selected)
+                    applyProTool?(pendingProTool.tool, item, pendingProTool.point.x)
+                } else {
+                    applyTrackTool?(pendingProTool.tool, pendingProTool.point.y)
+                }
             }
             return
         }

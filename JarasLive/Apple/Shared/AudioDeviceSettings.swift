@@ -339,6 +339,13 @@ private let outputDevicePropertyListener: AudioUnitPropertyListenerProc = { cont
         midiSlots[slot] = id
         UserDefaults.standard.set(midiSlots.map(NSNumber.init(value:)), forKey: "jaras.midiSlots")
     }
+    func firstAvailableMIDIInputSlot() -> Int? {
+        let connected = Set(midiDevices.map(\.id))
+        if let existing = midiSlots.firstIndex(where: { $0 != 0 && connected.contains($0) }) { return existing + 1 }
+        guard let device = midiDevices.first, let available = midiSlots.firstIndex(of: 0) else { return nil }
+        selectMIDI(device.id, slot: available)
+        return available + 1
+    }
     func midiSlotTitle(_ slot: Int) -> String {
         guard midiSlots.indices.contains(slot) else { return "MIDI" }
         let id = midiSlots[slot]

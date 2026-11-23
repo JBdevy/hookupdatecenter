@@ -55,7 +55,7 @@
 #include "DesktopLayout.h"
 #include "NativeWindowBoundsTests.h"
 #include "ProjectOpenConfirmationPanel.h"
-#include "BPMInputPanel.h"
+#include "TempoControl.h"
 #include "SettingsPanel.h"
 #include "ExportPanel.h"
 #include "EffectsPanel.h"
@@ -3170,16 +3170,25 @@ int runTests(const File &directory) {
         panel.selectEffect("Compressor");remove->onClick();expect(chain->getSelectedRow()==0,"One remaining FX was not selected");
         remove->onClick();expect(chain->getSelectedRow()==-1,"Empty chain retained stale selection");
     });
-    test("BPM sheet starts with current value and validates edits", [&] {
-        double committed=0;String error;
-        BPMInputPanel panel("153",[&](double value){committed=value;},[&](String value){error=value;});panel.setSize(390,188);
+    test("Inline BPM starts with current value and validates edits", [&] {
+        Session session; session.inspection = true; session.audio.prepareOffline(48000);
+        session.restoreSnapshot(ProjectCodec::encode(floatingControlTests::fixture()));
+        session.audio.setOffline(true);
+        String error;
+        TempoControl panel(session, [&](String value) { error = value; }, [] {}, [](String) {});
+        panel.setSize(179,35);
+        auto *value = dynamic_cast<QuietButton*>(panel.findChildWithID("bpmReadout"));
         auto *input=dynamic_cast<TextEditor*>(panel.findChildWithID("bpmValue"));
-        expect(input&&input->getText()=="153","BPM value missing");
-        input->setText("1");input->onReturnKey();expect(error.isNotEmpty()&&committed==0,"Invalid tempo was accepted");
-        input->setText("153,5");input->onReturnKey();floatingControlTests::pump();
-        expect(committed==153.5,"Decimal BPM was not applied");
+        expect(value && input && !input->isVisible(), "Inline BPM controls missing");
+        value->context({});
+        const auto original = session.tempoBPM();
+        expect(input->isVisible() && input->getText() == String::formatted("%g", original), "Current BPM value missing");
+        input->setText("1"); input->onReturnKey();
+        expect(error.isNotEmpty() && session.tempoBPM() == original && input->isVisible(), "Invalid tempo was accepted");
+        input->setText("153,5"); input->onReturnKey();
+        expect(session.tempoBPM() == 153.5 && !input->isVisible(), "Decimal BPM was not applied");
         auto stream=directory.getChildFile("bpm-input-panel.png").createOutputStream();
-        expect(stream&&PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),*stream),"BPM screenshot failed");
+        expect(stream&&PNGImageFormat().writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()),*stream),"BPM control screenshot failed");
     });
     test("Audio settings hide all controls while the transport runs", [&] {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);

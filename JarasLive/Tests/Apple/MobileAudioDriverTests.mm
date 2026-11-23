@@ -5,7 +5,82 @@
 #include <cmath>
 #include <vector>
 
+@interface ShortInputEngine : AVAudioEngine
+@end
+@implementation ShortInputEngine
+- (AVAudioEngineManualRenderingBlock)manualRenderingBlock {
+    return ^AVAudioEngineManualRenderingStatus(AVAudioFrameCount frames, AudioBufferList *out, OSStatus *status) {
+        for (unsigned ch = 0; ch < out->mNumberBuffers; ++ch) {
+            auto *samples = static_cast<float *>(out->mBuffers[ch].mData);
+            std::fill_n(samples, 96, ch ? -.25f : .25f);
+            out->mBuffers[ch].mDataByteSize = 96 * sizeof(float);
+        }
+        *status = noErr;
+        return AVAudioEngineManualRenderingStatusInsufficientDataFromInputNode;
+    };
+}
+@end
+
+static void verifyShortInputKeepsPlayback() {
+    auto engine = [ShortInputEngine new];
+    NSError *error = nil;
+    auto existing = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+    assert([engine enableManualRenderingMode:AVAudioEngineManualRenderingModeRealtime
+                                      format:existing maximumFrameCount:4096 error:&error]);
+    auto driver = [[JarasMobileAudioOutput alloc] initWithEngine:engine];
+    assert(![driver startAndReturnError:&error] && error);
+    error = nil;
+    auto format = [driver configureWithSampleRate:48000 channels:2 error:&error];
+    assert(format && [driver startAndReturnError:&error]);
+    auto pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:256];
+    pcm.frameLength = 256;
+    auto *buffers = pcm.mutableAudioBufferList;
+    for (unsigned ch = 0; ch < 2; ++ch) {
+        std::fill_n(static_cast<float *>(buffers->mBuffers[ch].mData), 256, .9f);
+    }
+    AudioTimeStamp time{};
+    AudioUnitRenderActionFlags flags = 0;
+    assert([driver renderFrames:256 time:&time flags:&flags buffers:buffers] == noErr);
+    assert(!(flags & kAudioUnitRenderAction_OutputIsSilence));
+    for (unsigned ch = 0; ch < 2; ++ch) {
+        const auto &channel = buffers->mBuffers[ch];
+        assert(channel.mDataByteSize == 256 * sizeof(float));
+        const auto *samples = static_cast<const float *>(channel.mData);
+        for (unsigned n=0; n<256; ++n) assert(samples[n] == (n < 96 ? (ch ? -.25f : .25f) : 0));
+    }
+    struct { UInt32 count; AudioBuffer buffers[2]; } borrowed{2, {{1, 0, nullptr}, {1, 0, nullptr}}};
+    flags = 0;
+    assert([driver renderFrames:256 time:&time flags:&flags buffers:reinterpret_cast<AudioBufferList *>(&borrowed)] == noErr);
+    for (const auto &channel : borrowed.buffers) {
+        assert(channel.mData && channel.mDataByteSize == 256 * sizeof(float));
+        const auto *samples = static_cast<const float *>(channel.mData);
+        assert(std::abs(samples[95]) == .25f && samples[96] == 0);
+    }
+    [driver stop];
+    puts("MOBILE_SHORT_INPUT_PRESERVES_PLAYBACK_AND_PADS_OUTPUT_OK");
+}
+
+static void verifyManualGraphFormat(AVAudioEngineManualRenderingMode mode, AVAudioFormat *previous,
+                                    AVAudioFrameCount maximumFrames) {
+    AVAudioEngine *engine = [AVAudioEngine new];
+    NSError *error = nil;
+    assert([engine enableManualRenderingMode:mode format:previous maximumFrameCount:maximumFrames error:&error]);
+    auto driver = [[JarasMobileAudioOutput alloc] initWithEngine:engine];
+    auto format = [driver configureWithSampleRate:48000 channels:2 error:&error];
+    assert(format && [format isEqual:engine.manualRenderingFormat]);
+    assert(engine.manualRenderingMode == AVAudioEngineManualRenderingModeRealtime);
+    assert(format.commonFormat == AVAudioPCMFormatFloat32 && !format.isInterleaved);
+    assert(engine.manualRenderingMaximumFrameCount >= 4096);
+}
+
 int main() { @autoreleasepool {
+    auto interleaved = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:48000 channels:2 interleaved:YES];
+    auto planar = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+    verifyManualGraphFormat(AVAudioEngineManualRenderingModeRealtime, interleaved, 4096);
+    verifyManualGraphFormat(AVAudioEngineManualRenderingModeOffline, planar, 4096);
+    verifyManualGraphFormat(AVAudioEngineManualRenderingModeRealtime, planar, 256);
+    puts("MOBILE_REUSED_ENGINE_MATCHES_HARDWARE_RENDER_CONTRACT_OK");
+    verifyShortInputKeepsPlayback();
     mach_timebase_info_data_t base; mach_timebase_info(&base);
     const double ticks = 1e9 * base.denom / base.numer;
     for (double rate : {44100., 48000.}) {

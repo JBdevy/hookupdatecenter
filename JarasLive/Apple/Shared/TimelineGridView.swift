@@ -378,6 +378,7 @@ private struct TimelineGridContent: View, Equatable {
     @State private var regionToDelete: (project: UUID, song: UUID, region: UUID)?
     @State private var confirmingRegionDelete = false
     @State private var confirmingBPMDetection = false
+    @State private var selectionTempoRequest: SelectionTempoRequest?
     #if !os(macOS)
     @State private var confirmingTimebase = false
     @State private var pendingTimebase: (project: UUID, song: UUID, relative: Bool)?
@@ -1141,6 +1142,7 @@ private struct TimelineGridContent: View, Equatable {
         }))
         .onDisappear { trackHeightMotion.cancel(); trackHeightPreview.removeAll(); itemWaveformPreview.clear(); resizedItemFrames.removeAll(); cancelRegionDrag() }
         .onChange(of: presentation.projectSession) { session in
+            selectionTempoRequest = nil
             trackHeightMotion.useProjectSession(session)
             trackHeightPreview.removeAll()
         }
@@ -1150,6 +1152,10 @@ private struct TimelineGridContent: View, Equatable {
         #endif
         .sheet(isPresented: $showingTrackVisibility) {
             TrackVisibilityEditor(show: show, close: { showingTrackVisibility = false })
+                .environment(\.locale, locale)
+        }
+        .sheet(item: $selectionTempoRequest) { request in
+            SelectionTempoResultView(request: request, close: { selectionTempoRequest = nil })
                 .environment(\.locale, locale)
         }
         .onChange(of: visibility.trackMixer) { _ in
@@ -1489,6 +1495,10 @@ private struct TimelineGridContent: View, Equatable {
                     from: left ? min(position, range.end - 0.001) : range.start,
                     to: left ? range.end : max(position, range.start + 0.001))
                 show.updateActiveLoopArea()
+            }, detectSelectionBPM: {
+                guard !gridInteractionBlocked, let selected = TimelineAreaSelection.shared.range,
+                      let current = show.current, selected.song == song.id else { return }
+                selectionTempoRequest = SelectionTempoRequest(selection: selected, song: current, documents: documents)
             }, rulerSeek: { fraction, free in
                 let editMode = TimelineEditPreferences.enabled(TimelineEditPreferences.desktop)
                 show.send(editMode ? .queueBeatSeek : .editSeek,
@@ -1676,8 +1686,15 @@ private struct TimelineGridContent: View, Equatable {
             case .mute:
                 guard source.track.kind == .standard else { return }
                 show.send(.clipMute, target: id)
-            case .solo: show.send(.solo, target: source.track.id)
+            case .solo, .exclusiveSolo: tool.apply(to: source.track.id, show: show)
             }
+        }
+        input.applyTrackTool = { tool, position in
+            let y = position - rulerHeight
+            guard let index = rows.offsets.indices.first(where: {
+                y >= rows.offsets[$0] && y < rows.offsets[$0] + rows.heights[$0]
+            }), song.tracks.indices.contains(index) else { return }
+            tool.apply(to: song.tracks[index].id, show: show)
         }
         input.setLoopArea = { start, end in
             guard !TrackRecording.shared.recording, !TrackRecording.shared.countingIn else { return }
@@ -3013,6 +3030,7 @@ private struct TimelineGridContent: View, Equatable {
     let selectTime: (Double, Double) -> Void
     let selectedTime: () -> (Double, Double)?
     let resizeTime: (Double, Bool) -> Void
+    let detectSelectionBPM: () -> Void
     let rulerSeek: (Double, Bool) -> Void
     let needleSeek: (Double, Bool) -> Void
     let marker: (Bool) -> Void
@@ -4294,6 +4312,13 @@ private final class NativeTimelineBaseMountView: NSView {
         rulerInput.markerCursor = { MarkerEditClickView.cursor(for: $0) }
         rulerInput.selectTime = value.selectTime
         rulerInput.selectedTime = value.selectedTime; rulerInput.resizeTime = value.resizeTime
+        rulerInput.openSelectionMenu = { [detect = value.detectSelectionBPM] view, point in
+            let action = TrackMenuAction(detect)
+            let menu = NSMenu()
+            menu.addItem(withTitle: JarasLocalization.string("Bpm detect"),
+                         action: #selector(TrackMenuAction.invoke), keyEquivalent: "").target = action
+            withExtendedLifetime(action) { _ = menu.popUp(positioning: nil, at: point, in: view) }
+        }
         rulerInput.seek = value.rulerSeek
         needles.configure(show: value.show, size: CGSize(width: value.extent * pixelsPerSecond, height: value.contentHeight),
             rulerHeight: value.rulerHeight, verticalOffset: 0, extent: value.extent,
@@ -4397,6 +4422,7 @@ private final class NativeTimelineBaseMountView: NSView {
             self.wheel.extend = nil; self.wheel.livePosition = nil; self.wheel.changeTrackHeight = nil; self.wheel.changeZoom = nil
             self.rulerInput.extend = nil; self.rulerInput.seek = nil; self.rulerInput.selectTime = nil
             self.rulerInput.selectedTime = nil; self.rulerInput.resizeTime = nil
+            self.rulerInput.openSelectionMenu = nil
             GridSelectionInput(origin: .zero, headerHeight: 0, items: [], selected: [],
                 selectionChanged: { _ in }, mute: { _ in }, move: { _, _, _, _ in }, seek: { _, _ in }, createRegion: { _ in }).apply(to: self.selection)
             self.needles.stop()

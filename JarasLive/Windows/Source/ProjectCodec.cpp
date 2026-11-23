@@ -883,6 +883,7 @@ jaras::Project ProjectCodec::decode(const var &input) {
         }
         p.regionSetlist = state;
     }
+    jaras::reconcileTrackInputs(p);
     jaras::validate(p);
     return p;
 }

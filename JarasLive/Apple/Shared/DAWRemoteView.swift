@@ -144,7 +144,7 @@ struct DAWRemoteClientView: View {
                         }
                 } else {
                 NativeRemoteWorkspace(state: state, computerName: remote.peerName, timer: localTimer, send: remote.send,
-                                      exitRemote: { remote.stop(); dismiss() }, observer: remote.presentationAccess == .observer)
+                                      exitRemote: { remote.stop(); dismiss() }, observer: remote.presentationAccess == .observer, remote: remote)
                     .id(state.project)
                 }
             } else if remote.connected {
@@ -519,6 +519,7 @@ struct DAWRemoteClientView: View {
                 masterVolume: show.mixerPlaybackGain(track: nil, manual: snapshot.project.masterVolume ?? 1), masterMute: snapshot.project.masterMute ?? false,
                 masterSolo: snapshot.project.masterSolo ?? false, masterMono: snapshot.project.masterMono ?? false,
                 pendingSave: show.hasUnsavedChanges, saving: show.saving, message: show.message,
+                transportPreparing: show.preparingAudio ? true : nil,
                 tempoNeedsRender: show.tempoControlNeedsRender,
                 loopStart: transport.loop.start ?? song?.parts.first(where: { $0.id == transport.regionId })?.startTime,
                 loopEnd: transport.loop.end ?? song?.parts.first(where: { $0.id == transport.regionId })?.endTime,
@@ -707,6 +708,9 @@ struct DAWRemoteClientView: View {
                 guard let song = show.current, let region = show.pitchRegion, region.id == command.target else { return }
                 let targets = song.pitchTargets(region)
                 show.setRegionPitch(region.id, semitones: Int(command.value), tracks: targets.tracks, groups: targets.groups)
+            case .tapTempo:
+                if let source = command.target { show.tapTempo(at: command.value, source: source) }
+                else { show.tapTempo() }
             case .tempo: show.setTempo(command.value)
             case .seek:
                 // Native grid taps move the edit cursor, just like the desktop.
@@ -1153,6 +1157,7 @@ private struct TrackMixFeedbackPanel: View {
     @Environment(\.multitrackAction) private var multitrackAction
     var openRegionActions: ((UUID) -> Void)? = nil
     var detectRegionBPM: ((UUID) -> Void)? = nil
+    var detectSelectionBPM: ((TimelineAreaSelection.Range) -> Void)? = nil
     var openPatch: ((UUID?) -> Void)? = nil
     var openPlugin: ((UUID?, String) -> Void)? = nil
     var openSelectedPatch: (([UUID]) -> Void)? = nil
@@ -1175,6 +1180,7 @@ private struct TrackMixFeedbackPanel: View {
     var stopsAtRegionEnd = false
     @State private var addingToPlaylist: UUID?
     @State private var creatingPlaylist = false
+    @State private var tappedSetlistRegion: UUID?
     var shareProject: (() -> Void)? = nil
     var groupTracks: ((Set<UUID>) -> Void)? = nil
     var groupableTracks: Set<UUID> = []
@@ -1193,6 +1199,7 @@ private struct TrackMixFeedbackPanel: View {
     @State private var confirmingMainMono = false
     @State private var pendingFadeout: (id: UUID, active: Bool, sent: Date)?
     @State private var fadeoutReceivedAt = Date()
+    @State private var tempoTapSource = UUID()
     @State private var tempoStepPending = false
     @State private var tempoStepGate = LiveTempoEditGate()
     @State private var tempoStepRequest = UUID()
@@ -1275,6 +1282,8 @@ private struct TrackMixFeedbackPanel: View {
     @GestureState private var mixerHeightTranslation: CGFloat = 0
     @AppStorage("jaras.ipad.focus.open") private var nativeFocusOpen = false
     @AppStorage("jaras.ipad.library.open") private var nativeLibraryOpen = false
+    @State private var nativeBPMEditing = false
+    @State private var nativeBPMDraft = NativeTransportNumberDraft()
     @AppStorage("jaras.ipad.transport.proMode") private var nativeProMode = false
     @State private var nativeProDock: Bool?
     @State private var nativeClockPositionOpen = false
@@ -1478,6 +1487,8 @@ private struct TrackMixFeedbackPanel: View {
         if local, action == .selectRegion { trackScrolling.selectionScope = .setlist }
         send(.init(project: state.project, song: state.song, action: action, target: target, value: value, playlist: playlist))
     }
+    private var remoteTransportRunning: Bool { remote.predictedTransportRunning ?? state.transportControlRunning }
+    private func toggleRemotePlayback() { action(remoteTransportRunning ? .stop : .play) }
     private func showRemotePatch(_ track: UUID?) {
         let row = track.flatMap { id in state.tracks.first { $0.id == id } }
         guard track == nil || row != nil else { return }
@@ -1787,11 +1798,13 @@ private struct TrackMixFeedbackPanel: View {
         .onChange(of: state.project) { _ in trackMixFeedback.dismiss() }
         .onChange(of: state.song) { _ in trackMixFeedback.dismiss() }
         .onDisappear { trackMixFeedback.dismiss() }
-        .sheet(item: $remotePatch) { request in
-            RemoteOutputPatchSheet(request: request) { routes in
-                guard state.project == request.project, state.song == request.song else { return }
-                send(.init(project: request.project, song: request.song, action: .setOutputRoutes,
-                    target: request.track, outputRoutes: routes))
+        .overlay {
+            if let request = remotePatch {
+                RemoteOutputPatchSheet(request: request, close: { remotePatch = nil }) { routes in
+                    guard state.project == request.project, state.song == request.song else { return }
+                    send(.init(project: request.project, song: request.song, action: .setOutputRoutes,
+                        target: request.track, outputRoutes: routes))
+                }
             }
         }
         .task(id: state.project.uuidString + "\n" + state.message) {
@@ -2101,7 +2114,7 @@ private struct TrackMixFeedbackPanel: View {
                     case .setlist: return AnyView(setlist)
                     case .grid:
                         return AnyView(RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled,
-                                    touchItemEditing: editingTracks, showRegionLanes: showNativeRegionLanes, showTempoLane: showNativeTempoLane, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
+                                    touchItemEditing: editingTracks, showRegionLanes: showNativeRegionLanes, showTempoLane: showNativeTempoLane, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, detectSelectionBPM: detectSelectionBPM, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
                             if command == "bpm" { detectRegionBPM?(id) }
                             else if command == "loops" { openRegionLoops?(id) }
                             else if command == "unify" { unifyName = ""; unifyingRegion = id }
@@ -2223,13 +2236,14 @@ private struct TrackMixFeedbackPanel: View {
                 .modifier(RemoteControlSurface(color: solid ? color : active ? color.opacity(0.35) : nil, radius: 5))
         }.buttonStyle(RemoteFullAreaButtonStyle()).foregroundStyle(solid ? (active ? Color.black : .white) : color).accessibilityLabel(label)
     }
-    private func transportProgress(height: CGFloat = SongProgressBar.standardHeight) -> some View {
+    private var transportProgress: some View {
         let region = state.transportDisplayRegion
         return SongProgressBar(position: state.playing || state.paused ? state.position : nil,
-                               start: region?.start, end: region?.end, height: height)
+                               start: region?.start, end: region?.end, height: SongProgressBar.panelHeight)
     }
     private var phoneTransport: some View {
-        VStack(spacing: 4) {
+        let stopping = remoteTransportRunning
+        return VStack(spacing: 4) {
             Text(verbatim: state.currentSongName)
                 .font(.jarasSystem(size: 13, weight: .semibold))
                 .foregroundStyle(state.playing ? JarasTheme.green : JarasTheme.text)
@@ -2237,11 +2251,9 @@ private struct TrackMixFeedbackPanel: View {
                 .frame(maxWidth: .infinity, minHeight: 25)
                 .background(RemoteSurface.display)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
-                .overlay(alignment: .bottom) { transportProgress().padding(.horizontal, 3) }
             HStack(spacing: 4) {
-                phoneTransportButton(state.playing || state.paused ? "Stop" : "Play", icon: state.playing || state.paused ? "stopall" : "play", active: state.playing) {
-                    action(state.playing || state.paused ? .stop : .play)
-                }
+                phoneTransportButton(stopping ? "Stop" : "Play", icon: stopping ? "stopall" : "play",
+                                     color: stopping ? JarasTheme.liveOffRed : JarasTheme.green, solid: stopping, perform: toggleRemotePlayback)
                 fadeoutButton(width: nil, height: 44)
                 phoneTransportButton(state.paused ? "Play" : "Pause", icon: state.paused ? "play" : "pause", active: state.paused,
                                      color: JarasTheme.pauseBackground(state.paused), iconOnly: true, solid: true) {
@@ -2257,6 +2269,9 @@ private struct TrackMixFeedbackPanel: View {
                 }
             }.frame(height: 32)
         }.padding(6).background(RemoteSurface.panel)
+            .overlay(alignment: .bottom) {
+                transportProgress.padding(.horizontal, 6)
+            }
     }
     private var footerInformationText: String {
         if !transientFooterNotice.isEmpty { return transientFooterNotice }
@@ -2509,7 +2524,7 @@ private struct TrackMixFeedbackPanel: View {
                             Button { action(.save) } label: { Text(verbatim: "Save") }
                             Button { exportNativeAudio() } label: { Text(verbatim: "Export") }
                         } label: {
-                            ControlIcon(name: "line.3.horizontal", active: false).font(.jarasSystem(size: 17, weight: .semibold))
+                            ControlIcon(name: "line.3.horizontal")
                                 .frame(width: railButton, height: 32).contentShape(Rectangle())
                         }.accessibilityLabel(Text(verbatim: "File")).accessibilityIdentifier("native-file-menu")
                             .buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(JarasTheme.toolbarTint(active: false))
@@ -2527,7 +2542,7 @@ private struct TrackMixFeedbackPanel: View {
                             .foregroundStyle(JarasTheme.toolbarTint(active: nativeLibraryOpen))
                             .accessibilityLabel(Text(verbatim: "Library"))
                         Button(action: toggleNativeFocus) {
-                            ControlIcon(name: "sidebar.left", active: nativeFocusOpen).frame(width: railButton, height: 32)
+                            ControlIcon(name: "trackInspector", active: nativeFocusOpen).frame(width: railButton, height: 32)
                         }.buttonStyle(RemoteFullAreaButtonStyle(surface: true))
                             .foregroundStyle(JarasTheme.toolbarTint(active: nativeFocusOpen))
                             .accessibilityLabel(Text(verbatim: "Track - I"))
@@ -2584,6 +2599,10 @@ private struct TrackMixFeedbackPanel: View {
                         ControlIcon(name: "stopwatch", active: timerOpen).font(.jarasSystem(size: 16, weight: .medium)).frame(width: railButton, height: 32)
                     }.buttonStyle(RemoteFullAreaButtonStyle(surface: true)).foregroundStyle(JarasTheme.toolbarTint(active: timerOpen)).accessibilityLabel("Timer")
                         .popover(isPresented: $timerOpen, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+                            if local {
+                                TeleprompterTimerConfiguration(controller: .shared)
+                                    .frame(width: 380).preferredColorScheme(.dark)
+                            } else {
                             VStack(spacing: 0) {
                                 RemoteNativeTimerView(timer: timer, send: {
                                     guard state.timer != nil else { return }
@@ -2594,6 +2613,7 @@ private struct TrackMixFeedbackPanel: View {
                                         .font(.jarasCaption).foregroundStyle(JarasTheme.secondary).padding(12).frame(width: 300)
                                 }
                             }.background(RemoteSurface.panel).preferredColorScheme(.dark)
+                            }
                         }
                     if local {
                         Button {
@@ -2732,7 +2752,7 @@ private struct TrackMixFeedbackPanel: View {
                                     if panelWidths != widths { livePanelWidths = widths }
                                 }, ended: finishPanelResize)
                                 RemoteNativeTimeline(state: state, tracks: visibleTracks, scrolling: trackScrolling, region: gridRegion, position: displayedPosition, local: local, localShow: localShow, timelineFocus: timelineFocus, editorEnabled: nativeInputEnabled,
-                                    touchItemEditing: editingTracks, showRegionLanes: showNativeRegionLanes, showTempoLane: showNativeTempoLane, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
+                                    touchItemEditing: editingTracks, showRegionLanes: showNativeRegionLanes, showTempoLane: showNativeTempoLane, regionDrag: $regionMovePreview, openRegionActions: openRegionActions, detectSelectionBPM: detectSelectionBPM, openItemMenu: openItemMenu, openSelectedItemMenu: openSelectedItemMenu, openItemFX: openItemFX, openMarkerEditor: { nativeMarker = $0 }, regionCommand: { id, command in
                                     if command == "bpm" { detectRegionBPM?(id) }
                                     else if command == "loops" { openRegionLoops?(id) }
                                     else if command == "unify" { unifyName = ""; unifyingRegion = id }
@@ -2870,12 +2890,12 @@ private struct TrackMixFeedbackPanel: View {
 
                 }.frame(width: contentWidth).disabled(state.projects?.busy == true)
             }
-        }.background(JarasTheme.line)
             .overlay(alignment: .top) {
                 if local && nativeProMode && nativeClockPositionOpen, let localShow {
-                    NativeClockPosition(show: localShow) { nativeClockPositionOpen = false }
+                    NativeClockPosition(show: localShow, available: geometry.size) { nativeClockPositionOpen = false }
                 }
             }
+        }.background(JarasTheme.line)
             .overlay(alignment: .topLeading) {
                 if !local, remoteVinhetasOpen, remoteVinhetasDetached {
                     IpadVinhetasFloatingPanel(touchMenusEnabled: false, createTrack: {},
@@ -3162,15 +3182,13 @@ private struct TrackMixFeedbackPanel: View {
     }
 
     private var transportSetlistButton: some View {
-        Button {
-            if prompterPanel == nil { toggleMainSetlist() } else { togglePrompterSetlist() }
-        } label: {
-            TransportControlIcon(name: "setlist", size: 17)
-        }
-        .accessibilityLabel("Setlist")
-        .buttonStyle(TransportButtonStyle(color: mainSetlistVisible ? JarasTheme.green : Color(hex: 0xc44545),
-            active: true, fontSize: 11, width: 34, height: transportActionHeight))
-        .accessibilityValue(mainSetlistVisible ? "Shown" : "Hidden")
+        PanelCollapseButton(collapsed: !mainSetlistVisible, title: "Setlist", icon: "setlist",
+            label: mainSetlistVisible ? "Recolher Setlist" : "Expandir Setlist",
+            tooltip: mainSetlistVisible ? "Ocultar Setlist" : "Restaurar largura anterior do Setlist",
+            height: transportActionHeight) {
+                if prompterPanel == nil { toggleMainSetlist() } else { togglePrompterSetlist() }
+            }
+            .frame(width: TransportControlMetrics.iconWidth)
     }
 
     private var transportActions: some View {
@@ -3181,9 +3199,9 @@ private struct TrackMixFeedbackPanel: View {
                     if !nativeProMode {
                         nativeProDock = nil; nativeClockPositionOpen = false
                     }
-                } label: { Text(verbatim: nativeProMode ? "Simple Mode" : "Pro Mode") }
+                } label: { Text(verbatim: "Pro") }
                 .buttonStyle(TransportButtonStyle(color: nativeProMode ? JarasTheme.green : Color(hex: 0x454545),
-                    active: nativeProMode, inactiveOpacity: 1, width: 68,
+                    active: nativeProMode, inactiveOpacity: 1, width: 44,
                     height: transportActionHeight, bordered: false))
             }
             transportSaveButton
@@ -3193,7 +3211,6 @@ private struct TrackMixFeedbackPanel: View {
 
     private var transportBar: some View {
         HStack(alignment: .top, spacing: local ? 5 : 8) {
-            if !local { masterStrip.frame(width: 220) }
             Group {
                 if local && nativeProMode, let localShow { nativeProTransport(show: localShow) }
                 else { VStack(spacing: 0) {
@@ -3201,7 +3218,6 @@ private struct TrackMixFeedbackPanel: View {
                     if local { nativeTransportReadout }
                     else { tabletRemoteTransportReadout }
                 }.frame(height: 30)
-                if !local { transportProgress().padding(.vertical, 1) }
                 HStack(alignment: local ? .bottom : .center, spacing: 6) {
                     GeometryReader { geometry in
                         if local { nativeTransportControls(width: geometry.size.width) }
@@ -3222,20 +3238,20 @@ private struct TrackMixFeedbackPanel: View {
                     .allowsHitTesting(false)
             }
             .overlay(alignment: .bottom) {
-                if local {
-                    transportProgress(height: nativeProMode ? SongProgressBar.proHeight : SongProgressBar.standardHeight)
-                        .padding(.horizontal, 3)
-                }
+                transportProgress
+                    .padding(.horizontal, 3)
             }
         }.padding(6).frame(height: 82, alignment: .top).background(RemoteSurface.panel)
     }
     private func nativeProTransport(show: ShowController) -> some View {
-        let playback = ProTransportButtons(show: show, configureFadeout: { fadeoutSettingsOpen = true })
-        let editing = TransportEditingButtons(show: show, key: TimelineEditPreferences.native)
+        let controlGap = TransportControlMetrics.groupSpacing
+        let minimumButtonWidth: CGFloat = 32
+        let minimumPlaybackWidth = minimumButtonWidth * ProTransportButtons.controlCount + ProTransportButtons.horizontalInset
+        let upperControlHeight: CGFloat = 24
+        let editing = TransportEditingButtons(show: show, key: TimelineEditPreferences.native, height: upperControlHeight)
         let controls = IpadTransportControl.visible(hidden: hiddenTransport)
-        let details = nativeTempoControls(controls, bpmWidth: 88, tunerWidth: 96)
+        let details = nativeTempoControls(controls, bpmWidth: 88, tunerWidth: 124)
         let tools = HStack(spacing: 4) {
-            ProGridToolPicker(selection: $nativeProTool)
             nativeProButton("Clock", icon: "timer", active: nativeClockPositionOpen) { nativeClockPositionOpen.toggle() }
             nativeProButton("Notes", icon: "note.text", active: nativeProDock == true) {
                 nativeProDock = nativeProDock == true ? nil : true
@@ -3250,8 +3266,9 @@ private struct TrackMixFeedbackPanel: View {
             HStack(spacing: 6) {
                 ProTimelinePosition(show: show)
                 Spacer(minLength: 0)
+                ProGridToolPicker(selection: $nativeProTool, height: upperControlHeight)
                 editing
-            }.frame(height: 30)
+            }.frame(height: 32)
             .overlay {
                 Text(verbatim: name)
                     .font(.jarasSystem(size: 15, weight: .semibold))
@@ -3262,22 +3279,29 @@ private struct TrackMixFeedbackPanel: View {
                     .accessibilityLabel("Current song").accessibilityValue(name)
                     .allowsHitTesting(false)
             }
-            HStack(alignment: .bottom, spacing: 6) {
+            HStack(alignment: .bottom, spacing: controlGap) {
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 6) {
-                        playback
-                        Spacer(minLength: 4)
+                    HStack(alignment: .bottom, spacing: controlGap) {
+                        GeometryReader { space in
+                            let width = (space.size.width - ProTransportButtons.horizontalInset) / ProTransportButtons.controlCount
+                            ProTransportButtons(show: show, configureFadeout: { fadeoutSettingsOpen = true },
+                                buttonWidth: max(minimumButtonWidth, width))
+                        }.frame(minWidth: minimumPlaybackWidth, maxHeight: TransportControlMetrics.proHeight)
                         details.frame(height: 32)
-                        Spacer(minLength: 4)
-                        tools
                     }
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) { playback; details.frame(height: 32); tools }
+                        HStack(alignment: .bottom, spacing: controlGap) {
+                            ProTransportButtons(show: show, configureFadeout: { fadeoutSettingsOpen = true },
+                                buttonWidth: minimumButtonWidth)
+                            details.frame(height: 32)
+                        }
                     }
                 }
-                transportActions
+                .clipped()
+                tools.layoutPriority(1)
+                transportActions.layoutPriority(1)
             }.frame(height: 32)
-        }.frame(height: 62)
+        }.frame(height: 64)
     }
     private func nativeProButton(_ title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) { TransportControlIcon(name: icon, size: 15) }
@@ -3310,7 +3334,6 @@ private struct TrackMixFeedbackPanel: View {
                     .frame(maxWidth: .infinity).padding(.horizontal, side)
                     .accessibilityLabel("Current song")
                 HStack(spacing: 6) {
-                    if let localShow { TimelineNavigationControls(show: localShow, width: 27) }
                     Text(verbatim: timeText).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
                         .foregroundStyle(JarasTheme.licenseTitleGreen)
                         .accessibilityLabel("Tempo da agulha")
@@ -3320,11 +3343,13 @@ private struct TrackMixFeedbackPanel: View {
     }
     private func remoteTransportControls(width: CGFloat) -> some View {
         let buttonWidth = max(30, (width - 288) / 4)
+        let stopping = remoteTransportRunning
         let controls = HStack(spacing: 4) {
-            Button { action(state.playing || state.paused ? .stop : .play) } label: {
-                Label { Text(verbatim: state.playing || state.paused ? "Stop" : "Play") }
-                    icon: { TransportControlIcon(name: state.playing || state.paused ? "stopall" : "play", size: 14) }
-            }.buttonStyle(TransportButtonStyle(color: JarasTheme.green, active: state.playing, fontSize: 12, width: buttonWidth, height: 28))
+            Button(action: toggleRemotePlayback) {
+                Label { Text(verbatim: stopping ? "Stop" : "Play") }
+                    icon: { TransportControlIcon(name: stopping ? "stopall" : "play", size: 14) }
+            }.buttonStyle(TransportButtonStyle(color: stopping ? JarasTheme.liveOffRed : JarasTheme.green, active: stopping,
+                activeForeground: .white, fontSize: 12, width: buttonWidth, height: 28))
             fadeoutButton(width: buttonWidth, height: 28)
             Button { action(state.paused ? .play : .pause) } label: {
                 TransportControlIcon(name: state.paused ? "play" : "pause", size: 14)
@@ -3344,37 +3369,31 @@ private struct TrackMixFeedbackPanel: View {
     private func nativeTransportControls(width: CGFloat) -> some View {
         let visible = IpadTransportControl.visible(hidden: hiddenTransport)
         let playback = visible.filter { [.play, .fadeout, .pause, .repeatPlayback, .record].contains($0) }
-        let hasFadeout = playback.contains(.fadeout)
-        let hasBPM = visible.contains(.bpm)
-        let hasMetronome = visible.contains(.metronome)
-        let hasTuner = visible.contains(.tuner)
-        let showsTempo = hasBPM || hasMetronome
-        let buttonCount = CGFloat(playback.count - (hasFadeout ? 1 : 0))
-        let playbackSpacing = CGFloat(max(0, playback.count - 1)) * 4
-        let fixedWidth = playbackSpacing + (hasFadeout ? 50 : 0)
-        let detailSpacing: CGFloat = (showsTempo || hasTuner ? 8 : 0) + (showsTempo && hasTuner ? 8 : 0)
-        let tempoInsets: CGFloat = (showsTempo ? 12 : 0) + (hasMetronome ? 68 : 0)
-            + (hasMetronome && hasBPM ? 10 : 0) + (hasBPM ? 56 : 0)
-        let minBPM: CGFloat = hasBPM ? 88 : 0
-        let minTuner: CGFloat = hasTuner ? 96 : 0
-        let buttonWidth = min(48, max(28, (width - fixedWidth - detailSpacing - tempoInsets - minBPM - minTuner) / max(1, buttonCount)))
-        let extra = max(0, width - fixedWidth - buttonCount * buttonWidth - detailSpacing - tempoInsets - minBPM - minTuner)
-        let tunerExtra = hasTuner ? extra * (hasBPM ? 0.4 : 1) : 0
-        let bpmWidth = minBPM + (hasBPM ? min(12, extra - tunerExtra) : 0)
-        let tunerWidth = minTuner + min(12, tunerExtra)
-        let controls = HStack(spacing: 8) {
-            nativePlaybackButtons(playback, width: buttonWidth)
-            if showsTempo || hasTuner {
-                nativeTempoControls(visible, bpmWidth: bpmWidth, tunerWidth: tunerWidth)
+        let controls = HStack(alignment: .bottom, spacing: 8) {
+            if !playback.isEmpty {
+                let count = CGFloat(playback.count)
+                let gaps = (count - 1) * 4
+                GeometryReader { space in
+                    let buttonWidth = min(128, (space.size.width - gaps) / count)
+                    nativePlaybackButtons(playback, width: buttonWidth)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }.frame(minWidth: count * 50 + gaps)
             }
-        }.fixedSize(horizontal: true, vertical: false)
+            if visible.contains(.bpm) {
+                nativeTransportStepper(width: 134, pitch: false).background(TransportDetailSurface())
+            }
+            if visible.contains(.tuner) {
+                nativeTransportStepper(width: 150, pitch: true).background(TransportDetailSurface())
+            }
+        }.frame(height: 32)
         return ViewThatFits(in: .horizontal) {
             controls
-            ScrollView(.horizontal, showsIndicators: false) { controls }
-        }.frame(width: width, height: 32, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) { controls.fixedSize(horizontal: true, vertical: false) }
+        }.frame(width: width, height: 32, alignment: playback.isEmpty ? .trailing : .leading)
     }
     private func nativePlaybackButtons(_ controls: [IpadTransportControl], width: CGFloat) -> some View {
-        HStack(spacing: 4) {
+        let height = transportActionHeight
+        return HStack(spacing: 4) {
             ForEach(controls) { control in
                 switch control {
                 case .play:
@@ -3383,19 +3402,20 @@ private struct TrackMixFeedbackPanel: View {
                         Label {
                             if width >= 44 { Text(verbatim: running ? "Stop" : "Play") }
                         } icon: { TransportControlIcon(name: running ? "stopall" : "play", size: 14) }
-                    }.buttonStyle(TransportButtonStyle(color: JarasTheme.transportPlay, active: running, fontSize: 10, width: width, height: 28))
+                    }.buttonStyle(TransportButtonStyle(color: running ? JarasTheme.liveOffRed : JarasTheme.transportPlay,
+                        active: running, activeForeground: .white, fontSize: 10, width: width, height: height))
                         .accessibilityLabel(Text(verbatim: running ? "Stop" : "Play"))
                 case .fadeout:
-                    fadeoutButton(width: 50, height: 28)
+                    fadeoutButton(width: width, height: height)
                 case .pause:
                     Button { action(.pause) } label: { TransportControlIcon(name: "pause", size: 14) }
                         .buttonStyle(TransportButtonStyle(color: JarasTheme.pauseBackground(state.paused),
-                            active: state.paused, inactiveOpacity: 1, fontSize: 11, width: width, height: 28))
+                            active: state.paused, inactiveOpacity: 1, fontSize: 11, width: width, height: height))
                         .disabled(!state.playing).accessibilityLabel("Pause")
                 case .repeatPlayback:
                     Button { action(.toggleLoop) } label: { TransportControlIcon(name: "loop", size: 14) }
                         .buttonStyle(TransportButtonStyle(color: state.loop ? JarasTheme.yellow : Color(hex: 0x454545), active: state.loop, inactiveOpacity: 1,
-                            activeForeground: .black, inactiveForeground: .white, fontSize: 12, width: width, height: 28))
+                            activeForeground: .black, inactiveForeground: .white, fontSize: 12, width: width, height: height))
                         .accessibilityLabel("Repeat")
                 case .record:
                     if let localShow { IpadAudioTransportButtons(show: localShow, only: control, controlWidth: width) }
@@ -3406,34 +3426,25 @@ private struct TrackMixFeedbackPanel: View {
         }.fixedSize()
     }
     private func nativeTempoControls(_ visible: [IpadTransportControl], bpmWidth: CGFloat, tunerWidth: CGFloat) -> some View {
-        HStack(spacing: 8) {
-            if visible.contains(.bpm) || visible.contains(.metronome) {
-                HStack(spacing: 10) {
-                    if visible.contains(.metronome), let localShow {
-                        HStack(spacing: 8) {
-                            MetronomeModeButton(width: 30)
-                            IpadAudioTransportButtons(show: localShow, configureMetronome: openMetronome, only: .metronome, controlWidth: 30)
-                        }
+        HStack(spacing: TransportControlMetrics.groupSpacing) {
+            if visible.contains(.metronome), let localShow {
+                MetronomeModeButton()
+                IpadAudioTransportButtons(show: localShow, configureMetronome: openMetronome,
+                    only: .metronome, controlWidth: TransportControlMetrics.iconWidth)
+            }
+            if visible.contains(.bpm) {
+                HStack(spacing: 8) {
+                    if let localShow {
+                        NativeTransportMeterField(show: localShow)
+                            .id(localShow.projectSessionID)
                     }
-                    if visible.contains(.bpm) {
-                        HStack(spacing: 8) {
-                            if let localShow {
-                                NativeTransportMeterField(show: localShow)
-                                    .id(localShow.projectSessionID)
-                            }
-                            nativeTransportStepper(width: bpmWidth, pitch: false)
-                        }
-                    }
-                }.padding(.horizontal, 6).background(nativeTransportControlBackground)
+                    nativeTransportStepper(width: bpmWidth, pitch: false)
+                }.padding(.horizontal, 6).background(TransportDetailSurface())
             }
             if visible.contains(.tuner) {
-                nativeTransportStepper(width: tunerWidth, pitch: true).background(nativeTransportControlBackground)
+                nativeTransportStepper(width: tunerWidth, pitch: true).background(TransportDetailSurface())
             }
         }.fixedSize()
-    }
-    private var nativeTransportControlBackground: some View {
-        RoundedRectangle(cornerRadius: 5).fill(Color(hex: 0x1b1b1b))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(JarasTheme.line))
     }
     private func nativeTransportStepper(width: Double, pitch: Bool) -> some View {
         let buttonWidth = min(28, max(18, width * 0.24))
@@ -3443,14 +3454,38 @@ private struct TrackMixFeedbackPanel: View {
                 Image(systemName: "minus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
             }.disabled(pitch ? state.pitchRegion == nil || (state.pitchSemitones ?? 0) <= -12 : bpm <= 60)
                 .accessibilityLabel(pitch ? "Diminuir afinação" : "Diminuir BPM")
-            VStack(spacing: 0) {
+            let readout = VStack(spacing: 0) {
                 Text(verbatim: pitch ? "Tuner" : "BPM")
                     .font(.jarasSystem(size: 9))
-                Text(verbatim: pitch ? String(format: "%+dst", state.pitchSemitones ?? 0) : String(format: "%.0f", bpm))
+                Text(verbatim: pitch ? String(format: "%+dst", state.pitchSemitones ?? 0)
+                    : nativeBPMEditing ? (nativeBPMDraft.text.isEmpty ? "–" : nativeBPMDraft.text) : String(format: "%.0f", bpm))
                     .monospacedDigit().font(.jarasSystem(size: 13, weight: .semibold))
                     .foregroundStyle(pitch ? JarasTheme.green : state.tempoNeedsRender == true ? JarasTheme.yellow : JarasTheme.text)
             }.lineLimit(1).minimumScaleFactor(0.6).frame(maxWidth: .infinity)
-                .modifier(NativeTunerTargets(show: pitch ? localShow : nil))
+            if pitch { readout.modifier(NativeTunerTargets(show: localShow)) }
+            else {
+                readout.contentShape(Rectangle())
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(nativeBPMEditing ? JarasTheme.yellow : .clear).allowsHitTesting(false))
+                    .onTapGesture(perform: tapTempo)
+                    .onLongPressGesture(minimumDuration: 0.4) {
+                        guard localShow?.tempoInputAllowed == true else { return }
+                        nativeBPMDraft = NativeTransportNumberDraft(text: String(format: "%.0f", bpm))
+                        nativeBPMEditing = true
+                    }
+                    .accessibilityLabel("BPM · Tap tempo")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { tapTempo() }
+                    .popover(isPresented: $nativeBPMEditing) {
+                        NativeTransportKeypad(title: "BPM", draft: $nativeBPMDraft, limit: 3,
+                            canApply: nativeBPMDraft.number.map { TimelineTempo.bpmRange.contains(Double($0)) } == true) {
+                            guard let show = localShow, show.tempoInputAllowed, let value = nativeBPMDraft.number else { return }
+                            show.resetTapTempo()
+                            show.setTypedTempo(Double(value))
+                            nativeBPMEditing = false
+                        }
+                    }
+                    .onChange(of: localShow?.tempoInputAllowed) { allowed in if allowed != true { nativeBPMEditing = false } }
+            }
             Button { if pitch { stepPitch(1) } else { stepTempo(1) } } label: {
                 Image(systemName: "plus").frame(width: buttonWidth, height: 32).contentShape(Rectangle())
             }.disabled(pitch ? state.pitchRegion == nil || (state.pitchSemitones ?? 0) >= 12 : bpm >= 300)
@@ -3523,9 +3558,11 @@ private struct TrackMixFeedbackPanel: View {
             Button { stepTempo(-1) } label: {
                 Image(systemName: "minus").frame(width: 28, height: 32)
             }.accessibilityLabel("Diminuir BPM")
-            Text(String(format: "%.0f BPM", state.bpm)).monospacedDigit()
-                .foregroundStyle(state.tempoNeedsRender == true ? JarasTheme.yellow : JarasTheme.text)
-                .frame(minWidth: local ? 48 : 70, maxWidth: .infinity)
+            Button(action: tapTempo) {
+                Text(String(format: "%.0f BPM", state.bpm)).monospacedDigit()
+                    .foregroundStyle(state.tempoNeedsRender == true ? JarasTheme.yellow : JarasTheme.text)
+                    .frame(minWidth: local ? 48 : 70, maxWidth: .infinity).contentShape(Rectangle())
+            }.accessibilityLabel("BPM · Tap tempo")
             Button { stepTempo(1) } label: {
                 Image(systemName: "plus").frame(width: 28, height: 32)
             }.accessibilityLabel("Aumentar BPM")
@@ -3537,6 +3574,11 @@ private struct TrackMixFeedbackPanel: View {
     private var timeText: String {
         let seconds = max(0, Int(displayedPosition))
         return String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+    private func tapTempo() {
+        if let localShow { localShow.tapTempo(); return }
+        guard !state.playing, !state.subPlaying, state.recording != true else { return }
+        action(.tapTempo, target: tempoTapSource, value: ProcessInfo.processInfo.systemUptime)
     }
     private func stepTempo(_ delta: Double) {
         if let localShow {
@@ -3650,7 +3692,8 @@ private struct TrackMixFeedbackPanel: View {
                     .overlay(alignment: .bottom) { Rectangle().fill(JarasTheme.timelineHeaderLine).frame(height: 1).allowsHitTesting(false) }
             }
         } else if UIDevice.current.userInterfaceIdiom == .pad && !phoneLayout {
-            RemoteSurface.panel.frame(height: RemoteNativeGridMetrics.rulerAreaHeight)
+            masterStrip.frame(height: RemoteNativeGridMetrics.rulerAreaHeight)
+                .background(RemoteSurface.panel)
         } else {
             masterStrip.background(RemoteSurface.panel)
         }
@@ -3871,6 +3914,10 @@ private struct TrackMixFeedbackPanel: View {
         localShow?.setMixerTrackSelection([], anchor: nil)
     }
     private func toggleTrackSelection(_ id: UUID) {
+        if local, nativeProMode, nativeProTool.appliesToTrack, let localShow {
+            nativeProTool.apply(to: id, show: localShow)
+            return
+        }
         defer { localShow?.revealSelectedMixerTrack(id) }
         trackScrolling.selectionScope = .tracks
         if hardwareModifiers.contains(.shift), let anchor = localShow?.selectedTrackForActions,
@@ -3917,7 +3964,7 @@ private struct TrackMixFeedbackPanel: View {
             case .record: smkExpectedState = !(state.recording == true); pendingSMKAction = control; action(.toggleRecord)
             case .preview: smkExpectedState = !(state.previewActive == true); pendingSMKAction = control; action(.togglePreview)
             case .auto: smkExpectedState = !(state.regionAuto == true); pendingSMKAction = control; action(.toggleRegionAuto)
-            case .playStop: smkExpectedState = !(state.playing || state.paused); pendingSMKAction = control; action(state.playing || state.paused ? .stop : .play)
+            case .playStop: smkExpectedState = !remoteTransportRunning; pendingSMKAction = control; toggleRemotePlayback()
             case .pause: smkExpectedState = !(state.paused); pendingSMKAction = control; action(.pause)
             case .repeatLoop: smkExpectedState = !(state.loop); pendingSMKAction = control; action(.toggleLoop)
             case .playlist(let delta):
@@ -4023,7 +4070,7 @@ private struct TrackMixFeedbackPanel: View {
     private func performRemoteMIDI(_ command: RemoteMIDIAction) {
         guard !local, !observer, !RemoteMIDIActions.shared.isLearning else { return }
         switch command {
-        case .playStop: action(state.playing || state.paused ? .stop : .play)
+        case .playStop: toggleRemotePlayback()
         case .subPlayStop: if state.playing { action(state.subPlaying ? .subStop : .subPlay) }
         case .repeatPlayback: action(.toggleLoop)
         case .togglePreview: if state.previewActive != nil { action(.togglePreview) }
@@ -4099,7 +4146,7 @@ private struct TrackMixFeedbackPanel: View {
         let ids = selectedTracks.contains(clicked) ? selectedTracks : [clicked]
         return state.tracks.filter { ids.contains($0.id) }.map(\.id)
     }
-    private func selectSetlistEntry(_ id: UUID) {
+    private func selectSetlistEntry(_ id: UUID, fromRow: Bool = false) {
         smkNavigation.selectSongs(); localShow?.smkNavigation.selectSongs()
         nativeKeyboardBrowsing = false
         trackScrolling.selectionScope = .setlist
@@ -4117,7 +4164,10 @@ private struct TrackMixFeedbackPanel: View {
         } else {
             selectedSetlistEntries = state.showsSetlistSelection ? [id] : []
             setlistSelectionAnchor = state.showsSetlistSelection ? id : nil
-            if !isBlock { action(.selectRegion, target: id) }
+            if !isBlock {
+                if fromRow { tappedSetlistRegion = id == state.focusedRegion ? nil : id }
+                action(.selectRegion, target: id)
+            }
         }
         if local { localShow?.selectSetlistBlock(selectedSetlistEntries.count == 1 ? selectedSetlistEntries.first : nil) }
     }
@@ -4219,7 +4269,7 @@ private struct TrackMixFeedbackPanel: View {
                                 case .block(let block): setlistBlockRow(block)
                                 case .region(let row):
                                 let region = row.region
-                                Button { selectSetlistEntry(region.id) } label: {
+                                Button { selectSetlistEntry(region.id, fromRow: true) } label: {
                                     setlistLabel(region.name, number: row.number, played: played.contains(region.sourceRegionId ?? region.id), selected: smkNavigation.focus == .songs && (state.showsSetlistSelection || (local && nativeKeyboardBrowsing)) && (selectedSetlistEntries.contains(region.id) || (selectedSetlistEntries.isEmpty && region.id == state.focusedRegion)),
                                         active: state.playing && region.id == state.setlistCurrentEntryId, queued: state.playing && region.id == (state.setlistQueuedEntryId),
                                         color: remoteColor(region.color), nameColor: remoteColor(region.nameColor ?? (row.child ? 0xffeb3b : 0xffffff)),
@@ -4276,8 +4326,12 @@ private struct TrackMixFeedbackPanel: View {
                         }
                     }
                 }.onChange(of: state.focusedRegion) { id in
-                    if let id { scroll.scrollTo(id, anchor: .center) }
+                    if id == tappedSetlistRegion { tappedSetlistRegion = nil; return }
+                    if let id { scroll.scrollTo(id) }
                 }
+                .onChange(of: state.song) { _ in tappedSetlistRegion = nil }
+                .onChange(of: state.selectedPlaylist) { _ in tappedSetlistRegion = nil }
+                .onDisappear { tappedSetlistRegion = nil }
             }
             if UIDevice.current.userInterfaceIdiom != .phone { setlistControls }
         }.padding([.top, .leading, .trailing], 10).background(RemoteSurface.background)
@@ -4738,6 +4792,7 @@ private struct NativeRemoteSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("jaras.language") private var language = "en"
     @State private var tab = "general"
+    @ObservedObject private var remote = DAWRemoteSession.shared
     var observer = false
     @AppStorage("jaras.remote.observer.setlistScale") private var observerScale = 1.0
     var body: some View {
@@ -4762,6 +4817,11 @@ private struct NativeRemoteSettingsView: View {
                 Picker("Language", selection: $language) {
                     Text(verbatim: "English").tag("en")
                     Text(verbatim: "Português").tag("pt-BR")
+                }.pickerStyle(.segmented).labelsHidden()
+                Text("Receive Audio Transmitter").font(.jarasSubheadline.weight(.semibold)).padding(.top, 10)
+                Picker("Receive Audio Transmitter", selection: Binding(get: { remote.receivesMainAudio }, set: { remote.setReceivesMainAudio($0) })) {
+                    Text("Enabled").tag(true)
+                    Text("Disabled").tag(false)
                 }.pickerStyle(.segmented).labelsHidden()
                 if observer {
                     HStack {
@@ -4911,43 +4971,41 @@ private struct RemoteOutputPatchRequest: Identifiable {
 private struct RemoteOutputPatchSheet: View {
     let request: RemoteOutputPatchRequest
     let apply: ([OutputPatch]) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let close: () -> Void
     @State private var routes: [OutputPatch]
 
-    init(request: RemoteOutputPatchRequest, apply: @escaping ([OutputPatch]) -> Void) {
-        self.request = request; self.apply = apply
+    init(request: RemoteOutputPatchRequest, close: @escaping () -> Void, apply: @escaping ([OutputPatch]) -> Void) {
+        self.request = request; self.close = close; self.apply = apply
         _routes = State(initialValue: request.routes ?? [])
     }
 
     var body: some View {
         let choices = OutputPatch.choices(channels: max(0, min(1024, request.channels ?? 0)),
             includeMaster: request.track != nil, includeGroup: request.hasGroup, includeNone: true)
-        return NavigationStack {
-            Form {
-                if request.channels != nil && request.routes != nil {
-                    ForEach(routes.indices, id: \.self) { index in
-                        HStack {
-                            Picker("Output", selection: $routes[index]) {
-                                if !choices.contains(routes[index]) { Text(routes[index].title).tag(routes[index]) }
-                                ForEach(choices, id: \.self) { Text(LocalizedStringKey($0.title)).tag($0) }
+        let canEdit = request.channels != nil && request.routes != nil
+        IpadCompactModal(preferredSize: CGSize(width: 350, height: 300)) {
+            VStack(spacing: 0) {
+                IpadModalHeader(title: "Patch", subtitle: request.name, close: close)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if canEdit {
+                            PatchOutputControls(outputs: routes, outputChoices: choices, canAdd: routes.count < 64) { edit in
+                                var updated = routes
+                                edit(&updated)
+                                routes = updated
                             }
-                            Button(role: .destructive) { routes.remove(at: index) } label: { Image(systemName: "minus.circle") }
-                                .buttonStyle(.borderless).accessibilityLabel("Remove output")
+                        } else {
+                            Text("Update CatLive on the connected computer to edit outputs.")
                         }
-                    }
-                    Button("Add output") { routes.append(.none) }.disabled(routes.count >= 64)
-                } else {
-                    Text("Update CatLive on the connected computer to edit outputs.")
+                    }.padding(18)
                 }
-            }.navigationTitle(Text(verbatim: request.name.isEmpty ? "Patch" : "Patch · " + request.name))
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
-                    if request.routes != nil && request.channels != nil {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Apply") { apply(routes); dismiss() }
-                        }
-                    }
+                if canEdit {
+                    HStack {
+                        Spacer()
+                        Button("Apply") { apply(routes); close() }
+                    }.padding(12)
                 }
+            }.background(JarasTheme.background)
         }
     }
 }
@@ -4978,6 +5036,7 @@ private struct RemoteNativeTimeline: View {
     var showTempoLane = true
     @Binding var regionDrag: IpadRegionMovePreview?
     var openRegionActions: ((UUID) -> Void)? = nil
+    var detectSelectionBPM: ((TimelineAreaSelection.Range) -> Void)? = nil
     @State private var selectedRegionID: UUID?
     var openItemMenu: ((UUID) -> Void)? = nil
     var openSelectedItemMenu: ((UUID, Set<UUID>) -> Void)? = nil
@@ -4994,6 +5053,8 @@ private struct RemoteNativeTimeline: View {
     @State private var rulerPointerViewport: IpadTimelineViewport?
     @State private var rulerVisibleViewport: IpadTimelineViewport?
     @State private var rulerSelectionAnchor: Double?
+    @State private var rulerMenuX: CGFloat = 0
+    @State private var rulerMenuSelection: TimelineAreaSelection.Range?
     @GestureState private var markerPreview: (id: UUID, position: Double)?
     @State private var rulerSelectionEnd: Double?
     @State private var selectionResizeFixedEdge: Double?
@@ -5066,8 +5127,7 @@ private struct RemoteNativeTimeline: View {
         return markers.filter { !$0.isTempo && $0.position >= start && $0.position <= end }.sorted { $0.position < $1.position }
     }
     private var highlightedTimeRange: ClosedRange<Double>? {
-        if let anchor = rulerSelectionAnchor {
-            guard let end = rulerSelectionEnd, end != anchor else { return nil }
+        if let anchor = rulerSelectionAnchor, let end = rulerSelectionEnd, end != anchor {
             return min(anchor, end)...max(anchor, end)
         }
         if local, let range = timeSelection.range, range.song == state.song { return range.start...range.end }
@@ -5259,9 +5319,8 @@ private struct RemoteNativeTimeline: View {
                                           let item = pointerItems(width: width).first(where: { $0.rect.contains(point) }) else { return false }
                                     return scrolling.itemSelection.items.contains(item.id)
                                 } : nil, touchTap: nativeProMode && proTool != .select ? { point in
-                                    guard let item = pointerItems(width: width).first(where: { $0.rect.contains(point) }) else { return false }
-                                    applyProTool(item.id, time: start + Double(point.x / max(1, width)) * span, width: width)
-                                    return true
+                                    let item = pointerItems(width: width).first { $0.rect.contains(point) }?.id
+                                    return applyProTool(item, at: point, time: start + Double(point.x / max(1, width)) * span, width: width)
                                 } : nil, reset: scrolling.pointerReset, accepts: { point in
                                     return true
                                 }, wantsAutoScroll: { point in
@@ -5280,6 +5339,7 @@ private struct RemoteNativeTimeline: View {
                     .background(RemoteTrackScrollProbe(controller: scrolling, tracks: tracks,
                         selectedTrack: localShow?.selectedTrackForActions ?? scrolling.heightSelectedTrack, isGrid: true, twoFingerScroll: local, gridTap: { fraction in
                         guard local || (!state.playing && region != nil) else { return }
+                        if local && nativeProMode && proTool.appliesToTrack { return }
                         if local { localShow?.selectProgramChange(nil) }
                         let time = start + fraction * span
                         if local, let song {
@@ -5439,7 +5499,7 @@ private struct RemoteNativeTimeline: View {
         if event.distance >= 3 { pointerDragged = true }
         if nativeProMode && !event.secondary && proTool != .select {
             if event.phase == .ended {
-                if !pointerDragged, let id = initial.item { applyProTool(id, time: initial.time, width: width) }
+                if !pointerDragged { applyProTool(initial.item, at: initial.point, time: initial.time, width: width) }
                 cancelPointer()
             }
             return
@@ -5526,23 +5586,29 @@ private struct RemoteNativeTimeline: View {
             }
         }
     }
-    private func applyProTool(_ id: UUID, time: Double, width: CGFloat) {
-        guard let show = localShow, let song = show.current else { return }
+    @discardableResult private func applyProTool(_ item: UUID?, at point: CGPoint, time: Double, width: CGFloat) -> Bool {
+        guard let show = localShow, let song = show.current else { return false }
+        guard let id = item else {
+            guard proTool.appliesToTrack, let track = pointerTrack(at: point.y) else { return false }
+            proTool.apply(to: track, show: show)
+            return true
+        }
         scrolling.itemSelection.replace([id])
         switch proTool {
         case .select: break
         case .cut:
-            guard !show.timelineItemsLocked else { return }
+            guard !show.timelineItemsLocked else { return true }
             let snapped = TimelineTempo.snap(time, song: song, pixelsPerSecond: width / span,
                 enabled: TimelineSnapPreference.enabled, includeItemEdges: true, excludingItems: [id], rulerSections: snapRulerSections)
             let right = show.splitItems([id], at: snapped)
             if !right.isEmpty { scrolling.itemSelection.replace(right) }
         case .mute: show.send(.clipMute, target: id)
-        case .solo:
+        case .solo, .exclusiveSolo:
             if let track = song.tracks.first(where: { $0.clips.contains { $0.id == id } }) {
-                show.send(.solo, target: track.id)
+                proTool.apply(to: track.id, show: show)
             }
         }
+        return true
     }
     private func gridMarks(width: CGFloat) -> [TimelineTimeRuler.Tick] {
         var sections: [TimelineTempoSection]
@@ -5632,6 +5698,19 @@ private struct RemoteNativeTimeline: View {
                     rulerPointer(.init(phase: cancelled ? .cancelled : ended ? .ended : .moved,
                         position: point, origin: first, secondary: true, modifiers: []), width: width)
                 }, tap: { seekOnRuler($0, width: width, modifiers: scrolling.modifiers) }))
+            .background(alignment: .leading) {
+                if detectSelectionBPM != nil {
+                    Color.clear.frame(width: 1, height: 1)
+                        .popover(isPresented: Binding(get: { rulerMenuSelection != nil }, set: { if !$0 { rulerMenuSelection = nil } })) {
+                            Button("Bpm detect") {
+                                guard let selection = rulerMenuSelection else { return }
+                                rulerMenuSelection = nil
+                                detectSelectionBPM?(selection)
+                            }.padding()
+                        }
+                        .offset(x: rulerMenuX)
+                }
+            }
             .background {
                 if local {
                     IpadTimelinePointerProbe(enabled: editorEnabled, capturesPointer: true,
@@ -5696,6 +5775,14 @@ private struct RemoteNativeTimeline: View {
                     rulerSelectionEnd = end
                     timeSelection.update(song: song.id, from: rulerSelectionAnchor ?? time(event.origin.x), to: end)
                     show.updateActiveLoopArea()
+                } else if event.phase == .ended, detectSelectionBPM != nil,
+                          let selection = timeSelection.range, selection.song == song.id,
+                          let initial = rulerPointerViewport {
+                    let touchedTime = initial.start + Double(event.origin.x / max(1, width)) * initial.span
+                    if (selection.start...selection.end).contains(touchedTime) {
+                        rulerMenuX = event.origin.x
+                        rulerMenuSelection = selection
+                    }
                 }
             } else if resizeRulerSelection(origin: event.origin.x, x: event.position.x, width: width, ended: event.phase == .ended) {
                 if event.phase == .ended { rulerPointerViewport = nil }
@@ -7838,49 +7925,92 @@ struct InlineMixerTrackName: View {
     }
 }
 
-private struct NativeTransportMeterField: View {
-    let show: ShowController
-    @State private var draft = ""
-    @FocusState private var editing: Bool
+private struct NativeTransportNumberDraft {
+    var text = ""
+    private var replacesValue = true
+    var number: Int? { Int(text) }
 
-    private var displayedMeter: String {
-        guard let meter = show.transportMeter else { return "–" }
-        return "\(meter.beats)/\(meter.unit)"
+    init(text: String = "") { self.text = text }
+
+    mutating func accept(_ key: String, limit: Int) {
+        switch key {
+        case "Clear": text = ""
+        case "⌫": if !text.isEmpty { text.removeLast() }
+        default:
+            guard key.count == 1, let digit = key.first, digit.isASCII, digit.isNumber else { return }
+            if replacesValue { text = key }
+            else if text.count < limit { text.append(digit) }
+        }
+        replacesValue = false
     }
+}
+
+private struct NativeTransportKeypad: View {
+    let title: LocalizedStringKey
+    @Binding var draft: NativeTransportNumberDraft
+    let limit: Int
+    let canApply: Bool
+    let apply: () -> Void
 
     var body: some View {
-        TextField("4/4", text: $draft)
-            .textFieldStyle(.plain)
-            .multilineTextAlignment(.center)
-            .font(.jarasSystem(size: 12, weight: .semibold, design: .monospaced))
-            .keyboardType(.numbersAndPunctuation)
-            .submitLabel(.done)
-            .focused($editing)
-            .frame(width: 48, height: 25)
-            .background(.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 5))
-            .overlay {
-                RoundedRectangle(cornerRadius: 5).strokeBorder(editing ? JarasTheme.green : JarasTheme.line)
-                    .allowsHitTesting(false)
-            }
+        VStack(spacing: 10) {
+            Text(title).font(.jarasHeadline)
+            Text(verbatim: draft.text.isEmpty ? "–" : draft.text).font(.jarasSystem(size: 24, weight: .semibold))
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .background(JarasTheme.display, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(JarasTheme.yellow))
+            TimerNumberPad(edit: { draft.accept($0, limit: limit) })
+            Button("Apply", action: apply).buttonStyle(.borderedProminent)
+                .tint(JarasTheme.green).foregroundStyle(.black).disabled(!canApply)
+        }.padding(14).frame(width: 250).background(JarasTheme.panel)
+    }
+}
+
+private struct NativeTransportMeterField: View {
+    private enum Field: String, Identifiable {
+        case beats, unit
+        var id: Self { self }
+        var title: LocalizedStringKey { self == .beats ? "Beats per bar" : "Beat unit" }
+
+        func accepts(_ value: Int) -> Bool {
+            self == .beats ? (1...32).contains(value) : TimelineTempo.beatUnits.contains(value)
+        }
+    }
+    let show: ShowController
+    @State private var field: Field?
+    @State private var draft = NativeTransportNumberDraft()
+
+    var body: some View {
+        HStack(spacing: 3) {
+            fieldButton(.beats, value: show.transportMeter?.beats)
+            Text(verbatim: "/").foregroundStyle(JarasTheme.text)
+            fieldButton(.unit, value: show.transportMeter?.unit)
+        }.font(.jarasSystem(size: 12, weight: .semibold, design: .monospaced))
             .disabled(!show.transportMeterEditingAllowed)
-            .accessibilityLabel("Time signature")
-            .onAppear { draft = displayedMeter }
-            .onChange(of: displayedMeter) { value in if !editing { draft = value } }
-            .onChange(of: show.transportMeterEditingAllowed) { allowed in
-                if !allowed { editing = false; draft = displayedMeter }
+            .onChange(of: show.transportMeterEditingAllowed) { allowed in if !allowed { field = nil } }
+            .popover(item: $field) { selection in
+                NativeTransportKeypad(title: selection.title, draft: $draft, limit: 2,
+                    canApply: draft.number.map(selection.accepts) == true) { commit(selection) }
             }
-            .onChange(of: editing) { focused in if !focused { commit() } }
-            .onSubmit { editing = false }
     }
 
-    private func commit() {
-        let fields = draft.split(separator: "/", omittingEmptySubsequences: false)
-        if draft != displayedMeter, fields.count == 2,
-           let beats = Int(fields[0].trimmingCharacters(in: .whitespaces)),
-           let unit = Int(fields[1].trimmingCharacters(in: .whitespaces)) {
-            _ = show.setTransportMeter(beats: beats, unit: unit)
-        }
-        draft = displayedMeter
+    private func fieldButton(_ selection: Field, value: Int?) -> some View {
+        Button {
+            draft = NativeTransportNumberDraft(text: value.map(String.init) ?? "")
+            field = selection
+        } label: {
+            Text(verbatim: field == selection ? (draft.text.isEmpty ? "–" : draft.text) : value.map(String.init) ?? "–")
+                .frame(width: 23, height: 25)
+                .background(.black.opacity(0.26), in: RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(field == selection ? JarasTheme.yellow : JarasTheme.line))
+        }.buttonStyle(.plain).accessibilityLabel(Text(selection.title))
+    }
+
+    private func commit(_ selection: Field) {
+        guard let value = draft.number, let meter = show.transportMeter else { return }
+        let beats = selection == .beats ? value : meter.beats
+        let unit = selection == .unit ? value : meter.unit
+        if show.setTransportMeter(beats: beats, unit: unit) { field = nil }
     }
 }
 

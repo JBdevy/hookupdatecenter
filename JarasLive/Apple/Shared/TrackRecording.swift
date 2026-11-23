@@ -416,7 +416,7 @@ private final class CaptureWriter: @unchecked Sendable {
         playback.setArmedInstrumentTracks(Set(tracks.filter { track in
             track.kind == .standard && track.role.rawValue != "vinhetas" &&
                 track.monitorsMIDIInstrument(armed: armed.contains(track.id)) &&
-                (track.fx?.hasDrummerPad == true || track.fx?.instrumentKeys.isEmpty == false ||
+                (track.fx?.hasNativeMIDIInstrument == true || track.fx?.instrumentKeys.isEmpty == false ||
                  track.fx?.externalPlugins?.contains { $0.category.localizedCaseInsensitiveContains("Instrument") } == true)
         }.map(\.id)))
         let desired = inputChannels > 0 && (AudioDeviceSettings.shared.usesSystemLoopback || AVCaptureDevice.authorizationStatus(for: .audio) == .authorized) ? tracks.filter {
@@ -618,7 +618,7 @@ private final class CaptureWriter: @unchecked Sendable {
         let wanted = armState.armed
         if let show {
             microphoneTracks = wanted.intersection(Set(show.snapshot.project.songs.flatMap(\.tracks).filter {
-                !$0.recordsOutput && hasRecordingInput($0) && $0.recordingMode != .midi && $0.fx?.hasDrummerPad != true && $0.fx?.instrumentKeys.isEmpty != false &&
+                !$0.recordsOutput && hasRecordingInput($0) && $0.recordingMode != .midi && $0.fx?.hasNativeMIDIInstrument != true && $0.fx?.instrumentKeys.isEmpty != false &&
                     !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false)
             }.map(\.id)))
         }
@@ -798,6 +798,7 @@ private final class CaptureWriter: @unchecked Sendable {
         RecordingLaneLayout.shared.remove(take.id); LiveRecordingPreview.shared.takes[take.id] = nil
     }
     private func hasRecordingInput(_ track: Track) -> Bool {
+        if track.midiInput != nil { return false }
         let input = track.inputPatch ?? defaultInputPatch
         return input.firstChannel >= 1 && input.channelCount > 0 &&
             input.firstChannel <= inputChannels - input.channelCount + 1
@@ -864,13 +865,14 @@ private final class CaptureWriter: @unchecked Sendable {
     }
     func cancelCountIn() {
         pendingCountIn = nil
-        countingIn = false
+        if countingIn { countingIn = false }
         (projectAudio ?? StemAudioPlayback.shared).cancelRecordingCountIn()
     }
 
     private func countIn(_ meter: TimelineTempoSection, song: Song) async throws -> UInt64? {
         let id = UUID()
         pendingCountIn = id
+        show?.resetTapTempo()
         countingIn = true
         defer { if pendingCountIn == id { pendingCountIn = nil; countingIn = false } }
         let audio = projectAudio ?? StemAudioPlayback.shared
@@ -905,7 +907,7 @@ private final class CaptureWriter: @unchecked Sendable {
         if let cycle = recordingCycle {
             let cursor = transport.playing ? transport.position : transport.editPosition ?? transport.position
             if cursor >= cycle.range.upperBound {
-                show.send(.seek, value: cycle.range.lowerBound)
+                show.seekForRecording(cycle.range.lowerBound)
                 if !transport.playing { show.send(.editSeek, value: cycle.range.lowerBound) }
             }
         }
@@ -1294,7 +1296,7 @@ struct TrackRecordButton: View {
     @State private var editingMode = false
     private func toggleArm(automatic: Bool) {
         let targets = show.mixerControlTargets(track.id).filter { $0.kind == .standard }
-        let requiresInput = targets.contains { $0.recordingMode != .midi && $0.fx?.hasDrummerPad != true && $0.fx?.instrumentKeys.isEmpty != false && !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false) }
+        let requiresInput = targets.contains { $0.recordingMode != .midi && $0.fx?.hasNativeMIDIInstrument != true && $0.fx?.instrumentKeys.isEmpty != false && !($0.fx?.externalPlugins?.contains { $0.category.contains("Instrument") } ?? false) }
         recorder.setMode(recorder.armState.mode(for: track.id).afterRecordClick(automatic: automatic), tracks: Set(targets.map(\.id)), requiresAudioInput: requiresInput)
     }
     var body: some View {

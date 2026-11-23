@@ -39,6 +39,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)editMasterColor:(unsigned int)color error:(NSError **)error;
 - (BOOL)setTrackMixerComponents:(NSString *)song masks:(NSDictionary<NSString *, NSNumber *> *)masks error:(NSError **)error;
 - (BOOL)editTrack:(NSString *)identifier name:(NSString *)name color:(unsigned int)color error:(NSError **)error;
+- (BOOL)renameTrack:(NSString *)identifier name:(NSString *)name error:(NSError **)error;
+- (BOOL)soloTrackExclusively:(NSString *)identifier error:(NSError **)error;
 - (BOOL)setRegionInit:(NSString *)identifier count:(int)count bars:(BOOL)bars error:(NSError **)error;
 - (BOOL)setRegionPitch:(NSString *)identifier semitones:(int)semitones tracks:(NSArray<NSString *> *)tracks groups:(NSArray<NSString *> *)groups error:(NSError **)error;
 - (BOOL)editRegion:(NSString *)identifier name:(NSString *)name color:(unsigned int)color uppercaseName:(BOOL)uppercaseName error:(NSError **)error;

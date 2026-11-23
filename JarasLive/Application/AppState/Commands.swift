@@ -35,6 +35,8 @@ public enum ShowCommand: String, Sendable { case toggleMultiLoopBypass, queueSec
     func editMasterColor(_ color: UInt32) throws
     func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws
     func editTrack(_ id: UUID, name: String, color: UInt32) throws
+    func renameTrack(_ id: UUID, name: String) throws
+    func soloTrackExclusively(_ id: UUID) throws
     func setRegionInit(_ id: UUID, count: Int, bars: Bool) throws
     func setRegionPitch(_ id: UUID, semitones: Int, tracks: [UUID], groups: [UUID]) throws
     func editRegion(_ id: UUID, name: String, color: UInt32, uppercaseName: Bool) throws
@@ -102,6 +104,8 @@ public extension CommandExecutor {
     func editMasterColor(_ color: UInt32) throws { throw BackendFailure.notConfigured }
     func setTrackMixerComponents(_ song: UUID, masks: [UUID: Int]) throws { throw BackendFailure.notConfigured }
     func editTrack(_ id: UUID, name: String, color: UInt32) throws { throw BackendFailure.notConfigured }
+    func renameTrack(_ id: UUID, name: String) throws { throw BackendFailure.notConfigured }
+    func soloTrackExclusively(_ id: UUID) throws { throw BackendFailure.notConfigured }
     func setTrackRouting(_ routes: [UUID: TrackRouting]) throws { throw BackendFailure.notConfigured }
     func setOutputPatches(track: UUID?, patches: [OutputPatch]) throws { throw BackendFailure.notConfigured }
     func setOutputPatch(track: UUID?, patch: OutputPatch, slot: Int) throws { throw BackendFailure.notConfigured }

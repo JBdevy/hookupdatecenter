@@ -13,10 +13,20 @@ let kAudioObjectUnknown: UInt32 = 0
 let kAudioObjectSystemObject: UInt32 = 1
 let kAudioHardwarePropertyDefaultInputDevice: UInt32 = 4
 let kAudioHardwarePropertyDefaultOutputDevice: UInt32 = 5
-@MainActor var defaultInput: UInt32 = 30
-@MainActor var defaultOutput: UInt32 = 10
-@MainActor func AudioObjectGetPropertyData(_ object: UInt32, _ address: inout AudioObjectPropertyAddress, _ qualifierSize: UInt32, _ qualifier: UnsafeRawPointer?, _ bytes: inout UInt32, _ value: inout UInt32) -> OSStatus {
-    value = address.mSelector == kAudioHardwarePropertyDefaultInputDevice ? defaultInput : defaultOutput
+// The catalog worker and the main actor read the same simulated HAL state.
+final class MockHALDefaults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values = [kAudioHardwarePropertyDefaultInputDevice: UInt32(30),
+                          kAudioHardwarePropertyDefaultOutputDevice: UInt32(10)]
+    subscript(_ selector: UInt32) -> UInt32 {
+        get { lock.lock(); defer { lock.unlock() }; return values[selector]! }
+        set { lock.lock(); defer { lock.unlock() }; values[selector] = newValue }
+    }
+}
+let halDefaults = MockHALDefaults()
+func AudioObjectGetPropertyData(_ object: UInt32, _ address: inout AudioObjectPropertyAddress, _ qualifierSize: UInt32, _ qualifier: UnsafeRawPointer?, _ bytes: inout UInt32, _ value: inout UInt32) -> OSStatus {
+    precondition(object == kAudioObjectSystemObject)
+    value = halDefaults[address.mSelector]
     return noErr
 }
 typealias AudioObjectPropertyListenerBlock = @Sendable (UInt32, UnsafePointer<AudioObjectPropertyAddress>) -> Void
@@ -52,7 +62,7 @@ struct AudioObjectPropertyAddress {
     var mScope: UInt32
     var mElement: UInt32
 }
-struct OutputDevice: Identifiable, Equatable {
+struct OutputDevice: Identifiable, Equatable, Sendable {
     var id: String
     var name: String
     var channels: Int
@@ -117,11 +127,21 @@ struct OutputDevice: Identifiable, Equatable {
     var defaultRefreshPending = false
     var usesSystemLoopback = false
     var loopback: AnyObject?
-    func refresh() { refreshSystemDefaults() }
+    let loopbackHardwareID: AudioDeviceID = 0
+    static let loopbackUID = "catlive.system-loopback"
+    /* HARDWARE_CATALOG */
+    private nonisolated static func readHardwareCatalog() -> HardwareCatalog? {
+        HardwareCatalog(outputs: Self.simulatedOutputs, inputs: Self.simulatedInputs,
+                        defaultOutput: defaultHardwareID(input: false), defaultInput: defaultHardwareID(input: true))
+    }
+    private nonisolated static let simulatedOutputs = [
+        OutputDevice(id: "speakers", name: "Speakers", channels: 2, hardwareID: 10),
+        OutputDevice(id: "interface", name: "Interface", channels: 4, hardwareID: 20)]
+    private nonisolated static let simulatedInputs = [
+        OutputDevice(id: "microphone", name: "Microphone", channels: 1, hardwareID: 30)]
     let engine = OutputEngine()
-    var devices = [OutputDevice(id: "speakers", name: "Speakers", channels: 2, hardwareID: 10),
-                   OutputDevice(id: "interface", name: "Interface", channels: 4, hardwareID: 20)]
-    var inputDevices = [OutputDevice(id: "microphone", name: "Microphone", channels: 1, hardwareID: 30)]
+    var devices = simulatedOutputs
+    var inputDevices = simulatedInputs
     var selectedUID = "speakers"
     var inputUID = ""
     var inputDevice: OutputDevice? { inputDevices.first { $0.id == inputUID } }
@@ -177,7 +197,8 @@ typealias AudioDeviceSettings = AudioOutputBindingHarness
 }
 
 @MainActor func resetHAL() {
-    defaultInput = 30; defaultOutput = 10
+    halDefaults[kAudioHardwarePropertyDefaultInputDevice] = 30
+    halDefaults[kAudioHardwarePropertyDefaultOutputDevice] = 10
     actualDevice = 10; deviceSetResult = 0; deviceReadResult = 0
     deviceReadSize = UInt32(MemoryLayout<AudioDeviceID>.size)
     acceptsDeviceChanges = true; deviceSetCalls = 0; hardwareSetCalls = 0
@@ -193,18 +214,18 @@ typealias AudioDeviceSettings = AudioOutputBindingHarness
     followed.select(AudioOutputBindingHarness.systemDefaultUID)
     followed.selectInput(AudioOutputBindingHarness.systemDefaultUID)
     precondition(followed.followsSystemInput && followed.followsSystemOutput && followed.inputUID == "microphone")
-    defaultOutput = 20; followed.refresh()
+    halDefaults[kAudioHardwarePropertyDefaultOutputDevice] = 20; followed.refresh()
     precondition(followed.selectedUID == "interface" && actualDevice == 20 && followed.channels == 4)
     let changes = deviceSetCalls; followed.refresh()
     precondition(deviceSetCalls == changes, "Unchanged default must not restart audio")
-    followed.select("speakers"); defaultOutput = 20; followed.refresh()
+    followed.select("speakers"); halDefaults[kAudioHardwarePropertyDefaultOutputDevice] = 20; followed.refresh()
     precondition(!followed.followsSystemOutput && followed.selectedUID == "speakers" && actualDevice == 10)
     followed.select(AudioOutputBindingHarness.systemDefaultUID); followed.canChangeConfiguration = { false }
-    defaultOutput = 10; followed.refresh()
+    halDefaults[kAudioHardwarePropertyDefaultOutputDevice] = 10; followed.refresh()
     precondition(followed.selectedUID == "interface", "Recording route changed before it was allowed")
     followed.canChangeConfiguration = { true }; followed.refresh()
     precondition(followed.selectedUID == "speakers")
-    followed.selectInput(""); defaultInput = 30; followed.refresh()
+    followed.selectInput(""); halDefaults[kAudioHardwarePropertyDefaultInputDevice] = 30; followed.refresh()
     precondition(!followed.followsSystemInput && followed.inputUID.isEmpty)
     precondition(UserDefaults.standard.values["catlive.followSystemOutput"] as? Bool == true)
     print("SYSTEM_DEFAULTS_FOLLOW_HAL_AND_PRESERVE_EXPLICIT_SELECTION_RECORDING_AND_PERSISTENCE_OK")
@@ -374,6 +395,23 @@ typealias AudioDeviceSettings = AudioOutputBindingHarness
 @main struct AudioOutputBindingTests {
     @MainActor static func main() async throws {
         try runAudioOutputBindingTests()
+        resetHAL()
+        let followed = AudioOutputBindingHarness()
+        followed.select(AudioOutputBindingHarness.systemDefaultUID)
+        followed.canChangeConfiguration = { false }
+        halDefaults[kAudioHardwarePropertyDefaultOutputDevice] = 20
+        followed.refresh()
+        followed.refresh()
+        precondition(followed.selectedUID == "speakers" && followed.defaultRefreshPending)
+        followed.canChangeConfiguration = { true }
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while followed.selectedUID != "interface", ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        precondition(followed.selectedUID == "interface" && actualDevice == 20 && !followed.defaultRefreshPending,
+                     "An unlock must let the deferred catalog refresh follow the latest system route")
+        print("DEFERRED_HAL_CATALOG_REFRESH_RECOVERS_AFTER_RECORDING_UNLOCK_OK")
+        resetHAL()
         rateListeners = [:]
         bufferListeners = [:]
         let output = AudioOutputBindingHarness()

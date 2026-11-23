@@ -1,5 +1,6 @@
 #pragma once
 #include "AudioEngine.h"
+#include "TapTempo.h"
 #include "../../Core/Transport/TempoEditGate.hpp"
 #include "MediaDropLayout.h"
 #include "ProjectCodec.h"
@@ -106,10 +107,13 @@ class Session final : private Timer {
     std::pair<int, int> transportMeter() const;
     bool meterInputAllowed() const;
     void setTempo(double bpm);
+    void resetTapTempo() { tempoTaps = {}; }
+    void tapTempo(double time = Time::getMillisecondCounterHiRes() / 1000., const ID& source = {});
     bool tempoInputAllowed() const { return !transport().playing && !transport().subPlay.playing; }
     void setTypedTempo(double bpm) { if (tempoInputAllowed()) setTempo(bpm); }
     std::function<double()> tempoEditClock = [] { return Time::getMillisecondCounterHiRes() / 1000.; };
     void configureTiming(double bpm, int beats, int unit, jaras::ProjectTimeSettings);
+    std::optional<int> firstAvailableMIDIInputSlot();
     void configureEffects(const ID &, const var &);
     void configureEffects(const std::map<ID, var> &);
     String copyEffect(const ID &source, const String &effect, const ID &destination, const String &before = {});
@@ -142,6 +146,8 @@ class Session final : private Timer {
     void renderItems(std::set<ID>, bool glue = false, int midiChannels = 0, std::function<void(std::set<ID>)> completed = {});
     void separateAudioItem(ID, std::function<void(std::set<ID>)> completed = {}, std::set<int> instruments = {});
     void detectRegionBPM(std::set<ID>);
+    void detectSelectionBPM(double start, double end, std::shared_ptr<std::atomic<double>> progress,
+                            std::function<void(String)> result);
     bool isDetectingBPM() const { return bpmCancellation != nullptr; }
     void cancelBPMDetection();
     void cancelExport() { exportCancelled = true; if(loadCancellation)loadCancellation->store(true); }
@@ -157,6 +163,7 @@ class Session final : private Timer {
     }
     void cycleRecordArm(const ID &, const std::set<ID> &targets = {}, bool automatic = false);
     void mixerCommand(jaras::CommandKind, const ID &, const std::set<ID> &, double value = 0, bool clearAll = false);
+    void soloTrackExclusively(const ID &);
     void beginMixerGesture(jaras::CommandKind kind, ID source) {
         mixerGestureSource = std::move(source); mixerGestureProject = project().id; mixerGestureKind = kind;
         mixerGestureTracks.clear();
@@ -293,6 +300,7 @@ class Session final : private Timer {
     ThreadPool bpmWorker{1};
     std::shared_ptr<std::atomic<bool>> bpmCancellation;
     std::shared_ptr<std::atomic<bool>> loadCancellation;
+    TapTempo tempoTaps;
     jaras::LiveTempoEditGate liveTempoEdits;
     std::shared_ptr<std::atomic<bool>> graphCancellation;
     std::shared_ptr<int> alive = std::make_shared<int>(0);

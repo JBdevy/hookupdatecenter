@@ -58,7 +58,8 @@ public:
     void insertAudioTracks(const ID& song, std::vector<Track> tracks);
     void addRecordedClip(const ID& track, AudioClip clip, bool replacing = false);
     void setTimecode(const ID& track, TimecodeSettings settings);
-    void editTrack(const ID& id, std::string name, unsigned color);
+    void editTrack(const ID& id, std::string name, std::optional<unsigned> color);
+    bool soloTrackExclusively(const ID& id);
     void editMasterColor(unsigned color);
     std::map<ID, int> setTrackMixerComponents(const ID& song, const std::map<ID, int>& masks);
     void setMarkers(const std::vector<TimelineMarker>& markers, const std::vector<ID>& removing = {}, bool retime = false);

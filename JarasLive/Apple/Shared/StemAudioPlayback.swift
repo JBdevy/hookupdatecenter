@@ -847,7 +847,35 @@ struct TimecodePlaybackSpan {
     var prepareAfterDeviceChange: (() throws -> Void)?
     var beforeAudioGraphReset: () -> Void = {}
     var afterAudioGraphReset: () -> Void = {}
-    private var files: [String: AVAudioFile] = [:]
+    // Voices and pending preparations own their readers. Keep those shareable
+    // while bounding idle readers so visiting a long set cannot exhaust open files.
+    private struct MediaReaders {
+        private let live = NSMapTable<NSString, AVAudioFile>.strongToWeakObjects()
+        private var recent: [(path: String, file: AVAudioFile)] = []
+        var retainedCount: Int { recent.count }
+
+        func file(for path: String) -> AVAudioFile? { live.object(forKey: path as NSString) }
+
+        mutating func remember(_ file: AVAudioFile, for path: String) {
+            live.setObject(file, forKey: path as NSString)
+            recent.removeAll { $0.path == path }
+            recent.append((path, file))
+            if recent.count > 32 { recent.removeFirst() }
+        }
+
+        mutating func removeValue(forKey path: String) -> AVAudioFile? {
+            let old = file(for: path)
+            live.removeObject(forKey: path as NSString)
+            recent.removeAll { $0.path == path }
+            return old
+        }
+
+        mutating func removeAll() {
+            live.removeAllObjects()
+            recent.removeAll()
+        }
+    }
+    private var files = MediaReaders()
     private struct OnsetKey: Hashable {
         let path: String
         let first: AVAudioFramePosition
@@ -905,9 +933,23 @@ struct TimecodePlaybackSpan {
     // the Delete action (AU listener disposal can take seconds in large sets).
     private var deletedVoices: [Voice] = []
     private var deletedVoiceCleanup: Task<Void, Never>?
-    private var subplayPreparation: Task<Void, Never>?
-    private var subplayPreparationGeneration = UUID()
-    private var subplayPreparedKey: String?
+    private final class DestinationPreparation {
+        var task: Task<Void, Never>?
+        var generation = UUID()
+        var key: String?
+        var warmSources = Set<ObjectIdentifier>()
+
+        func cancel() {
+            task?.cancel()
+            task = nil
+            key = nil
+            generation = UUID()
+            warmSources.removeAll(keepingCapacity: true)
+        }
+    }
+    private let subplayDestination = DestinationPreparation()
+    private let seekDestination = DestinationPreparation()
+    private let beatDestination = DestinationPreparation()
     private var subplayReserved: [UUID: [Voice]] = [:]
     private var readySourcePreparations: [ObjectIdentifier: SourcePreparation] = [:]
     /// File sources still retained by the graph must survive timeline cleanup,
@@ -962,9 +1004,15 @@ struct TimecodePlaybackSpan {
         let passes = max(1, Int(max(0, seconds - 0.15) / (cadence * 2)))
         return max(1, (pending + passes - 1) / passes)
     }
+    private func suspendSource(_ source: JarasPreparedClip) {
+        let id = ObjectIdentifier(source)
+        readySourcePreparations.removeValue(forKey: id)
+        source.suspendStreaming()
+    }
+
     private func retireSilently(_ voice: Voice) {
         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
-        voice.prepared?.suspendStreaming()
+        if let source = voice.prepared { suspendSource(source) }
         retiredVoices.append(voice)
     }
     private func cancelPreparedJump() {
@@ -1074,6 +1122,12 @@ struct TimecodePlaybackSpan {
     private var recordingTaps: [UUID: AVAudioNode] = [:]
     private var mainCaptureRings: [UUID: JarasCaptureRing] = [:]
     private var mainCaptureTapInstalled = false
+    private var remoteMainAudioCapture: JarasRemoteMainAudio?
+    func setRemoteMainAudioCapture(_ capture: JarasRemoteMainAudio?) {
+        guard remoteMainAudioCapture !== capture else { return }
+        remoteMainAudioCapture = capture
+        if masterConfigured { updateMainCaptureTap() }
+    }
     func attachOutputCapture(_ track: UUID, postFX: Bool, postFader: Bool, main: Bool = false, ring: JarasCaptureRing) throws -> AVAudioFormat {
         try prepareDevice()
         detachOutputCapture(track)
@@ -1103,9 +1157,11 @@ struct TimecodePlaybackSpan {
     private func updateMainCaptureTap() {
         if mainCaptureTapInstalled { masterGain.removeTap(onBus: 0); mainCaptureTapInstalled = false }
         let rings = Array(mainCaptureRings.values)
-        guard !rings.isEmpty else { return }
+        let remote = remoteMainAudioCapture
+        guard !rings.isEmpty || remote != nil else { return }
         masterGain.installTap(onBus: 0, bufferSize: 512, format: masterGain.outputFormat(forBus: 0)) { buffer, time in
             for ring in rings { ring.push(buffer, hostTime: time.isHostTimeValid ? time.hostTime : 0) }
+            remote?.capture(buffer)
         }
         mainCaptureTapInstalled = true
     }
@@ -1169,6 +1225,7 @@ struct TimecodePlaybackSpan {
     }
 
     func cancelRecordingCountIn() {
+        guard countInCleanup != nil || countInToken != nil || recordingLaunchHost != nil else { return }
         countInCleanup?.cancel()
         countInCleanup = nil
         countInToken = nil
@@ -1296,13 +1353,14 @@ struct TimecodePlaybackSpan {
     }
     func hasInputMonitor(_ track: UUID) -> Bool { inputMonitors[track] != nil }
     private var armedInstrumentTracks: Set<UUID> = []
+    private var synthPreviews: [SynthPreviewTarget: SynthPreview] = [:]
     var hasInstrumentMonitoring: Bool { !armedInstrumentTracks.isEmpty }
     func setArmedInstrumentTracks(_ armed: Set<UUID>) {
         guard armedInstrumentTracks != armed else { return }
         let changed = armedInstrumentTracks.symmetricDifference(armed)
         armedInstrumentTracks = armed
         #if os(macOS)
-        bufferedOutput?.setLiveInstrumentMonitoring(!armed.isEmpty)
+        bufferedOutput?.setLiveInstrumentMonitoring(!armed.isEmpty || !synthPreviews.isEmpty)
         #endif
         if !armed.isEmpty { instrumentRenderPending = true }
         setGraphRenderEnabled(transportWasRunning || instrumentRenderPending)
@@ -1321,6 +1379,7 @@ struct TimecodePlaybackSpan {
         // including a keyboard in their own editor or an effect generator.
         // Their capability is unknown, so retain their existing render policy.
         let enabled = requested || countInToken != nil || instrumentRenderPending || liveRenderPending
+            || !synthPreviews.isEmpty
             || !inputMonitors.isEmpty || !recordingTaps.isEmpty || !padVoices.isEmpty
             || !effectTails.isEmpty || !boundaryTails.isEmpty || !clockedIdlePlayers.isEmpty
             || !masterEffects.externalNodes.isEmpty
@@ -1947,10 +2006,13 @@ struct TimecodePlaybackSpan {
         mobileOutput?.stop()
         #endif
         stopEngine()
-        subplayPreparation?.cancel(); subplayPreparation = nil; subplayPreparedKey = nil
-        subplayPreparationGeneration = UUID()
+        cancelDestinationPreparations()
         readySourcePreparations.removeAll()
-        for reserved in subplayReserved.values { for voice in reserved { detach(voice) } }
+        // These silent voices can still have a worker inside prepareURL. Drop
+        // their graph connections without touching the worker's decoder state.
+        for reserved in subplayReserved.values {
+            for voice in reserved { detach(voice, reservedForPreparation: true) }
+        }
         subplayReserved.removeAll()
         drainDeletedVoices()
         for id in Array(recordingTaps.keys) { detachOutputCapture(id) }
@@ -2031,6 +2093,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         missingAudioPaths.removeAll(); fragmentPlaybackStarts.removeAll(); clipIndices.removeAll()
         contiguousNext.removeAll(); contiguousPrevious.removeAll(); contiguousSourceEnd.removeAll()
         analysisEffects.removeAll(); armedMIDIRecordingTracks.removeAll(); armedInstrumentTracks.removeAll()
+        synthPreviews.removeAll()
+        #if os(macOS)
+        bufferedOutput?.setLiveInstrumentMonitoring(false)
+        #endif
         instrumentRenderPending = false; liveRenderPending = false; setGraphRenderEnabled(false)
         midiPlans.removeAll(); appliedSharedMIDIValues.removeAll(); sharedMIDIIsolation = nil; midiPlanRevision = nil; midiPlanSong = nil; midiTakeCacheTick = 0
         automationSong = nil; itemAutomationVoiceKeys.removeAll(); voiceClockAnchors.removeAll()
@@ -2044,6 +2110,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // external-plugin references cannot survive a document switch.
         masterBus = AVAudioMixerNode(); masterEffects = NativeEffectsChain()
         masterChannelMode = JarasEqualizer.makeNode(); masterGain = AVAudioUnitEQ(numberOfBands: 0)
+        mainCaptureTapInstalled = false
         masterRoutes = [JarasChannelRouter.makeNode()]
         masterMeter.peakHold.clear()
         for meter in meters.values { meter.peakHold.clear() }
@@ -2342,6 +2409,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             JarasChannelRouter.setInputMeteringEnabled(route, enabled: index == 0)
         }
         masterConfigured = true
+        if !mainCaptureRings.isEmpty || remoteMainAudioCapture != nil { updateMainCaptureTap() }
     }
     var onPeakLimit: ((UUID) -> Void)?
     var onOutputDisconnected: (() -> Void)?
@@ -2528,7 +2596,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
     }
     private func prepareChangedMobileTrackGraph() throws {
         guard mobileTrackGraphNeedsRestart, let mobileOutput, outputAllowed,
-              !transportWasRunning, voices.isEmpty, padVoices.isEmpty,
+              !transportWasRunning, voices.isEmpty, padVoices.isEmpty, synthPreviews.isEmpty,
               inputMonitors.isEmpty, !instrumentRenderPending else { return }
         // prepare() and pause/start retain the stale topology on iOS 16.
         // Stop hardware pulls before releasing the render resources; retain
@@ -2546,7 +2614,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         guard !usesSelectedHardware || AudioDeviceSettings.shared.localSessionEnabled else { return }
         #endif
         refreshGraphRendering()
-        let active = transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padVoices.isEmpty
+        let active = transportWasRunning || instrumentRenderPending || !synthPreviews.isEmpty || !inputMonitors.isEmpty || !padVoices.isEmpty
             || masterMeter.level > 0 || meters.values.contains { $0.level > 0 }
         guard meterTimer == nil || meterTimerActive != active else { return }
         meterTimer?.invalidate()
@@ -2579,8 +2647,19 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             report["sourceMemory"] = JarasPreparedClip.memoryDiagnostics()
             report["idleVoiceGraphs"] = idleVoices.values.reduce(0) { $0 + $1.count }
             report["deletedVoiceGraphs"] = deletedVoices.count
-            report["metadataReaders"] = files.count
-            let processing = voices.values.compactMap { $0.prepared?.processingDiagnostics }
+            report["metadataReaders"] = files.retainedCount
+            let processing = voices.compactMap { key, voice -> [String: Any]? in
+                guard let source = voice.prepared else { return nil }
+                var record: [String: Any] = source.processingDiagnostics
+                record["track"] = tracks[voice.track]?.name
+                record["item"] = voice.clip.name
+                record["head"] = key.head
+                record["sourceSeconds"] = source.sourcePosition
+                record["running"] = source.playing
+                record["underruns"] = source.underruns
+                record["trackLevel"] = meters[voice.track]?.level
+                return record
+            }
             report["sourceProcessing"] = processing
             NSLog("CATLIVE_BUFFERED_AUDIO %@", report as NSDictionary)
         }
@@ -2713,6 +2792,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         for click in clickGenerators { click.configurePosition(0, hostTime: mach_absolute_time(), running: false, loopStart: 0, loopEnd: 0, sampleTime: .nan) }
         metronome?.configurePosition(0, hostTime: mach_absolute_time(), running: false, loopStart: 0, loopEnd: 0, sampleTime: .nan)
         cancelVoicePreparation()
+        cancelDestinationPreparations()
         timecodeGenerator?.configurePosition(0, end: 0, hostTime: mach_absolute_time(), rate: 30, mode: "", running: false, destination: 0)
         timecodeAnchor = nil
         releaseMIDINotes()
@@ -2720,11 +2800,6 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         // Silence every active source before touching effect state or idle caches.
         for voice in voices.values { voice.volume = 0 }
         for tail in effectTails.values { JarasVoiceGain.setDecibels(tail.voice.gain, decibels: -96) }
-        for key in Array(voices.keys) { remove(key) }
-        for voice in retiredVoices { recycle(voice) }
-        retiredVoices.removeAll()
-        for tail in effectTails.values { recycle(tail.voice) }; effectTails.removeAll()
-        for (voice, _) in boundaryTails { recycle(voice) }; boundaryTails.removeAll()
         for pooled in idleVoices.values {
             for voice in pooled {
                 voice.stopSource()
@@ -2734,6 +2809,11 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                 voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
             }
         }
+        for key in Array(voices.keys) { remove(key) }
+        for voice in retiredVoices { recycle(voice) }
+        retiredVoices.removeAll()
+        for tail in effectTails.values { recycle(tail.voice) }; effectTails.removeAll()
+        for (voice, _) in boundaryTails { recycle(voice) }; boundaryTails.removeAll()
         // Clear the mixer-owned sample-rate converter once per affected input.
         // Keep nodes attached: rebuilding them here stalls Stop and the next Play.
         for mixer in stoppedConverterMixers.values { mixer.auAudioUnit.reset() }
@@ -2768,7 +2848,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         deviceRecovery?.cancel(); deviceRecovery = nil
         meterTimer?.invalidate(); meterTimer = nil
         cancelVoicePreparation()
-        subplayPreparation?.cancel(); subplayPreparation = nil
+        cancelDestinationPreparations()
         programChangeSender?.stop()
         releaseMIDINotes()
         setGraphRenderEnabled(false)
@@ -2857,10 +2937,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         idleVoices[voice.track, default: []].append(voice)
     }
     private func audioFile(_ audio: AudioFile) throws -> AVAudioFile {
-        if let file = files[audio.path] { return file }
+        if let file = files.file(for: audio.path) { return file }
         guard let directory else { throw ProjectError.invalid("No project media directory") }
         let file = try AudioFileRead.openMedia(directory.appendingPathComponent(audio.path))
-        files[audio.path] = file
+        files.remember(file, for: audio.path)
         return file
     }
     private func handlePlaybackMediaFailure(_ error: Error, audio: AudioFile) throws {
@@ -2959,6 +3039,13 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         func matches(_ voice: Voice) -> Bool {
             guard (voice.clip.frozenMIDI == true) == (clip.frozenMIDI == true),
                   voice.file.processingFormat.isEqual(file.processingFormat) else { return false }
+            if let source = voice.prepared, let warmed = readySourcePreparations[ObjectIdentifier(source)],
+               protectsPreparedSource(source) {
+                guard let position else { return false }
+                var candidate = voice
+                candidate.file = file; candidate.clip = clip
+                return sourcePreparation(candidate, position: position) == warmed
+            }
             // Prepared sources support live rate/pitch changes without a new
             // graph. A previous BPM is not a reason to discard an idle voice.
             if voice.prepared != nil { return true }
@@ -3049,26 +3136,49 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         if readySourcePreparations.removeValue(forKey: ObjectIdentifier(request.source)) == request { return }
         try request.perform()
     }
-    /// Prime the silent incoming head off the main actor while Play continues.
-    /// Reserve its nodes until every decoder has finished; the audio callback
-    /// never waits for preparation and never sees a half-prepared source.
+    func cancelDestinationPreparations() {
+        subplayDestination.cancel()
+        seekDestination.cancel()
+        beatDestination.cancel()
+    }
+
+    private func protectsPreparedSource(_ source: JarasPreparedClip) -> Bool {
+        let id = ObjectIdentifier(source)
+        return seekDestination.warmSources.contains(id) || subplayDestination.warmSources.contains(id)
+            || beatDestination.warmSources.contains(id)
+    }
+
     func pendingSubplayPreparation(_ snapshot: ShowSnapshot, revision: UInt64) -> Task<Void, Never>? {
-        guard realtime, preparedSourceEnabled, snapshot.transport.playing, !snapshot.transport.subPlay.playing,
+        guard !snapshot.transport.subPlay.playing else { return nil }
+        return prepareDestination(subplayDestination, snapshot, revision: revision, position: snapshot.transport.subPlay.position)
+    }
+
+    func pendingSeekPreparation(_ snapshot: ShowSnapshot, revision: UInt64, position: Double) -> Task<Void, Never>? {
+        prepareDestination(seekDestination, snapshot, revision: revision, position: position)
+    }
+
+    /// Reserve silent nodes until the decoder has finished. The outgoing head
+    /// remains available while another destination is being prepared.
+    private func prepareDestination(_ destination: DestinationPreparation, _ snapshot: ShowSnapshot,
+                                    revision: UInt64, position: Double) -> Task<Void, Never>? {
+        guard realtime, preparedSourceEnabled, snapshot.transport.playing,
               self.revision == revision, let directory = self.directory,
               let song = snapshot.project.songs.first(where: { $0.id == snapshot.transport.songId }) else { return nil }
-        let position = snapshot.transport.subPlay.position
-        let key = "\(song.id)/\(revision)/\(position)"
-        if subplayPreparedKey == key { return nil }
-        subplayPreparation?.cancel()
-        let generation = UUID()
-        subplayPreparationGeneration = generation
+        let key = idlePreparationKey(song: song.id, position: position, revision: revision)
+        if destination.key == key { return destination.task }
+        destination.cancel()
+        let generation = destination.generation
+        destination.key = key
+        // Incoming heads use the destination's attachment bounds; a manual
+        // seek also clears Ignore Next in the transport before it is committed.
         let scope = song.playbackScope(snapshot.transport, head: 1, destination: position)
         let candidates = playbackClipIndex.candidates(at: position, lookahead: 2).filter {
             let clip = clips[$0].1
             return clip.audioFile != nil && scope.allows(fragmentPlaybackStarts[clip.id])
         }.map { clips[$0] }
-        guard !candidates.isEmpty else { subplayPreparedKey = key; return nil }
-        subplayPreparation = Task { @MainActor [weak self] in
+        guard !candidates.isEmpty else { return nil }
+        destination.task = Task { @MainActor [weak self] in
+            var completed = false
             defer {
                 if let self {
                     let reserved = self.subplayReserved.removeValue(forKey: generation) ?? []
@@ -3077,7 +3187,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                             self.idleVoices[voice.track, default: []].insert(voice, at: 0)
                         } else { self.detach(voice) }
                     }
-                    if self.subplayPreparationGeneration == generation { self.subplayPreparation = nil }
+                    if destination.generation == generation {
+                        destination.task = nil
+                        if !completed { destination.key = nil }
+                    }
                 }
             }
             var yieldedAt = ProcessInfo.processInfo.systemUptime
@@ -3089,11 +3202,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                     yieldedAt = ProcessInfo.processInfo.systemUptime
                 }
                 guard !Task.isCancelled, let self, self.directory == directory, self.revision == revision else { return }
-                if self.failedPlaybackFiles.contains(clip.audioFile!.path) { continue }
+                guard let media = clip.audioFile, !self.failedPlaybackFiles.contains(media.path),
+                      !clip.isProjectionMedia || !self.silentVideoFiles.contains(media.path) else { continue }
                 do {
-                    let path = clip.audioFile!.path
+                    let path = media.path
                     let file: AVAudioFile
-                    if let cached = self.files[path] { file = cached }
+                    if let cached = self.files.file(for: path) { file = cached }
                     else {
                         let url = directory.appendingPathComponent(path)
                         let opened = try await AudioFileRead.prepare { cancelled in
@@ -3101,7 +3215,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                             return IdleMedia(file: reader, playbackFile: reader, first: 0, frames: 0)
                         }
                         guard !Task.isCancelled, self.directory == directory, self.revision == revision else { return }
-                        self.files[path] = opened.file
+                        self.files.remember(opened.file, for: path)
                         file = opened.file
                     }
                     let voice = try self.takeVoice(track: track, clip: clip, file: file)
@@ -3112,18 +3226,26 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                         // source cannot return to the pool while its DSP changes.
                         self.readySourcePreparations[ObjectIdentifier(request.source)] = nil
                         try await Task.detached(priority: .userInitiated) { try request.perform() }.value
-                        guard !Task.isCancelled, self.subplayPreparationGeneration == generation else { return }
+                        guard !Task.isCancelled, destination.generation == generation,
+                              self.directory == directory, self.revision == revision else { return }
                         self.readySourcePreparations[ObjectIdentifier(request.source)] = request
                     }
                 } catch {
-                    if error is CancellationError { return }
-                    if let media = clip.audioFile { try? self.handlePlaybackMediaFailure(error, audio: media) }
+                    guard !Task.isCancelled, destination.generation == generation,
+                          self.directory == directory, self.revision == revision, !(error is CancellationError) else { return }
+                    if clip.isProjectionMedia, AudioFileRead.isVideoWithoutAudio(error) {
+                        self.silentVideoFiles.insert(media.path)
+                    } else { try? self.handlePlaybackMediaFailure(error, audio: media) }
                 }
             }
-            guard !Task.isCancelled, let self, self.subplayPreparationGeneration == generation else { return }
-            self.subplayPreparedKey = key
+            guard !Task.isCancelled, let self, destination.generation == generation,
+                  self.directory == directory, self.revision == revision else { return }
+            destination.warmSources = Set((self.subplayReserved[generation] ?? []).compactMap {
+                $0.prepared.map(ObjectIdentifier.init)
+            })
+            completed = true
         }
-        return subplayPreparation
+        return destination.task
     }
     private func idlePreparationKey(song: UUID?, position: Double, revision: UInt64) -> String {
         "\(song?.uuidString ?? "")/\(revision)/\(position)"
@@ -3210,10 +3332,10 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                     // Prepared sources only inspect this file's metadata. Keep
                     // one reference per media path; their PCM reader is shared
                     // separately. Legacy players still own mutable readers.
-                    let url = self.files[source.path]?.url ?? directory.appendingPathComponent(source.path)
+                    let url = self.files.file(for: source.path)?.url ?? directory.appendingPathComponent(source.path)
                     let transportStart = self.realtime
                     let allowsPreparedSource = self.preparedSourceEnabled
-                    let cachedFile = allowsPreparedSource ? self.files[source.path].flatMap {
+                    let cachedFile = allowsPreparedSource ? self.files.file(for: source.path).flatMap {
                         $0.processingFormat.channelCount <= 2 ? $0 : nil
                     } : nil
                     let media: IdleMedia
@@ -3264,7 +3386,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
                     guard !Task.isCancelled, self.preparationGeneration == generation, self.preparationKey == key,
                           self.directory == directory, !self.transportWasRunning else { return }
                     let file = media.file
-                    self.files[source.path] = file
+                    self.files.remember(file, for: source.path)
                     required[track, default: []].append((file.processingFormat, clip.audioRate))
                     let count = required[track]!.filter { $0.0.isEqual(file.processingFormat) && (allowsPreparedSource || abs($0.1 - clip.audioRate) < 0.000001) }.count
                     let ready = self.idleVoices[track, default: []].filter { $0.file.processingFormat.isEqual(file.processingFormat) && ($0.prepared != nil || abs($0.clip.audioRate - clip.audioRate) < 0.000001) }.count
@@ -3499,12 +3621,12 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
             applyItemGain(voice)
         }
     }
-    private func detach(_ voice: Voice) {
+    private func detach(_ voice: Voice, reservedForPreparation: Bool = false) {
         if let source = voice.prepared { readySourcePreparations[ObjectIdentifier(source)] = nil }
         clockedIdlePlayers.remove(ObjectIdentifier(voice.player))
         voiceClockAnchors[ObjectIdentifier(voice.player)] = nil
         suspendedVoiceOutputs.remove(ObjectIdentifier(voice.gain))
-        voice.stopSource()
+        if !reservedForPreparation || voice.prepared == nil { voice.stopSource() }
         voice.effects?.detach(from: engine)
         if let prepared = voice.prepared {
             preparedSourcesByPlayer[ObjectIdentifier(voice.player)] = nil
@@ -3976,7 +4098,7 @@ for sampler in samplers.values { engine.detach(sampler.node) }; samplers.removeA
         values[slot] = patch; previewPatches(id, patches: values)
     }
     func previewMIDIInput(_ id: UUID, slot: Int) {
-        guard (0...3).contains(slot), let track = tracks[id] else { return }
+        guard (0...6).contains(slot), let track = tracks[id] else { return }
         let input: Int? = slot == 0 ? nil : slot
         guard track.midiInput != input else { return }
         releaseTrackMIDI(id)
@@ -4568,6 +4690,55 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
         do { if !engine.isRunning { try prepareDevice() }; setGraphRenderEnabled(true); voice.source.hit(UInt(index)) }
         catch { onError(error) }
     }
+    private struct SynthPreviewTarget: Hashable { let track: UUID?; let effect: String }
+    private struct SynthPreview {
+        let voice: JarasCatSynth
+        var keys: Set<UInt> = []
+        var releasedAt: TimeInterval?
+    }
+    @discardableResult func playCatSynthKey(_ track: UUID?, effect: String, key: Int, velocity: Int) -> Bool {
+        let target = SynthPreviewTarget(track: track, effect: effect)
+        let note = UInt(key)
+        if velocity == 0 {
+            guard var preview = synthPreviews[target] else { return false }
+            preview.voice.screenKey(note, velocity: 0)
+            preview.keys.remove(note)
+            if preview.keys.isEmpty { preview.releasedAt = ProcessInfo.processInfo.systemUptime }
+            synthPreviews[target] = preview
+            return true
+        }
+        do {
+            guard outputAllowed, licenseAllowed else { return false }
+            #if os(iOS)
+            try prepareChangedMobileTrackGraph()
+            #endif
+            if !outputIsRunning { try prepareDevice() }
+            guard let voice = effects(for: track)?.catSynthVoices[effect] else { return false }
+            var preview = synthPreviews[target].flatMap { $0.voice === voice ? $0 : nil } ?? SynthPreview(voice: voice)
+            preview.keys.insert(note)
+            preview.releasedAt = nil
+            synthPreviews[target] = preview
+            setGraphRenderEnabled(true)
+            #if os(macOS)
+            bufferedOutput?.setLiveInstrumentMonitoring(true)
+            #endif
+            voice.screenKey(note, velocity: UInt(velocity))
+            startMeterClock()
+            return true
+        } catch { onError(error); return false }
+    }
+    private func finishReleasedSynthPreviews(now: TimeInterval) {
+        guard !synthPreviews.isEmpty else { return }
+        for (target, preview) in synthPreviews {
+            guard let released = preview.releasedAt, now - released >= 0.10 else { continue }
+            if !preview.voice.screenVoiceIsActive || now - released > 8.5 { synthPreviews[target] = nil }
+        }
+        guard synthPreviews.isEmpty else { return }
+        #if os(macOS)
+        bufferedOutput?.setLiveInstrumentMonitoring(!armedInstrumentTracks.isEmpty)
+        #endif
+        refreshGraphRendering()
+    }
     static let drumLearningNote = Notification.Name("CatLive.Drummer.learn")
     private func sendInstrumentMIDI(_ track: UUID, status: UInt8, number: UInt8, value: UInt8) {
         trackBuses[track]?.effects.drumMIDI(status, number, value)
@@ -4989,7 +5160,9 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
             sampleTime: sample.map(Double.init) ?? .nan)
     }
     func update(_ snapshot: ShowSnapshot, revision: UInt64, sampledAt: Double = ProcessInfo.processInfo.systemUptime) throws {
-        if snapshot.transport.subPlay.playing { subplayPreparedKey = nil }
+        if snapshot.transport.subPlay.playing, subplayDestination.task == nil, subplayDestination.key != nil {
+            subplayDestination.cancel()
+        }
         guard directory != nil else { return }
         #if os(macOS)
         // A clocked empty tab has already allocated its hardware graph without
@@ -5484,6 +5657,7 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
             }
         }
         let nextJump = upcomingJump(transport, song: song, setlist: snapshot.project.regionSetlist)
+        if transport.beatSeek == nil, beatDestination.key != nil { beatDestination.cancel() }
         if let jump = preparedJump, !transport.playing || jump.revision != revision || nextJump == nil ||
             nextJump!.0 != jump.boundary || nextJump!.1 != jump.destination || nextJump!.2 != jump.section || nextJump!.3 != jump.region {
             cancelPreparedJump()
@@ -5502,6 +5676,8 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
         }
         var heads = [(0, transport.playing, transport.position), (1, transport.subPlay.playing, transport.subPlay.position)]
         if let jump = preparedJump { heads.append((2, true, jump.destination)) }
+        let committingSeek = seekDestination.task == nil && seekDestination.key != nil
+            && seekDestination.key == idlePreparationKey(song: song.id, position: transport.position, revision: revision)
         for (head, playing, position) in heads {
             if !playing {
                 clearEffectTails(head: head)
@@ -5509,11 +5685,21 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
                 lastPosition[head] = nil; setHeadAudioClock(nil, head: head)
                 continue
             }
+            if head == 2, let beat = transport.beatSeek, let jump = preparedJump,
+               beat.destination == jump.destination, beat.boundary == jump.boundary {
+                // A ruler click has already committed the next beat in the core.
+                // Prime in the background while the outgoing audio continues;
+                // keep the original deadline for last-instant clicks.
+                let lead = jump.host > nowHost ? AVAudioTime.seconds(forHostTime: jump.host - nowHost) : 0
+                if lead > max(0.10, elapsed * 2) {
+                    if prepareDestination(beatDestination, snapshot, revision: revision, position: beat.destination) != nil { continue }
+                } else if beatDestination.task != nil { beatDestination.cancel() }
+            }
             // A tempo edit remaps project time explicitly. Time spent applying
             // that edit is not a user seek: restarting here interrupts every
             // stem and synchronously rebuilds the live audio graph.
             if head != 2, !tempoChanged, !markerTempoChanged,
-               let previous = lastPosition[head], abs(position - previous - elapsed) > 0.15 {
+               let previous = lastPosition[head], (head == 0 && committingSeek) || abs(position - previous - elapsed) > 0.15 {
                 setHeadAudioClock(nil, head: head)
                 clearEffectTails(head: head)
                 for key in Array(voices.keys) where key.head == head { remove(key) }
@@ -5944,7 +6130,9 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
             // clocks between tracks. Suspend only slots that were not used.
             for pooled in idleVoices.values {
                 for voice in pooled {
-                    voice.prepared?.suspendStreaming()
+                    if let source = voice.prepared, !protectsPreparedSource(source) {
+                        suspendSource(source)
+                    }
                     if clockedIdlePlayers.contains(ObjectIdentifier(voice.player)) {
                         JarasVoiceGain.setRenderEnabled(voice.gain, enabled: false)
                     }
@@ -5955,6 +6143,7 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
             bufferedOutput?.setPlaybackSourceCount(UInt(voices.count))
             #endif
         }
+        if committingSeek { seekDestination.cancel() }
         // Instruments can generate audio while the transport is stopped.
         // Keep polling the existing stereo taps whenever the device is running.
         if !realtime && !transport.playing && !transport.subPlay.playing && padVoices.isEmpty {
@@ -6019,10 +6208,11 @@ for sampler in samplers.values { sampler.sequenceHead(Int32(head), position: 0, 
     }
     private func pollMeters(now: Double = ProcessInfo.processInfo.systemUptime) {
         finishReleasedPads()
+        finishReleasedSynthPreviews(now: now)
         #if os(iOS)
         guard !AudioDeviceSettings.shared.localSessionReconfiguring else { return }
         #endif
-        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !inputMonitors.isEmpty || !padVoices.isEmpty else {
+        guard engine.isRunning, transportWasRunning || instrumentRenderPending || !synthPreviews.isEmpty || !inputMonitors.isEmpty || !padVoices.isEmpty else {
             decayIdleMeterLevels(now: now)
             return
         }

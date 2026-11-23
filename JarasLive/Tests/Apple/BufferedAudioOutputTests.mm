@@ -2,8 +2,82 @@
 #include <cassert>
 #include <iostream>
 
+// Exercise the production control path with a synthetic HAL endpoint.
+@interface BufferedHardwareFixture : NSObject
+@property (nonatomic) AVAudioFormat *format;
+@property (nonatomic) AVAudioEngine *owner;
+@property (nonatomic) BOOL rejectConnection;
+@end
+@implementation BufferedHardwareFixture
+- (instancetype)init {
+    if ((self = [super init])) { _owner = [AVAudioEngine new]; }
+    return self;
+}
+- (id)outputNode { return self; }
+- (AVAudioFormat *)outputFormatForBus:(AVAudioNodeBus)bus { return self.format; }
+- (AVAudioMixerNode *)mainMixerNode { return self.owner.mainMixerNode; }
+- (void)attachNode:(AVAudioNode *)node { [self.owner attachNode:node]; }
+- (void)detachNode:(AVAudioNode *)node { [self.owner detachNode:node]; }
+- (void)connect:(AVAudioNode *)source to:(AVAudioNode *)target format:(AVAudioFormat *)format {
+    if (self.rejectConnection) {
+        @throw [NSException exceptionWithName:@"RouteDisappeared" reason:@"Simulated USB disconnect" userInfo:nil];
+    }
+}
+- (void)stop {}
+@end
+
+static void verifyBufferedReconnect() {
+    auto hardware = [BufferedHardwareFixture new];
+    auto graph = [AVAudioEngine new];
+    auto driver = [[JarasBufferedAudioOutput alloc] initWithEngine:graph hardwareEngine:(AVAudioEngine *)hardware];
+    hardware.format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:44100 channels:2];
+    NSError *error = nil;
+    assert([driver configureAndReturnError:&error] && !error);
+    const auto configuredNodes = hardware.owner.attachedNodes.count;
+    hardware.format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+    hardware.rejectConnection = YES;
+    assert(![driver configureAndReturnError:&error] && error);
+    assert(driver.configuredHardwareChannels == 0);
+    assert(hardware.owner.attachedNodes.count + 1 == configuredNodes);
+    // Reconnecting with the original rate must rebuild the source and observer.
+    hardware.format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:44100 channels:2];
+    hardware.rejectConnection = NO; error = nil;
+    assert([driver configureAndReturnError:&error].sampleRate == 44100 && !error);
+    assert(driver.configuredHardwareChannels == 2 && hardware.owner.attachedNodes.count == configuredNodes);
+    puts("BUFFERED_HARDWARE_DISCONNECT_DURING_CONNECT_RETRY_OK");
+}
+
+static void verifyBufferedPartialRender() {
+    auto format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
+    auto pcm = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:512];
+    auto out = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:512];
+    BufferedAudioState state(2, 48000);
+    // Put the returned prefix and the missing suffix on opposite sides of the ring.
+    state.readFrame = state.writeFrame = BufferedAudioState::capacity - 64;
+    AVAudioEngineManualRenderingBlock render = ^AVAudioEngineManualRenderingStatus(AVAudioFrameCount frames, AudioBufferList *abl, OSStatus *error) {
+        *error = noErr;
+        for (unsigned ch=0; ch<2; ++ch) {
+            float *samples = static_cast<float *>(abl->mBuffers[ch].mData);
+            std::fill_n(samples, frames, .9f);
+            std::fill_n(samples, 96, ch ? -.25f : .25f);
+            abl->mBuffers[ch].mDataByteSize = 96 * sizeof(float);
+        }
+        return AVAudioEngineManualRenderingStatusInsufficientDataFromInputNode;
+    };
+    state.produce(nil, render, pcm, 256);
+    AudioTimeStamp stamp{};
+    state.consume(&stamp, 256, out.mutableAudioBufferList);
+    for (unsigned ch=0; ch<2; ++ch) for (unsigned n=0; n<256; ++n) {
+        assert(out.floatChannelData[ch][n] == (n < 96 ? (ch ? -.25f : .25f) : 0));
+    }
+    assert(state.graphSample == 96 && state.readFrame == BufferedAudioState::capacity + 192);
+    puts("BUFFERED_PARTIAL_RENDER_PRESERVES_OTHER_SOURCES_AND_SILENCES_ONLY_MISSING_FRAMES_OK");
+}
+
 int main() {
     @autoreleasepool {
+        verifyBufferedPartialRender();
+        verifyBufferedReconnect();
         auto engine = [[AVAudioEngine alloc] init];
         auto format = [[AVAudioFormat alloc] initStandardFormatWithSampleRate:48000 channels:2];
         NSError *error = nil;

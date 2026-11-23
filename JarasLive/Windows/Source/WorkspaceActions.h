@@ -72,10 +72,10 @@ void Workspace::performAction(const String &action, float value, int trackNumber
     else if (action == "ignoreNext")
         command(jaras::CommandKind::ignoreNext);
     else if (action == "tempoDown" || action == "tempoUp") {
-        tempoTaps = {};
+        session.resetTapTempo();
         session.setTempo(jlimit(60., 300., session.tempoBPM() + (action == "tempoUp" ? 1 : -1)));
     } else if (action == "tapTempo") {
-        if (auto bpm = tempoTaps.tap(Time::getMillisecondCounterHiRes() / 1000)) session.setTempo(*bpm);
+        if (value > 0) session.tapTempo(actions.eventTime());
     } else if (action == "tunerDown" || action == "tunerUp") {
         if (!tuner->region())
             return;

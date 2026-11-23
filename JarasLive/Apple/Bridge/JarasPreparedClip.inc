@@ -496,6 +496,21 @@ struct PreparedClipKernel : PreparedRenderSource {
     ~PreparedClipKernel() {
         stopRegisteredPlayback();
         if (timing) timing->remove(timingID);
+        releaseStretchGroup();
+    }
+
+    // A pooled voice can move to another file while other voices keep the
+    // previous group alive. Its reservation must follow its current reader.
+    void releaseStretchGroup() {
+        if (!stretchGroup) return;
+        pendingStretch.reset(); pendingConsumed = 0;
+        stretch.reset();
+        {
+            std::lock_guard<std::mutex> lock(stretchGroup->preparation);
+            assert(!registeredActive && stretchGroup->registeredVoices > 0);
+            --stretchGroup->registeredVoices;
+        }
+        stretchGroup.reset();
     }
     void configureStretchGroup(bool deferInactive = false) {
         if (stretchGroup && stretchGroup->reader == cache->reader) {
@@ -507,8 +522,7 @@ struct PreparedClipKernel : PreparedRenderSource {
             }
             return;
         }
-        pendingStretch.reset(); pendingConsumed = 0;
-        stretch.reset();
+        releaseStretchGroup();
         stretchGroup = PreparedStretchGroup::open(cache->reader, sampleRate, deferInactive);
         stretch = stretchGroup->pool.acquire();
         seekFrames = stretch->pitch.outputSeekLength(1.f);

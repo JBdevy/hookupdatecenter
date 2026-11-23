@@ -10,15 +10,23 @@ namespace catlive {
 class StageTimerSettings final : public Component, private Timer {
   public:
     explicit StageTimerSettings(StageState &value) : state(value) {
+        modeLabel.setText(localization::translate("Timer"), dontSendNotification);
+        modeLabel.setFont(theme::semiboldFont(13));
+        modeLabel.setJustificationType(Justification::centredLeft);
+        addAndMakeVisible(modeLabel);
         progressive.onClick = [this] { state.setProgressive(true); refresh(); };
         countdown.onClick = [this] { state.setProgressive(false); refresh(); };
-        for (auto *tab : {&progressive, &countdown}) addAndMakeVisible(tab);
+        for (auto *tab : {&progressive, &countdown}) {
+            tab->getProperties().set("flat", true);
+            tab->getProperties().set("cornerRadius", 6.f);
+            addAndMakeVisible(tab);
+        }
         for (int i = 0; i < 3; ++i) {
             fields[i].setName(StringArray{"Horas", "Minutos", "Segundos"}[i]);
             fields[i].onClick = [this, i] { field = i; caret = 0; refresh(); };
             addAndMakeVisible(fields[i]);
         }
-        const StringArray titles{"1", "2", "3", "4", "5", "6", "7", "8", "9", "Limpar", "0", String::fromUTF8("⌫")};
+        const StringArray titles{"1", "2", "3", "4", "5", "6", "7", "8", "9", localization::translate("Clear"), "0", String::fromUTF8("⌫")};
         for (int i = 0; i < 12; ++i) {
             keys[i].setButtonText(titles[i]);
             keys[i].setName(titles[i]);
@@ -43,13 +51,11 @@ class StageTimerSettings final : public Component, private Timer {
         };
         automatic.onClick = [this] { state.autoStart = !state.autoStart; state.saveTimer(); refresh(); };
         automatic.setTooltip(String::fromUTF8("Iniciar o cronômetro automaticamente quando uma música começar"));
-        close.onClick = [this] { ModalSheet::dismiss(*this); };
-        for (auto *button : {&start, &automatic, &close}) {
+        for (auto *button : {&start, &automatic}) {
             button->getProperties().set("flat", true);
             button->getProperties().set("cornerRadius", 6.f);
             addAndMakeVisible(button);
         }
-        close.setColour(TextButton::buttonColourId, Colour(0xff505050));
         refresh();
         startTimerHz(4);
     }
@@ -65,8 +71,10 @@ class StageTimerSettings final : public Component, private Timer {
     }
     void resized() override {
         const int width = getWidth() - 32;
-        progressive.setBounds(16, 16, width / 2, 28);
-        countdown.setBounds(16 + width / 2, 16, width - width / 2, 28);
+        auto selector = juce::Rectangle<int>(0, 16, std::min(width, 272), 25).withCentre({getWidth() / 2, 28});
+        modeLabel.setBounds(selector.removeFromLeft(80));
+        progressive.setBounds(selector.removeFromLeft(selector.getWidth() / 2));
+        countdown.setBounds(selector);
         for (int i = 0; i < 3; ++i) {
             const int x = 16 + i * (width + 8) / 3;
             fields[i].setBounds(x, 112, (width - 16) / 3, 60);
@@ -79,7 +87,6 @@ class StageTimerSettings final : public Component, private Timer {
         const int y = getHeight() - 40;
         start.setBounds(16, y, 62, 24);
         automatic.setBounds(88, y, 88, 24);
-        close.setBounds(getWidth() - 82, y, 66, 24);
     }
   private:
     class Field final : public Button {
@@ -103,10 +110,11 @@ class StageTimerSettings final : public Component, private Timer {
         }
     };
     StageState &state;
+    Label modeLabel;
     Field fields[3];
     QuietButton keys[12];
     QuietButton progressive{localization::translate("Progressive")}, countdown{localization::translate("Countdown")};
-    QuietButton start{localization::translate("Iniciar")}, automatic{"INIT AUTO"}, close{localization::translate("Fechar")};
+    QuietButton start{localization::translate("Iniciar")}, automatic{"INIT AUTO"};
     int field = 0, caret = 0;
     void edit(int key) {
         if (state.running || state.progressive) return;

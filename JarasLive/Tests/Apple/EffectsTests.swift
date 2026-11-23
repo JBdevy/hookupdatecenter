@@ -872,7 +872,147 @@ func testSpectrumWorker(rate: Double) {
     print("NATIVE_FX_CHANNEL_SELECTION_PRESERVES_EXACT_DRY_PCM_AND_CREATIVE_INSERTS_ARE_AUDIBLE")
 }
 
-try MainActor.assumeIsolated { try testChannelSelectionAndCreativeEffects(); try testEffectOutputSilenceFlags(); try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
+@MainActor func testLivePitchAndFormantLatency() throws {
+    for rate in [44100.0, 48000.0] {
+        for reorderable in [true, false] {
+            let engine = AVAudioEngine()
+            let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2)!
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+            let player = AVAudioPlayerNode()
+            engine.attach(player)
+            let chain = NativeEffectsChain(reorderable: reorderable)
+            chain.attach(to: engine, input: player, format: format)
+            engine.connect(chain.output, to: engine.mainMixerNode, format: format)
+            var settings = NativeFXSettings()
+            let key = settings.appendNative("Pitch", asInstance: !reorderable)
+            let stages: [(pitch: Double, formant: Double, enabled: Bool)] = [
+                (0, 0, true), (0, 6, true), (0, 0, true), (12, 0, true), (0, 0, false), (0, 0, true)
+            ]
+            let block = 512, stageFrames = block * 48, pulse = block * 18
+            let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(stageFrames * stages.count))!
+            input.frameLength = input.frameCapacity
+            for channel in 0..<2 {
+                for frame in 0..<Int(input.frameLength) {
+                    input.floatChannelData![channel][frame] = frame % stageFrames == pulse ? 0.6 : 0
+                }
+            }
+            chain.apply(settings)
+            try engine.start()
+            defer { engine.stop() }
+            player.scheduleBuffer(input)
+            player.play()
+            let nodes = engine.attachedNodes
+            let unit = nodes.compactMap { $0 as? AVAudioUnitEffect }.first { $0.auAudioUnit.latency > 0 }!
+            let delay = Int((unit.auAudioUnit.latency * rate).rounded())
+            let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(block))!
+            for stage in stages {
+                var draft = settings.settings(for: key)
+                draft.pitchSemitones = stage.pitch
+                draft.pitchFormant = stage.formant
+                draft.pitchEnabled = stage.enabled
+                settings = settings.merging(effect: key, from: draft)
+                chain.apply(settings)
+                precondition(engine.attachedNodes == nodes && abs(unit.auAudioUnit.latency * rate - Double(delay)) < 0.01)
+                var pcm: [Float] = []
+                for _ in 0..<(stageFrames / block) {
+                    let status = try engine.renderOffline(AVAudioFrameCount(block), to: output)
+                    precondition(status == .success)
+                    pcm.append(contentsOf: UnsafeBufferPointer(start: output.floatChannelData![0], count: block))
+                }
+                let peak = pcm.indices.max(by: { abs(pcm[$0]) < abs(pcm[$1]) })!
+                let tolerance = stage.pitch == 0 && stage.formant == 0 ? 1 : 96
+                precondition(abs(pcm[peak]) > 0.025 && abs(peak - (pulse + delay)) <= tolerance,
+                             "Pitch at \(rate) Hz, \(stage): pulse at \(peak), expected \(pulse + delay)")
+            }
+        }
+    }
+    print("PITCH_FORMANT_AND_BYPASS_KEEP_LIVE_PCM_LATENCY_OK")
+}
+
+@MainActor func testLiveNativeEffectParameterLatency() throws {
+    let effects = ["EQ", "Compressor", "Limiter", "Delay", "Reverb", "Cat Gate", "CatLive Trigger"]
+        + NativeCreativeEffect.allCases.map(\.rawValue)
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
+    let triggerSample = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+    defer { try? FileManager.default.removeItem(at: triggerSample) }
+    let sample = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 256)!
+    sample.frameLength = 256
+    for channel in 0..<2 {
+        for frame in 0..<256 { sample.floatChannelData![channel][frame] = frame == 0 ? 0.5 : 0 }
+    }
+    try AVAudioFile(forWriting: triggerSample, settings: format.settings).write(from: sample)
+    for name in effects {
+        let engine = AVAudioEngine()
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: 512)
+        let input = AVAudioPlayerNode()
+        engine.attach(input)
+        let chain = NativeEffectsChain(reorderable: true)
+        chain.attach(to: engine, input: input, format: format)
+        engine.connect(chain.output, to: engine.mainMixerNode, format: format)
+        var settings = NativeFXSettings()
+        let key = settings.appendNative(name, asInstance: true)
+        if name == "CatLive Trigger" {
+            var draft = settings.settings(for: key)
+            draft.triggerParameters.samplePath = triggerSample.path
+            settings = settings.merging(effect: key, from: draft)
+        }
+        chain.apply(settings)
+        let block = 512, blocksPerStage = 64, impulseFrame = 64
+        let signal = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(block * blocksPerStage * 3))!
+        signal.frameLength = signal.frameCapacity
+        for channel in 0..<2 {
+            for frame in 0..<Int(signal.frameLength) {
+                signal.floatChannelData![channel][frame] = frame % (block * blocksPerStage) == impulseFrame ? 0.8 : 0
+            }
+        }
+        let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(block))!
+        try engine.start()
+        defer { engine.stop() }
+        input.scheduleBuffer(signal)
+        input.play()
+        let nodes = engine.attachedNodes
+        func connection(_ node: AVAudioNode) -> [ObjectIdentifier] {
+            engine.outputConnectionPoints(for: node, outputBus: 0).compactMap { $0.node.map(ObjectIdentifier.init) }
+        }
+        let processors = nodes.compactMap { $0 as? AVAudioUnit }
+        let latency = processors.map { $0.auAudioUnit.latency }
+        let destinations = processors.map(connection)
+        for amount in [0.0, 0.75, 0.0] {
+            var draft = settings.settings(for: key)
+            draft.bands[1].gain = 12 * amount
+            draft.threshold = -20 - 20 * amount
+            draft.limiterParameters.inputGain = 8 * amount
+            draft.delayTime = 0.25 + 0.1 * amount
+            draft.reverbDecay = 2 + amount
+            draft.gateParameters.threshold = -50 - amount
+            draft.gateParameters.attack = 0
+            draft.triggerParameters.gain = 5 * amount
+            if let creative = NativeCreativeEffect(rawValue: name), let parameter = creative.parameters.first {
+                let value = parameter.range.lowerBound + amount * (parameter.range.upperBound - parameter.range.lowerBound)
+                var values = [parameter.key: value]
+                if creative == .divisionGate { values["depth"] = 50 }
+                draft.setCreativeParameters(values, for: creative)
+            }
+            settings = settings.merging(effect: key, from: draft)
+            chain.apply(settings)
+            precondition(engine.attachedNodes == nodes && processors.map(connection) == destinations &&
+                         processors.map({ $0.auAudioUnit.latency }) == latency,
+                         "\(name) changed graph connections or latency during a live parameter edit")
+            let first = try engine.renderOffline(AVAudioFrameCount(block), to: output)
+            precondition(first == .success)
+            let pcm = output.floatChannelData![0]
+            precondition(abs(pcm[impulseFrame] - pcm[impulseFrame - 1]) > 0.001,
+                         "\(name) moved the impulse during a live parameter edit")
+            for _ in 1..<blocksPerStage {
+                let status = try engine.renderOffline(AVAudioFrameCount(block), to: output)
+                precondition(status == .success)
+            }
+        }
+    }
+    print("LIVE_NATIVE_EFFECT_KNOBS_KEEP_CONNECTIONS_AND_LATENCY_OK")
+}
+
+try MainActor.assumeIsolated { try testLivePitchAndFormantLatency(); try testLiveNativeEffectParameterLatency(); try testChannelSelectionAndCreativeEffects(); try testEffectOutputSilenceFlags(); try testDefaultEQTrackFanout(); try testInlineLevelMeterPeaks(); try testDirectChainDestinationTails(); try testLiveSettledEQAndLazyCompressorMeters(); try testCombinedItemEQCompressor(); try run() }
 
 
 let spectrumStart = EQSpectrum(input: Array(repeating: -72, count: EQSpectrum.binCount), output: Array(repeating: -48, count: EQSpectrum.binCount))

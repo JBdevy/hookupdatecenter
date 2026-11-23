@@ -35,6 +35,8 @@ struct MappingTestSnapshot { var project = MappingTestProject() }
     func previewClipFX(_ clip: UUID, settings: NativeFXSettings) { nativeFX = settings }
     func commitFX() {}
     var bpm = 120.0
+    var tempoTapTimes: [Double] = []
+    func tapTempo(at time: Double) { tempoTapTimes.append(time) }
     var actionsReceived: [DAWAction] = []
     var focusedBlocks: [Int] = []
     func focusSetlistBlock(number: Int) -> Bool { focusedBlocks.append(number); return true }
@@ -126,6 +128,16 @@ enum ProjectError: Error { case invalid(String) }
         precondition(mappings.mappings.isEmpty && mappings.actions.binding(.muteTrack, trackNumber: 1).trackNumber == 1)
         precondition(mappings.actions.binding(.muteMaster).midi?.number == 90, "legacy master mappings migrate without a project dependency")
         mappings.sources[100] = (123, "Test MIDI")
+        mappings.beginAction(.tapTempo, kind: "midi")
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 100, timestamp: 2)
+        mappings.save()
+        mappings.receive(endpoint: 100, status: 0x80, number: 98, value: 64, timestamp: 2.2)
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 100, timestamp: 3)
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 100, timestamp: 3.1)
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 0, timestamp: 3.2)
+        mappings.receive(endpoint: 100, status: 0x90, number: 98, value: 100, timestamp: 3.5)
+        mappings.receive(endpoint: 100, status: 0x80, number: 98, value: 0, timestamp: 3.7)
+        precondition(show.tempoTapTimes == [3, 3.5], "Use the original MIDI timestamps and only one tap per press")
         var recorded: [(Int32, UInt8, UInt8, UInt8, Double)] = []
         mappings.onMIDIReceived = { recorded.append(($0, $1, $2, $3, $4)) }
         mappings.receive(endpoint: 100, status: 0x95, number: 60, value: 100, timestamp: 10.125)

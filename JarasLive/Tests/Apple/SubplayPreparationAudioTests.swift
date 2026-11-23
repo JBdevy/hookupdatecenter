@@ -63,6 +63,9 @@ setbuf(stdout, nil)
     precondition(heartbeats > 1, "Main-actor transport/UI work must continue during decoder preparation")
     precondition(audio.pendingSubplayPreparation(state, revision: 1) == nil, "The completed request must not restart preparation")
     precondition(abs(peak() - Float(count) * 0.01) < 0.005, "Incoming priming must not leak or interrupt main-head PCM")
+    // Ordinary ticks may suspend other spare sources while the incoming head waits.
+    state.transport.position = 1 + ProcessInfo.processInfo.systemUptime - start
+    try audio.update(state, revision: 1)
     state.transport.subPlay.playing = true
     let commit = ProcessInfo.processInfo.systemUptime
     try audio.update(state, revision: 1)

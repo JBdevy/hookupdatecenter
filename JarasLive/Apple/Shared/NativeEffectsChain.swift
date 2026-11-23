@@ -10,6 +10,7 @@ struct EQAnalysisFrame: Sendable {
 // Each chain is confined to its owning audio graph/control thread. Offline
 // export owns separate instances and never touches the live graph.
 final class NativeEffectsChain {
+    private(set) var catSynthVoices: [String: JarasCatSynth] = [:]
     private(set) var drummerVoices: [String: DrummerPadVoice] = [:]
     var offlineDrums = false
     private var drumSequence: [[String: Double]] = []
@@ -17,16 +18,41 @@ final class NativeEffectsChain {
         guard notes != drumSequence else { return }
         drumSequence = notes
         for voice in drummerVoices.values { voice.source.setSequenceNotes(notes) }
+        for voice in catSynthVoices.values { voice.setSequenceNotes(notes) }
     }
     func drumClock(head: Int, position: Double, clock: Double, running: Bool, loopStart: Double, loopEnd: Double) {
+        for voice in catSynthVoices.values {
+            voice.sequenceHead(Int32(head), position: position, clock: clock, running: running, loopStart: loopStart, loopEnd: loopEnd)
+        }
         for voice in drummerVoices.values {
             voice.source.sequenceHead(Int32(head), position: position, clock: clock, running: running && voice.enabled, loopStart: loopStart, loopEnd: loopEnd)
         }
     }
     func drumMIDI(_ status: UInt8, _ note: UInt8, _ velocity: UInt8) {
+        for voice in catSynthVoices.values { voice.receiveStatus(status, key: note, value: velocity) }
         for voice in drummerVoices.values where voice.enabled {
             if status & 0xf0 == 0x90 && velocity > 0 { voice.source.midiNote(UInt(note), velocity: UInt(velocity)) }
             if status & 0xf0 == 0xb0 && (note == 120 || note == 123) { voice.source.silence() }
+        }
+    }
+    private func configureCatSynths(_ next: NativeFXSettings, rate: Double) {
+        guard let engine, let format else { return }
+        for key in next.effectKeys where next.kind(of: key) == "CatSynth" {
+            let voice: JarasCatSynth
+            if let existing = catSynthVoices[key] { voice = existing }
+            else {
+                voice = JarasCatSynth(sampleRate: rate)
+                engine.attach(voice.mix)
+                engine.attach(voice.node)
+                engine.connect(voice.node, to: voice.mix, fromBus: 0, toBus: 1, format: format)
+                voice.setSequenceNotes(drumSequence)
+                catSynthVoices[key] = voice
+            }
+            let bank = next.settings(for: key).catSynth ?? CatSynthBank()
+            let index = min(CatSynthBank.count - 1, max(0, bank.selected))
+            let defaults = JarasCatSynth.factoryPatch(UInt(index))
+            let values = bank.slots.indices.contains(index) ? bank.slots[index]?.map { NSNumber(value: $0) } : nil
+            voice.configurePatch(values ?? defaults, enabled: next.isEnabled(key))
         }
     }
     private func configureDrums(_ next: NativeFXSettings, rate: Double) {
@@ -106,20 +132,12 @@ final class NativeEffectsChain {
             decay: p.decay, hold: p.hold, release: p.release, highPass: p.highPass,
             lowPass: p.lowPass, filterOutput: p.filterOutput)
     }
-    private var pitch: AVAudioUnitTimePitch?
-    private var formantNodes: [String: AVAudioUnitEffect] = [:]
+    private var pitch: AVAudioUnitEffect?
 
-    private func configurePitch(_ legacy: AVAudioUnitTimePitch, key: String, settings: NativeFXSettings, enabled: Bool) {
+    private func configurePitch(_ node: AVAudioUnitEffect, settings: NativeFXSettings, enabled: Bool) {
         let pitch = enabled ? Float(settings.semitones) : 0
         let formant = enabled ? Float(settings.formantSemitones) : 0
-        if formantNodes[key] == nil {
-            let node = JarasPitchFormant.makeNode()
-            formantNodes[key] = node
-            engine?.attach(node)
-        }
-        legacy.pitch = formant == 0 ? pitch * 100 : 0
-        legacy.bypass = legacy.pitch == 0
-        if let node = formantNodes[key] { JarasPitchFormant.configure(node, pitch: pitch, formant: formant) }
+        JarasPitchFormant.configure(node, pitch: pitch, formant: formant)
     }
 
     private var channelDelays: [String: AVAudioUnitEffect] = [:]
@@ -204,7 +222,7 @@ final class NativeEffectsChain {
     private func configureInstances(_ next: NativeFXSettings, rate: Double) {
         for instance in next.instances ?? [] where next.inserted.contains(instance.effectKey) {
             let key = instance.effectKey, value = instance.settings
-            guard DrummerPadKind(rawValue: instance.kind) == nil, instance.kind != "Arpeggiator", NativeCreativeEffect(rawValue: instance.kind) == nil else { continue }
+            guard DrummerPadKind(rawValue: instance.kind) == nil, instance.kind != "Arpeggiator", instance.kind != "CatSynth", NativeCreativeEffect(rawValue: instance.kind) == nil else { continue }
             let node: AVAudioNode
             if let existing = instanceNodes[key] { node = existing }
             else {
@@ -215,7 +233,7 @@ final class NativeEffectsChain {
                 case "Limiter": node = JarasDynamics.makeLimiter()
                 case "CatLive Trigger": node = JarasDynamics.makeTrigger()
                 case "Cat Gate": node = JarasDynamics.makeGate()
-                case "Pitch": let pitch = AVAudioUnitTimePitch(); pitch.rate = 1; pitch.overlap = 8; node = pitch
+                case "Pitch": node = JarasPitchFormant.makeNode()
                 case "Delay": node = AVAudioUnitDelay()
                 default: node = JarasDynamics.makeReverb()
                 }
@@ -237,7 +255,7 @@ final class NativeEffectsChain {
             case "Cat Gate":
                 configureGate(node as! AVAudioUnitEffect, value: value, enabled: value.gateEnabled == true)
             case "Pitch":
-                configurePitch(node as! AVAudioUnitTimePitch, key: key, settings: value, enabled: value.pitchEnabled == true)
+                configurePitch(node as! AVAudioUnitEffect, settings: value, enabled: value.pitchEnabled == true)
             case "Delay":
                 let delay = node as! AVAudioUnitDelay
                 delay.bypass = !value.delayEnabled; delay.delayTime = value.delayTime
@@ -426,7 +444,6 @@ final class NativeEffectsChain {
         if let trigger { result.append(trigger) }
         if let gate { result.append(gate) }
         for node in creativeNodes.values { result.append(node) }
-        for node in formantNodes.values { result.append(node) }
         for node in channelDelays.values { result.append(node) }
         if let stemSeparatorNode { result.append(stemSeparatorNode) }
         #if os(macOS)
@@ -540,13 +557,10 @@ final class NativeEffectsChain {
         if instrumentMix != nil && !keys.contains("Instruments") { keys.insert("Instruments", at: 0) }
         var includedNodes = Set<ObjectIdentifier>()
         func node(for key: String) -> AVAudioNode? {
-            // Keep item Pitch connected through bypass and zero semitones
-            // so editing the effect does not disconnect the scheduled source.
-            // Track and master chains retain their direct path at 0 st.
-            if reorderable, next.kind(of: key) == "Pitch" {
-                let value = next.settings(for: key)
-                guard next.effectKeys.contains(key), value.pitchEnabled == true, (value.semitones != 0 || value.formantSemitones != 0) else { return nil }
-            }
+            // Keep the latency of an inserted Pitch instance fixed during
+            // knob moves and bypass, including the neutral setting.
+            if next.kind(of: key) == "Pitch" && !next.effectKeys.contains(key) { return nil }
+            if let voice = catSynthVoices[key] { return next.inserted.contains(key) ? voice.mix : nil }
             if let voice = drummerVoices[key] { return next.inserted.contains(key) ? voice.mixer : nil }
             if let node = creativeNodes[key] { return node }
             if let alternate = channelDelays[key], next.settings(for: key).channels(for: "Delay") != 3 { return alternate }
@@ -575,7 +589,6 @@ final class NativeEffectsChain {
         for key in keys {
             guard let processor = node(for: key), includedNodes.insert(ObjectIdentifier(processor)).inserted else { continue }
             ordered.append(processor)
-            if let formant = formantNodes[key] { ordered.append(formant) }
         }
         guard !connectionsInstalled || ordered.map(ObjectIdentifier.init) != connected.map(ObjectIdentifier.init) else { return }
         for node in ordered where node.engine == nil { engine.attach(node) }
@@ -614,6 +627,8 @@ final class NativeEffectsChain {
     }
     func detach(from engine: AVAudioEngine) {
         for voice in drummerVoices.values { engine.detach(voice.source.node); engine.detach(voice.mixer) }
+        for voice in catSynthVoices.values { engine.detach(voice.node); engine.detach(voice.mix) }
+        catSynthVoices.removeAll()
         drummerVoices.removeAll(); drumSequence.removeAll()
         if let node = stemSeparatorNode { JarasStemSeparator.stop(node) }
         detachDelayAnalysis()
@@ -626,7 +641,7 @@ final class NativeEffectsChain {
         if outputDestination == nil { engine.detach(outputMix) }
         outputDestination = nil; connected.removeAll(); connectionsInstalled = false; self.engine = nil; input = nil
         preparedEffects = ["EQ"]
-        creativeNodes.removeAll(); channelDelays.removeAll(); formantNodes.removeAll(); externalTempoSections = nil; externalTempoPoints = []
+        creativeNodes.removeAll(); channelDelays.removeAll(); externalTempoSections = nil; externalTempoPoints = []
         instrumentMix = nil
         #if os(macOS)
         externalNodes.removeAll(); failedExternalPlugins.removeAll()
@@ -643,6 +658,7 @@ final class NativeEffectsChain {
         guard next != settings || rate != sampleRate else { return }
         #endif
         configureDrums(next, rate: rate)
+        configureCatSynths(next, rate: rate)
         configureStemSeparator(next)
         #if os(macOS)
         failedExternalPlugins = failedExternalPlugins.filter { retained.contains($0.key) }
@@ -664,11 +680,11 @@ final class NativeEffectsChain {
         externalError = (next.externalPlugins ?? []).compactMap { failedExternalPlugins[$0.id]?.1 }.first
         #endif
         if next.inserted.contains("Pitch"), pitch == nil {
-            let node = AVAudioUnitTimePitch(); node.rate = 1; node.overlap = 8
+            let node = JarasPitchFormant.makeNode()
             pitch = node; engine?.attach(node)
         }
         if let pitch {
-            configurePitch(pitch, key: "Pitch", settings: next, enabled: next.inserted.contains("Pitch") && next.pitchEnabled == true)
+            configurePitch(pitch, settings: next, enabled: next.inserted.contains("Pitch") && next.pitchEnabled == true)
         }
         if next.inserted.contains("Limiter"), limiter == nil {
             let node = JarasDynamics.makeLimiter(); limiter = node; engine?.attach(node)
@@ -696,6 +712,10 @@ final class NativeEffectsChain {
         // Rewire the old chain while its mixers still belong to the engine.
         // Disconnecting a detached node raises an Objective-C exception in AVFAudio.
         connect(next)
+        for key in Array(catSynthVoices.keys) where !next.inserted.contains(key) {
+            guard let voice = catSynthVoices.removeValue(forKey: key) else { continue }
+            engine?.detach(voice.node); engine?.detach(voice.mix)
+        }
         for key in Array(drummerVoices.keys) where !next.inserted.contains(key) {
             guard let voice = drummerVoices.removeValue(forKey: key) else { continue }
             engine?.detach(voice.source.node)
@@ -709,7 +729,6 @@ final class NativeEffectsChain {
         let nativeRetained = Set((next.instances ?? []).filter { next.inserted.contains($0.effectKey) }.map(\.effectKey))
         for key in Set(instanceNodes.keys).subtracting(nativeRetained) {
             if let node = instanceNodes.removeValue(forKey: key) { engine?.detach(node) }
-            if let formant = formantNodes.removeValue(forKey: key) { engine?.detach(formant) }
             if let alternate = channelDelays.removeValue(forKey: key) { engine?.detach(alternate) }
             triggerSamplePaths[key] = nil; sampleErrors[key] = nil
         }

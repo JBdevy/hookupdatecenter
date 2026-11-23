@@ -22,7 +22,6 @@
 #include "EditorSelectionAreas.h"
 #include "MacPopupMenuLook.h"
 #include "ExternalMediaDrop.h"
-#include "TapTempo.h"
 #include "RemoteProjectCatalog.h"
 #include "TrackVisibility.h"
 #include "TrackMixerViewport.h"
@@ -126,6 +125,7 @@ class Workspace final : public Component,
     void exportRegions(std::set<ID>);
     void exportMultitrack(std::set<ID>);
     void detectRegions(std::set<ID>);
+    void showRulerRangeMenu(std::pair<double,double>, Point<int>);
     void editMultiLoops(ID);
     void deleteRegions(std::set<ID>, bool withContents = false);
     void editMarker(ID, double, bool section = false);
@@ -152,6 +152,7 @@ class Workspace final : public Component,
     bool lastSetlistPlaying = false;
     std::unique_ptr<native::TransportButtons> nativeTransport;
     void syncNativeTransport();
+    void layoutTransportSongTitle();
     void refreshPlaybackState();
     std::unique_ptr<AudioPreparationOverlay> audioPreparationOverlay;
     std::optional<double> audioPreparationStarted;
@@ -219,15 +220,17 @@ class Workspace final : public Component,
     std::unique_ptr<WorkspaceLibrary> workspaceLibrary, proLibraryDock;
     enum class ProDock { none, notes, samplers };
     ProDock proDock = ProDock::none;
-    bool proTransport = false;
-    enum class ProTool { select, cut, mute, solo };
+    bool proTransport = true;
+    enum class ProTool { select, cut, mute, solo, exclusiveSolo };
+    static bool isTrackCursorTool(ProTool tool) { return tool == ProTool::mute || tool == ProTool::solo || tool == ProTool::exclusiveSolo; }
+    void applyTrackCursorTool(ProTool, const ID &);
     ProTool proTool = ProTool::select;
     juce::Rectangle<int> proPlaybackBounds, proTimeBounds;
     ID proTimingSong;
     uint64_t proTimingRevision = 0;
     std::vector<timelineGrid::Section> proTimingSections;
     std::optional<timelineGrid::MeasureLabels> proMeasureLabels;
-    std::array<int64_t,9> proPosition{};
+    std::array<int64_t,7> proPosition{};
     SafePointer<Label> clockPositionLabel;
     void updateProPosition(double);
     void toggleProDock(ProDock);
@@ -275,8 +278,8 @@ class Workspace final : public Component,
     std::optional<std::pair<double, double>> transportProgressRange;
     int transportProgressPixels = -1;
     juce::Rectangle<int> transportProgressBounds() const {
-        const int height = proTransport ? 4 : 2;
-        return transportDisplayBounds.reduced(3, 0).removeFromBottom(height);
+        constexpr int progressHeight = 4;
+        return transportDisplayBounds.reduced(3, 0).removeFromBottom(progressHeight);
     }
     Label songDisplay, transportTime, transportInfo, footer, tempo;
     DragDivider mixerDivider, setlistDivider, partsLeftDivider, partsRightDivider;
@@ -382,7 +385,6 @@ class Workspace final : public Component,
     void changeListenerCallback(ChangeBroadcaster *) override;
     void perform(std::function<void()>);
     void performAction(const String &, float, int);
-    TapTempo tempoTaps;
     bool lastSubCursorVisible = false;
     void prompt(const String &, const String &, const String &, std::function<void(String)>);
     void confirm(const String &, const String &, std::function<void()>, std::function<void()> cancelled = {}, String action = {}, bool destructive = false, bool vertical = false);

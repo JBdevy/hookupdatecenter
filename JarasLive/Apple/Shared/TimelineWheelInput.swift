@@ -995,6 +995,7 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
     var selectTime: ((Double, Double) -> Void)?
     var selectedTime: (() -> (Double, Double)?)?
     var resizeTime: ((Double, Bool) -> Void)?
+    var openSelectionMenu: ((NSView, CGPoint) -> Void)?
     private var selectionEdge: Bool?
     private var hoverTracking: NSTrackingArea?
     private var selectionStart: Double?
@@ -1105,10 +1106,14 @@ final class TimelineRulerView: NSView, NativeTimelineInputObserver {
     override func rightMouseUp(with event: NSEvent) {
         guard !NativeTimelineInputGate.shared.isBlocked(window), let selectionStart else { return }
         if let startX, hypot(event.locationInWindow.x - startX, event.locationInWindow.y - startY) >= 3 { selectingTime = true }
+        let wasClick = !selectingTime
         if let selectionEdge {
             if selectingTime { resizeTime?(fraction(event), selectionEdge) }
         } else if selectingTime { selectTime?(selectionStart, fraction(event)) }
         self.selectionStart = nil; startX = nil; selectingTime = false; selectionEdge = nil
+        if wasClick, let range = selectedTime?(), selectionStart >= range.0, selectionStart <= range.1 {
+            openSelectionMenu?(self, convert(event.locationInWindow, from: nil))
+        }
     }
     private func fraction(_ event: NSEvent) -> Double {
         Double(min(1, max(0, convert(event.locationInWindow, from: nil).x / max(1, inputWidth))))

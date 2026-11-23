@@ -77,7 +77,7 @@ inline void link(jaras::Project &project, const ID &songID, const std::set<ID> &
         auto data=object();put(data,"partner",text(partner));put(data,"left",side==0);put(data,"original",originals.at(track.id));
         track.stereoLinkJSON=utf8(JSON::toString(data,true));track.stereoLinkPartner=partner;track.stereoLinkLeft=side==0;
         track.name=(side==0?"L - ":"R - ")+track.name;track.color=colour;track.volume=volume;track.pan=side==0?-1:1;
-        track.inputPatch=jaras::OutputPatch{firstInput+side,1};
+        jaras::selectLineInput(*song, track, {firstInput+side,1});
     }
 }
 inline void unlink(jaras::Project &project, const ID &id) {

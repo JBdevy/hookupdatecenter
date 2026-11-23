@@ -2154,9 +2154,8 @@ let nodesBeforePitch = pitchEngine.attachedNodes
 var nativePitch = NativeFXSettings(); nativePitch.inserted = ["Pitch"]; nativePitch.pitchEnabled = true; nativePitch.pitchSemitones = 12
 pitchAudio.previewFX(pitchTrack.id, settings: nativePitch)
 let addedPitchNodes = pitchEngine.attachedNodes.subtracting(nodesBeforePitch)
-precondition(addedPitchNodes.count == 2 && addedPitchNodes.contains { $0 is AVAudioUnitTimePitch }
-             && addedPitchNodes.contains { $0 is AVAudioUnitEffect },
-             "Inserting Pitch adds one pitch processor and one formant processor")
+precondition(addedPitchNodes.count == 1 && addedPitchNodes.first is AVAudioUnitEffect,
+             "Pitch and Formant share one processor")
 try expectFrequency(880)
 nativePitch.pitchSemitones = -12; pitchAudio.previewFX(pitchTrack.id, settings: nativePitch); try expectFrequency(220)
 nativePitch.pitchEnabled = false; pitchAudio.previewFX(pitchTrack.id, settings: nativePitch); try expectFrequency(440)

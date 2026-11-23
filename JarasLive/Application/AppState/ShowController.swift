@@ -150,6 +150,7 @@ public struct ShowTimelinePresentationState: Equatable {
     @Published public private(set) var snapshot: ShowSnapshot {
         didSet {
             if !snapshot.transport.playing && !snapshot.transport.subPlay.playing { liveTempoEdits.reset() }
+            else if !oldValue.transport.playing && !oldValue.transport.subPlay.playing { resetTapTempo() }
             if oldValue.project.effectiveTimelineLocks & 4 == 0 && snapshot.project.effectiveTimelineLocks & 4 != 0,
                let song = current {
                 // A lock can arrive during a live knob preview, including Undo
@@ -754,6 +755,8 @@ public struct ShowTimelinePresentationState: Equatable {
     /// A local engine can finish its pending media work before the transport
     /// starts. Remote controllers and already prepared projects return nil.
     public var pendingSubplayPreparation: (ShowSnapshot, UInt64) throws -> Task<Void, Never>? = { _, _ in nil }
+    public var pendingSeekPreparation: (ShowSnapshot, UInt64, Double) -> Task<Void, Never>? = { _, _, _ in nil }
+    public var cancelDestinationPreparations: () -> Void = {}
     public var pendingAudioPreparation: (ShowSnapshot, UInt64) throws -> Task<Void, Never>? = { _, _ in nil }
     func prepareRecordingPlayback() async throws {
         try validateAudioOutput()
@@ -771,6 +774,7 @@ public struct ShowTimelinePresentationState: Equatable {
     private func cancelPendingPlayback() {
         playbackPreparationGeneration = UUID()
         playbackPreparation?.cancel(); playbackPreparation = nil
+        cancelDestinationPreparations()
         preparingAudio = false
     }
     @Published public var modalNotice: String?
@@ -858,8 +862,10 @@ public struct ShowTimelinePresentationState: Equatable {
     }
 
     public func resetTapTempo() { tempoTaps = TapTempo() }
-    public func tapTempo(at time: Double = ProcessInfo.processInfo.systemUptime) {
-        if let bpm = tempoTaps.tap(at: time) { setTempo(bpm) }
+    public var recordingBlocksTapTempo: () -> Bool = { false }
+    public func tapTempo(at time: Double = ProcessInfo.processInfo.systemUptime, source: UUID? = nil) {
+        guard tempoInputAllowed, !recordingBlocksTapTempo(), canControl(), !finishing else { return }
+        if let bpm = tempoTaps.tap(at: time, source: source) { setTempo(bpm) }
     }
     public func actionTrack(number: Int?) -> Track? {
         guard let tracks = current?.tracks else { return nil }
@@ -1210,6 +1216,7 @@ public struct ShowTimelinePresentationState: Equatable {
     public var audioPatches: (UUID?, [OutputPatch]) -> Void = { _, _ in }
     public var audioPatch: (UUID?, OutputPatch, Int) -> Void = { _, _, _ in }
     public var audioMIDIChannel: (UUID, Int) -> Void = { _, _ in }
+    public var preferredInstrumentMIDIInput: () -> Int? = { nil }
     public var audioMIDIInput: (UUID, Int) -> Void = { _, _ in }
     private let executor: any CommandExecutor, persistence: any ProjectPersistence
     private let cursorMemory: ProjectCursorMemory?
@@ -2082,7 +2089,18 @@ public struct ShowTimelinePresentationState: Equatable {
         if let region = tempoControlRegion { return region.startTime }
         return position
     }
-    public var tempoControlBPM: Double { current?.tempoSection(at: tempoControlPosition).bpm ?? 120 }
+    private var displayTempoCache: (revision: UInt64, song: UUID, section: TimelineTempoSection)?
+    private func displayTempo(at position: Double) -> TimelineTempoSection? {
+        guard let song = current else { return nil }
+        if let cached = displayTempoCache, cached.revision == projectRevision, cached.song == song.id,
+           position >= cached.section.start && position < cached.section.end {
+            return cached.section
+        }
+        let section = song.tempoSection(at: position)
+        displayTempoCache = (projectRevision, song.id, section)
+        return section
+    }
+    public var tempoControlBPM: Double { displayTempo(at: tempoControlPosition)?.bpm ?? 120 }
     private var tempoRenderIndicatorCache: (revision: UInt64, song: UUID, region: UUID?, pending: Bool)?
     public var tempoControlNeedsRender: Bool {
         guard let song = current else { return false }
@@ -2189,7 +2207,7 @@ public struct ShowTimelinePresentationState: Equatable {
         return transport.playing ? transport.position : transport.editPosition ?? transport.position
     }
     public var transportMeter: TimelineTempoSection? {
-        current?.tempoSection(at: transportMeterPosition)
+        displayTempo(at: transportMeterPosition)
     }
     public var transportMeterEditingAllowed: Bool {
         guard let song = current else { return false }
@@ -2248,6 +2266,7 @@ public struct ShowTimelinePresentationState: Equatable {
     }
     public var selectedLoopArea: () -> ClosedRange<Double>? = { nil }
     public func audioOutputDisconnected(_ notice: String) {
+        cancelPendingPlayback()
         do {
             try executor.execute(.stopAll, target: nil, value: 0)
             snapshot = try executor.snapshot()
@@ -2257,6 +2276,16 @@ public struct ShowTimelinePresentationState: Equatable {
         message = notice; modalNotice = notice
     }
     public func send(_ command: ShowCommand, target: UUID? = nil, value: Double = 0) {
+        send(command, target: target, value: value, prepareSeek: true)
+    }
+
+    // The recording coordinator owns the loop capture epoch and places
+    // its cursor before arming. It cannot defer that operation past capture.
+    public func seekForRecording(_ position: Double) {
+        send(.seek, target: nil, value: position, prepareSeek: false)
+    }
+
+    private func send(_ command: ShowCommand, target: UUID?, value: Double, prepareSeek: Bool) {
         guard !ProjectSyncControl.following else { return }
         if command == .play && preparingAudio { return }
         if [.pause, .stop, .stopAll, .subPlay, .subStop, .editSeek, .seek, .queueBeatSeek, .select, .selectRegion,
@@ -2337,6 +2366,24 @@ public struct ShowTimelinePresentationState: Equatable {
                         // Recheck the current cursor/revision: an edit while
                         // waiting may have replaced the engine's preparation.
                         self.send(.play, target: target, value: value)
+                    }
+                    return
+                }
+            }
+            if prepareSeek, previous.playing, let song = current,
+               command == .seek || command == .selectRegion {
+                let position = command == .seek ? min(song.duration, max(0, value)) : target.flatMap { playlistRegion($0)?.startTime }
+                if let position, let preparation = pendingSeekPreparation(snapshot, audioProjectRevision, position) {
+                    preparingAudio = true
+                    let generation = UUID(), project = snapshot.project.id, songID = song.id, revision = audioProjectRevision
+                    playbackPreparationGeneration = generation
+                    playbackPreparation = Task { @MainActor [weak self] in
+                        await preparation.value
+                        guard !Task.isCancelled, let self, self.playbackPreparationGeneration == generation else { return }
+                        self.playbackPreparation = nil; self.preparingAudio = false
+                        guard !preparation.isCancelled, self.snapshot.project.id == project, self.snapshot.transport.songId == songID,
+                              self.snapshot.transport.playing else { return }
+                        self.send(command, target: target, value: value, prepareSeek: self.audioProjectRevision != revision)
                     }
                     return
                 }
@@ -2527,6 +2574,29 @@ public struct ShowTimelinePresentationState: Equatable {
             message = error.localizedDescription
         }
     }
+    public func soloTrackExclusively(_ target: UUID) {
+        guard canControl(), !finishing,
+              let index = snapshot.project.songs.firstIndex(where: { $0.id == snapshot.transport.songId }),
+              let selected = snapshot.project.songs[index].tracks.first(where: { $0.id == target }),
+              selected.kind.supportsTrackSolo else { return }
+        let others = snapshot.project.songs[index].tracks.filter { $0.solo && $0.id != target }
+        guard !selected.solo || !others.isEmpty else { return }
+        do {
+            try executor.soloTrackExclusively(target)
+            var project = snapshot.project
+            for row in project.songs[index].tracks.indices {
+                let id = project.songs[index].tracks[row].id
+                project.songs[index].tracks[row].solo = id == target
+                loopMixerBase[id]?.solo = id == target
+            }
+            if !selected.solo { audioSolo(target, true) }
+            for track in others { audioSolo(track.id, false) }
+            publishingScalarMixerEdit = true
+            snapshot.project = project
+            publishingScalarMixerEdit = false
+            markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
+        } catch { message = error.localizedDescription }
+    }
     // Scalar mixer edits update the existing native buses and voices in place.
     private func sendMixer(_ command: ShowCommand, target: UUID?, value: Double) {
         guard (canControl() || (applyingLoopMixer && canExecute())), !finishing else { return }
@@ -2661,12 +2731,24 @@ public struct ShowTimelinePresentationState: Equatable {
                     }
                 }
             }
-            try executor.setFX(track, settings: settings)
-            if let track {
-                for song in snapshot.project.songs.indices {
-                    if let index = snapshot.project.songs[song].tracks.firstIndex(where: { $0.id == track }) { snapshot.project.songs[song].tracks[index].fx = settings }
+            if let track, let location = trackLocation(track) {
+                let row = snapshot.project.songs[location.song].tracks[location.track]
+                if row.kind == .standard, row.role.rawValue != "vinhetas", settings.addsInstrument(comparedTo: previous) {
+                    let slot = preferredInstrumentMIDIInput()
+                    var project = snapshot.project
+                    project.songs[location.song].selectMIDIInput(slot, forTrack: location.track, clearLineInput: true)
+                    project.songs[location.song].tracks[location.track].fx = settings
+                    try executor.applyProjectEdit(project)
+                    snapshot.project = project
+                    audioMIDIInput(track, slot ?? 0)
+                } else {
+                    try executor.setFX(track, settings: settings)
+                    snapshot.project.songs[location.song].tracks[location.track].fx = settings
                 }
-            } else { snapshot.project.masterFX = settings }
+            } else {
+                try executor.setFX(track, settings: settings)
+                if track == nil { snapshot.project.masterFX = settings }
+            }
             knownMediaPaths.formUnion(settings.samplePaths)
             effectRevision &+= 1; hasUnsavedChanges = true; pendingFXEdit = true
             if !settings.inserted.isEmpty || !previous.inserted.isEmpty { audioFX(track, settings) }
@@ -2813,15 +2895,18 @@ public struct ShowTimelinePresentationState: Equatable {
         if changed { markChanged(refreshAudio: false) }
     }
     public func setMIDIInput(_ track: UUID, slot: Int) {
-        guard canControl(), !finishing else { return }
-        guard let location = trackLocation(track), snapshot.project.songs[location.song].tracks[location.track].role.rawValue != "vinhetas", snapshot.project.songs[location.song].tracks[location.track].midiInput != (slot == 0 ? nil : slot) else { return }
+        guard canControl(), !finishing, (0...6).contains(slot), let location = trackLocation(track) else { return }
+        let selected = slot == 0 ? nil : slot
+        let previous = snapshot.project.songs[location.song].tracks[location.track]
+        guard previous.role.rawValue != "vinhetas" else { return }
+        guard previous.midiInput != selected || (selected != nil && previous.kind == .standard && previous.inputPatch != OutputPatch.none) else { return }
         do {
             try executor.setMIDIInput(track, slot: slot)
-            snapshot.project.songs[location.song].tracks[location.track].midiInput = slot == 0 ? nil : slot
+            if previous.kind == .standard { snapshot.project.songs[location.song].selectMIDIInput(selected, forTrack: location.track) }
+            else { snapshot.project.songs[location.song].tracks[location.track].midiInput = selected }
             audioMIDIInput(track, slot)
-            markChanged(refreshAudio: false)
-        }
-        catch { message = error.localizedDescription }
+            markChanged(refreshAudio: false, preservingMediaStorage: true)
+        } catch { message = error.localizedDescription }
     }
     public func setMIDIChannel(_ track: UUID, channel: Int) {
         guard canControl(), !finishing else { return }
@@ -2850,12 +2935,16 @@ public struct ShowTimelinePresentationState: Equatable {
               snapshot.project.songs[location.song].tracks[location.track].recordingChannels != channel else { return }
         do {
             try executor.setRecordingChannels(track, channel: channel)
-            snapshot.project.songs[location.song].tracks[location.track].recordingChannels = channel
-            if channel == TrackRecordingMode.midi.rawValue, snapshot.project.songs[location.song].tracks[location.track].midiInput == nil {
-                try executor.setMIDIInput(track, slot: 1)
-                snapshot.project.songs[location.song].tracks[location.track].midiInput = 1
-                audioMIDIInput(track, 1)
+            let row = snapshot.project.songs[location.song].tracks[location.track]
+            if channel == TrackRecordingMode.midi.rawValue, row.kind == .standard, row.role.rawValue != "vinhetas" {
+                let slot = row.midiInput ?? preferredInstrumentMIDIInput()
+                if let slot, row.midiInput != slot {
+                    try executor.setMIDIInput(track, slot: slot)
+                    audioMIDIInput(track, slot)
+                }
+                snapshot.project.songs[location.song].selectMIDIInput(slot, forTrack: location.track, clearLineInput: true)
             }
+            snapshot.project.songs[location.song].tracks[location.track].recordingChannels = channel
             markChanged(refreshAudio: false)
         }
         catch { message = error.localizedDescription }
@@ -3207,14 +3296,12 @@ public struct ShowTimelinePresentationState: Equatable {
         guard previous.inputPatch != input || previous.recordingFormat != format else { return }
         do {
             try executor.setRecording(track, input: input, format: format)
-            if let link = previous.stereoLink {
-                let first = min(1023, max(1, input.firstChannel - (link.left ? 0 : 1)))
-                snapshot.project.songs[location.song].tracks[location.track].inputPatch = OutputPatch(firstChannel: first + (link.left ? 0 : 1), channelCount: 1)
-                if let other = snapshot.project.songs[location.song].tracks.firstIndex(where: { $0.id == link.partner }) {
-                    snapshot.project.songs[location.song].tracks[other].inputPatch = OutputPatch(firstChannel: first + (link.left ? 1 : 0), channelCount: 1)
-                }
-            } else { snapshot.project.songs[location.song].tracks[location.track].inputPatch = input }
+            snapshot.project.songs[location.song].selectLineInput(input, forTrack: location.track)
             snapshot.project.songs[location.song].tracks[location.track].recordingFormat = format
+            if input.firstChannel > 0 {
+                if previous.midiInput != nil { audioMIDIInput(track, 0) }
+                if let partner = previous.stereoLink?.partner { audioMIDIInput(partner, 0) }
+            }
             markChanged(refreshAudio: false)
         }
         catch { message = error.localizedDescription }
@@ -3255,18 +3342,17 @@ public struct ShowTimelinePresentationState: Equatable {
     public func setRecordingInput(_ track: UUID, input: OutputPatch) {
         guard canControl(), !finishing, let location = trackLocation(track) else { return }
         let previous = snapshot.project.songs[location.song].tracks[location.track]
-        guard previous.kind == .standard, previous.role.rawValue != "vinhetas", previous.inputPatch != input else { return }
+        guard previous.kind == .standard, previous.role.rawValue != "vinhetas",
+              previous.inputPatch != input || (input.firstChannel > 0 && previous.midiInput != nil) else { return }
         do {
             try input.validate(allowMaster: false, allowNone: true)
             var project = snapshot.project
-            if let link = previous.stereoLink {
-                let first = min(1023, max(1, input.firstChannel - (link.left ? 0 : 1)))
-                project.songs[location.song].tracks[location.track].inputPatch = input == .none ? OutputPatch.none : OutputPatch(firstChannel: first + (link.left ? 0 : 1), channelCount: 1)
-                if let other = project.songs[location.song].tracks.firstIndex(where: { $0.id == link.partner }) {
-                    project.songs[location.song].tracks[other].inputPatch = input == .none ? OutputPatch.none : OutputPatch(firstChannel: first + (link.left ? 1 : 0), channelCount: 1)
-                }
-            } else { project.songs[location.song].tracks[location.track].inputPatch = input }
-            try executor.applyProjectEdit(project); snapshot = try executor.snapshot()
+            project.songs[location.song].selectLineInput(input, forTrack: location.track)
+            try executor.applyProjectEdit(project); snapshot.project = project
+            if input.firstChannel > 0 {
+                if previous.midiInput != nil { audioMIDIInput(track, 0) }
+                if let partner = previous.stereoLink?.partner { audioMIDIInput(partner, 0) }
+            }
             markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
         } catch { message = error.localizedDescription }
     }
@@ -3513,14 +3599,13 @@ public struct ShowTimelinePresentationState: Equatable {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canControl(), !finishing, snapshot.project.id == project, !name.isEmpty,
               let location = trackLocation(id), snapshot.project.songs[location.song].id == current?.id else { return }
-        var next = snapshot.project
-        let previous = next.songs[location.song].tracks[location.track]
+        let previous = snapshot.project.songs[location.song].tracks[location.track]
         guard previous.fixedName == nil, previous.role.rawValue != "vinhetas", previous.name != name else { return }
-        next.songs[location.song].tracks[location.track].name = name
         do {
-            try executor.applyProjectEdit(next)
-            snapshot = try executor.snapshot()
-            markChanged(refreshAudio: false, preservingMediaStorage: true); onProjectEdited()
+            try executor.renameTrack(id, name: name)
+            snapshot.project.songs[location.song].tracks[location.track].name = name
+            markChanged(refreshAudio: false, preservingMediaStorage: true, updateAudio: false, knownChanged: true)
+            onProjectEdited()
         } catch { message = error.localizedDescription }
     }
     /// Save track artwork outside Undo; name/color retain their existing history.
@@ -4632,6 +4717,7 @@ public struct ShowTimelinePresentationState: Equatable {
     /// Prepare playback after the document has selected its media directory.
     public func preparePlayback() { audioUpdate(snapshot, audioProjectRevision) }
     private func beginProjectSession(_ loaded: ShowSnapshot) {
+        cancelPendingPlayback()
         cancelTransportFadeout()
         transportFadeout.load(project: loaded.project.id, defaults: globalDefaults, defaultTracks: Set((loaded.project.songs.first { $0.id == loaded.transport.songId }?.tracks ?? []).filter { $0.kind == .standard || $0.kind == .click }.map(\.id)))
         // Clear only document-local interaction state. Audio-device preferences,

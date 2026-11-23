@@ -61,14 +61,14 @@ class Transport final : private Thread {
         const ScopedLock lock(mutex);
         return active;
     }
-    bool send(const ID &client, const Bytes &packet) {
+    bool send(const ID &client, const Bytes &packet, bool audio = false) {
         if (packet.empty() || packet.size() > maximumPacket)
             return false;
         const ScopedLock lock(mutex);
         if (!active.count(client) || queuedBytes + packet.size() > maximumFrame * 8 ||
-            outgoing.size() >= 256)
+            outgoing.size() >= 256 || (audio && queuedBytes >= maximumFrame * 2))
             return false;
-        outgoing.push_back({client, packet, false});
+        outgoing.push_back({client, packet, false, audio});
         queuedBytes += packet.size();
         notify();
         return true;
@@ -114,6 +114,7 @@ class Transport final : private Thread {
         ID client;
         Bytes packet;
         bool close;
+        bool audio = false;
     };
     struct Connection { ID id; String address; int port; String localAddress; ULONG interfaceIndex=0; };
     std::vector<Connection> connections;
@@ -155,8 +156,8 @@ class Transport final : private Thread {
         require(plain.size() >= 6 && plain[0] == 1 && plain[1] == 0x4a && plain[2] == 0x4c &&
                 plain[3] == 2);
         const uint8_t kind = plain[4];
-        require(kind == 1 || kind == 3 || kind == 5 || kind == 8);
-        const size_t maximum = kind == 8 ? 524292 : kind == 1 ? 8192 : kind == 3 ? 64 : 256;
+        require(kind == 1 || kind == 3 || kind == 5 || kind == 8 || kind == 9);
+        const size_t maximum = kind == 8 ? 524292 : kind == 1 ? 8192 : kind == 3 ? 64 : kind == 9 ? 9 : 256;
         require(plain.size() - 1 <= maximum);
         const auto now = Time::getMillisecondCounterHiRes();
         if (now - client.rateStarted >= 1000) {
@@ -176,8 +177,10 @@ class Transport final : private Thread {
         require(JSON::parse("[" + String::fromUTF8(json, jsonSize) + "]", wrapper).wasOk() &&
                 wrapper.isArray() && wrapper.size() == 1);
         value = wrapper[0];
-        require(kind == 3 ? (value.isInt() || value.isInt64()) && (int64)value >= 0
-                          : value.isObject());
+        if (kind == 3)
+            require((value.isInt() || value.isInt64()) && (int64)value >= 0);
+        else
+            require(kind == 9 ? value.isBool() : value.isObject());
         post({Event::packetReceived, client.id, {}, kind, value});
     }
     void poll(Client &client) {
@@ -267,7 +270,7 @@ class Transport final : private Thread {
                     if (client->id == message.client) {
                         if (message.close)
                             client->closed = true;
-                        else if (client->ready && !client->closed)
+                        else if (client->ready && !client->closed && (!message.audio || client->pendingBytes < maximumFrame * 3))
                             try {
                                 message.packet.insert(message.packet.begin(), 1);
                                 client->push(Frames::encode(client->cipher.seal(message.packet)));

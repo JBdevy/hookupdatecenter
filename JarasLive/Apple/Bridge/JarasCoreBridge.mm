@@ -817,6 +817,12 @@ static void report(NSError** error, const std::exception& e) { if (error) *error
 - (BOOL)editTrack:(NSString*)identifier name:(NSString*)name color:(unsigned int)color error:(NSError**)error {
     try { _engine->editTrack(str(identifier), str(name), color); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }
+- (BOOL)renameTrack:(NSString*)identifier name:(NSString*)name error:(NSError**)error {
+    try { _engine->editTrack(str(identifier), str(name), std::nullopt); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
+}
+- (BOOL)soloTrackExclusively:(NSString*)identifier error:(NSError**)error {
+    try { _engine->soloTrackExclusively(str(identifier)); return YES; } catch (const std::exception& e) { report(error,e); return NO; }
+}
 - (BOOL)setRegionInit:(NSString*)identifier count:(int)count bars:(BOOL)bars error:(NSError**)error {
     try { _engine->setRegionInit(str(identifier), count, bars); return YES; } catch(const std::exception& e) { report(error,e); return NO; }
 }

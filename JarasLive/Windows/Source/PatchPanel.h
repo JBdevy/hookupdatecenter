@@ -102,14 +102,6 @@ class PatchPanel final : public Component, private Timer {
                     return &t;
         return nullptr;
     }
-    static void assignInput(jaras::Song &song, jaras::Track &track, jaras::OutputPatch input) {
-        if (!track.stereoLinkPartner) { track.inputPatch = input; return; }
-        const bool none = input.firstChannel == -1;
-        const int first = jlimit(1, 1023, input.firstChannel - (track.stereoLinkLeft ? 0 : 1));
-        track.inputPatch = none ? jaras::OutputPatch{-1,2} : jaras::OutputPatch{first + (track.stereoLinkLeft ? 0 : 1),1};
-        for (auto &other : song.tracks) if (other.id == *track.stereoLinkPartner)
-            other.inputPatch = none ? jaras::OutputPatch{-1,2} : jaras::OutputPatch{first + (track.stereoLinkLeft ? 1 : 0),1};
-    }
     void edit(std::function<void(jaras::Track &)> action, bool routing = true) {
         try {
             session.editTrackSettings([&](jaras::Project &p) {
@@ -316,12 +308,12 @@ class PatchPanel final : public Component, private Timer {
             if(batchCategory!=2 && session.audio.isRecording())return;
             try{session.editTrackSettings([&](jaras::Project &p){for(auto &song:p.songs)for(auto &t:song.tracks)if(targets.count(t.id)){
                 if(batchCategory!=2&&t.role.id=="vinhetas")continue;
-                if(batchCategory==1){if(batchChoice==1)t.midiInput.reset();else t.midiInput=batchChoice-1;if(batchMIDIChannel==0)t.midiChannel.reset();else t.midiChannel=batchMIDIChannel;}
+                if(batchCategory==1){jaras::selectMIDIInput(song, t, batchChoice > 1 ? std::optional<int>(batchChoice - 1) : std::nullopt);if(batchMIDIChannel==0)t.midiChannel.reset();else t.midiChannel=batchMIDIChannel;}
                 else {const auto patch=patches[(size_t)jlimit(0,(int)patches.size()-1,batchChoice-1)];
-                    if(batchCategory==0){if(!t.stereoLinkPartner || t.stereoLinkLeft || !targets.count(*t.stereoLinkPartner))assignInput(song,t,patch);}
+                    if(batchCategory==0){if(!t.stereoLinkPartner || t.stereoLinkLeft || !targets.count(*t.stereoLinkPartner))jaras::selectLineInput(song,t,patch);}
                     else{t.outputs=std::vector<jaras::OutputPatch>{patch};t.patch.reset();t.secondaryPatch.reset();}
                 }
-            }}, batchCategory!=1);}catch(const std::exception &e){if(error)error(String::fromUTF8(e.what()));}
+            }}, batchCategory != 1 || batchChoice > 1);}catch(const std::exception &e){if(error)error(String::fromUTF8(e.what()));}
         });
         fields.getLast()->setEnabled(batchCategory==2 || (allStandard && !session.audio.isRecording()));
         height=batchCategory==1?250:216;resized();
@@ -383,7 +375,7 @@ class PatchPanel final : public Component, private Timer {
             try {
                 session.editTrackSettings([&](jaras::Project &project) {
                     for (auto &song : project.songs) for (auto &track : song.tracks)
-                        if (track.id == id) assignInput(song,track,input);
+                        if (track.id == id) jaras::selectLineInput(song,track,input);
                 }, true);
             } catch (const std::exception &e) { if (error) error(String::fromUTF8(e.what())); }
             MessageManager::callAsync([inputPanel] { if (inputPanel) inputPanel->build(); });
@@ -398,13 +390,16 @@ class PatchPanel final : public Component, private Timer {
             for (const auto &device : devices) if (device.identifier == identifier) label = device.name;
             midi.add("MIDI " + String(slot) + String::fromUTF8(" · ") + label);
         }
-        choice(0, 108, 196, midi, t->midiInput.value_or(0)+1, [this](int n) {
-            edit([&](auto &t) {
-                if (n > 1)
-                    t.midiInput = n - 1;
-                else
-                    t.midiInput.reset();
-            }, false);
+        const bool hadLineInput = t->inputPatch && t->inputPatch->firstChannel > 0;
+        choice(0, 108, 196, midi, t->midiInput.value_or(0)+1, [this, hadLineInput](int n) {
+            const auto slot = n > 1 ? std::optional<int>(n - 1) : std::nullopt;
+            try {
+                session.editTrackSettings([&](jaras::Project &project) {
+                    for (auto &song : project.songs) for (auto &track : song.tracks)
+                        if (track.id == id) jaras::selectMIDIInput(song, track, slot);
+                }, slot.has_value() && hadLineInput);
+            } catch (const std::exception &e) { if (error) error(String::fromUTF8(e.what())); }
+            MessageManager::callAsync([safe = SafePointer<PatchPanel>(this)] { if (safe) safe->build(); });
         });
         StringArray channels{"Todos"};
         for (int i = 1; i <= 16; ++i)

@@ -43,6 +43,8 @@ class Host final : private Timer, private AsyncUpdater {
     std::function<var(int)> presentation;
     std::function<bool(const Command &)> perform;
     std::function<Bytes(const Command &)> image;
+    std::function<void(bool)> streamMainAudio;
+    std::function<Bytes()> takeMainAudio;
     String error;
     int port = 0;
     bool enabled() const { return transport.running(); }
@@ -71,6 +73,7 @@ class Host final : private Timer, private AsyncUpdater {
         }
     }
     void stop() {
+        if (streamMainAudio) streamMainAudio(false);
         sync.stop();
         stopTimer();
         discovery.stop();
@@ -117,6 +120,7 @@ class Host final : private Timer, private AsyncUpdater {
             if (client.mode == (notices ? "notices" : "director")) {
                 releaseVinhetas(client);
                 client.mode.clear();
+                client.mainAudio = false;
                 client.ack.reset();
                 client.panel = 0;
             }
@@ -128,8 +132,25 @@ class Host final : private Timer, private AsyncUpdater {
     void update() {
         receiveCommands();
         publishState();
+        publishMainAudio();
     }
   private:
+    void publishMainAudio() {
+        if (!streamMainAudio || !takeMainAudio) return;
+        std::vector<ID> subscribers;
+        for (const auto &entry : clients)
+            if (entry.second.mainAudio) subscribers.push_back(entry.first);
+        streamMainAudio(!subscribers.empty());
+        if (subscribers.empty()) return;
+        for (int i = 0; i < 24; ++i) {
+            const auto pcm = takeMainAudio();
+            if (pcm.empty()) break;
+            Bytes audio{0x4a, 0x4c, 2, 10};
+            audio.insert(audio.end(), pcm.begin(), pcm.end());
+            for (const auto &id : subscribers) transport.send(id, audio, true);
+        }
+    }
+
     void receiveCommands() {
         for (const auto &event : transport.events()) {
             if (event.type == Transport::Event::disconnected) {
@@ -151,6 +172,7 @@ class Host final : private Timer, private AsyncUpdater {
             try {
                 if (event.kind == 5) {
                     releaseVinhetas(client);
+                    client.mainAudio = false;
                     const auto mode = event.body["mode"], value = event.body["pin"];
                     require(
                         mode.isString() && value.isString() &&
@@ -176,6 +198,8 @@ class Host final : private Timer, private AsyncUpdater {
                     client.ack.reset();
                     client.failures = 0;
                     accessStatus(event.client, client);
+                } else if (event.kind == 9) {
+                    client.mainAudio = (client.mode == "director" || client.mode == "observer") && (bool)event.body;
                 } else if (event.kind == 3) {
                     if (client.ack && *client.ack == (uint64)(int64)event.body)
                         client.ack.reset();
@@ -241,6 +265,8 @@ class Host final : private Timer, private AsyncUpdater {
                 if (!at->second.isObject())
                     continue;
                 auto value = at->second.clone();
+                if (streamMainAudio && takeMainAudio && (client.mode == "director" || client.mode == "observer"))
+                    put(value, "mainAudioAvailable", true);
                 if (client.mode != "director") {
                     put(value, "projectTabs", var()); put(value, "projects", var()); put(value,"vinhetas",var());
                 }
@@ -265,6 +291,7 @@ class Host final : private Timer, private AsyncUpdater {
         std::optional<uint64> ack;
         double sentAt = 0;
         int panel = 0, failures = 0;
+        bool mainAudio = false;
     };
     void releaseVinhetas(Client &client) {
         auto held=std::move(client.heldVinhetas);client.heldVinhetas.clear();

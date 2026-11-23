@@ -55,6 +55,9 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         require(!tap.tap(6) && tap.tap(7)==60,"Idle reset differs");
         tap={};tap.tap(0);require(tap.tap(.15)==300,"Fast taps must clamp");
         tap={};tap.tap(0);require(tap.tap(2)==60,"Slow taps must clamp");
+        require(!tap.tap(10000, "remote") && tap.tap(10000.5, "remote")==120, "Clock domains must start independently");
+        require(!tap.tap(10000.5, "remote") && !tap.tap(9999, "remote") && tap.tap(10001, "remote")==120,
+                "Duplicate and delayed packets must not reset the estimator");
     });
     test("Delete preserves track selection after cancel or a declined edit and retries with one Undo", [&] {
         Session session;session.inspection=true;session.audio.prepareOffline(48000);

@@ -999,6 +999,84 @@ function existingImportGroupDestination(tracks, groupKey) {
 }
 
 
+// Use the exact artwork IDs bundled by CatLive on every platform. The track
+// taxonomy has already removed song names and resolved numbered variants.
+const catLiveStemIcons = new Map(Object.entries({
+ 'Other/metronome': ['Click', 'Metronome'],
+ 'Other/dynamic-mic': ['Guia', 'Regência'],
+ 'Other/vocals': ['Vocal', 'Vox', 'Coro', 'Backing Vocal', 'Back Vocais'],
+ 'Keyboards/accordion': ['Sanfona', 'Sanfonas'],
+ 'Guitar/double-cut-electric': ['Guitarra', 'Guitarras'],
+ 'Guitar/classical-guitar': ['Violão Nylon'],
+ 'Guitar/steel-string-acoustic': ['Violão', 'Violões'],
+ 'Guitar/banjo': ['Banjo'],
+ 'Guitar/ukulele': ['Ukulele'],
+ 'Strings/mandolin': ['Bandolim'],
+ 'Bass/precision-bass': ['Baixo'],
+ 'Drums/acoustic-drum-kit': ['Bateria', 'Over', 'Percussivo'],
+ 'Drums/kick-drum': ['Bumbo'],
+ 'Drums/snare-drum': ['Caixa', 'Rimshot', 'Tarol'],
+ 'Drums/hi-hat': ['Hi-Hat'],
+ 'Drums/floor-tom': ['Surdo'],
+ 'Drums/rack-toms': ['Tom'],
+ 'Drums/ride-cymbal': ['Ride'],
+ 'Drums/crash-cymbal': ['Crash', 'Pratos', 'Reverse Cymbal'],
+ 'Percussion/congas': ['Conga'],
+ 'Percussion/bongos': ['Bongo'],
+ 'Percussion/tambourine': ['Pandeiro', 'Pandeirola', 'Meia Lua'],
+ 'Percussion/shaker': ['Shaker', 'Ganzá'],
+ 'Percussion/cowbell': ['Cowbell'],
+ 'Percussion/claves': ['Clave'],
+ 'Percussion/triangle': ['Triângulo'],
+ 'Percussion/cajon': ['Cajón'],
+ 'Percussion/djembe': ['Djembe'],
+ 'Percussion/maracas': ['Maracas'],
+ 'Percussion/guiro': ['Reco-Reco'],
+ 'Percussion/wood-block': ['Woodblock', 'Bloco'],
+ 'Percussion/chime-tree': ['Bar Chimes'],
+ 'Percussion/vibraphone': ['Vibrafone'],
+ 'Other/kalimba': ['Kalimba'],
+ 'Keyboards/grand-piano': ['Piano'],
+ 'Keyboards/upright-piano': ['Honky Tonk'],
+ 'Keyboards/electric-piano': ['Rhodes', 'Wurlitzer', 'Electric Piano', 'CP80', 'Clavi'],
+ 'Keyboards/tonewheel-organ': ['Hammond', 'Órgão'],
+ 'Keyboards/synth-workstation': ['Teclado', 'Teclados', 'Triton', 'Trinity', 'Kronos', 'Nautilus', 'Krome', 'Kross', 'Fantom'],
+ 'Keyboards/digital-synth': ['DX', 'Vox Synth', 'Synth Brass', 'Synth Strings', 'M1', 'D-50', 'JD-800', 'JV-1080', 'XV-5080', 'XP', 'Opsix', 'Modwave', 'Wavestation', 'Wavestate'],
+ 'Keyboards/analog-synth': ['Synth', 'Saw', 'Square', 'Pulse', 'Pad', 'Lead', 'Pluck', 'Arp', 'Juno', 'Jupiter', 'MS-20', 'Polysix', 'Minilogue', 'SH-101', 'JX', 'System-8'],
+ 'Strings/string-ensemble': ['Cordas', 'Orquestra'],
+ 'Strings/violin': ['Violino'],
+ 'Strings/viola': ['Viola'],
+ 'Strings/cello': ['Cello'],
+ 'Strings/concert-harp': ['Harpa'],
+ 'Strings/sitar': ['Sitar'],
+ 'Strings/koto': ['Koto'],
+ 'Brass/trumpet': ['Metais', 'Trompete', 'Trompete Piccolo', 'Trompete Baixo', 'Clarim'],
+ 'Brass/trombone': ['Trombone', 'Trombone Alto', 'Trombone Tenor'],
+ 'Brass/bass-trombone': ['Trombone Baixo'],
+ 'Brass/cornet': ['Corneta'],
+ 'Brass/flugelhorn': ['Flugelhorn'],
+ 'Brass/tuba': ['Tuba'],
+ 'Brass/sousaphone': ['Sousafone'],
+ 'Brass/euphonium': ['Bombardino', 'Barítono de Metal'],
+ 'Brass/french-horn': ['Trompa', 'Trompa Alto', 'Mellophone'],
+ 'Wind/alto-saxophone': ['Sax', 'Sax Soprano', 'Sax Alto', 'Sax Tenor', 'Sax Barítono'],
+ 'Wind/flute': ['Flauta', 'Piccolo'],
+ 'Wind/clarinet': ['Clarinete'],
+ 'Wind/oboe': ['Oboé'],
+ 'Wind/bassoon': ['Fagote'],
+ 'Wind/harmonica': ['Harmônica'],
+ 'Sound Effects/impact': ['Hit']
+}).flatMap(([icon, names]) => names.map(name => [name, 'png:' + icon])));
+
+function catLiveStemIcon(trackName) {
+ const name = String(trackName || '').trim().replace(/^#+\s*/, '');
+ const base = getCreateProjectTrackBaseName(name);
+ const canonical = base === 'Out' && !/^out(?:\s+\d+)?$/i.test(name)
+   ? getCreateProjectTrackBaseName(classifyCreateProjectTrack(name + '.wav').name)
+   : base;
+ return catLiveStemIcons.get(name) || catLiveStemIcons.get(canonical) || 'png:Other/waveform';
+}
+
 function suggestImportRemovals(names, { limit = 12 } = {}) {
  const groups = new Set(CREATE_PROJECT_TRACK_GROUPS.map(group => normalizeTrackKey(group.name)));
  return suggestRepeatedNames(names, { limit: Math.max(64, limit) })

@@ -12,11 +12,30 @@ inline var settings(const Session &session, const ID &id) {
     }
     return {};
 }
+inline bool isInstrument(const var &settings, const String &key) {
+    for (const auto &plugin : list(get(settings, "externalPlugins")))
+        if (key == "External:" + str(plugin, "id")) return str(plugin, "category").containsIgnoreCase("Instrument");
+    auto kind = key;
+    for (const auto &instance : list(get(settings, "instances")))
+        if (key == "Native:" + str(instance, "id") || key == "Instance:" + str(instance, "id")) {
+            kind = str(instance, "kind");
+            break;
+        }
+    return kind == "Instruments" || kind == "CatSynth" || kind == "Drummer Pad 16" || kind == "Drummer Pad 48";
+}
+inline bool addsInstrument(const var &previous, const var &next) {
+    const auto old = list(get(previous, "inserted"));
+    const auto added = list(get(next, "inserted"));
+    return std::any_of(added.begin(), added.end(), [&](const auto &key) {
+        return !old.contains(key) && isInstrument(next, key.toString());
+    });
+}
 inline String enabledKey(const String &kind) {
     if (const auto *spec = jaras::audio::creativeEffect(utf8(kind))) return spec->enabledField;
     if (kind == "CatLive Trigger") return "triggerEnabled";
     if (kind == "Drummer Pad 16") return "drummer16Enabled";
     if (kind == "Drummer Pad 48") return "drummer48Enabled";
+    if (kind == "CatSynth") return "catSynthEnabled";
     if (kind == "Arpeggiator") return "arpeggiatorEnabled";
     if (kind == "Cat Gate") return "gateEnabled";
     if (kind == "CatStemSeparation 5") return "stemSeparatorEnabled";

@@ -168,9 +168,12 @@ public enum TimelineTempo {
 public struct TapTempo {
     private var last: Double?
     private var intervals: [Double] = []
+    private var source: UUID?
     public init() {}
-    public mutating func tap(at time: Double) -> Double? {
-        guard let previous = last, time > previous, time - previous <= 4 else {
+    public mutating func tap(at time: Double, source: UUID? = nil) -> Double? {
+        guard time.isFinite else { return nil }
+        guard self.source == source, let previous = last, time - previous <= 4 else {
+            self.source = source
             last = time; intervals.removeAll(keepingCapacity: true); return nil
         }
         let interval = time - previous

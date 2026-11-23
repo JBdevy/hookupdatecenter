@@ -4,6 +4,7 @@ import Network
 import CryptoKit
 import Security
 import ImageIO
+import OSLog
 import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
@@ -38,7 +39,107 @@ private final class DesktopBatteryStatus: @unchecked Sendable {
 }
 #else
 import UIKit
+import AVFoundation
+private final class DAWRemoteMainAudioPlayer: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "com.jaras.remote.main-audio", qos: .userInitiated)
+    private weak var channel: DAWRemoteChannel?
+    private var engine: AVAudioEngine?
+    private var player: AVAudioPlayerNode?
+    private var format: AVAudioFormat?
+    private var queuedFrames = 0
+    private var generation: UInt64 = 0
+    private var activeSession = false
+    private var lastOpenFailure: TimeInterval = 0
+
+    func setSource(_ channel: DAWRemoteChannel?) {
+        queue.async { [weak channel] in
+            guard self.channel !== channel || channel == nil else { return }
+            self.channel = channel
+            self.clear()
+            self.lastOpenFailure = 0
+        }
+    }
+
+    func enqueue(_ packet: Data, from source: DAWRemoteChannel) {
+        queue.async { [weak source] in
+            guard let source, self.channel === source else { return }
+            self.schedule(packet)
+        }
+    }
+
+    private func clear() {
+        generation &+= 1
+        player?.stop()
+        engine?.stop()
+        engine = nil; player = nil; format = nil; queuedFrames = 0
+        if activeSession {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            activeSession = false
+        }
+    }
+
+    private func schedule(_ packet: Data) {
+        let rate = packet.withUnsafeBytes { Double(UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self))) }
+        guard (8000...192000).contains(rate) else { return }
+        let frames = (packet.count - 4) / 4
+        if format?.sampleRate != rate || engine?.isRunning != true {
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - lastOpenFailure >= 1 else { return }
+            clear()
+            let engine = AVAudioEngine(), player = AVAudioPlayerNode()
+            guard let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2) else { return }
+            do {
+                let session = AVAudioSession.sharedInstance()
+                try session.setCategory(.playback, mode: .default, options: .mixWithOthers)
+                try session.setActive(true)
+                activeSession = true
+                engine.attach(player)
+                engine.connect(player, to: engine.mainMixerNode, format: format)
+                try engine.start()
+                self.engine = engine; self.player = player; self.format = format
+                remoteAudioLog.notice("Remote Main output prepared at \(rate, privacy: .public) Hz")
+            } catch {
+                lastOpenFailure = now
+                remoteAudioLog.error("Remote Main output setup failed: \(error.localizedDescription, privacy: .public)")
+                clear()
+                return
+            }
+        }
+        guard let player, let format,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
+              let channels = buffer.floatChannelData else { return }
+        if queuedFrames + frames > Int(rate * 1.5) {
+            generation &+= 1
+            player.stop(); queuedFrames = 0
+        }
+        packet.withUnsafeBytes { bytes in
+            for channel in 0..<2 {
+                for frame in 0..<frames {
+                    let sample = bytes.loadUnaligned(fromByteOffset: 4 + frame * 4 + channel * 2, as: Int16.self)
+                    channels[channel][frame] = Float(Int16(littleEndian: sample)) / 32768
+                }
+            }
+        }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        queuedFrames += frames
+        let generation = self.generation
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            guard let self else { return }
+            self.queue.async {
+                guard self.generation == generation else { return }
+                self.queuedFrames = max(0, self.queuedFrames - frames)
+                if self.queuedFrames == 0 { self.player?.pause() }
+            }
+        }
+        if !player.isPlaying && queuedFrames >= Int(rate / 4) {
+            player.play()
+            remoteAudioLog.notice("Remote Main started with \(self.queuedFrames, privacy: .public) frames buffered")
+        }
+    }
+}
 #endif
+
+private let remoteAudioLog = Logger(subsystem: "com.hookdeveloper.jaraslive", category: "RemoteAudio")
 
 struct DAWRemotePeer: Hashable { let id: String; let displayName: String }
 enum DAWRemoteRole: UInt8 { case host = 1, client = 2 }
@@ -51,7 +152,8 @@ enum DAWRemoteSnapshotComparison {
         guard let current else { return true }
         if candidate.position != current.position || candidate.subPlayPosition != current.subPlayPosition ||
             candidate.editPosition != current.editPosition || candidate.playing != current.playing ||
-            candidate.paused != current.paused || candidate.subPlaying != current.subPlaying ||
+            candidate.paused != current.paused || candidate.transportPreparing != current.transportPreparing ||
+            candidate.subPlaying != current.subPlaying ||
             candidate.loop != current.loop || candidate.currentRegion != current.currentRegion ||
             candidate.queuedRegion != current.queuedRegion || candidate.focusedRegion != current.focusedRegion ||
             candidate.currentPlaylistEntryId != current.currentPlaylistEntryId || candidate.queuedPlaylistEntryId != current.queuedPlaylistEntryId ||
@@ -166,8 +268,37 @@ private func remoteMain(_ body: @escaping () -> Void) {
     CFRunLoopWakeUp(CFRunLoopGetMain())
 }
 
-/// Same Network.framework peer-to-peer path as VS Hook, carrying native
-/// Remote packets directly. All mutable transport fields belong to queue.
+enum DAWRemoteNetworkRoute {
+    static func priority(name: String, type: NWInterface.InterfaceType) -> Int? {
+        if type == .wifi && !name.hasPrefix("anpi") { return 0 }
+        if name.hasPrefix("awdl") { return 1 }
+        if name.hasPrefix("llw") { return 2 }
+        return nil
+    }
+
+    static func interface(of endpoint: NWEndpoint) -> NWInterface? {
+        if case let .service(_, _, _, interface) = endpoint { return interface }
+        return nil
+    }
+
+    static func preferredInterfaces(from results: Set<NWBrowser.Result>) -> [NWEndpoint] {
+        var services: [NWEndpoint: (endpoint: NWEndpoint, priority: Int, index: Int)] = [:]
+        for result in results {
+            guard case let .service(name, type, domain, advertised) = result.endpoint else { continue }
+            let service = NWEndpoint.service(name: name, type: type, domain: domain, interface: nil)
+            let interfaces = result.interfaces + (advertised.map { [$0] } ?? [])
+            for interface in interfaces {
+                guard let priority = Self.priority(name: interface.name, type: interface.type) else { continue }
+                if let previous = services[service], (previous.priority, previous.index) <= (priority, interface.index) { continue }
+                let scoped = NWEndpoint.service(name: name, type: type, domain: domain, interface: interface)
+                services[service] = (scoped, priority, interface.index)
+            }
+        }
+        return services.values.map(\.endpoint)
+    }
+}
+
+/// Remote control uses the available Bonjour paths. Only Main audio excludes a direct wired link.
 final class DAWRemoteChannel {
     let connection: NWConnection
     private let queue: DispatchQueue
@@ -182,6 +313,7 @@ final class DAWRemoteChannel {
     var sessionBinding: Data { cipher.binding }
     var onReady: ((String) -> Void)?
     var onPacket: ((DAWRemoteWire.Packet) -> Void)?
+    var onMainAudio: ((Data) -> Void)?
     var onClose: (() -> Void)?
     init(connection: NWConnection, role: DAWRemoteRole, name: String, queue: DispatchQueue) {
         self.connection = connection; self.queue = queue; cipher = DAWRemoteCipher(role: role, name: name)
@@ -194,6 +326,22 @@ final class DAWRemoteChannel {
         let parameters = NWParameters(tls: nil, tcp: tcp)
         parameters.includePeerToPeer = true
         return parameters
+    }
+    static func allowsMainAudio(local: NWEndpoint?, remote: NWEndpoint?, wired: Bool) -> Bool {
+        guard wired else { return true }
+        return ![local, remote].contains { endpoint in
+            guard case let .hostPort(host, _)? = endpoint else { return false }
+            switch host {
+            case .ipv4(let address): return address.isLinkLocal
+            case .ipv6(let address): return address.isLinkLocal
+            default: return false
+            }
+        }
+    }
+    var allowsMainAudio: Bool {
+        guard let path = connection.currentPath, path.status == .satisfied else { return false }
+        return Self.allowsMainAudio(local: path.localEndpoint, remote: path.remoteEndpoint,
+                                    wired: path.usesInterfaceType(.wiredEthernet))
     }
     func start() {
         connection.stateUpdateHandler = { [weak self] state in
@@ -210,11 +358,12 @@ final class DAWRemoteChannel {
         self.timeout = timeout; queue.asyncAfter(deadline: .now() + 15, execute: timeout)
         connection.start(queue: queue)
     }
-    func send(_ data: Data, completion: ((Bool) -> Void)? = nil) {
+    func send(_ data: Data, audio: Bool = false, completion: ((Bool) -> Void)? = nil) {
         queue.async {
             guard self.ready, !self.closed, data.count <= DAWRemoteWire.maximumPacket else {
                 if let completion { remoteMain { completion(false) } }; return
             }
+            guard !audio || (self.allowsMainAudio && self.pendingBytes < 3 * DAWRemoteFrames.maximum) else { return }
             do {
                 var payload = Data([1]); payload.append(data)
                 self.write(try DAWRemoteFrames.encode(self.cipher.seal(payload)), completion: completion)
@@ -252,7 +401,11 @@ final class DAWRemoteChannel {
                             } else {
                                 guard payload.first == 1, payload.count > 1 else { throw DAWRemoteWire.Failure.invalid }
                                 let decoded = try DAWRemoteWire.decode(Data(payload.dropFirst()))
-                                if let callback = self.onPacket { remoteMain { callback(decoded) } }
+                                if case .mainAudio(let frames) = decoded {
+                                    if self.allowsMainAudio { self.onMainAudio?(frames) }
+                                } else if let callback = self.onPacket {
+                                    remoteMain { callback(decoded) }
+                                }
                             }
                         }
                     }
@@ -425,6 +578,64 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     @Published private(set) var peerName = ""
     @Published private(set) var status = ""
     @Published private(set) var remoteState: DAWRemoteState?
+    private var confirmedState: DAWRemoteState?
+    private var blockPresentation: DAWRemoteState?
+    private var controlFeedback = DAWRemoteControlFeedback()
+    private var controlFeedbackTimer: Timer?
+    @Published private(set) var predictedTransportRunning: Bool?
+    private var transportFeedback: DAWRemoteTransportFeedback?
+    private var transportFeedbackTimer: Timer?
+
+    private func predictTransport(running: Bool, state: DAWRemoteState) {
+        transportFeedback = DAWRemoteTransportFeedback(running: running, state: state, previous: transportFeedback)
+        if predictedTransportRunning != running { predictedTransportRunning = running }
+        transportFeedbackTimer?.invalidate()
+        let timer = Timer(timeInterval: DAWRemoteTransportFeedback.timeout, repeats: false) { [weak self] _ in
+            self?.clearTransportFeedback()
+        }
+        transportFeedbackTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    private func clearTransportFeedback() {
+        transportFeedbackTimer?.invalidate(); transportFeedbackTimer = nil
+        transportFeedback = nil
+        if predictedTransportRunning != nil { predictedTransportRunning = nil }
+    }
+
+    private func publishControlFeedback() {
+        guard let base = blockPresentation ?? confirmedState else { return }
+        let displayed = controlFeedback.overlay(base)
+        var comparable = displayed
+        comparable.sequence = remoteState?.sequence ?? displayed.sequence
+        // The timer view advances locally while the host revision stays the same.
+        if !reconnecting, let current = remoteState?.timer, var timer = comparable.timer, timer.revision == current.revision {
+            timer.remainingSeconds = current.remainingSeconds
+            if timer == current { comparable.timer = timer }
+        }
+        if DAWRemoteSnapshotComparison.differs(comparable, from: remoteState) { remoteState = displayed }
+    }
+    private func scheduleControlFeedback(now: TimeInterval) {
+        controlFeedbackTimer?.invalidate(); controlFeedbackTimer = nil
+        guard let deadline = controlFeedback.nextExpiration else { return }
+        let timer = Timer(timeInterval: max(0.001, deadline - now), repeats: false) { [weak self] _ in
+            guard let self else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            self.controlFeedback.expire(now: now)
+            self.publishControlFeedback()
+            self.scheduleControlFeedback(now: now)
+        }
+        controlFeedbackTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    private func clearClientFeedback() {
+        clearTransportFeedback()
+        controlFeedbackTimer?.invalidate(); controlFeedbackTimer = nil
+        controlFeedback.reset()
+        blockPresentation = nil
+        publishControlFeedback()
+        confirmedState = nil
+    }
+
     private var blockFeedback = DAWRemoteBlockFeedback()
     private var blockTimer: Timer?
     private func cancelBlockFeedback() {
@@ -444,7 +655,8 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             let timer = Timer(timeInterval: max(0.001, deadline - now), repeats: false) { [weak self] _ in
                 guard let self, self.connected, self.enabled, !self.clientSuspended,
                       let prepared = self.blockFeedback.advance(now: ProcessInfo.processInfo.systemUptime) else { return }
-                self.remoteState = prepared; self.blockTimer = nil
+                self.blockPresentation = prepared
+                self.publishControlFeedback(); self.blockTimer = nil
             }
             blockTimer = timer; RunLoop.main.add(timer, forMode: .common)
         }
@@ -459,6 +671,42 @@ final class DAWRemoteSession: NSObject, ObservableObject {
     private var channelReady = false
     private weak var parentHost: DAWRemoteSession?
     private var clients: [UUID: DAWRemoteSession] = [:]
+    private var canReceiveMainAudio: Bool { accessMode == .director || accessMode == .observer }
+    #if os(macOS)
+    private var mainAudioSubscribed = false
+    private var mainAudioTimer: Timer?
+    private var mainAudioCapture: JarasRemoteMainAudio?
+    private weak var mainAudioSource: StemAudioPlayback?
+    #elseif os(iOS)
+    private static let mainAudioPreference = "jaras.remote.receiveMainAudio"
+    @Published private(set) var receivesMainAudio = UserDefaults.standard.object(forKey: mainAudioPreference) as? Bool ?? true
+    private var mainAudioAvailable = false
+    private var mainAudioSubscription: Bool?
+    private let mainAudioPlayer = DAWRemoteMainAudioPlayer()
+
+    func setReceivesMainAudio(_ enabled: Bool) {
+        guard role == .client, !isLocalWorkspace, enabled != receivesMainAudio else { return }
+        receivesMainAudio = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.mainAudioPreference)
+        if !enabled { mainAudioPlayer.setSource(nil) }
+        updateMainAudioSubscription()
+    }
+
+    private func updateMainAudioSubscription() {
+        guard role == .client, connected, !clientSuspended, canReceiveMainAudio, mainAudioAvailable,
+              let channel, mainAudioSubscription != receivesMainAudio else { return }
+        mainAudioSubscription = receivesMainAudio
+        remoteAudioLog.notice("Remote Main client subscription: \(self.receivesMainAudio, privacy: .public)")
+        mainAudioPlayer.setSource(receivesMainAudio ? channel : nil)
+        channel.send(DAWRemoteWire.mainAudioSubscription(receivesMainAudio))
+    }
+
+    private func resetMainAudioClient() {
+        mainAudioAvailable = false
+        mainAudioSubscription = nil
+        mainAudioPlayer.setSource(nil)
+    }
+    #endif
     private(set) var requestedPanel = 0
     var stateProviderForSession: ((DAWRemoteSession) -> DAWRemoteState?)?
     @Published private(set) var imageRevision: UInt64 = 0
@@ -697,6 +945,12 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         clientSuspended = false
         preferredPeer = nil; resumeAccess = nil; pendingAccess = nil
         for child in clients.values { child.stop() }; clients.removeAll()
+        #if os(macOS)
+        mainAudioSubscribed = false
+        updateMainAudioHost()
+        #elseif os(iOS)
+        resetMainAudioClient()
+        #endif
         connectionGeneration = UUID(); channelReady = false
         accessMode = nil; accessError = ""; authorizing = false; requestedPanel = 0
         stateTimer?.invalidate(); stateTimer = nil; waitingForState = nil; sendingState = false
@@ -704,6 +958,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         listener?.cancel(); listener = nil; stopDiscovery()
         channel?.close(); channel = nil; endpoints = [:]
         cancelBlockFeedback()
+        clearClientFeedback()
         enabled = false; connected = false; connecting = false; remoteState = nil; receivedStateSequence = 0
         peers = []; peerName = ""; status = ""
         setImageProject(nil)
@@ -726,7 +981,11 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         dispatchPrecondition(condition: .onQueue(.main))
         guard role == .client, enabled, !clientSuspended, !isLocalWorkspace else { return }
         clientSuspended = true
+        #if os(iOS)
+        resetMainAudioClient()
+        #endif
         cancelBlockFeedback()
+        clearClientFeedback()
         reconnectTimer?.invalidate(); reconnectTimer = nil
         stopDiscovery()
         reconnecting = preferredPeer != nil
@@ -773,11 +1032,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             }
         }
         listener.stateUpdateHandler = { [weak self, weak listener] state in
-            if case .failed(let error) = state {
-                remoteMain {
-                    guard let self, self.listener === listener else { return }
-                    self.stop(); self.status = error.localizedDescription
-                }
+            remoteMain {
+                guard let self, let listener, self.listener === listener else { return }
+                if case .failed(let error) = state { self.stop(); self.status = error.localizedDescription }
             }
         }
         listener.start(queue: worker)
@@ -870,7 +1127,11 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             remoteMain {
                 guard let self, let browser else { return }
+                #if os(iOS)
+                self.updateDiscoveredEndpoints(DAWRemoteNetworkRoute.preferredInterfaces(from: results), from: browser)
+                #else
                 self.updateDiscoveredEndpoints(results.map(\.endpoint), from: browser)
+                #endif
             }
         }
         browser.stateUpdateHandler = { [weak self, weak browser] state in
@@ -896,8 +1157,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         guard self.browser === browser, enabled, !connected else { return }
         var endpoints: [String: NWEndpoint] = [:], peers: [DAWRemotePeer] = []
         for endpoint in discovered {
-            guard case let .service(name, _, _, _) = endpoint else { continue }
-            let id = endpoint.debugDescription
+            guard case let .service(name, type, domain, _) = endpoint else { continue }
+            let id = NWEndpoint.service(name: name, type: type, domain: domain, interface: nil).debugDescription
+            guard endpoints[id] == nil else { continue }
             endpoints[id] = endpoint; peers.append(.init(id: id, displayName: name))
         }
         self.endpoints = endpoints
@@ -932,11 +1194,27 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         guard role == .client, enabled, !clientSuspended, !connecting, !connected, let endpoint = endpoints[peer.id] else { return }
         preferredPeer = peer
         peerName = peer.displayName
-        attach(NWConnection(to: endpoint, using: DAWRemoteChannel.parameters()))
+        let parameters = DAWRemoteChannel.parameters()
+        #if os(iOS)
+        guard let interface = DAWRemoteNetworkRoute.interface(of: endpoint),
+              DAWRemoteNetworkRoute.priority(name: interface.name, type: interface.type) != nil else { return }
+        // Scope the actual Bonjour service and TCP flow. A default Wi-Fi path does
+        // not stop an unscoped Bonjour resolver from choosing the USB address.
+        parameters.requiredInterface = interface
+        remoteAudioLog.notice("Remote connection interface: \(interface.name, privacy: .public)")
+        #endif
+        attach(NWConnection(to: endpoint, using: parameters))
     }
     private func attach(_ connection: NWConnection) {
         let channel = DAWRemoteChannel(connection: connection, role: role, name: name, queue: worker)
         self.channel = channel; receivedStateSequence = 0; connecting = true; status = "Connecting…"
+        #if os(iOS)
+        if role == .client && !isLocalWorkspace {
+            channel.onMainAudio = { [weak player = mainAudioPlayer, weak channel] frames in
+                if let channel { player?.enqueue(frames, from: channel) }
+            }
+        }
+        #endif
         channel.onReady = { [weak self, weak channel] name in
             guard let self, let channel, self.channel === channel, self.enabled else { return }
             self.channelReady = true
@@ -963,6 +1241,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             guard let self, let channel, self.channel === channel else { return }
             self.releaseVinhetas()
             self.cancelBlockFeedback()
+            self.clearClientFeedback()
             self.failPendingNotices(.disconnected)
             let wasConnected = self.connected
             let resume = self.role == .client && self.enabled && (self.reconnecting || (wasConnected && self.remoteState != nil))
@@ -971,6 +1250,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                 self.startReconnecting()
             }
             self.channel = nil; self.channelReady = false; self.connectionGeneration = UUID()
+            #if os(iOS)
+            self.resetMainAudioClient()
+            #endif
             self.accessMode = nil; self.accessError = ""; self.authorizing = false; self.pendingAccess = nil
             if self.role == .host { self.requestedPanel = 0 }
             self.connected = false; self.connecting = false; self.receivedStateSequence = 0
@@ -995,16 +1277,25 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             refreshLocalWorkspace()
             return
         }
-        guard role == .client, connected, DAWRemoteAccessRules.allows(command, mode: accessMode), let data = try? DAWRemoteWire.command(command) else { return }
+        guard role == .client, connected, let channel, DAWRemoteAccessRules.allows(command, mode: accessMode),
+              let data = try? DAWRemoteWire.command(command) else { return }
+        if command.action == .play || command.action == .stop,
+           let state = confirmedState ?? remoteState, state.project == command.project,
+           command.song == nil || command.song == state.song {
+            predictTransport(running: command.action == .play, state: state)
+        }
         if command.action != .remotePanel && command.action != .requestImage { cancelBlockFeedback() }
+        let now = ProcessInfo.processInfo.systemUptime
         if command.action == .stop, let state = remoteState {
-            let now = ProcessInfo.processInfo.systemUptime
             if let prepared = blockFeedback.stop(state, now: now) {
-                remoteState = prepared; scheduleBlockFeedback(now: now)
+                blockPresentation = prepared; publishControlFeedback(); scheduleBlockFeedback(now: now)
             }
         }
+        if let host = confirmedState, let display = remoteState, controlFeedback.record(command, display: display, host: host, now: now) {
+            publishControlFeedback(); scheduleControlFeedback(now: now)
+        }
         if command.action == .remotePanel { requestedPanel = Int(command.value) }
-        channel?.send(data)
+        channel.send(data)
     }
     /// Explicitly closing the Notices-only screen also closes its connection.
     /// Let the queued withdrawal finish writing first; never queue a withdrawal
@@ -1070,6 +1361,14 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         guard channel === source, connected, enabled else { return }
         switch packet {
         case .projectSync: return
+        case .mainAudioSubscription(let subscribed):
+            #if os(macOS)
+            guard role == .host, canReceiveMainAudio else { return }
+            mainAudioSubscribed = subscribed
+            remoteAudioLog.notice("Remote Main host subscription: \(subscribed, privacy: .public)")
+            (parentHost ?? self).updateMainAudioHost()
+            #endif
+        case .mainAudio: return
         case .command(let command):
             guard role == .host, DAWRemoteAccessRules.allows(command, mode: accessMode) else { return }
             if handledCommands.contains(command.id) {
@@ -1097,17 +1396,20 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             guard role == .client, accessMode != nil else { return }
             if state.sequence > receivedStateSequence {
                 receivedStateSequence = state.sequence
+                #if os(iOS)
+                if state.mainAudioAvailable == true {
+                    mainAudioAvailable = true
+                    updateMainAudioSubscription()
+                } else if mainAudioAvailable { resetMainAudioClient() }
+                #endif
                 setImageProject(state.project)
-                let displayed = receiveBlockFeedback(state)
-                var comparable = displayed
-                comparable.sequence = remoteState?.sequence ?? state.sequence
-                // The iPad timer advances locally. An unchanged timer revision
-                // must not publish the entire workspace for each network tick.
-                if !reconnecting, let current = remoteState?.timer, var timer = comparable.timer, timer.revision == current.revision {
-                    timer.remainingSeconds = current.remainingSeconds
-                    if timer == current { comparable.timer = timer }
-                }
-                if DAWRemoteSnapshotComparison.differs(comparable, from: remoteState) { remoteState = displayed }
+                let now = ProcessInfo.processInfo.systemUptime
+                confirmedState = state
+                controlFeedback.receive(state, now: now)
+                blockPresentation = receiveBlockFeedback(state)
+                publishControlFeedback()
+                scheduleControlFeedback(now: now)
+                if transportFeedback?.isPending(after: state) == false { clearTransportFeedback() }
             }
             if reconnecting {
                 reconnecting = false; reconnectTimer?.invalidate(); reconnectTimer = nil
@@ -1128,6 +1430,10 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             let result = accessPolicy.authorize(request)
             if let mode = result.mode, accessPolicy.requiresPIN(for: mode) { _ = (parentHost ?? self).storePIN(request.pin, mode: mode) }
             accessMode = result.mode; requestedPanel = 0
+            #if os(macOS)
+            mainAudioSubscribed = false
+            (parentHost ?? self).updateMainAudioHost()
+            #endif
             stateAccessGeneration = UUID()
             // The client discards the old workspace on an access change. Never
             // wait for an ACK belonging to that discarded presentation.
@@ -1136,6 +1442,9 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             if accessMode != nil { publishState() }
         case .accessStatus(let result):
             guard role == .client else { return }
+            #if os(iOS)
+            if accessMode != result.mode { resetMainAudioClient() }
+            #endif
             directorRequiresPIN = result.requiresPIN; noticesRequiresPIN = result.noticesRequiresPIN ?? false; accessError = result.error ?? ""
             accessMode = result.mode; authorizing = false
             if result.mode != nil {
@@ -1151,7 +1460,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
                 failPendingNotices(.disconnected)
                 reconnecting = false; reconnectTimer?.invalidate(); reconnectTimer = nil
                 resumeAccess = nil; pendingAccess = nil
-                cancelBlockFeedback(); remoteState = nil; setImageProject(nil)
+                cancelBlockFeedback(); clearClientFeedback(); remoteState = nil; setImageProject(nil)
             }
         }
     }
@@ -1175,7 +1484,60 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         connected = channelReady || clients.values.contains { $0.connected }
         connecting = (channel != nil && !channelReady) || clients.values.contains { $0.connecting }
         if connected { status = "Connected" }
+        #if os(macOS)
+        updateMainAudioHost()
+        #endif
     }
+    #if os(macOS)
+    private var mainAudioClients: [DAWRemoteSession] {
+        var sessions = clients.values.filter(\.wantsMainAudio)
+        // The listener owns the first connection directly. Only subsequent
+        // peers get a child session in clients.
+        if wantsMainAudio { sessions.append(self) }
+        return sessions
+    }
+
+    private var wantsMainAudio: Bool {
+        connected && mainAudioSubscribed && canReceiveMainAudio && channel?.allowsMainAudio == true
+    }
+
+    private func updateMainAudioHost() {
+        guard role == .host, parentHost == nil else { return }
+        if mainAudioClients.isEmpty {
+            mainAudioTimer?.invalidate(); mainAudioTimer = nil
+            guard let capture = mainAudioCapture else { return }
+            capture.setCapturing(false)
+            MainActor.assumeIsolated { mainAudioSource?.setRemoteMainAudioCapture(nil) }
+            mainAudioCapture = nil; mainAudioSource = nil
+        } else if mainAudioTimer == nil {
+            let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.publishMainAudio() }
+            mainAudioTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    private func publishMainAudio() {
+        let clients = mainAudioClients
+        guard !clients.isEmpty else { updateMainAudioHost(); return }
+        let capture = mainAudioCapture ?? JarasRemoteMainAudio()
+        mainAudioCapture = capture
+        MainActor.assumeIsolated {
+            let source = StemAudioPlayback.shared
+            if mainAudioSource !== source {
+                capture.setCapturing(false)
+                mainAudioSource?.setRemoteMainAudioCapture(nil)
+                mainAudioSource = source
+                capture.setCapturing(true)
+                source.setRemoteMainAudioCapture(capture)
+            }
+        }
+        for _ in 0..<24 {
+            guard let payload = capture.nextPacket() else { break }
+            let packet = DAWRemoteWire.mainAudio(payload)
+            for client in clients { client.channel?.send(packet, audio: true) }
+        }
+    }
+    #endif
     private func sendAccessStatus(_ status: DAWRemoteAccessStatus) {
         var status = status
         status.requiresPIN = accessPolicy.requiresPIN
@@ -1213,11 +1575,17 @@ final class DAWRemoteSession: NSObject, ObservableObject {
             if session.accessMode == mode {
                 session.releaseVinhetas()
                 session.accessMode = nil; session.requestedPanel = 0
+                #if os(macOS)
+                session.mainAudioSubscribed = false
+                #endif
                 session.stateAccessGeneration = UUID()
                 session.waitingForState = nil; session.sendingState = false
             }
             session.sendAccessStatus(.init(mode: session.accessMode, requiresPIN: accessPolicy.requiresPIN))
         }
+        #if os(macOS)
+        updateMainAudioHost()
+        #endif
         return true
     }
     private func storePIN(_ pin: String, mode: DAWRemoteAccess) -> Bool {
@@ -1251,6 +1619,7 @@ final class DAWRemoteSession: NSObject, ObservableObject {
         guard var state = stateProviderForSession?(self) ?? stateProvider?() else { return }
         #if os(macOS)
         state.desktopBatteryPercent = DesktopBatteryStatus.shared.current()
+        if canReceiveMainAudio { state.mainAudioAvailable = true }
         #endif
         if accessMode == .observer || accessMode == .notices {
             state.vinhetas = nil

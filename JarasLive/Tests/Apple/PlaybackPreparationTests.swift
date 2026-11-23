@@ -61,5 +61,30 @@ import Foundation
         precondition(show.isPlaying && !show.preparingAudio)
         show.send(.stopAll)
         print("PLAYBACK_PREPARATION_READY_CANCEL_CURSOR_REVISION_OK")
+
+        let older = PreparationGate(), newer = PreparationGate()
+        show.pendingSeekPreparation = { _, _, position in position == 3 ? older.task : newer.task }
+        show.send(.editSeek, value: 0)
+        show.send(.play)
+        show.send(.seek, value: 3); show.send(.seek, value: 7)
+        older.release(); await settle()
+        precondition(show.isPlaying && show.preparingAudio && show.snapshot.transport.position < 3)
+        newer.release(); await settle()
+        precondition(!show.preparingAudio && abs(show.snapshot.transport.position - 7) < 0.5)
+        let stopGate = PreparationGate()
+        show.pendingSeekPreparation = { _, _, _ in stopGate.task }
+        show.send(.seek, value: 9)
+        show.send(.stopAll); stopGate.release(); await settle()
+        precondition(!show.isPlaying && !show.preparingAudio && show.snapshot.transport.position != 9)
+
+        show.send(.play)
+        show.send(.editSeek, value: 11)
+        precondition(show.snapshot.transport.editPosition == 11 && !show.preparingAudio)
+        show.seekForRecording(2)
+        precondition(!show.preparingAudio && abs(show.snapshot.transport.position - 2) < 0.5)
+        show.send(.queueBeatSeek, value: 5)
+        precondition(show.snapshot.transport.beatSeek?.destination == 5 && !show.preparingAudio)
+        show.send(.stopAll)
+        print("LIVE_SEEK_LATEST_WINS_STOP_EDIT_RECORDING_AND_BEAT_BOUNDARY_OK")
     }
 }

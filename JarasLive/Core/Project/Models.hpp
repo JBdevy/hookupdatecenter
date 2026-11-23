@@ -59,6 +59,9 @@ struct Project {
 void validateRegionSetlist(const Project& project, const RegionSetlist& state);
 void validateClipFXJSON(const std::string& json);
 void validateClipText(const std::string& text);
+void selectLineInput(Song& song, Track& track, OutputPatch input);
+void selectMIDIInput(Song& song, Track& track, std::optional<int> slot, bool clearLineInput = false);
+void reconcileTrackInputs(Project& project);
 void orderSpecialTracks(Project& project);
 void validateRouting(const Song&);
 void validate(const Project& project);

@@ -8,6 +8,7 @@
 #include "SharedClipAudio.h"
 #include "FXPresets.h"
 #include "DrummerPadAssets.h"
+#include "CatSynthState.h"
 namespace catlive {
 namespace {
 catlive::dsp::TriggerParameters readTriggerParameters(const var &settings) {
@@ -29,6 +30,7 @@ catlive::dsp::GateParameters readGateParameters(const var &settings) {
 }
 struct NativeFX::Effect {
     std::shared_ptr<jaras::audio::DrummerPad> drums;
+    std::shared_ptr<jaras::audio::CatSynth> synth;
     StringArray drumFiles;
     std::unique_ptr<jaras::audio::CreativeEffectDSP> creative;
     catlive::dsp::Trigger trigger;
@@ -141,8 +143,10 @@ NativeFX::ParameterPreview NativeFX::parameterPreview(const String &kind, const 
         v[2]=Decibels::decibelsToGain((float)jlimit(-24.,24.,num(p,"inputGain")));
     } else if (kind == "Pitch") {
         result.kind = ParameterPreview::pitch;
-        v[0] = (float)jlimit(-12., 12., num(value, "pitchSemitones"));
-        v[1] = (float)jlimit(-12., 12., num(value, "pitchFormant"));
+        if (flag(value, "pitchEnabled")) {
+            v[0] = (float)jlimit(-12., 12., num(value, "pitchSemitones"));
+            v[1] = (float)jlimit(-12., 12., num(value, "pitchFormant"));
+        }
     } else if (const auto *spec = jaras::audio::creativeEffect(utf8(kind))) {
         result.kind = ParameterPreview::creative;
         const auto group = get(value, Identifier(spec->field));
@@ -208,6 +212,10 @@ std::shared_ptr<jaras::audio::DrummerPad> NativeFX::drummerVoice(const String &k
     for (const auto &effect : effects) if (effect->key == key) return effect->drums;
     return {};
 }
+std::shared_ptr<jaras::audio::CatSynth> NativeFX::synthVoice(const String &key) const {
+    for (const auto &effect : effects) if (effect->key == key) return effect->synth;
+    return {};
+}
 static std::shared_ptr<const jaras::audio::DrumSample> loadDrumPCM(const File &file) {
     static std::mutex mutex;
     static std::map<String, std::weak_ptr<const jaras::audio::DrumSample>> cache;
@@ -234,6 +242,17 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
     hasDynamicsMeter = false;
     reductionDB = -1.f;
     auto append = [&](String kind, const String &key, const var &value) {
+        if (kind == "CatSynth") {
+            if (!flag(value, "catSynthEnabled")) return;
+            auto e = std::make_unique<Effect>();
+            e->kind = kind; e->key = key; e->sampleRate = sampleRate;
+            if (previous) for (const auto &old : previous->effects)
+                if (old->key == key && old->synth && old->sampleRate == sampleRate) e->synth = old->synth;
+            if (!e->synth) e->synth = std::make_shared<jaras::audio::CatSynth>(sampleRate);
+            e->synth->configure(synthState::patch(get(value, "catSynth")));
+            effects.push_back(std::move(e));
+            return;
+        }
         if (const auto count = drummer::count(kind)) {
             if (!flag(value, drummer::enabledField(count))) return;
             const auto kit = drummer::kit(value, count);
@@ -307,7 +326,6 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
                             : kind == "Delay"      ? "delayEnabled"
                             : kind == "Reverb"     ? "reverbEnabled"
                             : kind == "Limiter"    ? "limiterEnabled"
-                            : kind == "Pitch"      ? "pitchEnabled"
                                                    : String();
         if (enabledKey.isNotEmpty() && !flag(value, Identifier(enabledKey)))
             return;
@@ -520,11 +538,21 @@ void NativeFX::captureExternalState(var &settings) const {
         for(const auto &effect:effects)if(effect->plugin==processor)effect->externalConfiguration=JSON::toString(configuration,true);
     }
 }
-unsigned NativeFX::latencyFrames() const {unsigned value=0;for(const auto &e:effects)if(e->stem)value+=e->stem->availableLatency();return value;}
+unsigned NativeFX::latencyFrames() const {
+    unsigned value = 0;
+    for (const auto &effect : effects) {
+        if (effect->stem) value += effect->stem->availableLatency();
+        if (effect->pitch) value += unsigned(effect->pitch->inputLatency() + effect->pitch->outputLatency());
+    }
+    return value;
+}
 unsigned NativeFX::readyLatencyFrames(bool releaseRemoved) const {
     unsigned value=0;
-    for(const auto &e:effects)if(e->stem&&!(releaseRemoved&&e->retiredStem))
-        value+=e->stem->pending()?e->stem->latency():e->stem->availableLatency();
+    for (const auto &effect : effects) {
+        if (effect->stem && !(releaseRemoved && effect->retiredStem))
+            value += effect->stem->pending() ? effect->stem->latency() : effect->stem->availableLatency();
+        if (effect->pitch) value += unsigned(effect->pitch->inputLatency() + effect->pitch->outputLatency());
+    }
     return value;
 }
 void NativeFX::collectReadyStemActivations(std::vector<std::shared_ptr<native::stem::Processor>> &pending) const {
@@ -590,6 +618,20 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
     if (effects.empty()) return;
     ScopedNoDenormals noDenormals;
     for (auto &e : effects) {
+        if (e->synth) {
+            auto *left = buffer.getWritePointer(0);
+            auto *right = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+            int cursor = 0;
+            e->synth->beginBlock();
+            if (midi) for (const auto event : *midi) {
+                const auto at = jlimit(cursor, samples, event.samplePosition);
+                if (at > cursor) e->synth->render(left+cursor, right ? right+cursor : nullptr, unsigned(at-cursor));
+                cursor = at;
+                if (event.numBytes >= 3) e->synth->midi(event.data[0], event.data[1], event.data[2]);
+            }
+            if (samples > cursor) e->synth->render(left+cursor, right ? right+cursor : nullptr, unsigned(samples-cursor));
+            continue;
+        }
         if (e->drums) {
             auto *left = buffer.getWritePointer(0);
             auto *right = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
@@ -634,7 +676,7 @@ void NativeFX::process(AudioBuffer<float> &buffer, int samples,double seconds,bo
             const auto reduction = e->plugin->gainReduction();
             if (reduction >= 0) reductionDB = std::max(reductionDB, e->bypassed ? 0.f : reduction);
         }
-        if (e->kind == "Pitch" && (e->parameters.values[0] != 0 || e->parameters.values[1] != 0)) {
+        if (e->pitch) {
             for (int ch = 0; ch < 2; ++ch)
                 e->pitchInput.copyFrom(ch, 0, buffer, ch, 0, samples);
             e->pitch->process(e->pitchInput.getArrayOfReadPointers(), samples,

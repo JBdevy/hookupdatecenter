@@ -168,6 +168,7 @@ import Combine
     @State private var metronomeOpen = false
     @State private var regionActions: UUID?
     @State private var detectingRegion: UUID?
+    @State private var selectionTempoRequest: SelectionTempoRequest?
     @State private var homeOpen = false
     @State private var addingTrack = false
     @State private var advancedOpen = false
@@ -193,7 +194,7 @@ import Combine
         _local = StateObject(wrappedValue: IpadStandalonePresentation(show: show, documents: documents))
     }
     private var dialogOpen: Bool {
-        homeOpen || clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
+        homeOpen || clickSoundTrack != nil || remoteSettingsOpen || remoteTeleprompter != nil || patch != nil || settingsOpen || metronomeOpen || regionActions != nil || detectingRegion != nil || selectionTempoRequest != nil || sharingProject || advancedOpen || matrixOpen || addingTrack || regionLoops != nil || itemMenu != nil || editingTextItem != nil || fullLyricsTarget != nil || trackEdit != nil || fx != nil || automationTrack != nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -203,7 +204,11 @@ import Combine
                         onExit()
                     }, local: true, openHome: { homeOpen = true },
                     openNativeProject: { documents.browse(onlyCatLiveProject: true) }, exportNativeAudio: { exportingAudio = true },
-                    localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 }, openPatch: { patch = .init(track: $0) }, openPlugin: { fx = .init(track: $0, effect: $1) },
+                    localShow: show, timelineFocus: local.timelineFocus, openMetronome: { metronomeOpen = true }, openRegionActions: { regionActions = $0 }, detectRegionBPM: { detectingRegion = $0 },
+                    detectSelectionBPM: { selection in
+                        guard let song = show.current, TimelineAreaSelection.shared.range == selection else { return }
+                        selectionTempoRequest = SelectionTempoRequest(selection: selection, song: song, documents: documents)
+                    }, openPatch: { patch = .init(track: $0) }, openPlugin: { fx = .init(track: $0, effect: $1) },
                     openSelectedPatch: { patch = .init(track: $0.first, targets: $0.map { Optional($0) }) },
                     openTrackAutomation: { automationTrack = $0 },
                     openTrackDetails: { presentTrackDetails($0) },
@@ -233,6 +238,7 @@ import Combine
         .onDisappear { local.stop(); IpadItemContextMenu.commands = { _, _ in [] }; IpadTimelinePointerContextMenu.contains = { _ in false } }
         .disabled(dialogOpen || audio.localSessionReconfiguring).accessibilityHidden(dialogOpen)
         .overlay { workspaceDialogs }
+        .onChange(of: show.projectSessionID) { _ in selectionTempoRequest = nil }
         .overlay(alignment: .bottom) {
             if audio.localSessionReconfiguring && !audio.error.isEmpty {
                 Text(verbatim: audio.error).font(.jarasCallout).multilineTextAlignment(.center)
@@ -379,12 +385,16 @@ import Combine
             IpadCompactModal {
                 IpadRegionActions(show: show, id: id, close: { regionActions = nil })
             }
+        } else if let selectionTempoRequest {
+            IpadCompactModal(preferredSize: CGSize(width: 350, height: 180)) {
+                SelectionTempoResultView(request: selectionTempoRequest, close: { self.selectionTempoRequest = nil })
+            }
         } else if let id = detectingRegion {
             IpadCompactModal(preferredSize: CGSize(width: 500, height: 270)) {
                 IpadRegionBPMDetection(show: show, documents: documents, region: id, close: { detectingRegion = nil })
             }
         } else if let target = patch {
-            IpadCompactModal(preferredSize: CGSize(width: 620, height: 540)) {
+            IpadCompactModal(preferredSize: CGSize(width: target.targets.count > 1 ? 620 : 350, height: 540)) {
                 VStack(spacing: 0) {
                     IpadModalHeader(title: "Patch", subtitle: target.track.flatMap { FXModelLookup.track($0, in: show.snapshot.project)?.name } ?? "Main", close: { patch = nil })
                     PatchEditor(show: show, track: target.track, targets: target.targets.isEmpty ? [target.track] : target.targets)
@@ -1442,7 +1452,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
                     TransportControlIcon(name: "record", size: 13, color: recorder.recording || recorder.countingIn ? nil : JarasTheme.liveOffRed)
                 }
             }.buttonStyle(RecordingButtonStyle(active: recorder.recording || recorder.countingIn, width: controlWidth ?? 47,
-                    height: 28, fontSize: 10, cornerRadius: 6, transport: true,
+                    height: TransportControlMetrics.proHeight, fontSize: 10, cornerRadius: 6, transport: true,
                     idleTransportBackground: Color(hex: 0x454545), idleTransportForeground: .white))
                 .overlay {
                     IpadTapHoldTouchSurface(tap: { recorder.toggle(show: show) }, hold: { recordingSettings = true })
@@ -1459,7 +1469,7 @@ struct IpadDialogButtonStyle: ButtonStyle {
                 TransportControlIcon(name: "metronome", size: 17)
             }.buttonStyle(TransportButtonStyle(color: metronome.enabled ? JarasTheme.yellow : Color(hex: 0x454545),
                 active: metronome.enabled, inactiveOpacity: 1, fontSize: TransportControlMetrics.font,
-                width: controlWidth ?? 30, height: TransportControlMetrics.metronomeButtonHeight, bordered: false))
+                width: controlWidth ?? 30, height: TransportControlMetrics.proHeight, bordered: false))
                 .overlay {
                     if let configureMetronome {
                         IpadTapHoldTouchSurface(tap: { metronome.enabled.toggle() }, hold: configureMetronome)

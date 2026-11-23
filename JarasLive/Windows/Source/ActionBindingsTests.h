@@ -79,7 +79,7 @@ void addActionBindingsTests(const File &directory, Register &&test) {
         require(calls==3&&reopened.midiInput("togglePreview").isObject(),"Preview mappings were not saved");
     });
     test("Transport toggles accept one MIDI press until release", [&, require] {
-        for (const auto *action : {"playStop", "subPlayStop"}) {
+        for (const auto *action : {"playStop", "subPlayStop", "tapTempo"}) {
             Appearance settings(directory.getNonexistentChildFile("transport-press", ".json"));
             AudioDeviceManager devices; ActionBindings bindings(settings, devices);
             auto input=object(); put(input,"status",0x90); put(input,"number",61); put(input,"channel",2);

@@ -384,6 +384,41 @@ void validateRouting(const Song& song) {
     };
     for (const auto& id : audio) visit(id);
 }
+void selectLineInput(Song& song, Track& track, OutputPatch input) {
+    const auto assign = [](Track& row, OutputPatch patch) {
+        row.inputPatch = patch;
+        if (patch.firstChannel > 0) {
+            row.midiInput.reset();
+            if (row.recordingChannels == 0) row.recordingChannels = patch.channelCount;
+        }
+    };
+    if (!track.stereoLinkPartner) {
+        assign(track, input);
+        return;
+    }
+    const auto offset = track.stereoLinkLeft ? 0 : 1;
+    const auto first = std::clamp(input.firstChannel - offset, 1, 1023);
+    assign(track, input.firstChannel < 0 ? input : OutputPatch{first + offset, 1});
+    for (auto& partner : song.tracks) {
+        if (partner.id == *track.stereoLinkPartner)
+            assign(partner, input.firstChannel < 0 ? input : OutputPatch{first + 1 - offset, 1});
+    }
+}
+
+void selectMIDIInput(Song& song, Track& track, std::optional<int> slot, bool clearLineInput) {
+    if (slot || clearLineInput) selectLineInput(song, track, {-1, 2});
+    track.midiInput = slot;
+    if (slot && !track.receivesMain()) track.recordingChannels = 0;
+}
+
+void reconcileTrackInputs(Project& project) {
+    for (auto& song : project.songs) for (auto& track : song.tracks) {
+        if (!track.supportsMixerComponents() || !track.midiInput || !track.inputPatch || track.inputPatch->firstChannel <= 0) continue;
+        if (track.recordingChannels == 0) selectMIDIInput(song, track, track.midiInput);
+        else track.midiInput.reset();
+    }
+}
+
 void validate(const Project& p) {
     auto require = [](bool valid, const char* message) { if (!valid) throw std::invalid_argument(message); };
     auto finite = [](double x) { return std::isfinite(x); };

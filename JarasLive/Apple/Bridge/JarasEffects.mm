@@ -6,6 +6,7 @@
 #include "../../Core/Audio/CreativeEffects.hpp"
 #include "../../Core/Transport/PluginTransportClock.hpp"
 #include "../../Core/Audio/PadGateRelease.hpp"
+#include "../../Core/Audio/RemoteMainAudio.hpp"
 #include <TargetConditionals.h>
 #import <Accelerate/Accelerate.h>
 #include <array>
@@ -24,6 +25,21 @@
 #include "JarasPadSource.inc"
 
 #include "../../Core/MIDI/ChordName.hpp"
+
+@implementation JarasRemoteMainAudio {
+    jaras::audio::RemoteMainAudio audio;
+}
+- (void)setCapturing:(BOOL)capturing { audio.setEnabled(capturing); }
+- (void)captureBuffer:(AVAudioPCMBuffer *)buffer {
+    auto *channels = buffer.floatChannelData;
+    if (!channels || buffer.format.isInterleaved || buffer.format.channelCount < 2) return;
+    audio.push(channels[0], channels[1], buffer.frameLength, unsigned(buffer.format.sampleRate));
+}
+- (NSData *)nextPacket {
+    auto data = audio.pop();
+    return data.empty() ? nil : [NSData dataWithBytes:data.data() length:data.size()];
+}
+@end
 
 @implementation JarasMIDIChord
 + (NSString *)nameForPitchClasses:(uint16_t)classes bass:(NSInteger)bass {
@@ -1547,12 +1563,12 @@ struct CreativeKernel {
 };
 }
 
-// The normal Pitch insert keeps its original processor at neutral formant.
-// This stage owns both spectral transformations whenever the envelope is shifted.
+// One continuously clocked processor keeps the same latency for pitch,
+// formant and the neutral signal.
 namespace {
 struct PitchFormantKernel {
     signalsmith::stretch::SignalsmithStretch<float> stretch{0};
-    std::atomic<uint32_t> controls{0};
+    std::atomic<uint32_t> controls{pack(0, 0)};
     std::atomic<bool> resetRequested{true};
     std::atomic<double> latency{0};
     uint32_t applied = 0;
@@ -1569,20 +1585,19 @@ struct PitchFormantKernel {
         for (unsigned channel = 0; channel < channels; ++channel)
             input[channel] = samples.data() + size_t(channel) * frames;
         stretch.presetDefault(int(channels), float(rate));
+        stretch.setNeutralWarmup(true);
         latency.store((stretch.inputLatency() + stretch.outputLatency()) / rate);
         resetRequested.store(true);
         applied = 0;
     }
     static uint32_t pack(float pitch, float formant) {
-        if (!std::isfinite(formant) || std::abs(formant) < .005f) return 0;
         const auto field = [](float value) {
             return uint32_t(std::lround((std::clamp(std::isfinite(value) ? value : 0.f, -12.f, 12.f) + 12.f) * 100));
         };
-        return 1u + (field(pitch) << 12) + field(formant);
+        return (field(pitch) << 12) | field(formant);
     }
     OSStatus process(AudioBufferList *buffers, unsigned frames) {
         const auto next = controls.load(std::memory_order_acquire);
-        if (next == 0) { applied = 0; return noErr; }
         if (frames > capacity) return kAudioUnitErr_TooManyFramesToProcess;
         if (buffers->mNumberBuffers != input.size()) return kAudioUnitErr_FormatNotSupported;
         for (unsigned ch = 0; ch < input.size(); ++ch) {
@@ -1593,11 +1608,10 @@ struct PitchFormantKernel {
             std::copy_n(output[ch], frames, samples.data() + size_t(ch) * capacity);
         }
         const bool reset = resetRequested.exchange(false, std::memory_order_acq_rel);
-        if (!applied || reset) stretch.reset();
+        if (reset) stretch.reset();
         if (applied != next || reset) {
-            const auto fields = next - 1;
-            stretch.setTransposeSemitones(float(fields >> 12) * .01f - 12.f);
-            stretch.setFormantSemitones(float(fields & 0xfffu) * .01f - 12.f);
+            stretch.setTransposeSemitones(float(int(next >> 12) - 1200) * .01f);
+            stretch.setFormantSemitones(float(int(next & 0xfffu) - 1200) * .01f);
             applied = next;
         }
         stretch.process(input.data(), int(frames), output.data(), int(frames));
@@ -1627,7 +1641,7 @@ struct PitchFormantKernel {
 }
 - (AUAudioUnitBusArray *)inputBusses { return _inputs; }
 - (AUAudioUnitBusArray *)outputBusses { return _outputs; }
-- (NSTimeInterval)latency { return kernel.controls.load() ? kernel.latency.load() : 0; }
+- (NSTimeInterval)latency { return kernel.latency.load(); }
 - (BOOL)allocateRenderResourcesAndReturnError:(NSError **)error {
     if (![_input.format isEqual:_output.format] || _output.format.interleaved ||
         _output.format.commonFormat != AVAudioPCMFormatFloat32) {
@@ -1647,7 +1661,7 @@ struct PitchFormantKernel {
         const OSStatus inputStatus = pull(flags, time, frames, 0, output);
         if (inputStatus != noErr) return inputStatus;
         const auto status = state->process(output, frames);
-        if (status == noErr && state->applied != 0) updateEffectSilenceFlag(flags, output, frames);
+        if (status == noErr) updateEffectSilenceFlag(flags, output, frames);
         return status;
     };
 }

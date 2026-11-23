@@ -102,8 +102,16 @@ final class MIDIItemTests: XCTestCase {
     func snapshot() throws -> ShowSnapshot {ShowSnapshot(project:project,transport:TransportState(playing:false,songId:project.songs.first?.id,position:editPosition,editPosition:editPosition,queue:QueueState(),loop:LoopState(enabled:false),subPlay:SubPlayState(playing:false,position:0)))}
     func playbackSnapshot() throws -> PlaybackSnapshot {PlaybackSnapshot(transport:try snapshot().transport)}
     func applyProjectEdit(_ value:Project) throws {try value.validate();project=value}
-    func setRecordingChannels(_ track: UUID, channel: Int) throws { project.songs[0].tracks[0].recordingChannels = channel }
-    func setMIDIInput(_ track: UUID, slot: Int) throws { project.songs[0].tracks[0].midiInput = slot }
+    func setRecordingChannels(_ track: UUID, channel: Int) throws {
+        if channel == TrackRecordingMode.midi.rawValue {
+            let slot = project.songs[0].tracks[0].midiInput
+            project.songs[0].selectMIDIInput(slot, forTrack: 0, clearLineInput: true)
+        }
+        project.songs[0].tracks[0].recordingChannels = channel
+    }
+    func setMIDIInput(_ track: UUID, slot: Int) throws {
+        project.songs[0].selectMIDIInput(slot == 0 ? nil : slot, forTrack: 0)
+    }
     func addRecordedClip(_ clip: AudioClip, track: UUID) throws { project.songs[0].tracks[0].clips.append(clip); project.songs[0].duration = max(project.songs[0].duration, clip.startTime + clip.duration) }
     func insertAudioTracks(_ tracks: [Track], song: UUID) throws {
         guard let index = project.songs.firstIndex(where: { $0.id == song }) else { return }
@@ -316,6 +324,7 @@ extension MIDIItemTests {
         let track = Track(id: UUID(), name: "MIDI", role: .keys)
         project.songs[0].tracks = [track]
         let show = try ShowController(executor: executor, persistence: MemoryProjectStore(), initialProject: project)
+        show.preferredInstrumentMIDIInput = { 1 }
         XCTAssertEqual(track.recordingMode, .stereo)
         show.setRecordingChannels(track.id, channel: TrackRecordingMode.midi.rawValue)
         XCTAssertEqual(show.current?.tracks[0].recordingMode, .midi)

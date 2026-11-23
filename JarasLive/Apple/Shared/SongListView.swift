@@ -184,6 +184,7 @@ struct SongListView: View {
     @State private var createdBlock: UUID?
     @State private var selectedEntries: Set<UUID> = []
     @State private var entrySelectionAnchor: UUID?
+    @State private var rowFocus: (id: UUID, regionRequest: UUID, setlistRequest: UUID)?
     @State private var playlistMaximumListHeight: CGFloat = 500
     @State private var choosingPlaylist = false
     @State private var showingPlaylistCopyResult = false
@@ -255,11 +256,16 @@ struct SongListView: View {
             selectedEntries = [id]; entrySelectionAnchor = id
             if let entry = visible.first(where: { $0.id == id }), case .region = entry {
                 show.focusRegion(id)
+                rowFocus = show.focusedRegion == id ? (id, show.regionFocusRequest, show.setlistFocusRequest) : nil
                 if show.focusedRegion == nil { selectedEntries = []; entrySelectionAnchor = nil }
             }
         }
         show.smkNavigation.selectSongs()
         show.selectSetlistBlock(selectedEntries.count == 1 ? selectedEntries.first : nil)
+    }
+    private func shouldRevealSetlistFocus(_ id: UUID) -> Bool {
+        guard let rowFocus else { return true }
+        return rowFocus.id != id || rowFocus.regionRequest != show.regionFocusRequest || rowFocus.setlistRequest != show.setlistFocusRequest
     }
     var body: some View {
         let song = show.current
@@ -516,27 +522,29 @@ struct SongListView: View {
                     }
                     #endif
                 }.onChange(of: show.focusedRegion) { id in
-                    if let id { selectedEntries = [id]; entrySelectionAnchor = id; scroll.scrollTo(visibleFocusID(id)) }
-                    else { selectedEntries = []; entrySelectionAnchor = nil }
+                    if let id {
+                        selectedEntries = [id]; entrySelectionAnchor = id
+                        if shouldRevealSetlistFocus(id) { scroll.scrollTo(visibleFocusID(id)) }
+                    } else { selectedEntries = []; entrySelectionAnchor = nil; rowFocus = nil }
                 }
                     .onChange(of: selectedEntries) { ids in
                         AudioExportSelection.shared.setRegions(Set(ids.map(show.playlistRegionSourceID)), song: show.current?.id)
                     }
-                    .onChange(of: show.selectedRegionPlaylist?.id) { _ in selectedEntries = []; entrySelectionAnchor = nil }
-                    .onChange(of: show.snapshot.project.id) { _ in selectedEntries = []; entrySelectionAnchor = nil; creatingPlaylist = false; addingToPlaylist = nil }
+                    .onChange(of: show.selectedRegionPlaylist?.id) { _ in selectedEntries = []; entrySelectionAnchor = nil; rowFocus = nil }
+                    .onChange(of: show.snapshot.project.id) { _ in selectedEntries = []; entrySelectionAnchor = nil; rowFocus = nil; creatingPlaylist = false; addingToPlaylist = nil }
                     .onChange(of: show.regionFocusRequest) { request in
                         // Apply after the destination playlist has laid out, including repeated results.
                         DispatchQueue.main.async {
                             guard show.regionFocusRequest == request, let id = show.focusedRegion else { return }
                             selectedEntries = [id]; entrySelectionAnchor = id
-                            scroll.scrollTo(visibleFocusID(id))
+                            if shouldRevealSetlistFocus(id) { scroll.scrollTo(visibleFocusID(id)) }
                         }
                     }
                     .onChange(of: show.setlistFocusRequest) { request in
                         DispatchQueue.main.async {
                             guard show.setlistFocusRequest == request, let id = show.focusedRegion else { return }
                             selectedEntries = [id]; entrySelectionAnchor = id
-                            scroll.scrollTo(visibleFocusID(id))
+                            if shouldRevealSetlistFocus(id) { scroll.scrollTo(visibleFocusID(id)) }
                         }
                     }
                     .onChange(of: createdBlock) { id in if let id { scroll.scrollTo(id, anchor: .top) } }

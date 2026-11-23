@@ -38,7 +38,7 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
         g.fillEllipse(bounds.withSizeKeepingCentre(5.f, 5.f));
         return true;
     }
-    if (name == "toolSelect" || name == "toolCut" || name == "toolMute" || name == "toolSolo") {
+    if (name == "toolSelect" || name == "toolCut" || name == "toolMute" || name == "toolSolo" || name == "toolExclusiveSolo") {
         const auto b=bounds.withSizeKeepingCentre(15.f,15.f);
         const auto at=[&](float x,float y){return Point<float>(b.getX()+x,b.getY()+y);};
         if (name == "toolSelect") {
@@ -50,6 +50,10 @@ inline bool drawInterfaceIcon(Graphics &g, const String &name, juce::Rectangle<f
             g.drawEllipse(b.getX()+9,b.getY()+8,5,5,1.2f);
             g.drawLine(Line<float>(at(5,9),at(13,1)),1.2f);
             g.drawLine(Line<float>(at(10,9),at(2,1)),1.2f);
+        } else if (name == "toolExclusiveSolo") {
+            g.drawEllipse(b.reduced(1.f), 1.2f);
+            g.setFont(theme::semiboldFont(10));
+            g.drawText("1", b, Justification::centred, false);
         } else {
             g.setFont(theme::semiboldFont(12));
             g.drawText(name=="toolMute"?"M":"S",b,Justification::centred,false);

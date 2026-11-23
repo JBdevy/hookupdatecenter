@@ -1,6 +1,7 @@
 #pragma once
 #include <bitset>
 #include "../../Core/Audio/StopTransition.hpp"
+#include "../../Core/Audio/RemoteMainAudio.hpp"
 #include "../../Core/Transport/SongPluginTempo.hpp"
 #include "../../Core/Loop/MultiLoopMixer.hpp"
 #include "SystemAudioDefaults.h"
@@ -33,6 +34,8 @@ class ClipAudio;
 // Prepared readers, buffers and routing live outside the device callback.
 class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallback, private MidiKeyboardState::Listener, private Timer {
   public:
+    void setRemoteMainAudioStreaming(bool enabled) { remoteMainAudio.setEnabled(enabled); }
+    std::vector<uint8_t> takeRemoteMainAudio() { return remoteMainAudio.pop(); }
     VinhetasAudio vinhetas;
     void playLibrarySample(std::shared_ptr<VinhetasAudio::Sample>, float gain);
     void setLibrarySampleGain(float gain);
@@ -64,6 +67,10 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     AudioCallbackMetrics callbackMetrics;
     // -2 idle, -1 waiting for the next note, 0...127 learned note.
     std::atomic<int> drummerLearnNote{-2};
+    std::shared_ptr<jaras::audio::CatSynth> synthVoice(const ID &id, const String &key, int head = 0) const {
+        if (auto *fx = effects(id, head)) return fx->synthVoice(key);
+        return {};
+    }
     std::shared_ptr<jaras::audio::DrummerPad> drummerVoice(const ID &id, const String &key, int head = 0) const {
         if (auto *fx = effects(id, head)) return fx->drummerVoice(key);
         return {};
@@ -335,6 +342,7 @@ class AudioEngine final : public AudioIODeviceCallback, private MidiInputCallbac
     var preparationDiagnostics;
 
   private:
+    jaras::audio::RemoteMainAudio remoteMainAudio;
     NativeFX *effects(const ID &, int head = 0) const;
     int lastPrimedSources = 0;
     double lastPrimeWaitMilliseconds = 0;

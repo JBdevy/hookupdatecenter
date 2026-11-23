@@ -1,7 +1,7 @@
 #pragma once
 #include "Session.h"
 #include "TempoEditing.h"
-#include "BPMInputPanel.h"
+#include "Localization.h"
 namespace catlive {
 class TempoControl final : public Component {
   public:
@@ -21,11 +21,25 @@ class TempoControl final : public Component {
         up.setTooltip("Aumentar BPM");
         down.setTooltip("Diminuir BPM");
         addAndMakeVisible(bpm);
+        bpm.setComponentID("bpmReadout");
         bpm.getProperties().set("plain", true);
         bpm.getProperties().set("fontSize", 15);
         bpm.onClick = std::move(tap);
         bpm.context = [this](Point<int>) { editBPM(); };
         bpm.setTooltip("Tap tempo · Clique direito para editar BPM");
+        addChildComponent(bpmInput);
+        bpmInput.setComponentID("bpmValue");
+        bpmInput.setName("BPM");
+        bpmInput.setFont(theme::semiboldFont(14));
+        bpmInput.setJustification(Justification::centred);
+        bpmInput.setIndents(0, 0);
+        bpmInput.setBorder(BorderSize<int>(1));
+        bpmInput.setSelectAllWhenFocused(true);
+        bpmInput.setInputRestrictions(8, "0123456789.,");
+        bpmInput.setPopupMenuEnabled(false);
+        bpmInput.onReturnKey = [this] { finishBPM(true); };
+        bpmInput.onEscapeKey = [this] { closeBPM(); };
+        bpmInput.onFocusLost = [this] { finishBPM(false); };
         for (auto *field : {&beats, &unit}) {
             addAndMakeVisible(field);
             field->setFont(theme::font(13));
@@ -51,6 +65,7 @@ class TempoControl final : public Component {
     }
     void refresh() {
         const auto value = session.tempoBPM();
+        if (bpmInput.isVisible() && !session.tempoInputAllowed()) closeBPM();
         bpm.setButtonText(String::formatted("%g", value));
         const auto *song = session.song();
         const auto *part = song ? tempoEditing::region(*song, session.transport()) : nullptr;
@@ -90,6 +105,7 @@ class TempoControl final : public Component {
         unit.setBounds(roundToInt(37 * scale), centerY, roundToInt(24 * scale), 23);
         down.setBounds(roundToInt(65 * scale), stepY, roundToInt(stepWidth * scale), stepHeight);
         bpm.setBounds(roundToInt(94 * scale), std::max(0, (getHeight() - 26) / 2), roundToInt(55 * scale), 18);
+        bpmInput.setBounds(bpm.getBounds());
         up.setBounds(roundToInt(150 * scale), stepY, roundToInt(stepWidth * scale), stepHeight);
     }
 
@@ -98,7 +114,7 @@ class TempoControl final : public Component {
     std::function<void(String)> error;
     std::function<void()> resetTap;
     QuietButton up{"+"}, down{String::fromUTF8("−")}, bpm;
-    TextEditor beats, unit;
+    TextEditor beats, unit, bpmInput;
     uint64 tempoRevision = std::numeric_limits<uint64>::max();
     ID tempoRegion;
     bool tempoNeedsRender = false;
@@ -120,10 +136,30 @@ class TempoControl final : public Component {
         refreshMeter();
     }
     void editBPM() {
-        if (!session.tempoInputAllowed()) return;
-        auto *parent = getTopLevelComponent();
-        ModalSheet::open(*parent,"BPM",std::make_unique<BPMInputPanel>(bpm.getButtonText(),
-            [safe=SafePointer<TempoControl>(this)](double value){if(safe && safe->session.tempoInputAllowed())safe->apply(value,0,0);},error),390,188);
+        if (!session.tempoInputAllowed() || bpmInput.isVisible()) return;
+        bpmInput.setText(bpm.getButtonText(), false);
+        bpm.setVisible(false);
+        bpmInput.setVisible(true);
+        bpmInput.grabKeyboardFocus();
+        bpmInput.selectAll();
+    }
+    void closeBPM() {
+        bpmInput.setVisible(false);
+        bpm.setVisible(true);
+    }
+    void finishBPM(bool keepInvalidOpen) {
+        if (!bpmInput.isVisible()) return;
+        const auto text = bpmInput.getText().replaceCharacter(',', '.').toStdString();
+        size_t consumed = 0;
+        double value = 0;
+        try { value = std::stod(text, &consumed); } catch (const std::exception &) {}
+        if (!session.tempoInputAllowed() || consumed != text.size() || !std::isfinite(value) || value < 60 || value > 300) {
+            if (keepInvalidOpen && error) error(localization::translate("Enter a BPM between 60 and 300."));
+            else closeBPM();
+            return;
+        }
+        closeBPM();
+        apply(value, 0, 0);
     }
 
     void change(int delta) {

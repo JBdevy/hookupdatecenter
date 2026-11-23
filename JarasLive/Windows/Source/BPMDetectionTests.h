@@ -41,6 +41,36 @@ inline int tempos(const Session &session) {
         [](const auto &marker) { return marker.tempoBPM.has_value(); }) : 0;
 }
 template <typename Test> void registerTests(const File &directory, Test &test) {
+    test("Ruler selection measures only arranged PCM, preserving the project and cursor", [&] {
+        const auto file = clickFile(directory);
+        auto project = fixture(file);
+        auto& track = project.songs.front().tracks.front();
+        track.role.id = "other"; track.name = "Percussion";
+        auto& clip = track.clips.front();
+        clip.sourceOffset = 3; clip.playbackRate = 1.5; clip.duration = 6;
+        clip.loopStart = 3; clip.loopLength = 2;
+        Session session; setup(session,project,directory);
+        session.command(jaras::CommandKind::editSeek,{},2.25);
+        const auto before = JSON::toString(ProjectCodec::encode(session.project()));
+        const bool dirty = session.dirty;
+        auto scan = [&](double from, double to) {
+            auto progress = std::make_shared<std::atomic<double>>(0);
+            String report;
+            session.detectSelectionBPM(from,to,progress,[&](String value) { report = std::move(value); });
+            require(session.isDetectingBPM() && !session.busy, "Range scan blocked the session");
+            wait(session);
+            require(report.isNotEmpty() && progress->load() == 1., "No completed range result");
+            return report;
+        };
+        require(std::abs(scan(1.,5.75).getDoubleValue()-180.) < .1, "Failed rate, offset or loop mapping");
+        require(scan(8.,13.).getDoubleValue() == 0, "Out-of-range audio contributed a tempo");
+        require(session.dirty == dirty && session.transport().editPosition == 2.25 && tempos(session) == 0 &&
+                JSON::toString(ProjectCodec::encode(session.project())) == before, "Measurement changed the project or cursor");
+        bool stale = false;
+        session.detectSelectionBPM(0,4,std::make_shared<std::atomic<double>>(0),[&](String) { stale = true; });
+        session.cancelBPMDetection(); pump();
+        require(!stale && !session.isDetectingBPM(), "Cancelled range reported a stale result");
+    });
     test("BPM detection reuses prepared waveform peaks and invalidates changed source stamps", [&] {
         const auto file = clickFile(directory);
         AudioFormatManager formats; registerAudioFormats(formats);

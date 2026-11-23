@@ -86,6 +86,7 @@ enum JarasTheme {
     static let green = Color(hex: 0x69ed91)
     static let workspaceToolbar = Color(hex: 0x2a2a2a)
     static let desktopTransportGradient = [Color(hex: 0x262626), Color(hex: 0x1a1a1a)]
+    static let transportControlGroup = Color(hex: 0x343434)
     static let workspaceTransportGradient = [Color(hex: 0x10291c), Color(hex: 0x07100b)]
     static let licenseTitleGreen = Color(hex: 0x54ff93)
     static let transportPlay = Color(hex: 0x24f06a)
@@ -360,8 +361,7 @@ struct TransportControlIcon: View {
 struct TransportDetailSurface: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 4)
-            .fill(LinearGradient(colors: [Color(hex: 0x1f1f1f), Color(hex: 0x1a1a1a)],
-                                 startPoint: .top, endPoint: .bottom))
+            .fill(JarasTheme.transportControlGroup)
             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color(hex: 0x3b3b3b)))
             .allowsHitTesting(false)
     }

@@ -3,6 +3,7 @@ import XCTest
 @MainActor private final class PitchTestExecutor: CommandExecutor {
     var project = Project.empty(name: "Pitch")
     func load(_ value: Project) throws { project = value }
+    func applyProjectEdit(_ value: Project) throws { project = value }
     func snapshot() throws -> ShowSnapshot {
         ShowSnapshot(project: project, transport: TransportState(playing: false, songId: project.songs[0].id, position: 0,
             queue: QueueState(), loop: LoopState(enabled: false), subPlay: SubPlayState(playing: false, position: 0)))
@@ -31,6 +32,58 @@ import XCTest
     }
 }
 final class NativeFXTests: XCTestCase {
+    func testCatSynthPresetSlotsSurviveProjectEncodingAndEffectBypass() throws {
+        var settings = NativeFXSettings()
+        let key = settings.appendNative("CatSynth", asInstance: true)
+        var draft = settings.settings(for: key)
+        var bank = CatSynthBank()
+        bank.selected = 5
+        bank.slots[5] = Array(repeating: 0.2, count: CatSynthBank.parameterCount)
+        bank.slots[1] = Array(repeating: 0.8, count: CatSynthBank.parameterCount)
+        bank.names = Array(repeating: nil, count: CatSynthBank.count)
+        bank.names?[5] = "Teclas 🎹"
+        draft.catSynth = bank
+        settings = settings.merging(effect: key, from: draft)
+        try settings.validate()
+        XCTAssertTrue(settings.hasNativeMIDIInstrument)
+        var restored = try JSONDecoder().decode(NativeFXSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored.settings(for: key).catSynth, bank)
+        restored.setEnabled(key, enabled: false)
+        XCTAssertFalse(restored.hasNativeMIDIInstrument)
+        XCTAssertEqual(restored.settings(for: key).catSynth, bank)
+    }
+
+    @MainActor func testNativeAndVSTInstrumentInsertionsSelectMIDIAndClearLineInput() throws {
+        let line = OutputPatch(firstChannel: 1, channelCount: 1)
+        let plugin = ExternalPlugin(classID: String(repeating: "A", count: 32), name: "Synth", path: "/test.vst3",
+                                    category: "Instrument|Synth")
+        for external in [false, true] {
+            var project = Project.empty(name: "Instruments")
+            var track = Track(id: UUID(), name: "Keys", role: .keys)
+            track.inputPatch = line
+            project.songs[0].tracks = [track]
+            let show = try ShowController(executor: PitchTestExecutor(), persistence: MemoryProjectStore(), initialProject: project)
+            show.preferredInstrumentMIDIInput = { 5 }
+            var settings = NativeFXSettings()
+            settings.appendNative("EQ")
+            show.previewFX(track.id, settings: settings)
+            XCTAssertEqual(show.current?.tracks[0].inputPatch, line)
+            if external {
+                settings.externalPlugins = [plugin]
+                settings.inserted.append(plugin.effectKey)
+            } else {
+                settings.appendNative("CatSynth")
+            }
+            show.previewFX(track.id, settings: settings)
+            XCTAssertEqual(show.current?.tracks[0].inputPatch, OutputPatch.none)
+            XCTAssertEqual(show.current?.tracks[0].midiInput, 5)
+            XCTAssertEqual(show.current?.tracks[0].recordingMode, .midi)
+            show.setRecordingInput(track.id, input: line)
+            XCTAssertEqual(show.current?.tracks[0].inputPatch, line)
+            XCTAssertNil(show.current?.tracks[0].midiInput)
+        }
+    }
+
     @MainActor func testSessionFXBypassAllowsIndependentMainAndTrackOverrides() throws {
         var project = Project.empty(name: "Session FX")
         var fx = NativeFXSettings()

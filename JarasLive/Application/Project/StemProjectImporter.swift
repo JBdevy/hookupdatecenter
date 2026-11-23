@@ -863,10 +863,14 @@ enum StemProjectImporter {
             if keys["custom:" + key] == nil { keys["custom:" + key] = index }
         }
         let audioKeys = Set(audit.songs.flatMap(\.files).filter { sources[$0.filePath] != nil }.map(\.trackKey))
+        func importedIcon(_ name: String) -> String {
+            js.objectForKeyedSubscript("catLiveStemIcon")?.call(withArguments: [name])?.toString() ?? "png:Other/waveform"
+        }
         for channel in audit.tracks where audioKeys.contains(channel.key) && keys[channel.key] == nil {
             let role: TrackRole = channel.name == "Click" ? .click : channel.name == "Guia" || channel.name == "Regência" ? .guide : channel.groupKey == "sanfonas" ? .accordion : channel.name.hasPrefix("Baixo") ? .bass : channel.groupKey == "teclados" ? .keys : channel.groupKey == "percussivo" ? .drums : channel.groupKey == "guitarras" ? .guitar : .other
             keys[channel.key] = arrangement.tracks.count
-            arrangement.tracks.append(Track(id: UUID(), name: channel.name, role: role, color: Track.defaultStandardColor))
+            arrangement.tracks.append(Track(id: UUID(), name: channel.name, role: role,
+                instrumentIcon: importedIcon(channel.name), color: Track.defaultStandardColor))
         }
         // Allocate unique filenames and roll back only files owned by this import.
         let relativeFolder = "Stems"
@@ -966,7 +970,10 @@ enum StemProjectImporter {
                 let anchor = target.anchorIndex.map { arrangement.tracks[$0] }
                 let color = folder?.color ?? anchor?.color ?? UInt32(group.colorHex.dropFirst(), radix: 16) ?? 0x55acbe
                 let parent: UUID? = folder?.id ?? (anchor == nil ? UUID() : nil)
-                if folder == nil, let parent { arrangement.tracks.append(Track(id: parent, name: group.name, role: .other, color: color)) }
+                if folder == nil, let parent {
+                    arrangement.tracks.append(Track(id: parent, name: group.name, role: .other,
+                        instrumentIcon: importedIcon(group.name), color: color))
+                }
                 for index in members {
                     arrangement.tracks[index].parentTrackID = parent
                     if parent != nil {
