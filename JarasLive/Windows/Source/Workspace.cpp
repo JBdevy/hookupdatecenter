@@ -5538,7 +5538,7 @@ Workspace::Workspace(Session &s, Auth &a, Lighting &l, bool homePreview, File ap
             menu.addItem(i+1,localization::translate(names[i]),true,static_cast<int>(proTool)==i,image);
         }
         menu.showMenuAsync(PopupMenu::Options().withTargetComponent(controls.at("proTool")),
-            [safe=proOwner](int result) {
+            [safe=proOwner, toolCount](int result) {
                 if (!safe || result<1 || result>toolCount || !safe->proTransport) return;
                 safe->proTool=static_cast<ProTool>(result-1);
                 auto *control=safe->controls.at("proTool");

@@ -94,7 +94,7 @@ class CatSynthEditor final : public Component, public DragAndDropContainer, publ
         g.fillRoundedRectangle(shape, 12);
         g.setColour(accent.withAlpha(.4f)); g.drawRoundedRectangle(shape, 12, 1.f);
         g.setColour(Colour(0xff120a20));
-        g.fillRoundedRectangle(Rectangle<float>(10.f, 10.f, float(getWidth()-20), 70.f), 8.f);
+        g.fillRoundedRectangle(juce::Rectangle<float>(10.f, 10.f, float(getWidth()-20), 70.f), 8.f);
         for (size_t index=0; index<areas.size(); ++index) {
             auto area = areas[index];
             g.setColour(Colour(0xff171022)); g.fillRoundedRectangle(area.toFloat(), 6);
@@ -136,7 +136,7 @@ class CatSynthEditor final : public Component, public DragAndDropContainer, publ
             auto &dials = groups[i];
             for (size_t d=0; d<dials.size(); ++d) {
                 auto &dial = *dials[d];
-                auto bounds = Rectangle<int>(body.getX()+int(d)*body.getWidth()/int(dials.size()), body.getY(),
+                auto bounds = juce::Rectangle<int>(body.getX()+int(d)*body.getWidth()/int(dials.size()), body.getY(),
                                              body.getWidth()/int(dials.size()), body.getHeight());
                 dial.label.setBounds(bounds.removeFromTop(16));
                 dial.slider.setBounds(bounds.reduced(0, 1));
@@ -197,7 +197,7 @@ class CatSynthEditor final : public Component, public DragAndDropContainer, publ
         }
         Font getComboBoxFont(ComboBox &) override { return theme::font(11); }
         void drawComboBox(Graphics &g, int width, int height, bool, int, int, int, int, ComboBox &) override {
-            const auto box = Rectangle<float>(0,0,float(width),float(height)).reduced(.5f);
+            const auto box = juce::Rectangle<float>(0,0,float(width),float(height)).reduced(.5f);
             g.setColour(Colour(0xff2a1a3c)); g.fillRoundedRectangle(box,4);
             g.setColour(Colour(0x42b58aff)); g.drawRoundedRectangle(box,4,1);
             Path arrow;
@@ -209,7 +209,7 @@ class CatSynthEditor final : public Component, public DragAndDropContainer, publ
             width = std::max(134, int(std::ceil(GlyphArrangement::getStringWidth(theme::font(11), text))) + 32);
             height = divider ? 4 : 24;
         }
-        void drawPopupMenuItem(Graphics &g, const Rectangle<int> &area, bool divider, bool enabled,
+        void drawPopupMenuItem(Graphics &g, const juce::Rectangle<int> &area, bool divider, bool enabled,
                                bool highlighted, bool checked, bool, const String &text, const String &,
                                const Drawable *, const Colour *) override {
             if (divider) return;
@@ -274,7 +274,7 @@ class CatSynthEditor final : public Component, public DragAndDropContainer, publ
     std::array<std::vector<std::unique_ptr<Dial>>,8> groups;
     std::array<std::unique_ptr<ComboBox>,8> modes;
     std::array<unsigned,8> modeIndex{};
-    std::array<Rectangle<int>,8> areas;
+    std::array<juce::Rectangle<int>,8> areas;
     const std::array<const char*,8> titles{"OSC 1","OSC 2","OSC 3","FILTER","AMPLIFIER ENV","FILTER ENV","MODULATION","OUTPUT"};
 
     int presetAt(Point<int> point) const {

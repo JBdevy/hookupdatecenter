@@ -391,7 +391,7 @@ class PatchPanel final : public Component, private Timer {
             midi.add("MIDI " + String(slot) + String::fromUTF8(" · ") + label);
         }
         const bool hadLineInput = t->inputPatch && t->inputPatch->firstChannel > 0;
-        choice(0, 108, 196, midi, t->midiInput.value_or(0)+1, [this, hadLineInput](int n) {
+        choice(0, 108, 196, midi, t->midiInput.value_or(0)+1, [this, hadLineInput, inputPanel](int n) {
             const auto slot = n > 1 ? std::optional<int>(n - 1) : std::nullopt;
             try {
                 session.editTrackSettings([&](jaras::Project &project) {
@@ -399,7 +399,7 @@ class PatchPanel final : public Component, private Timer {
                         if (track.id == id) jaras::selectMIDIInput(song, track, slot);
                 }, slot.has_value() && hadLineInput);
             } catch (const std::exception &e) { if (error) error(String::fromUTF8(e.what())); }
-            MessageManager::callAsync([safe = SafePointer<PatchPanel>(this)] { if (safe) safe->build(); });
+            MessageManager::callAsync([inputPanel] { if (inputPanel) inputPanel->build(); });
         });
         StringArray channels{"Todos"};
         for (int i = 1; i <= 16; ++i)
