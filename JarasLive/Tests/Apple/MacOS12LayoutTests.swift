@@ -25,8 +25,9 @@ private final class ButtonsState: ObservableObject {
 private struct ButtonsFixture: View {
     @ObservedObject var state: ButtonsState
     let standard: Bool
-    private var widths: [CGFloat] { standard ? [34, 28, 22, 22, 22, 22, 22, 22] : [47, 22, 22] }
+    static func widths(standard: Bool) -> [CGFloat] { standard ? [34, 28, 22, 47, 22, 22, 22, 22] : [47, 22, 22] }
     var body: some View {
+        let widths = Self.widths(standard: standard)
         TrackMixerContinuousContainer(meterWidth: 12, standard: standard, lowerTitle: true) {
             Color.clear.jarasPlaced(at: 0)
             Color.clear.jarasPlaced(at: 1)
@@ -83,7 +84,7 @@ MainActor.assumeIsolated {
             }
         }
         settleButtons()
-        let widths: [CGFloat] = standard ? [34, 28, 22, 22, 22, 22, 22, 22] : [47, 22, 22]
+        let widths = ButtonsFixture.widths(standard: standard)
         let identities = widths.indices.map { ObjectIdentifier(PlacementProbe.views[100 + $0]!) }
         for showsFader in [true, false] {
             buttonState.showsFader = showsFader

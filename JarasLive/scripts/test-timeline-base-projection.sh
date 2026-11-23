@@ -12,7 +12,7 @@ from pathlib import Path
 import re, sys
 source = Path('Apple/Shared/TimelineGridView.swift').read_text()
 fonts = Path('Apple/Shared/Theme.swift').read_text()
-fonts = fonts[fonts.index('private enum CatLiveTypeface {'):fonts.index('\n#endif', fonts.index('private enum CatLiveTypeface {'))]
+fonts = fonts[fonts.index('// App-owned typography.'):]
 Path(sys.argv[1]).with_name('Fonts.swift').write_text('import SwiftUI\nimport AppKit\nimport CoreText\n' + fonts)
 tempo = Path('Application/Project/TimelineTempo.swift').read_text()
 

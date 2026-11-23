@@ -10,13 +10,18 @@ def native_mixer_sources(*, control_marker=True, timeline_rows=True, scroll_stub
     s=Path('Apple/Shared/TrackMixerRow.swift').read_text()
     theme=Path('Apple/Shared/Theme.swift').read_text()
     parts=['import AppKit\nimport SwiftUI\nimport Combine\nimport UniformTypeIdentifiers\n', Path('Application/Transport/TransportFadeout.swift').read_text().split('extension ShowController {')[0], ('// App-owned typography.' + Path('Apple/Shared/Theme.swift').read_text().split('// App-owned typography.')[1])]
-    display = '; '.join(line.strip() for line in theme.splitlines() if 'static let displayHex:' in line or 'static let lightDarkBackgroundHex:' in line or 'static let workspaceToolbar =' in line)
+    display = '; '.join(line.strip() for line in theme.splitlines() if line.strip().startswith((
+        'static let displayHex:', 'static let lightDarkBackgroundHex:', 'static let workspaceToolbar =', 'static let transportControlGroup =')))
     project=Path('Application/Project/ProjectModels.swift').read_text()
     parts.append(project[project.index('public enum TrackHeightGeometry'):project.index('public struct TrackLinkOriginal')])
     parts.append(theme[theme.index('enum JarasInterfaceTheme:'):theme.index('enum JarasTheme {')])
     parts.append(theme[theme.index('extension Color {'):theme.index('#if os(macOS)\nenum DesktopToolbarTone')])
     parts.append(theme[theme.index('private struct ToolbarIconSurfaceKey:'):theme.index('struct StageButtonStyle:')])
     selection = Path('Apple/Shared/GridSelectionInput.swift').read_text()
+    drawing = selection.index('    static func drawValueTooltip(')
+    parts.append('private enum GridSelectionHeaderControls {\n' + selection[drawing:selection.index('    static func phase(', drawing)] + '}')
+    tooltip = s.index('@MainActor private final class CompactTrackValueTooltip')
+    parts.append(s[tooltip:s.index('\n#endif', tooltip)])
     appearance = selection.index('enum TrackMixerButtonAppearance {')
     parts.append(selection[appearance:selection.index('\n}', appearance) + 2])
     # Exercise the real row equality gate, including the height-mode inputs supplied

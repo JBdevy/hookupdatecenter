@@ -328,9 +328,15 @@
     precondition(edited.coordinateSpace?.contentRevision != cold.coordinateSpace?.contentRevision)
     body.configure(configuration(song, selected: [first.id], height: 24))
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
-    let minimumItemHeight = CGFloat(TrackHeightGeometry.minimumLaneHeight) - 2 * itemInset
-    precondition(body.fillsForTest!.items[0].rect.height == minimumItemHeight && !body.waveformsForTest!.isEmpty,
-        "audio items keep their waveform when the requested height is below the track minimum")
+    let compactRows = TrackRowLayout(tracks: song.tracks, baseHeight: 24)
+    let minimumItemHeight = compactRows.itemLaneHeight(first.id, track: 0) - 2 * itemInset
+    precondition(body.fillsForTest!.items[0].rect.height == minimumItemHeight,
+        "The native item bar follows the compact row height")
+    precondition(body.waveformIDsForTest.contains(first.id) == (minimumItemHeight > 26),
+        "Only the bar is drawn when the compact row has no room for the waveform")
+    body.configure(configuration(song, selected: [first.id]))
+    body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 300)
+    precondition(body.waveformIDsForTest.contains(first.id), "Expanding the row restores the waveform")
     print("NATIVE_BODY_EDIT_SELECTION_AND_MINIMUM_ROW_WAVEFORM_OK")
 
     var shortLoop = first
@@ -380,8 +386,9 @@
     }
     body.configure(configuration(repeatedSong, height: 24))
     body.project(viewport: viewport, documentSize: CGSize(width: 1000, height: 400), scale: 80)
-    precondition(body.inkForTest.count == 3 && body.fillsForTest!.items.allSatisfy { $0.firstSeamX == 200 && $0.repeatSpacing == 160 },
-        "media and text at the minimum row height retain their ink and repetition cuts")
+    precondition(body.fillsForTest!.items.count == 3 && body.fillsForTest!.items.allSatisfy { $0.firstSeamX == 200 && $0.repeatSpacing == 160 },
+        "Media and text at the compact height retain their repetition cuts")
+    precondition(body.inkForTest.allSatisfy { $0.rect.height > 26 }, "Collapsed items reserve the remaining height for their header")
     print("NATIVE_BODY_TEXT_IMAGE_VIDEO_REPEAT_SEAMS_AND_INK_CUTOUTS_OK")
 
     // Projects made entirely of retained text and media must release the
@@ -446,11 +453,13 @@
     precondition(body.inkForTest.map(\.rect) == firstInk, "returning from an offscreen pan restores exact ink geometry")
     body.configure(configuration(specials, height: 24))
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 80)
-    precondition(body.inkForTest.map(\.rect) == firstInk && body.fillsForTest!.items.count == 5,
-        "special items keep their labels at the track minimum")
+    precondition(body.fillsForTest!.items.count == 5 && body.inkForTest.allSatisfy { $0.content.isVisible(in: $0.rect) },
+        "Special items retain their bars and draw labels only in lanes tall enough for them")
     precondition(body.inkForTest.allSatisfy { !$0.content.isVisible(in: CGRect(x: 0, y: 0, width: 80, height: 24)) },
         "item lanes too short for labels omit their ink")
     body.configure(allNative)
+    body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 80)
+    precondition(body.inkForTest.map(\.rect) == firstInk, "Expanding restores the exact special-item ink geometry")
     body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: 0.01)
     for zoom in [0.015, 0.02, 0.04, 0.1] {
         body.project(viewport: viewport, documentSize: CGSize(width: 4000, height: 400), scale: zoom)
