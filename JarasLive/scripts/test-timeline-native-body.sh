@@ -38,7 +38,6 @@ import Combine
 import AVFoundation
 import UniformTypeIdentifiers
 import Metal
-private enum JarasLocalization { static func string(_ value: String) -> String { value } }
 private final class RecordingLaneLayout {
     static let shared = RecordingLaneLayout()
     struct Item { var track: UUID }
@@ -116,7 +115,8 @@ swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos12.0" \
   Application/Project/TrackRouting.swift Application/Project/MultiLoop.swift \
   Application/Project/TrackAutomation.swift Application/Controls/NativeFXParameter.swift Application/Project/ProjectModels.swift Application/Project/MIDIItem.swift Application/Project/ItemFade.swift Application/Project/ItemFadeCurve.swift Application/Project/TimelineTempo.swift \
   Application/Project/ClipRepetition.swift Application/Project/AudioFileRead.swift \
-  Apple/Shared/Theme.swift Apple/Shared/TimelineItemWaveformColors.swift Apple/Shared/ItemWaveformPreview.swift "$test_dir/TimelineAudioWaveform.swift" \
+  Apple/Shared/Theme.swift Apple/Shared/NativeTooltips.swift Apple/Shared/NativeTimelineInputGate.swift \
+  Apple/Shared/TimelineItemWaveformColors.swift Apple/Shared/ItemWaveformPreview.swift "$test_dir/TimelineAudioWaveform.swift" \
   "$test_dir/MetalWaveformRenderer.swift" Apple/Shared/TimelineMetalWaveforms.swift \
   "$test_dir/GridSelectionGeometry.swift" "$test_dir/main.swift" -o "$test_dir/test"
 if [[ "${CATLIVE_ZOOM_PROFILE:-0}" == "1" ]]; then
