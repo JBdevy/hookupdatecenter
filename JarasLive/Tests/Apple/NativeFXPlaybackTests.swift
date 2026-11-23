@@ -76,8 +76,19 @@ import AVFoundation
             precondition(result == .success)
             try tick()
         }
-        // Measure the existing player's fixed pipeline latency before editing
-        // effects. Bypass/removal must preserve that same clock alignment.
+        // Measure the source's baseline latency before editing effects. A
+        // Pitch instance adds fixed lookahead for as long as it is connected.
+        func connectedPitchFrames() -> Int {
+            guard kind == "Pitch" else { return 0 }
+            return engine.attachedNodes.reduce(0) { total, node in
+                guard let unit = node as? AVAudioUnitEffect,
+                      unit.audioComponentDescription.componentSubType == 0x4a4c7066, // 'JLpf'
+                      engine.inputConnectionPoint(for: node, inputBus: 0) != nil,
+                      engine.outputConnectionPoints(for: node, outputBus: 0).contains(where: { $0.node != nil })
+                else { return total }
+                return total + Int((unit.auAudioUnit.latency * rate).rounded())
+            }
+        }
         let referenceFrame = Int(engine.manualRenderingSampleTime)
         let referenceStatus = try engine.renderOffline(512, to: buffer)
         precondition(referenceStatus == .success)
@@ -93,6 +104,8 @@ import AVFoundation
         precondition(referenceError < 0.00000001, "Dry baseline is not the scheduled stereo tone")
         print("NATIVE_FX_BASELINE_LATENCY rate=\(rate) target=\(target) effect=\(kind) frames=\(latency)")
         try tick()
+        var pitchFrames = connectedPitchFrames()
+        let sourceLatency = latency - pitchFrames
         let targetID: UUID? = target == "master" ? nil : target == "group" ? group.id : target == "item" ? track.clips[0].id : track.id
         for stage in 0..<9 {
             switch stage {
@@ -106,7 +119,7 @@ import AVFoundation
                 case "Limiter": settings.limiterParameters.ceiling = -24; settings.limiterParameters.inputGain = 12
                 case "Delay": settings.delayTime = 0.06; settings.delayMix = 30; settings.feedback = 30
                 case "Reverb": settings.reverbRoom = 2; settings.reverbDecay = 0.4; settings.reverbMix = 30
-                case "Pitch": settings.pitchSemitones = 3
+                case "Pitch": settings.pitchSemitones = 3; settings.pitchFormant = 2
                 default: break
                 }
             case 7: settings = NativeFXSettings()
@@ -125,14 +138,21 @@ import AVFoundation
             var rendered = 0, sumSquares = 0.0, sampleCount = 0, largestPeak: Float = 0, dryError: Float = 0
             var dropouts: [String] = []
             let dry = [0, 2, 5, 7].contains(stage)
-            // TimePitch legitimately primes its transform when enabling a
-            // nonzero shift. It must then sustain every variable-sized block.
-            let pitchPriming = kind == "Pitch" && ([4, 6].contains(stage) || (target == "item" && stage == 8)) ? Int(rate * 0.15) : 0
+            let previousPitchFrames = pitchFrames
+            var pitchPriming = 0
             for block in 0..<72 {
                 let count = [64, 128, 256, 512, 1024, 2048][block % 6]
                 let firstFrame = Int(engine.manualRenderingSampleTime)
                 let result = try engine.renderOffline(AVAudioFrameCount(count), to: buffer)
                 precondition(result == .success, "\(kind) stage \(stage): render status \(result)")
+                if block == 0 && kind == "Pitch" {
+                    pitchFrames = connectedPitchFrames()
+                    if (2...6).contains(stage) {
+                        precondition(pitchFrames == previousPitchFrames, "Pitch, formant or bypass changed the active latency")
+                    }
+                    if stage == 1 { precondition(pitchFrames > 0, "Inserted Pitch must report its lookahead") }
+                    pitchPriming = max(0, pitchFrames - previousPitchFrames)
+                }
                 for ch in 0..<2 {
                     var blockEnergy = 0.0
                     for n in 0..<Int(buffer.frameLength) {
@@ -142,7 +162,7 @@ import AVFoundation
                         precondition(abs(value) < 0.15, "\(kind) stage \(stage): unexpected overshoot \(value)")
                         blockEnergy += Double(value * value)
                         if dry && rendered > Int(rate * (kind == "Limiter" ? 0.8 : 0.25)) {
-                            dryError = max(dryError, abs(value - sample(ch, firstFrame + n - latency)))
+                            dryError = max(dryError, abs(value - sample(ch, firstFrame + n - sourceLatency - pitchFrames)))
                         }
                     }
                     if rendered > pitchPriming {
