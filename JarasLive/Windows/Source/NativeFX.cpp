@@ -345,6 +345,7 @@ void NativeFX::prepare(const var &settings, double sampleRate, const NativeFX *p
         if (kind == "Pitch") {
             e->pitch = std::make_unique<signalsmith::stretch::SignalsmithStretch<float>>(0);
             e->pitch->presetDefault(2, (float)sampleRate);
+            e->pitch->setNeutralWarmup(true);
             e->pitch->setTransposeSemitones(e->parameters.values[0]);
             e->pitch->setFormantSemitones(e->parameters.values[1]);
             e->pitchInput.setSize(2, 4096);

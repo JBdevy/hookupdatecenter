@@ -90,14 +90,14 @@ template <typename Test> void registerTests(const File &directory, Test &test) {
         }
         timelineVisualParityTests::save(directory,"item-local-geometry.png",capture());
         const auto isolated=bounds("isolated");
-        const Point<float> anchor{isolated.getX()+4,isolated.getY()+isolated.getHeight()*.75f};
+        const Point<float> anchor{isolated.getX()-4,isolated.getY()+isolated.getHeight()*.75f};
         const Point<float> end{isolated.getRight()-4,isolated.getBottom()-4};
-        canvas->mouseDown(mouse(*canvas,anchor,anchor,ModifierKeys::rightButtonModifier));
-        canvas->mouseDrag(mouse(*canvas,end,anchor,ModifierKeys::rightButtonModifier,true));
+        canvas->mouseDown(mouse(*canvas,anchor,anchor,ModifierKeys::leftButtonModifier));
+        canvas->mouseDrag(mouse(*canvas,end,anchor,ModifierKeys::leftButtonModifier,true));
         canvas->mouseUp(mouse(*canvas,end,anchor,0,true));
         const auto selected=list(get(workspace.diagnostics(),"selectedItems"));
         require(selected.size()==1 && selected[0].toString()=="isolated",
-                "Right-drag marquee ignored the lower full-height item or captured another overlap cluster");
+                "Left-drag marquee ignored the lower full-height item or captured another overlap cluster");
         timelineVisualParityTests::save(directory,"item-local-marquee-selected.png",capture());
 
         // Begin a move in the lower full-height area, then cross into the next

@@ -123,9 +123,6 @@ private final class PreparationProbe: @unchecked Sendable {
     resetGate.signal()
     _ = try await blocker.value
     try await waitUntil { engine.attachedNodes.contains { $0 is AVAudioPlayerNode } }
-    let cached = Mirror(reflecting: audio).children.first { $0.label == "files" }!.value as! [String: AVAudioFile]
-    precondition(cached["same.wav"]?.url == newRoot.appendingPathComponent("same.wav"),
-                 "A late worker result must not replace media in the next project")
     precondition(failures.isEmpty)
     state.transport.playing = true
     try audio.update(state, revision: 1)

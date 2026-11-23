@@ -489,10 +489,16 @@ struct WorkspaceLayoutTests {
                 w.controls.at("editMode")->isVisible() && w.controls.at("track-envelopes")->isVisible() &&
                 w.controls.at("proTool")->isVisible() && w.controls.count("proStop")==0 && w.controls.count("proSubplay")==0,
                 "Pro Mode must keep the timeline tools and a single Play/Stop control");
+        const auto &metronomeMode = *w.controls.at("metronomeMode");
+        const auto &metronome = *w.controls.at("metronome");
         require(w.controls.at("track-envelopes")->getX() - w.controls.at("editMode")->getRight() == 6 &&
                 w.timelineSnap.getX() - w.controls.at("track-envelopes")->getRight() == 6 &&
                 w.timelineTimebase.getX() - w.timelineSnap.getRight() == 6 &&
-                w.tempoDisplayBounds.getX() - w.timelineTimebase.getRight() == 6 &&
+                metronomeMode.getX() - w.timelineTimebase.getRight() == 6 &&
+                metronome.getX() - metronomeMode.getRight() == 6 &&
+                w.tempoDisplayBounds.getX() - metronome.getRight() == 6 &&
+                metronome.getBottom() == w.tuner->getBottom() &&
+                metronomeMode.getHeight() == w.tuner->getHeight() &&
                 w.timelineTimebase.getBottom() == w.tuner->getBottom() &&
                 w.timelineTimebase.getHeight() == w.tuner->getHeight(),
                 "Edit, Envelopes, Snap and Timebase must match the transport button heights and spacing");
@@ -607,21 +613,23 @@ struct WorkspaceLayoutTests {
                         w.stageTimer->getX() >= w.controls["resolume"]->getRight(), "Timer overlaps toolbar labels");
             else
                 require(w.transportBounds.contains(w.stageTimer->getBounds()),"Timer needs space in the existing panel at the minimum width");
-            int navRight = w.transportDisplayBounds.getX();
+            int navRight = w.proPlaybackBounds.getX();
             for (auto id : {"projectStart", "previousTimelinePoint", "nextTimelinePoint", "projectEnd"}) {
                 const auto *control = w.controls[id];
                 require(control->isVisible() && control->getButtonText().isEmpty() &&
-                        w.transportDisplayBounds.contains(control->getBounds()) &&
-                        control->getX() >= navRight && control->getY() < w.controls["play"]->getY(),
+                        w.proPlaybackBounds.contains(control->getBounds()) &&
+                        control->getX() >= navRight && control->getY() == w.controls["proPlay"]->getY(),
                         "Project navigation must show symbols at the left of the display");
                 navRight = control->getRight();
             }
-            require(w.transportTime.getX() > navRight && w.transportTime.getX() - navRight <= 10 &&
-                    w.transportTime.getRight() < w.songDisplay.getX(), "The clock should follow the navigation without overlap");
-            require(w.controls["play"]->getRight() < w.controls["fadeout"]->getX() &&
-                    w.controls["fadeout"]->getRight() < w.controls["pause"]->getX() &&
-                    w.controls["fadeout"]->getY() == w.controls["pause"]->getY(),
-                    "Fadeout should be between Play and Pause");
+            require(w.proTimeBounds.getX() == w.proPlaybackBounds.getX() &&
+                    w.proTimeBounds.getBottom() <= w.proPlaybackBounds.getY() &&
+                    w.proTimeBounds.getRight() <= w.songDisplay.getX(), "Position display must sit above the transport without overlap");
+            require(navRight <= w.controls["proPlay"]->getX() &&
+                    w.controls["proPause"]->getRight() <= w.controls["proFadeout"]->getX() &&
+                    w.controls["proFadeout"]->getRight() <= w.controls["proRecord"]->getX() &&
+                    w.controls["proFadeout"]->getY() == w.controls["proPause"]->getY(),
+                    "Play follows navigation and Fadeout sits between Pause and Record");
             require(w.controls["remote"]->getRight() < w.controls["audioStatus"]->getX(), "Live tools overlap audio status");
             require(uiFeatureTests::find(w,"timerHours")==nullptr,"Toolbar retained editable timer inputs");
             w.stage.target=65;w.stage.start();w.updateState();
@@ -940,7 +948,8 @@ struct WorkspaceLayoutTests {
             require(channel, "Mixer channel is missing");
             auto *input = dynamic_cast<InlineMixerTrackName *>(uiFeatureTests::find(*channel, "mixerTrackNameEditor"));
             require(input && !input->isVisible(), "The rename field should start hidden");
-            const auto point = input->getBounds().toFloat().getCentre();
+            auto point = input->getBounds().toFloat().getCentre();
+            if (channel == row) point.x = float(input->getX() + 6);
             const auto now = Time::getCurrentTime();
             const MouseEvent event(Desktop::getInstance().getMainMouseSource(), point,
                 ModifierKeys(ModifierKeys::leftButtonModifier), 1, 0, 0, 0, 0,

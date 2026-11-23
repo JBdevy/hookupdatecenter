@@ -2917,7 +2917,7 @@ int runTests(const File &directory) {
                !session.song()->tracks[3].parentTrackID,"Root folder click must dissolve only its immediate membership");
         session.undo();expect(JSON::toString(ProjectCodec::encode(session.project()))==baseline,"Undo did not restore dissolved group");
     });
-    test("Grid right drag selects intersecting items without seeking or opening menus", [&] {
+    test("Grid left drag selects intersecting items without seeking or opening menus", [&] {
         Session session; session.inspection=true;
         auto project=projectFixture(); auto &song=project.songs.front(); song.tracks.clear();
         for(int row=0;row<2;++row) {
@@ -2943,25 +2943,25 @@ int runTests(const File &directory) {
         const auto timeline = get(workspace.diagnostics(), "timeline");
         Point<float> anchor{0,float(num(timeline, "headerHeight") + 2)};
         Point<float> end{float(canvas->getWidth() - 1),float(canvas->getHeight() - 1)};
-        canvas->mouseDown(event(anchor,anchor,ModifierKeys::rightButtonModifier,false));
-        expect(Component::getNumCurrentlyModalComponents()==modals,"Right down defers menu");
-        canvas->mouseDrag(event(end,anchor,ModifierKeys::rightButtonModifier,true));
+        canvas->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));
+        expect(Component::getNumCurrentlyModalComponents()==modals,"Left down leaves context menus closed");
+        canvas->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier,true));
         expect(selectedCount()==2,"Both rows selected during drag, before release");
         canvas->mouseUp(event(end,anchor,0,true));
         expect(selectedCount()==2 && session.transport().editPosition==edit,"Selection persists without changing edit cursor");
         expect(Component::getNumCurrentlyModalComponents()==modals,"Drag release does not open item menu");
         // A high-rate mouse can release before the next display tick. The final
         // pointer position must be applied even when intermediate events coalesce.
-        canvas->mouseDown(event(anchor,anchor,ModifierKeys::rightButtonModifier,false));
-        canvas->mouseDrag(event({5,76},anchor,ModifierKeys::rightButtonModifier,true));
-        for(int n=0;n<100;++n)canvas->mouseDrag(event(end,anchor,ModifierKeys::rightButtonModifier,true));
+        canvas->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier,false));
+        canvas->mouseDrag(event({5,76},anchor,ModifierKeys::leftButtonModifier,true));
+        for(int n=0;n<100;++n)canvas->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier,true));
         canvas->mouseUp(event(end,anchor,0,true));
         expect(selectedCount()==2,"Final rectangle was lost before the coalesced selection frame");
         // An empty rectangle retains the previous selection only with Shift/Ctrl.
         for(int additive:std::initializer_list<int>{ModifierKeys::shiftModifier,ModifierKeys::ctrlModifier,0}) {
             anchor={0,(float)canvas->getHeight()-8};end={5,(float)canvas->getHeight()-1};
-            canvas->mouseDown(event(anchor,anchor,ModifierKeys::rightButtonModifier|additive,false));
-            canvas->mouseDrag(event(end,anchor,ModifierKeys::rightButtonModifier|additive,true));
+            canvas->mouseDown(event(anchor,anchor,ModifierKeys::leftButtonModifier|additive,false));
+            canvas->mouseDrag(event(end,anchor,ModifierKeys::leftButtonModifier|additive,true));
             canvas->mouseUp(event(end,anchor,additive,true));
             expect(selectedCount()==(additive?2:0),"Additive modifiers preserve; plain drag replaces");
         }
@@ -5558,6 +5558,7 @@ int runTests(const File &directory) {
                 auto settings=fxschema::defaults(true);
                 const String enabled=kind=="EQ"?"eqEnabled":kind=="Compressor"?"compressorEnabled":kind=="Limiter"?"limiterEnabled":
                     kind=="Delay"?"delayEnabled":kind=="Reverb"?"reverbEnabled":"pitchEnabled";
+                unsigned pitchLatency = 0;
                 for(int stage=0;stage<9;++stage) {
                     if(stage==1){put(settings,"inserted",Array<var>{kind});put(settings,Identifier(enabled),true);}
                     if(stage==2||stage==5)put(settings,Identifier(enabled),false);
@@ -5568,7 +5569,7 @@ int runTests(const File &directory) {
                         if(kind=="Limiter"){auto parameters=object();put(parameters,"ceiling",-24);put(parameters,"inputGain",12);put(settings,"limiter",parameters);}
                         if(kind=="Delay"){put(settings,"delayTime",.06);put(settings,"delayMix",30);put(settings,"feedback",30);}
                         if(kind=="Reverb"){put(settings,"reverbRoom",2);put(settings,"reverbDecay",.4);put(settings,"reverbMix",30);}
-                        if(kind=="Pitch")put(settings,"pitchSemitones",3);
+                        if(kind=="Pitch") { put(settings,"pitchSemitones",3); put(settings,"pitchFormant",2); }
                     }
                     if(stage==7)settings=fxschema::defaults(true);
                     if(stage==8){
@@ -5581,8 +5582,20 @@ int runTests(const File &directory) {
                     session.configureEffects(track.id,settings);
                     expect(session.audio.state().playing&&session.audio.state().position==position,"Native FX edit stopped or moved transport");
                     int rendered=0;const bool dry=stage==0||stage==2||stage==5||stage==7;
-                    const int priming=kind=="Pitch"&&(stage==4||stage==6)?(int)(rate*.15):0;
+                    const auto latency = session.audio.presentationLatencyFrames();
                     const String context=kind+" stage "+String(stage)+" rate "+String(rate);
+                    if (kind == "Pitch") {
+                        if (stage == 1) {
+                            pitchLatency = latency;
+                            expect(pitchLatency > 0, context + ": Pitch did not report lookahead");
+                        } else if (stage >= 2 && stage <= 6) {
+                            expect(latency == pitchLatency, context + ": Pitch, formant or bypass changed the active latency");
+                        } else if (stage == 8) {
+                            expect(latency == 2 * pitchLatency, context + ": Two Pitch instances must compensate both latencies");
+                        }
+                    }
+                    // A new spectral processor has no input history until its lookahead fills.
+                    const int priming = kind == "Pitch" && (stage == 1 || stage == 8) ? int(latency) : 0;
                     for(int block=0;block<36;++block) {
                         const int sizes[]{64,128,256,512,1024,2048},count=sizes[block%6];
                         const auto firstFrame=(int64)std::llround(session.audio.state().position*rate);
@@ -5590,7 +5603,7 @@ int runTests(const File &directory) {
                         for(int c=0;c<2;++c){double energy=0;float error=0;
                             for(int n=0;n<count;++n){const auto value=output.getSample(c,n);
                                 expect(std::isfinite(value)&&std::abs(value)<.15f,context+": invalid PCM or overshoot");
-                                energy+=value*value;error=std::max(error,std::abs(value-sample(c,firstFrame+n)));
+                                energy+=value*value;error=std::max(error,std::abs(value-sample(c,firstFrame+n-latency)));
                             }
                             if(rendered>priming)expect(energy/count>.00000025,context+": audio dropout, block "+String(block)+" channel "+String(c));
                             if(dry&&rendered>rate*.25)expect(error<.0001f,context+": bypass/removal changed scheduled PCM");

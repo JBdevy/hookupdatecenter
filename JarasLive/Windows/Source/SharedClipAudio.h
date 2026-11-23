@@ -7,6 +7,9 @@
 #ifndef CATLIVE_SIGNALSMITH_BATCH_OUTPUT
 #define CATLIVE_SIGNALSMITH_BATCH_OUTPUT 1
 #endif
+#ifndef CATLIVE_SIGNALSMITH_NEUTRAL_WARMUP
+#define CATLIVE_SIGNALSMITH_NEUTRAL_WARMUP 1
+#endif
 #include "../ThirdParty/Signalsmith/signalsmith-stretch.h"
 #include "../../Core/Audio/SharedRenderPool.hpp"
 

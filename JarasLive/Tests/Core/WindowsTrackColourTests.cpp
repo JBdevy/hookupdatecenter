@@ -59,9 +59,9 @@ int main(){
     const auto& tracks=w.session.model.songs.front().tracks;
     assert(tracks[0].color==0x55aa88 && tracks[1].color==0x55aa88 && tracks[2].color==0x111111);
     assert(tracks[0].name=="a" && tracks[1].name=="b" && w.session.edits==1 && w.sheet.dismissed);
-    w.editTrack("a");assert(ModalSheet::editor->allowName);
+    w.editTrack("a");assert(!ModalSheet::editor->allowName);
     ModalSheet::editor->commit("Renamed",0xaabbcc,false);
-    assert(tracks[0].name=="Renamed" && tracks[1].name=="b");
+    assert(tracks[0].name=="a" && tracks[0].color==0xaabbcc && tracks[1].name=="b");
     w.editTrack("a",{"a","b","missing"});
     w.session.model.id="another";
     const int edits=w.session.edits;
