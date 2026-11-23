@@ -23,6 +23,7 @@ private final class ReadCounter: @unchecked Sendable {
 }
 
 @MainActor private func run() async throws {
+    setbuf(stdout, nil)
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("catlive-seek-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -108,10 +109,11 @@ private final class ReadCounter: @unchecked Sendable {
 
     // The core already chose the beat. Keep ticking the outgoing transport
     // while the other head warms, then deliver the core's normal jump serial.
-    let boundary = target + 1.0, beatTarget = 60.5
+    let lead = Double(ProcessInfo.processInfo.environment["CATLIVE_SEEK_PROBE_LEAD"] ?? "1") ?? 1
+    let boundary = target + lead, beatTarget = 60.5
     state.transport.beatSeek = TransportBeatSeek(boundary: boundary, destination: beatTarget)
     var promoted = false, heardDestination = false
-    while ProcessInfo.processInfo.systemUptime < seekStart + 1.4 {
+    while ProcessInfo.processInfo.systemUptime < seekStart + lead + 0.4 {
         let now = ProcessInfo.processInfo.systemUptime
         let outgoing = target + now - seekStart
         if outgoing >= boundary && !promoted {
@@ -120,8 +122,10 @@ private final class ReadCounter: @unchecked Sendable {
             state.transport.sectionJumpSerial = (state.transport.sectionJumpSerial ?? 0) + 1
         }
         state.transport.position = promoted ? beatTarget + outgoing - boundary : outgoing
+        let started = ProcessInfo.processInfo.systemUptime
         try audio.update(state, revision: 1, sampledAt: now)
         let sample = render()
+        print("BEAT_PROBE relative=\(outgoing-boundary) frame=\(engine.manualRenderingSampleTime) sample=\(sample) counts=\(counter.counts()) elapsed=\(ProcessInfo.processInfo.systemUptime-started)")
         if outgoing < boundary - 0.1 { precondition(abs(sample - after) < 0.01) }
         if outgoing > boundary + 0.2 { heardDestination = abs(sample - 3 * before) < 0.01 }
         try await Task.sleep(nanoseconds: 10_666_667)
