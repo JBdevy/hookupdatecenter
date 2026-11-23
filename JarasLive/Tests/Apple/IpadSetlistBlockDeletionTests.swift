@@ -34,6 +34,7 @@ private final class ShowController {
 }
 private struct TestState {
     var project: UUID; var song: UUID; var selectedPlaylist: UUID?; var setlistBlocks: [RowID]?
+    var focusedRegion: UUID? = nil
     var playing = false
     var subPlaying = false
     var showsSetlistSelection: Bool { !playing && !subPlaying }
@@ -66,6 +67,7 @@ private final class WorkspaceProbe {
     var editingTracks = true
     var allRegionsOrder = 0
     var nativeKeyboardBrowsing = false
+    var tappedSetlistRegion: UUID?
     var remoteNavigationTask: Task<Void, Never>?
     var observer = false
     var controlsEnabled = true
@@ -131,8 +133,9 @@ private final class WorkspaceProbe {
                 view.state.playing = !subPlaying; view.state.subPlaying = subPlaying
                 view.nativeKeyboardBrowsing = true
                 view.selectedSetlistEntries = [song]
-                view.selectSetlistEntry(song)
+                view.selectSetlistEntry(song, fromRow: true)
                 expect(!view.nativeKeyboardBrowsing, "Touch must leave external-keyboard browsing mode")
+                expect(view.tappedSetlistRegion == song, "An in-list touch must keep the list at its current scroll position")
                 expect(view.selectedSetlistEntries.isEmpty && view.setlistSelectionAnchor == nil, "Touch cannot leave blue selection during main or Sub Play")
                 expect(view.regionActions == [song], "Touch must still send its queue toggle")
             }
