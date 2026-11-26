@@ -1,6 +1,8 @@
 #include "../../Apple/Bridge/JarasEffects.mm"
 #include <cassert>
+#include <chrono>
 #include <iostream>
+#include <thread>
 
 int main() {
     @autoreleasepool {
@@ -88,7 +90,11 @@ int main() {
             [transition startAtHostTime:0 ramp:NO];
             assert(transition.playing);
             assert([JarasPreparedClip memoryDiagnostics][@"stretchStates"].unsignedLongLongValue == 3);
-            [first suspendStreaming]; [transition suspendStreaming];
+            [first suspendIdleStreaming]; [transition suspendIdleStreaming];
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while ([JarasPreparedClip memoryDiagnostics][@"stretchStates"].unsignedLongLongValue != 0 &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             assert([JarasPreparedClip memoryDiagnostics][@"stretchStates"].unsignedLongLongValue == 0);
             assert([first prepareURL:url sourceFrame:512 endFrame:96000 rate:1 pitch:0 loopStart:0 loopEnd:0 error:&error]);
             auto engine = [[AVAudioEngine alloc] init];
@@ -105,7 +111,7 @@ int main() {
                     assert(std::abs(output.floatChannelData[0][n] - pcm.floatChannelData[0][512 + block * 512 + n]) < 1e-6);
             }
             assert(first.underruns == 0);
-            [first suspendStreaming]; [engine stop];
+            [engine stop]; [first suspendIdleStreaming];
         }
         assert([JarasPreparedClip memoryDiagnostics][@"stretchStates"].unsignedLongLongValue == 0);
         [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
