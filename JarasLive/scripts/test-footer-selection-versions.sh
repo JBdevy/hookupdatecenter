@@ -7,7 +7,7 @@ python3 - "$test_dir/main.swift" <<'PY'
 from pathlib import Path
 import sys
 source=Path('Apple/Shared/TrackMixerRow.swift').read_text()
-start=source.index('private struct FooterMixerRenderState:')
+start=source.index('private struct FooterRoutingChannel:')
 state=source[start:source.index('@MainActor extension ShowController', start)]
 versions=source[source.index('private final class FooterMixerStripVersions'):source.index('private struct FooterMixerContent:')]
 tests=Path('Tests/Apple/FooterMixerSelectionVersionsTests.swift').read_text()

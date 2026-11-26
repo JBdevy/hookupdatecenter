@@ -9,6 +9,8 @@ import sys
 catalog=Path('Apple/Shared/PluginCatalog.swift').read_text()
 model=Path('Application/Project/NativeFXSettings.swift').read_text()
 parts=['import AppKit\nimport Combine\nimport CryptoKit\nimport Darwin\n', 'enum JarasLocalization { static func string(_ s: String) -> String { s } }']
+# VST3 scan tests must not depend on the host's installed Audio Units.
+parts.append('enum JarasVST3 { static func installedAudioUnits() -> [[String: Any]] { [] } }')
 parts.append(model[model.index('public struct ExternalPlugin:'):model.index('public struct NativeFXInstance:')])
 parts.append(catalog[catalog.index('struct RecognizedPlugin:'):catalog.index('/// One import owns this session')])
 parts.append(Path('Tests/Apple/VST3/CatalogTests.swift').read_text())

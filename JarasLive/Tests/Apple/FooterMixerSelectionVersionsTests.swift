@@ -29,7 +29,7 @@ let routeChanged = versions.update(routed, active: true, locale: "pt_BR")
 precondition(routeChanged == group && versions.masterVersion != master, "Master output changes must refresh its routing slots without replacing track controls")
 let beforeMainSend = versions.masterVersion
 routed.mainSends = [tracks[0].id]
-routed.mainSendNames = [tracks[0].id: "Piano"]
+routed.mainSendTargets = [tracks[0].id: .init(id: tracks[0].id, number: 1, name: "Piano")]
 precondition(versions.update(routed, active: true, locale: "pt_BR") == group && versions.masterVersion != beforeMainSend)
 let translated = versions.update(state([tracks[5].id, tracks[9].id]), active: true, locale: "en")
 precondition(original.indices.allSatisfy { translated[$0] != group[$0] }, "locale changes still update every channel")
@@ -59,3 +59,17 @@ numbered.trackNumbers[tracks[2].id] = 4
 let renumbered = numberedVersions.update(numbered, active: true, locale: "pt_BR")
 precondition(hiddenFirst.indices.filter { hiddenFirst[$0] != renumbered[$0] } == [1])
 print("FOOTER_NUMBERING_PRESERVES_HIDDEN_TRACK_POSITIONS_AND_REFRESHES_CHANGED_NUMBERS_OK")
+
+private let componentVersions = FooterMixerStripVersions()
+private let visibleComponents = state([])
+private var componentState = visibleComponents
+let visibleVersions = componentVersions.update(visibleComponents, active: true, locale: "pt_BR")
+let unchangedMaster = componentVersions.masterVersion
+componentState.hiddenComponents = 1 << 1
+precondition(componentState != visibleComponents, "Changing a component must invalidate the iPad mixer content")
+let hiddenVersions = componentVersions.update(componentState, active: true, locale: "pt_BR")
+precondition(visibleVersions.indices.allSatisfy { visibleVersions[$0] != hiddenVersions[$0] })
+let restoredVersions = componentVersions.update(visibleComponents, active: true, locale: "pt_BR")
+precondition(hiddenVersions.indices.allSatisfy { restoredVersions[$0] != hiddenVersions[$0] })
+precondition(componentVersions.masterVersion == unchangedMaster)
+print("FOOTER_COMPONENTS_UPDATE_CHANNELS_WHEN_HIDDEN_AND_RESTORED_OK")

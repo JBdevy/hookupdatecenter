@@ -14,7 +14,7 @@ source = source.replace('private weak var show:', 'weak var show:').replace('pri
 source = source.replace('guard NSApp.isActive, transferRequest == nil', 'guard mappingTestApplicationActive, transferRequest == nil')
 meter = Path('Apple/Shared/ResourceUsageView.swift').read_text()
 start = meter.index('@MainActor final class TransportMIDIActivity:')
-end = meter.index('struct TransportResourceMeters: View', start)
+end = meter.index('\n}', start) + 2
 Path(sys.argv[1]).write_text(source + '\n' + meter[start:end])
 # ZIP package I/O is covered by VinhetasPackageTests; this fixture needs only MIDI library types.
 Path(sys.argv[3]).write_text(Path('Application/Project/Vinhetas.swift').read_text().split('public enum VinhetasPackage {')[0])

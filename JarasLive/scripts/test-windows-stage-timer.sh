@@ -8,11 +8,12 @@ from pathlib import Path
 import sys
 state = Path('Windows/Source/StageState.h').read_text()
 constructor = state[state.index('    explicit StageState('):state.index('    Appearance &preferences;')]
+preview = state[state.index('    int target = 0,'):state.index('    std::pair<int, int> previewBlocks(')]
 methods = state[state.index('    static double now()'):state.index('    void observe(')]
 remote = Path('Windows/Source/RemotePresentation.h').read_text()
 handler = remote[remote.index('        if (a == "timerStart" ||'):remote.index('        if (a == "noticeSend" ||')]
 source = Path('Tests/Core/WindowsStageTimerTests.cpp').read_text()
-source = source.replace('// INSERT_CONSTRUCTOR', constructor).replace('// INSERT_TIMER_METHODS', methods).replace('// INSERT_REMOTE_HANDLER', handler)
+source = source.replace('// INSERT_CONSTRUCTOR', constructor).replace('// INSERT_STATE_FIELDS', preview).replace('// INSERT_TIMER_METHODS', methods).replace('// INSERT_REMOTE_HANDLER', handler)
 Path(sys.argv[1]).write_text(source)
 PY
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -pedantic "$test_dir/test.cpp" -o "$test_dir/test"

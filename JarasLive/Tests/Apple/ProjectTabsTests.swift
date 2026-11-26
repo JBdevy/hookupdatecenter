@@ -7,9 +7,11 @@ import AVFoundation
     static var response: NSApplication.ModalResponse = .alertThirdButtonReturn
     var messageText = "", informativeText = ""
     var alertStyle: NSAlert.Style = .warning
+    var icon: NSImage?
     func addButton(withTitle: String) {}
     func runModal() -> NSApplication.ModalResponse { Self.response }
 }
+@MainActor enum ProjectSaveAlert { static let appIcon: NSImage? = nil }
 enum JarasLocalization { static func string(_ key: String) -> String { key } }
 @MainActor enum ProjectSyncControl { static var following = false }
 enum ProjectError: Error { case invalid(String) }

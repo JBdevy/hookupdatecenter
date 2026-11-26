@@ -19,6 +19,10 @@ on:
         description: 'Validar somente o Windows e gerar instalador de teste (sem publicar)'
         type: boolean
         default: false
+      macos_only:
+        description: 'Validar somente o macOS e gerar o PKG notarizado (sem publicar)'
+        type: boolean
+        default: false
       audio_tests:
         description: 'Executar testes de renderização, Dynamics e Trigger/Gate (1.30 altera áudio)'
         type: boolean
@@ -42,7 +46,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: catlive-desktop-${{ inputs.version }}-${{ inputs.reuse_build_run && 'validated-publication' || inputs.audio_tail_from_run && 'audio-tail-validation' || inputs.audio_only && 'audio-validation' || inputs.windows_only && 'windows-validation' || 'release' }}
+  group: catlive-desktop-${{ inputs.version }}-${{ inputs.reuse_build_run && 'validated-publication' || inputs.audio_tail_from_run && 'audio-tail-validation' || inputs.audio_only && 'audio-validation' || inputs.windows_only && 'windows-validation' || inputs.macos_only && 'macos-validation' || 'release' }}
   cancel-in-progress: false
 
 jobs:
@@ -82,11 +86,11 @@ jobs:
           bash scripts/test-midi-sequence.sh
 
   audio-audit:
-    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.windows_only && (inputs.audio_only || inputs.audio_tests || inputs.full_fx_tests) }}
+    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.windows_only && !inputs.macos_only && (inputs.audio_only || inputs.audio_tests || inputs.full_fx_tests) }}
     uses: ./.github/workflows/catlive-audio-audit.yml
 
   integration:
-    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.audio_only && !inputs.windows_only }}
+    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.audio_only && !inputs.windows_only && !inputs.macos_only }}
     uses: ./.github/workflows/catlive-integration.yml
     secrets: inherit
 
@@ -103,7 +107,7 @@ jobs:
         run: bash scripts/test-audio.sh
 
   windows:
-    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.audio_only }}
+    if: ${{ !inputs.audio_tail_from_run && !inputs.reuse_build_run && !inputs.audio_only && !inputs.macos_only }}
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -586,7 +590,7 @@ jobs:
           if-no-files-found: warn
 
   release:
-    if: ${{ always() && !cancelled() && inputs.publish_release && !inputs.audio_only && !inputs.windows_only && needs.windows.result == 'success' && needs.macos-pkg.result == 'success' && needs.compatibility.result == 'success' && needs.integration.result == 'success' && (needs.audio-audit.result == 'success' || (!inputs.audio_tests && !inputs.full_fx_tests && needs.audio-audit.result == 'skipped')) }}
+    if: ${{ always() && !cancelled() && inputs.publish_release && !inputs.audio_only && !inputs.windows_only && !inputs.macos_only && needs.windows.result == 'success' && needs.macos-pkg.result == 'success' && needs.compatibility.result == 'success' && needs.integration.result == 'success' && (needs.audio-audit.result == 'success' || (!inputs.audio_tests && !inputs.full_fx_tests && needs.audio-audit.result == 'skipped')) }}
     needs: [windows, macos-pkg, compatibility, integration, audio-audit]
     runs-on: ubuntu-latest
     steps:

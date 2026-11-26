@@ -8,7 +8,7 @@ private struct ProjectionFixtureRows: Equatable {
 }
 private struct ProjectionFixtureContent {
     var extent: Double = 1_000_000
-    var contentHeight: CGFloat = 700
+    var contentHeight: CGFloat = 2400
     var layoutWidth: CGFloat = 2_000_000
     var headerBands = TimelineHeaderBands(regionRows: 1)
     var rulerHeight: CGFloat { headerBands.height }
@@ -17,6 +17,7 @@ private struct ProjectionFixtureContent {
     var editPosition: Double = 0
     var sections = [TimelineTempoSection(start: 0, end: 1_000_000, bpm: 120, beats: 4, unit: 4, timebase: .free)]
     var divisions = 4
+    var selectionColor = CGColor(gray: 0.3, alpha: 0.2)
     var bands = [TimelineNativeGridBand(rect: CGRect(x: 0, y: 120, width: 100, height: 40), color: CGColor(gray: 0.3, alpha: 0.2))]
 }
 private struct ProjectionFixtureStyle {
@@ -40,11 +41,13 @@ private final class ProjectionFixtureController {
     let ruler = TimelineNativeRulerView()
     let header = ProjectionFixtureHeader()
     let selection = NSView()
+    var vertical: NSClipView? = nil
     var zoom = 0.1203
     var pixelsPerSecond: CGFloat { zoom * 10 }
     var value = ProjectionFixtureContent()
     var style = ProjectionFixtureStyle()
 PRODUCTION_PROJECTION_STATE
+    func selectionBands(in tile: CGRect) -> [TimelineNativeGridBand] { value.bands }
     func contentChanged() { revision &+= 1 }
     func configure(_ value: ProjectionFixtureContent) {
         let previous: ProjectionFixtureContent? = self.value
@@ -56,6 +59,10 @@ PRODUCTION_DRAWING_INVALIDATION
         let value = value, style = style
         let nativeBounds = viewport, left = viewport.minX
         let width = value.extent * pixelsPerSecond
+        let projected = Projection(revision: revision, zoom: zoom, viewport: viewport)
+        let geometryChanged = lastProjection?.revision != revision || lastProjection?.zoom != zoom ||
+            lastProjection?.viewport.size != viewport.size
+        lastProjection = projected
 PRODUCTION_SELECTION_VIEWPORT
 PRODUCTION_TILE_PROJECTION
     }
@@ -132,7 +139,7 @@ for scale: CGFloat in [1, 2] {
     }
     precondition(controller.backdrop.fixtureUpdates == beforeCursor.0 && controller.ruler.fixtureUpdates == beforeCursor.1 && TimelineTimeRuler.fixtureTickBuilds == beforeCursor.2,
                  "arming/cancelling a section must not rebuild static timeline tiles")
-    viewport.origin.y = 600
+    viewport.origin.y = 1600
     controller.project(viewport)
     precondition(controller.backdrop.fixtureUpdates == initialBackdrop + 1 && controller.ruler.fixtureUpdates == initialRuler,
                  "vertical coverage invalidates only the backdrop, keeping the pinned ruler: \(controller.backdrop.fixtureUpdates)/\(controller.ruler.fixtureUpdates), initial \(initialBackdrop)/\(initialRuler), frame \(controller.backdrop.frame)")

@@ -12,9 +12,11 @@ subject = source[start:source.index('\n#endif', start)]
 # Horizontal keyboard navigation belongs to the full timeline fixture. This
 # wheel-only fixture has no nested timeline, but its owner type must compile.
 keyboard_owner = '''
+private final class TimelineClipView: NSClipView {}
 final class GridNativeScrollView: NSScrollView {
     var logicalDocumentWidth: CGFloat?
     var prepareHorizontalScroll: ((CGFloat) -> Void)?
+    var prepareHostedVerticalScroll: ((CGFloat) -> Bool)?
     func pauseManualPlaybackFollow() {}
     func prepareHorizontalViewport(at offset: CGFloat) {}
 }

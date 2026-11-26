@@ -49,7 +49,7 @@ controller = source[source.index('@MainActor private final class NativeTimelineB
 key_start = controller.index('    private struct Projection: Equatable {')
 key_end = controller.index('    private(set) var pixelsPerSecond:', key_start)
 key = controller[key_start:key_end]
-project_start = controller.index('        let tile = TimelineCanvasCoverage.preparedRect(visibleRect: viewport,')
+project_start = controller.index('        let documentSize = CGSize(width: width, height: value.contentHeight)')
 project_end = controller.index('        audioBody.project(', project_start)
 projection = controller[project_start:project_end]
 selection_start = controller.index('        let selectionSize = ')

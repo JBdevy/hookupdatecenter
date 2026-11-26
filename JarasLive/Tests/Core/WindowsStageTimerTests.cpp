@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -6,6 +7,7 @@
 #include <map>
 #include <string>
 #include <variant>
+#include <vector>
 
 // Lightweight platform boundary: the constructor, time calculation,
 // persistence and Remote handler below come directly from production headers.
@@ -20,11 +22,23 @@ struct String : std::string {
         return s;
     }
 };
-using Value = std::variant<int, bool, std::string>;
+using Value = std::variant<int, bool, std::string, std::vector<int>>;
 using Object = std::map<std::string, Value>;
 Object object() { return {}; }
 template<class T> void put(Object &o, const char *key, T value) { o[key] = value; }
 void put(Object &o, const char *key, const char *value) { o[key] = std::string(value); }
+Value get(const Object &o, const char *key) {
+    const auto i = o.find(key); return i == o.end() ? Value{} : i->second;
+}
+struct IntList {
+    std::vector<int> entries;
+    int size() const { return static_cast<int>(entries.size()); }
+    int operator[](int index) const { return entries[index]; }
+};
+IntList list(const Value &value) {
+    const auto *values = std::get_if<std::vector<int>>(&value);
+    return {values ? *values : std::vector<int>{}};
+}
 int num(const Object &o, const char *key) {
     const auto i = o.find(key); return i == o.end() ? 0 : std::get<int>(i->second);
 }
@@ -50,7 +64,7 @@ class StageState {
   public:
     // INSERT_CONSTRUCTOR
     Appearance &preferences;
-    int target = 0;
+    // INSERT_STATE_FIELDS
     bool running = false, autoStart = false, progressive = false;
     double started = 0;
     // INSERT_TIMER_METHODS
