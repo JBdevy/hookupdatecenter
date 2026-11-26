@@ -84,9 +84,13 @@ if os.environ.get('CATLIVE_ZOOM_BENCHMARK') == '1':
     tests = Path('Tests/Apple/TimelineZoomBodyPerformanceTests.swift').read_text()
 out.joinpath('main.swift').write_text(stubs + text_colors + '\n'.join(parts) + probes + tests)
 renderer = Path('Apple/Shared/MetalWaveformRenderer.swift').read_text()
-renderer = renderer.replace('    private var latest: MetalWaveformFrame?', '    var nativeBodySubmissionsForTest = 0\n    private var latest: MetalWaveformFrame?', 1)
-renderer = renderer.replace('    func submit(_ frame: MetalWaveformFrame) {', '    func submit(_ frame: MetalWaveformFrame) {\n        nativeBodySubmissionsForTest += 1', 1)
-renderer += '\nextension MetalWaveformSurface { var nativeBodyFrameForTest: MetalWaveformFrame? { latest } }\n'
+submit = '    func submit(_ frame: MetalWaveformFrame) {'
+assert renderer.count(submit) == 1, 'The waveform surface submit method changed'
+renderer = renderer.replace(submit, '''    private(set) var nativeBodySubmissionsForTest = 0
+    private(set) var nativeBodyFrameForTest: MetalWaveformFrame?
+    func submit(_ frame: MetalWaveformFrame) {
+        nativeBodySubmissionsForTest += 1
+        nativeBodyFrameForTest = frame''', 1)
 out.joinpath('MetalWaveformRenderer.swift').write_text(renderer)
 cache = Path('Apple/Shared/TimelineAudioWaveform.swift').read_text()
 cache += '''
@@ -103,7 +107,7 @@ extension TimelineAudioWaveform {
 '''
 out.joinpath('TimelineAudioWaveform.swift').write_text(cache)
 selection = Path('Apple/Shared/GridSelectionInput.swift').read_text()
-start = selection.index('struct GridSelectionItem {')
+start = selection.index('struct ElasticOverlayGeometry {')
 metrics = '\nimport AppKit\nimport CoreText\n'+selection[selection.index('enum GridSelectionHeaderText {'):selection.index('enum GridSelectionHeaderControls {')]
 appearance = selection.index('enum TrackMixerButtonAppearance {')
 appearance = selection[appearance:selection.index('\n}', appearance) + 2]

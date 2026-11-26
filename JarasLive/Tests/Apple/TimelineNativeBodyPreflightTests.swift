@@ -33,18 +33,22 @@ MainActor.assumeIsolated {
     let fixture = NativeBodyYPreflightFixture()
     fixture.horizontal!.bounds.origin = CGPoint(x: 512, y: 0)
     fixture.vertical!.bounds.origin = CGPoint(x: 0, y: 800)
+    var verticalPublications: [CGFloat] = []
+    fixture.configuration?.verticalOffsetChanged = { verticalPublications.append($0) }
     let sameBucket = fixture.prepareHostedViewport(y: 1021)
-    precondition(!sameBucket, "native band expiration inside the same512 bucket cannot force hosting layout")
+    precondition(!sameBucket, "native band expiration cannot force hosting layout")
     precondition(fixture.audioBody.calls.count == 1)
     let first = fixture.audioBody.calls[0]
     precondition(first.0 == CGRect(x:512,y:1021,width:600,height:260) && first.1 == CGSize(width:12000,height:1975) && first.2==600)
     precondition(fixture.automationLanes.calls.count == 1 && fixture.automationLanes.calls[0].0 == first.0 && fixture.automationLanes.calls[0].1 == first.2,
                  "automation lanes must be projected to the same pending viewport before the scroll exposes it")
     precondition(fixture.vertical!.bounds.minY == 800, "native target is prepared before native bounds expose it")
-    precondition(fixture.prepareHostedViewport(y:1024), "existing512 publication boundary still requests hosting layout")
+    precondition(!fixture.prepareHostedViewport(y: 1024) && verticalPublications == [1021, 1024],
+                 "vertical scrolling publishes exact positions without forcing host layout at a bucket boundary")
     let count = fixture.audioBody.calls.count
     _ = fixture.prepareHostedViewport(x:800)
     precondition(fixture.audioBody.calls.count==count, "horizontal preflight remains unchanged")
+    precondition(fixture.prepareHostedViewport(x: 1024), "crossing a horizontal bucket still requests host layout")
     fixture.changed = true
     precondition(fixture.prepareHostedViewport(y:1025), "fallback gate change still requires hosting layout")
     fixture.configuration = nil
