@@ -2835,7 +2835,26 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
     uint64 waveformRevision = 0;
     struct MarkerFlag {ID id;double position=0,next=std::numeric_limits<double>::infinity(),regionEnd=std::numeric_limits<double>::infinity();String label;float width=0;unsigned colour=0;bool tempo=false,section=false,linked=false;};
     std::optional<std::pair<ID,double>> markerPreview;
-    void previewMarker(std::optional<std::pair<ID,double>> value) { markerPreview=std::move(value); markerRevision=~uint64(0); invalidate(); }
+    void previewMarker(std::optional<std::pair<ID,double>> value) {
+        if (markerPreview == value) return;
+        const auto *song = displaySong();
+        const auto &moving = value ? value : markerPreview;
+        if (song && song->markers) {
+            const auto marker = std::find_if(song->markers->begin(), song->markers->end(),
+                [&](const auto &candidate) { return candidate.id == moving->first; });
+            if (marker != song->markers->end()) {
+                const bool tempo = marker->tempoBPM.has_value();
+                const int top = markerTop(tempo);
+                canvas.repaint(0, top, canvas.getWidth(), markerHeight(tempo));
+                const int lineTop = top + markerHeight(tempo);
+                for (const auto position : {markerPreview ? markerPreview->second : marker->position,
+                                            value ? value->second : marker->position})
+                    canvas.repaint(roundToInt(xAt(position)) - 2, lineTop, 5, std::max(0, canvas.getHeight() - lineTop));
+            }
+        }
+        markerPreview = std::move(value);
+        markerRevision = ~uint64(0);
+    }
     uint64 markerRevision=~uint64(0);
     std::vector<MarkerFlag> markerFlags;
     juce::Rectangle<float> markerHead(const MarkerFlag &marker) const {
@@ -3852,10 +3871,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if (x >= 0 && x < getWidth()) g.fillRect(x, top, pixel, getHeight()-top);
                 }
             }
-            if (song->markers) for (auto marker : *song->markers) {
-                if(t.markerPreview && t.markerPreview->first==marker.id) marker.position=t.markerPreview->second;
+            if (song->markers) for (const auto &marker : *song->markers) {
+                const auto position = t.markerPreview && t.markerPreview->first == marker.id
+                    ? t.markerPreview->second : marker.position;
                 const bool tempo = marker.tempoBPM.has_value();
-                const float x = gridColumnX(marker.position), top = float(t.markerTop(tempo) + markerHeight(tempo));
+                const float x = gridColumnX(position), top = float(t.markerTop(tempo) + markerHeight(tempo));
                 if (x < 0 || x > getWidth()) continue;
                 auto colour = Colour(0xff000000 | (marker.tempoBPM ? 0x999999 : marker.color));
                 g.setColour(colour.withAlpha(marker.unifiedRegionID || marker.sourceRegionID ? 1.f : .45f));
@@ -3976,6 +3996,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             regionDeleteGesture.reset();
             dragOriginalClip.reset();
             dragOriginalValid=false;
+            lastItemMove.reset();
             previewPlacements.clear();
             rulerPan=false; rulerPanDragged=false;
             mainDrag=false; dragPreview = false; resizedClipPreview.reset(); movingClipPreview.reset(); sharedOriginal.reset(); sharedPreview.reset();
@@ -4316,7 +4337,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                         t.setRegionPreview(previewRegionEdit(*t.w.session.song(),dragRegion,previewStart,previewEnd,regionEdge!=0));
                     }
                     if (!dragMarker.empty()) { previewStart=markerEditPosition(e); t.previewMarker(std::make_pair(dragMarker,previewStart)); }
-                    dragPreview=true; setMouseCursor(regionEdge?regionResizeCursor():MouseCursor(MouseCursor::DraggingHandCursor)); repaint();
+                    dragPreview=true;
+                    setMouseCursor(regionEdge?regionResizeCursor():MouseCursor(MouseCursor::DraggingHandCursor));
                 }
                 return;
             }
@@ -4348,10 +4370,9 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     t.w.session.command(jaras::CommandKind::editSeek, {}, pointerPosition(t.timeAt(e.position.x), e.mods));
                 });
             } else if (!dragClip.empty() && (!clipMoveBlocked || resizeEdge) && e.getDistanceFromDragStart() > 4) {
-                if(previewRow>=0 && previewRow<(int)t.w.rows.size())
-                    repaint(0,rowsTop()+t.w.rowTop(previewRow)-t.w.verticalOffset,getWidth(),t.w.rowHeight(previewRow));
+                const int previousRow = previewRow;
                 const bool began = !dragPreview;
-                updateDrag(e);
+                const bool moved = updateDrag(e);
                 if (!resizeEdge) {
                     if (began) t.pausePlaybackFollow();
                     itemEdgeActive=true; itemEdgePointer=e.position; itemEdgeModifiers=e.mods;
@@ -4359,7 +4380,11 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                 }
                 setMouseCursor(sharedOriginal ? sharedBoundaryCursor() : MouseCursor(resizeEdge ? MouseCursor::LeftRightResizeCursor
                                           : MouseCursor::DraggingHandCursor));
-                repaintDragPreview();
+                if (moved) {
+                    if (previousRow != previewRow && previousRow >= 0 && previousRow < (int)t.w.rows.size())
+                        repaint(0, rowsTop() + t.w.rowTop(previousRow) - t.w.verticalOffset, getWidth(), t.w.rowHeight(previousRow));
+                    repaintDragPreview();
+                }
             }
         }
         void mouseUp(const MouseEvent &e) override {
@@ -4489,7 +4514,6 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     }
                 });
                 t.setRegionPreview(std::nullopt); t.previewMarker(std::nullopt);
-                t.previewMarker(std::nullopt);
                 dragRegion.clear();dragMarker.clear();dragPreview=false;setMouseCursor(MouseCursor::NormalCursor);t.invalidate();return;
             }
             if (controlClip) {
@@ -5151,7 +5175,8 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             const auto *song=t.w.session.song();
             return song ? timelineGrid::snapCursor(time,*song,t.w.pixelsPerSecond,t.w.freeTimelinePosition(modifiers),&snapTiming(*song)) : time;
         }
-        void updateDrag(const MouseEvent &e) { updateDrag(e.position,e.mods); }
+        std::optional<std::tuple<double, int, uint64, double>> lastItemMove;
+        bool updateDrag(const MouseEvent &e) { return updateDrag(e.position,e.mods); }
         void repaintItemEdgeGuides() {
             if (dragClip.empty()) return;
             const double from=dragPreview ? previewStart : originalStart;
@@ -5181,8 +5206,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             const auto sourceDuration = resizeSourceDuration(track, clip);
             return clipEditing::resizedSource(clip, start, end, sourceDuration);
         }
-        void updateDrag(Point<float> point, ModifierKeys modifiers) {
-            repaintItemEdgeGuides();
+        bool updateDrag(Point<float> point, ModifierKeys modifiers) {
             double edge = (resizeEdge > 0 ? originalStart + clipLength : originalStart) +
                           t.timeAt(point.x) - startTime;
             edge = std::max(0., edge);
@@ -5193,6 +5217,15 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                                                    t.w.session.transport(),t.w.freeTimelinePosition(modifiers), &excluded, &itemSnapEdges,
                                                    &snapTiming(*song));
             }
+            int row = resizeEdge || point.y < rowsTop() ? sourceRow :
+                t.w.rowAt(roundToInt(point.y) - rowsTop() + t.w.verticalOffset);
+            if (row < 0 || row >= t.w.rows.size()) row = sourceRow;
+            if (!resizeEdge) {
+                const auto placement = std::tuple{edge, row, t.w.session.revision, t.w.pixelsPerSecond};
+                if (lastItemMove == placement) return false;
+                lastItemMove = placement;
+            }
+            repaintItemEdgeGuides();
             previewStart =
                 resizeEdge > 0
                     ? originalStart
@@ -5200,10 +5233,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             previewEnd = resizeEdge < 0   ? originalStart + clipLength
                          : resizeEdge > 0 ? std::max(originalStart + .01, edge)
                                           : previewStart + clipLength;
-            previewRow = resizeEdge || point.y < rowsTop() ? sourceRow :
-                t.w.rowAt(roundToInt(point.y) - rowsTop() + t.w.verticalOffset);
-            if (previewRow < 0 || previewRow >= t.w.rows.size())
-                previewRow = sourceRow;
+            previewRow = row;
             if(const auto *song=t.w.session.song(); song && dragOriginalValid && dragOriginalClip && sourceRow>=0 && sourceRow<(int)song->tracks.size()) {
                 const auto &source=song->tracks[(size_t)sourceRow];
                 const auto &target=song->tracks[(size_t)previewRow];
@@ -5230,7 +5260,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
                     if (resizedClipPreview && sharedPreview) {
                         previewStart=resizedClipPreview->startTime;previewEnd=sharedPreview->startTime;
                     }
-                    refreshPreviewPlacements(*song);repaintDragPreview();repaintItemEdgeGuides();return;
+                    refreshPreviewPlacements(*song);repaintDragPreview();repaintItemEdgeGuides();return true;
                 }
                 if (resizeEdge) {
                     const double anchorEdge = resizeEdge < 0 ? originalStart : originalStart + clipLength;
@@ -5269,6 +5299,7 @@ class Workspace::Timeline final : public Component, private ScrollBar::Listener,
             }
             dragPreview = true;
             repaintItemEdgeGuides();
+            return true;
         }
     } canvas;
     class Heads final : public Component {
